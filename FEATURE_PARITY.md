@@ -1,0 +1,279 @@
+# Feature Parity: pi_agent_rust vs pi-mono (TypeScript)
+
+> **Purpose:** Authoritative single-source-of-truth for implementation status.
+> **Last Updated:** 2026-02-02
+
+## Status Legend
+
+| Status | Meaning |
+|--------|---------|
+| ✅ Implemented | Feature exists, covered by tests |
+| 🔶 Partial | Some functionality present, known gaps remain |
+| ❌ Missing | In scope but not yet implemented |
+| ⬜ Out of Scope | Intentionally excluded from this port |
+
+---
+
+## Executive Summary
+
+| Category | Implemented | Partial | Missing | Out of Scope | Total |
+|----------|-------------|---------|---------|--------------|-------|
+| **Core Types** | 8 | 0 | 0 | 0 | 8 |
+| **Provider Layer** | 1 | 1 | 3 | 10+ | 15+ |
+| **Tools (7 total)** | 7 | 0 | 0 | 0 | 7 |
+| **Agent Runtime** | 1 | 1 | 0 | 0 | 2 |
+| **Session Management** | 1 | 1 | 2 | 0 | 4 |
+| **CLI** | 1 | 0 | 2 | 2 | 5 |
+| **TUI** | 0 | 0 | 6 | 2 | 8 |
+| **Configuration** | 1 | 0 | 1 | 0 | 2 |
+| **Authentication** | 0 | 0 | 2 | 0 | 2 |
+
+---
+
+## 1. Core Types (Message/Content/Usage)
+
+| Feature | Status | Rust Location | Tests | Notes |
+|---------|--------|---------------|-------|-------|
+| Message union (User/Assistant/ToolResult) | ✅ | `src/model.rs:13-19` | Unit | Complete enum with serde |
+| UserMessage | ✅ | `src/model.rs:22-27` | Unit | Text or Blocks content |
+| AssistantMessage | ✅ | `src/model.rs:38-50` | Unit | Full metadata |
+| ToolResultMessage | ✅ | `src/model.rs:53-63` | Unit | Error flag, details |
+| ContentBlock enum | ✅ | `src/model.rs:86-93` | Unit | Text/Thinking/Image/ToolCall |
+| StopReason enum | ✅ | `src/model.rs:70-79` | Unit | All 5 variants |
+| Usage tracking | ✅ | `src/model.rs:145-166` | Unit | Input/output/cache/cost |
+| StreamEvent enum | ✅ | `src/model.rs:172-232` | Unit | All 12 event types |
+
+---
+
+## 2. Provider Layer
+
+### 2.1 Provider Trait
+
+| Feature | Status | Rust Location | Tests | Notes |
+|---------|--------|---------------|-------|-------|
+| Provider trait definition | ✅ | `src/provider.rs:18-31` | - | async_trait based |
+| Context struct | ✅ | `src/provider.rs:38-43` | - | System prompt + messages + tools |
+| StreamOptions | ✅ | `src/provider.rs:62-72` | - | Temperature, max_tokens, thinking |
+| ToolDef struct | ✅ | `src/provider.rs:49-55` | - | JSON Schema parameters |
+| Model definition | ✅ | `src/provider.rs:108-121` | - | Cost, context window, etc. |
+| ThinkingLevel enum | ✅ | `src/model.rs:239-265` | Unit | 6 levels with budgets |
+| CacheRetention enum | ✅ | `src/provider.rs:75-81` | - | None/Short/Long |
+
+### 2.2 Provider Implementations
+
+| Provider | Status | Rust Location | Tests | Notes |
+|----------|--------|---------------|-------|-------|
+| **Anthropic** | ✅ | `src/providers/anthropic.rs` | Unit | Full streaming + thinking + tools |
+| OpenAI | ❌ | - | - | Planned for Phase 2 |
+| Google Gemini | ❌ | - | - | Planned for Phase 2 |
+| Azure OpenAI | ❌ | - | - | Planned for Phase 3 |
+| Amazon Bedrock | ⬜ | - | - | Low priority |
+| Google Vertex | ⬜ | - | - | Low priority |
+| GitHub Copilot | ⬜ | - | - | OAuth complexity |
+| XAI | ⬜ | - | - | Low priority |
+| Groq | ⬜ | - | - | Low priority |
+| Cerebras | ⬜ | - | - | Low priority |
+| OpenRouter | ⬜ | - | - | Low priority |
+| Mistral | ⬜ | - | - | Low priority |
+| Custom providers | ⬜ | - | - | Defer |
+
+### 2.3 Streaming Implementation
+
+| Feature | Status | Location | Notes |
+|---------|--------|----------|-------|
+| SSE parsing (Anthropic) | ✅ | `anthropic.rs` | reqwest-eventsource |
+| Text delta streaming | ✅ | `anthropic.rs:339-352` | Real-time text |
+| Thinking delta streaming | ✅ | `anthropic.rs:354-367` | Extended thinking |
+| Tool call streaming | ✅ | `anthropic.rs:368-382` | JSON accumulation |
+| Usage updates | ✅ | `anthropic.rs:430-448` | Token counts |
+| Error event handling | ✅ | `anthropic.rs:258-266` | API errors |
+
+---
+
+## 3. Built-in Tools
+
+| Tool | Status | Rust Location | Tests | Conformance Tests |
+|------|--------|---------------|-------|-------------------|
+| **read** | ✅ | `src/tools.rs` | 4 | ✅ test_read_* |
+| **bash** | ✅ | `src/tools.rs` | 3 | ✅ test_bash_* |
+| **edit** | ✅ | `src/tools.rs` | 3 | ✅ test_edit_* |
+| **write** | ✅ | `src/tools.rs` | 2 | ✅ test_write_* |
+| **grep** | ✅ | `src/tools.rs` | 3 | ✅ test_grep_* |
+| **find** | ✅ | `src/tools.rs` | 2 | ✅ test_find_* |
+| **ls** | ✅ | `src/tools.rs` | 3 | ✅ test_ls_* |
+
+### 3.1 Tool Feature Details
+
+| Feature | read | bash | edit | write | grep | find | ls |
+|---------|------|------|------|-------|------|------|-----|
+| Basic operation | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Truncation (head/tail) | ✅ | ✅ | - | - | ✅ | ✅ | ✅ |
+| Image support | ✅ | - | - | - | - | - | - |
+| Streaming updates | - | ✅ | - | - | - | - | - |
+| Line numbers | ✅ | - | - | - | ✅ | - | - |
+| Path resolution | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| ~ expansion | ✅ | - | ✅ | ✅ | ✅ | ✅ | ✅ |
+| macOS screenshot paths | ✅ | - | - | - | - | - | - |
+
+### 3.2 Truncation Constants
+
+| Constant | Value | Used By |
+|----------|-------|---------|
+| DEFAULT_MAX_LINES | 2000 | read, bash, grep |
+| DEFAULT_MAX_BYTES | 50KB | read, bash, grep, find, ls |
+| GREP_MAX_LINE_LENGTH | 500 | grep |
+| DEFAULT_BASH_TIMEOUT | 120s | bash |
+
+---
+
+## 4. Agent Runtime
+
+| Feature | Status | Rust Location | Tests | Notes |
+|---------|--------|---------------|-------|-------|
+| Agent struct | ✅ | `src/agent.rs` | Unit | Provider + tools + config |
+| Agent loop | ✅ | `src/agent.rs` | - | Tool iteration limit |
+| Tool execution | ✅ | `src/agent.rs` | Unit | Error handling |
+| Event callbacks | ✅ | `src/agent.rs` | - | 9 event types |
+| Stream processing | ✅ | `src/agent.rs` | - | Delta handling |
+| Context building | ✅ | `src/agent.rs` | - | System + history + tools |
+| Abort handling | 🔶 | - | - | Basic, needs SIGINT |
+
+---
+
+## 5. Session Management
+
+| Feature | Status | Rust Location | Tests | Notes |
+|---------|--------|---------------|-------|-------|
+| Session struct | ✅ | `src/session.rs` | - | Header + entries + path |
+| SessionHeader | ✅ | `src/session.rs` | - | Version 3 |
+| JSONL persistence | ✅ | `src/session.rs` | - | Save/load |
+| Entry types (7) | ✅ | `src/session.rs` | - | Message, ModelChange, etc. |
+| Tree structure | 🔶 | `src/session.rs` | - | Basic; no navigation yet |
+| CWD encoding | ✅ | `src/session.rs` | - | Session directory naming |
+| Entry ID generation | ✅ | `src/session.rs` | - | 8-char hex |
+| Continue previous | ✅ | `src/session.rs` | - | Most recent by mtime |
+| Session picker UI | ❌ | - | - | TUI dependency |
+| Branching/navigation | ❌ | - | - | Needs implementation |
+
+---
+
+## 6. CLI
+
+| Feature | Status | Rust Location | Tests | Notes |
+|---------|--------|---------------|-------|-------|
+| Argument parsing | ✅ | `src/cli.rs` | - | Clap derive |
+| Subcommands | ✅ | `src/cli.rs` | - | install/remove/update/list/config |
+| @file arguments | ✅ | `src/cli.rs` | - | File inclusion |
+| Message arguments | ✅ | `src/cli.rs` | - | Positional text |
+| Tool selection | ✅ | `src/cli.rs` | - | --tools flag |
+| Model listing | ❌ | `src/main.rs` | - | Stub only |
+| Session export | ❌ | `src/main.rs` | - | Stub only |
+| Print mode | 🔶 | `src/main.rs` | - | Stub only |
+| RPC mode | ⬜ | `src/main.rs` | - | Out of scope for v1 |
+| Package management | ⬜ | - | - | Out of scope for v1 |
+
+---
+
+## 7. Configuration
+
+| Feature | Status | Rust Location | Tests | Notes |
+|---------|--------|---------------|-------|-------|
+| Config loading | ✅ | `src/config.rs` | - | Global + project merge |
+| Settings struct | ✅ | `src/config.rs` | - | All fields optional |
+| Default accessors | ✅ | `src/config.rs` | - | Fallback values |
+| Compaction settings | ✅ | `src/config.rs` | - | enabled, reserve, keep |
+| Retry settings | ✅ | `src/config.rs` | - | enabled, max, delays |
+| Image settings | ✅ | `src/config.rs` | - | auto_resize, block |
+| Terminal settings | ✅ | `src/config.rs` | - | show_images, clear |
+| Thinking budgets | ✅ | `src/config.rs` | - | Per-level overrides |
+| Environment variables | ❌ | - | - | Partial (API keys only) |
+
+---
+
+## 8. Terminal UI
+
+| Feature | Status | Rust Location | Tests | Notes |
+|---------|--------|---------------|-------|-------|
+| Terminal state (raw mode) | ❌ | `src/tui.rs` | - | TODO stub |
+| Differential renderer | ❌ | - | - | Not started |
+| Multi-line editor | ❌ | - | - | Not started |
+| Slash command system | ❌ | - | - | Not started |
+| Status line | ❌ | - | - | Not started |
+| Thinking block display | ❌ | - | - | Not started |
+| Markdown rendering | ❌ | - | - | Not started |
+| Image display | ⬜ | - | - | Terminal dependent |
+| Autocomplete | ⬜ | - | - | Defer |
+
+---
+
+## 9. Authentication
+
+| Feature | Status | Rust Location | Tests | Notes |
+|---------|--------|---------------|-------|-------|
+| API key from env | ✅ | `anthropic.rs` | - | ANTHROPIC_API_KEY |
+| API key from flag | ✅ | `anthropic.rs` | - | --api-key |
+| auth.json storage | ❌ | - | - | File with 0600 perms |
+| OAuth flow | ❌ | - | - | Browser callback |
+| Token refresh | ❌ | - | - | Expiry handling |
+
+---
+
+## 10. Error Handling
+
+| Feature | Status | Rust Location | Tests | Notes |
+|---------|--------|---------------|-------|-------|
+| Error enum | ✅ | `src/error.rs` | - | thiserror based |
+| Config errors | ✅ | `src/error.rs` | - | |
+| Session errors | ✅ | `src/error.rs` | - | Including NotFound |
+| Provider errors | ✅ | `src/error.rs` | - | Provider + message |
+| Auth errors | ✅ | `src/error.rs` | - | |
+| Tool errors | ✅ | `src/error.rs` | - | Tool name + message |
+| Validation errors | ✅ | `src/error.rs` | - | |
+| IO/JSON/HTTP errors | ✅ | `src/error.rs` | - | From impls |
+
+---
+
+## Test Coverage Summary
+
+| Category | Unit Tests | Integration Tests | Conformance Tests | Total |
+|----------|------------|-------------------|-------------------|-------|
+| Core types | 4 | 0 | 0 | 4 |
+| Provider (Anthropic) | 2 | 0 | 0 | 2 |
+| Tools | 7 | 20 | 20 | 47 |
+| Agent | 2 | 0 | 0 | 2 |
+| Session | 0 | 0 | 0 | 0 |
+| **Total** | **15** | **20** | **20** | **55** |
+
+---
+
+## Conformance Testing Status
+
+| Component | Has Fixture Tests | Reference Captured | Notes |
+|-----------|-------------------|-------------------|-------|
+| Tools | ✅ Yes | TypeScript (manual) | `tests/tools_conformance.rs` |
+| Session format | ❌ No | - | Need JSONL fixtures |
+| Provider responses | ❌ No | - | Need mock API fixtures |
+| CLI flags | ❌ No | - | Need behavior fixtures |
+
+---
+
+## Performance Targets
+
+| Metric | Target | Current | Status |
+|--------|--------|---------|--------|
+| Startup time | <100ms | Not measured | ❌ |
+| Binary size (release) | <20MB | Not built | ❌ |
+| TUI framerate | 60fps | N/A | ❌ |
+| Memory (idle) | <50MB | Not measured | ❌ |
+
+---
+
+## Next Steps (Priority Order)
+
+1. **Complete print mode** - Non-interactive single response
+2. **Add OpenAI provider** - Second provider implementation  
+3. **Implement auth.json** - Credential storage
+4. **Session picker UI** - Basic TUI for --resume
+5. **Branching/navigation** - Tree operations
+6. **Benchmark harness** - Performance validation
+7. **Conformance fixtures** - TypeScript reference capture
