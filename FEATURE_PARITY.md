@@ -195,13 +195,19 @@
 
 | Feature | Status | Rust Location | Tests | Notes |
 |---------|--------|---------------|-------|-------|
-| Terminal state (raw mode) | ❌ | `src/tui.rs` | - | TODO stub |
+| PiConsole wrapper | ✅ | `src/tui.rs` | 3 | rich_rust integration |
+| Styled output (markup) | ✅ | `src/tui.rs` | - | Colors, bold, dim |
+| Agent event rendering | ✅ | `src/tui.rs` | - | Text, thinking, tools, errors |
+| Table rendering | ✅ | `src/tui.rs` | - | Via rich_rust Tables |
+| Panel rendering | ✅ | `src/tui.rs` | - | Via rich_rust Panels |
+| Rule rendering | ✅ | `src/tui.rs` | - | Horizontal dividers |
+| Spinner styles | ✅ | `src/tui.rs` | 1 | Dots, line, simple |
+| Terminal state (raw mode) | ❌ | - | - | Not yet needed |
 | Differential renderer | ❌ | - | - | Not started |
 | Multi-line editor | ❌ | - | - | Not started |
 | Slash command system | ❌ | - | - | Not started |
 | Status line | ❌ | - | - | Not started |
-| Thinking block display | ❌ | - | - | Not started |
-| Markdown rendering | ❌ | - | - | Not started |
+| Markdown rendering | 🔶 | `src/tui.rs` | - | Available via rich_rust |
 | Image display | ⬜ | - | - | Terminal dependent |
 | Autocomplete | ⬜ | - | - | Defer |
 

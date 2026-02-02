@@ -9,7 +9,7 @@
 // Allow dead code and unused async during scaffolding phase - remove once implementation is complete
 #![allow(dead_code, clippy::unused_async)]
 
-use std::io::{self, BufRead, IsTerminal, Write};
+use std::io::{self, BufRead, IsTerminal};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -18,6 +18,7 @@ use clap::Parser;
 use pi::agent::{Agent, AgentConfig, AgentEvent};
 use pi::providers::anthropic::AnthropicProvider;
 use pi::tools::ToolRegistry;
+use pi::tui::PiConsole;
 use pi::{cli, config, session};
 use tracing_subscriber::EnvFilter;
 
@@ -138,48 +139,30 @@ async fn run_print_mode(
     // Create agent
     let mut agent = Agent::new(provider, tools, agent_config);
 
-    // Run and stream output
-    let is_tty = io::stdout().is_terminal();
+    // Create console for styled output
+    let console = PiConsole::new();
 
+    // Run and stream output
     let result = agent
         .run(&input, move |event| {
-            // Get stdout fresh each time to avoid holding lock across await
-            let mut stdout = io::stdout();
             match event {
                 AgentEvent::TextDelta { text } => {
-                    let _ = write!(stdout, "{text}");
-                    let _ = stdout.flush();
+                    console.render_text_delta(&text);
                 }
                 AgentEvent::ThinkingDelta { text } => {
-                    if is_tty {
-                        // Only show thinking in TTY mode
-                        let _ = write!(stdout, "\x1b[2m{text}\x1b[0m"); // Dim
-                        let _ = stdout.flush();
-                    }
+                    console.render_thinking_delta(&text);
                 }
                 AgentEvent::ToolExecuteStart { name, .. } => {
-                    if is_tty {
-                        let _ = writeln!(stdout, "\n\x1b[33m[Running {name}...]\x1b[0m");
-                        let _ = stdout.flush();
-                    }
+                    console.render_tool_start(&name, "");
                 }
                 AgentEvent::ToolExecuteEnd { name, is_error, .. } => {
-                    if is_tty {
-                        if is_error {
-                            let _ = writeln!(stdout, "\x1b[31m[{name} failed]\x1b[0m\n");
-                        } else {
-                            let _ = writeln!(stdout, "\x1b[32m[{name} done]\x1b[0m\n");
-                        }
-                        let _ = stdout.flush();
-                    }
+                    console.render_tool_end(&name, is_error);
                 }
                 AgentEvent::Error { error } => {
-                    let _ = writeln!(stdout, "\n\x1b[31mError: {error}\x1b[0m");
-                    let _ = stdout.flush();
+                    console.render_error(&error);
                 }
                 AgentEvent::Done { .. } => {
-                    let _ = writeln!(stdout);
-                    let _ = stdout.flush();
+                    console.newline();
                 }
                 _ => {}
             }
@@ -189,7 +172,8 @@ async fn run_print_mode(
     match result {
         Ok(_) => Ok(()),
         Err(e) => {
-            eprintln!("\nError: {e}");
+            let console = PiConsole::new();
+            console.render_error(&e.to_string());
             std::process::exit(1);
         }
     }
