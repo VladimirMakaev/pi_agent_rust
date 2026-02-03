@@ -28,6 +28,7 @@ pub mod compaction;
 pub mod config;
 pub mod connectors;
 pub mod error;
+pub mod error_hints;
 pub mod extensions;
 pub mod extensions_js;
 pub mod http;
