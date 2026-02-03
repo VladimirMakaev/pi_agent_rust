@@ -18,12 +18,12 @@ use crate::model::{
     ToolResultMessage, UserContent, UserMessage,
 };
 use crate::provider::{Context, Provider, StreamOptions, ToolDef};
-use serde::Serialize;
 use crate::session::Session;
 use crate::session_index::SessionIndex;
 use crate::tools::ToolRegistry;
 use chrono::Utc;
 use futures::StreamExt;
+use serde::Serialize;
 use std::sync::Arc;
 
 // ============================================================================

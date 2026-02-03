@@ -14,7 +14,9 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AuthCredential {
-    ApiKey { key: String },
+    ApiKey {
+        key: String,
+    },
     OAuth {
         access_token: String,
         refresh_token: String,
@@ -61,6 +63,7 @@ impl AuthStorage {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(&self.path)?;
         let _lock = lock_file(&file, Duration::from_secs(30))?;
 
@@ -88,7 +91,11 @@ impl AuthStorage {
     pub fn api_key(&self, provider: &str) -> Option<String> {
         match self.entries.get(provider) {
             Some(AuthCredential::ApiKey { key }) => Some(key.clone()),
-            Some(AuthCredential::OAuth { access_token, expires, .. }) => {
+            Some(AuthCredential::OAuth {
+                access_token,
+                expires,
+                ..
+            }) => {
                 let now = chrono::Utc::now().timestamp_millis();
                 if *expires > now {
                     Some(access_token.clone())
@@ -137,17 +144,15 @@ fn env_key_for_provider(provider: &str) -> Option<&'static str> {
 fn lock_file(file: &File, timeout: Duration) -> Result<LockGuard<'_>> {
     let start = Instant::now();
     loop {
-        match file.try_lock_exclusive() {
-            Ok(true) => return Ok(LockGuard { file }),
-            Ok(false) | Err(_) => {
-                if start.elapsed() >= timeout {
-                    return Err(Error::auth(
-                        "Timed out waiting for auth lock".to_string()
-                    ));
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
+        if matches!(FileExt::try_lock_exclusive(file), Ok(true)) {
+            return Ok(LockGuard { file });
         }
+
+        if start.elapsed() >= timeout {
+            return Err(Error::auth("Timed out waiting for auth lock".to_string()));
+        }
+
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -157,7 +162,7 @@ struct LockGuard<'a> {
 
 impl Drop for LockGuard<'_> {
     fn drop(&mut self) {
-        let _ = self.file.unlock();
+        let _ = FileExt::unlock(self.file);
     }
 }
 

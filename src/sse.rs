@@ -3,6 +3,7 @@
 //! Implements the SSE protocol (text/event-stream) on top of asupersync's
 //! HTTP client for streaming LLM responses.
 
+use std::collections::VecDeque;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -51,12 +52,14 @@ impl SseParser {
         self.buffer.push_str(data);
         let mut events = Vec::new();
 
-        // Process complete lines
-        while let Some(newline_pos) = self.buffer.find('\n') {
-            let line = self.buffer[..newline_pos]
-                .trim_end_matches('\r')
-                .to_string();
-            self.buffer = self.buffer[newline_pos + 1..].to_string();
+        let mut start = 0usize;
+        while let Some(rel_newline) = self.buffer[start..].find('\n') {
+            let newline_pos = start + rel_newline;
+            let mut line = &self.buffer[start..newline_pos];
+            if let Some(stripped) = line.strip_suffix('\r') {
+                line = stripped;
+            }
+            start = newline_pos + 1;
 
             if line.is_empty() {
                 // Blank line = event boundary
@@ -90,7 +93,7 @@ impl SseParser {
                 }
             } else {
                 // Field with no value
-                match line.as_str() {
+                match line {
                     "event" => self.current.event = String::new(),
                     "data" => {
                         if self.has_data {
@@ -104,6 +107,9 @@ impl SseParser {
             }
         }
 
+        if start > 0 {
+            self.buffer.drain(..start);
+        }
         events
     }
 
@@ -150,7 +156,7 @@ impl SseParser {
 pub struct SseStream<S> {
     inner: S,
     parser: SseParser,
-    pending_events: Vec<SseEvent>,
+    pending_events: VecDeque<SseEvent>,
 }
 
 impl<S> SseStream<S> {
@@ -159,7 +165,7 @@ impl<S> SseStream<S> {
         Self {
             inner,
             parser: SseParser::new(),
-            pending_events: Vec::new(),
+            pending_events: VecDeque::new(),
         }
     }
 }
@@ -174,8 +180,8 @@ where
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<SseEvent, std::io::Error>>> {
         // Return any pending events first
-        if !self.pending_events.is_empty() {
-            return Poll::Ready(Some(Ok(self.pending_events.remove(0))));
+        if let Some(event) = self.pending_events.pop_front() {
+            return Poll::Ready(Some(Ok(event)));
         }
 
         // Poll the inner stream for more data
@@ -196,8 +202,10 @@ where
                     // Feed to parser
                     let events = self.parser.feed(text);
                     if !events.is_empty() {
-                        self.pending_events = events;
-                        return Poll::Ready(Some(Ok(self.pending_events.remove(0))));
+                        self.pending_events = events.into_iter().collect();
+                        if let Some(event) = self.pending_events.pop_front() {
+                            return Poll::Ready(Some(Ok(event)));
+                        }
                     }
                     // No complete events yet, continue polling
                 }

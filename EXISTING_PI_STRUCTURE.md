@@ -643,11 +643,14 @@ Current version: **3**
 ```rust
 pub struct SessionHeader {
     pub r#type: String,              // "session"
-    pub version: u8,                 // 3
+    pub version: Option<u8>,         // Usually 3
     pub id: String,                  // UUID
     pub timestamp: String,           // ISO-8601
     pub cwd: String,                 // Absolute path
-    pub parent_session: Option<String>,  // Parent session path (for forks)
+    pub provider: Option<String>,    // Provider name (optional)
+    pub model_id: Option<String>,    // Model ID (optional)
+    pub thinking_level: Option<String>,  // "off"|"minimal"|... (optional)
+    pub parent_session: Option<String>,  // Parent session path (serialized as "branchedFrom"; accepts legacy "parentSession")
 }
 ```
 
@@ -659,7 +662,10 @@ pub struct SessionHeader {
   "id": "uuid-string",
   "timestamp": "2024-01-15T10:30:45.123Z",
   "cwd": "/absolute/path/to/dir",
-  "parentSession": "/path/to/parent.jsonl"
+  "provider": "anthropic",
+  "modelId": "claude-sonnet-4-20250514",
+  "thinkingLevel": "medium",
+  "branchedFrom": "/path/to/parent.jsonl"
 }
 ```
 
@@ -669,8 +675,7 @@ All entries have base fields:
 
 ```rust
 pub struct EntryBase {
-    pub r#type: String,
-    pub id: String,           // 8-char hex or UUID
+    pub id: Option<String>,   // 8-char hex or UUID (may be missing on disk)
     pub parent_id: Option<String>,
     pub timestamp: String,    // ISO-8601
 }

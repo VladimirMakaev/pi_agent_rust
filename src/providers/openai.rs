@@ -8,8 +8,8 @@
 
 use crate::error::{Error, Result};
 use crate::model::{
-    AssistantMessage, ContentBlock, Message, StopReason, StreamEvent, TextContent, ToolCall,
-    Usage, UserContent,
+    AssistantMessage, ContentBlock, Message, StopReason, StreamEvent, TextContent, ToolCall, Usage,
+    UserContent,
 };
 use crate::provider::{Context, Provider, StreamOptions, ToolDef};
 use async_trait::async_trait;
@@ -57,18 +57,12 @@ impl OpenAIProvider {
 
     /// Build the request body for the OpenAI API.
     fn build_request(&self, context: &Context, options: &StreamOptions) -> OpenAIRequest {
-        let messages = self.build_messages(context);
+        let messages = Self::build_messages(context);
 
         let tools: Option<Vec<OpenAITool>> = if context.tools.is_empty() {
             None
         } else {
-            Some(
-                context
-                    .tools
-                    .iter()
-                    .map(convert_tool_to_openai)
-                    .collect(),
-            )
+            Some(context.tools.iter().map(convert_tool_to_openai).collect())
         };
 
         OpenAIRequest {
@@ -85,7 +79,7 @@ impl OpenAIProvider {
     }
 
     /// Build the messages array with system prompt prepended.
-    fn build_messages(&self, context: &Context) -> Vec<OpenAIMessage> {
+    fn build_messages(context: &Context) -> Vec<OpenAIMessage> {
         let mut messages = Vec::new();
 
         // Add system prompt as first message
@@ -242,13 +236,13 @@ impl StreamState {
 
         // Process choices
         if let Some(choice) = chunk.choices.into_iter().next() {
-            return self.process_choice(choice);
+            return Ok(self.process_choice(choice));
         }
 
         Ok(None)
     }
 
-    fn process_choice(&mut self, choice: OpenAIChoice) -> Result<Option<StreamEvent>> {
+    fn process_choice(&mut self, choice: OpenAIChoice) -> Option<StreamEvent> {
         // Handle finish reason
         if let Some(reason) = choice.finish_reason {
             self.partial.stop_reason = match reason.as_str() {
@@ -277,7 +271,7 @@ impl StreamState {
                 }));
             }
 
-            return Ok(None); // Done event handled by [DONE] message
+            return None; // Done event handled by [DONE] message
         }
 
         let delta = choice.delta;
@@ -285,19 +279,19 @@ impl StreamState {
         // Emit start event on first content
         if !self.started {
             self.started = true;
-            return Ok(Some(StreamEvent::Start {
+            return Some(StreamEvent::Start {
                 partial: self.partial.clone(),
-            }));
+            });
         }
 
         // Handle text content
         if let Some(content) = delta.content {
             self.current_text.push_str(&content);
-            return Ok(Some(StreamEvent::TextDelta {
+            return Some(StreamEvent::TextDelta {
                 content_index: 0,
                 delta: content,
                 partial: self.partial.clone(),
-            }));
+            });
         }
 
         // Handle tool calls
@@ -329,17 +323,17 @@ impl StreamState {
                     }
                     if let Some(args) = function.arguments {
                         tc.arguments.push_str(&args);
-                        return Ok(Some(StreamEvent::ToolCallDelta {
+                        return Some(StreamEvent::ToolCallDelta {
                             content_index: index,
                             delta: args,
                             partial: self.partial.clone(),
-                        }));
+                        });
                     }
                 }
             }
         }
 
-        Ok(None)
+        None
     }
 }
 
@@ -468,6 +462,7 @@ struct OpenAIFunctionDelta {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(clippy::struct_field_names)]
 struct OpenAIUsage {
     prompt_tokens: u64,
     #[serde(default)]

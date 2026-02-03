@@ -1,7 +1,7 @@
 # Feature Parity: pi_agent_rust vs Pi Agent (TypeScript)
 
 > **Purpose:** Authoritative single-source-of-truth for implementation status.
-> **Last Updated:** 2026-02-02 (32 lib tests pass, OpenAI provider added)
+> **Last Updated:** 2026-02-02 (39 lib tests pass, slash commands implemented)
 
 ## Status Legend
 
@@ -19,13 +19,13 @@
 | Category | Implemented | Partial | Missing | Out of Scope | Total |
 |----------|-------------|---------|---------|--------------|-------|
 | **Core Types** | 8 | 0 | 0 | 0 | 8 |
-| **Provider Layer** | 2 | 1 | 2 | 10+ | 15+ |
+| **Provider Layer** | 3 | 1 | 1 | 10+ | 15+ |
 | **Tools (7 total)** | 7 | 0 | 0 | 0 | 7 |
 | **Agent Runtime** | 1 | 1 | 0 | 0 | 2 |
 | **Session Management** | 1 | 1 | 2 | 0 | 4 |
-| **CLI** | 1 | 0 | 2 | 2 | 5 |
-| **TUI** | 13 | 1 | 3 | 2 | 19 |
-| **Configuration** | 1 | 0 | 1 | 0 | 2 |
+| **CLI** | 7 | 1 | 0 | 2 | 10 |
+| **TUI** | 16 | 1 | 0 | 2 | 19 |
+| **Configuration** | 2 | 0 | 0 | 0 | 2 |
 | **Authentication** | 6 | 1 | 1 | 0 | 8 |
 
 ---
@@ -65,7 +65,7 @@
 |----------|--------|---------------|-------|-------|
 | **Anthropic** | ✅ | `src/providers/anthropic.rs` | Unit | Full streaming + thinking + tools |
 | **OpenAI** | ✅ | `src/providers/openai.rs` | Unit | Full streaming + tool use |
-| Google Gemini | ❌ | - | - | Planned for Phase 2 |
+| **Google Gemini** | ✅ | `src/providers/gemini.rs` | 4 | Full streaming + tool use |
 | Azure OpenAI | ❌ | - | - | Planned for Phase 3 |
 | Amazon Bedrock | ⬜ | - | - | Low priority |
 | Google Vertex | ⬜ | - | - | Low priority |
@@ -152,7 +152,7 @@
 | CWD encoding | ✅ | `src/session.rs` | - | Session directory naming |
 | Entry ID generation | ✅ | `src/session.rs` | - | 8-char hex |
 | Continue previous | ✅ | `src/session.rs` | - | Most recent by mtime |
-| Session picker UI | ❌ | - | - | TUI dependency |
+| Session picker UI | ✅ | `src/session_picker.rs` | 3 | TUI picker with bubbletea |
 | Branching/navigation | ❌ | - | - | Needs implementation |
 
 ---
@@ -162,13 +162,13 @@
 | Feature | Status | Rust Location | Tests | Notes |
 |---------|--------|---------------|-------|-------|
 | Argument parsing | ✅ | `src/cli.rs` | - | Clap derive |
-| Subcommands | ✅ | `src/cli.rs` | - | install/remove/update/list/config |
+| Subcommands | 🔶 | `src/cli.rs` | - | Parsed, but handlers not implemented |
 | @file arguments | ✅ | `src/cli.rs` | - | File inclusion |
 | Message arguments | ✅ | `src/cli.rs` | - | Positional text |
 | Tool selection | ✅ | `src/cli.rs` | - | --tools flag |
-| Model listing | ❌ | `src/main.rs` | - | Stub only |
-| Session export | ❌ | `src/main.rs` | - | Stub only |
-| Print mode | 🔶 | `src/main.rs` | - | Stub only |
+| Model listing | ✅ | `src/main.rs` | - | Table output |
+| Session export | ✅ | `src/main.rs` | - | HTML export |
+| Print mode | ✅ | `src/main.rs` | - | Single-shot mode |
 | RPC mode | ⬜ | `src/main.rs` | - | Out of scope for v1 |
 | Package management | ⬜ | - | - | Out of scope for v1 |
 
@@ -186,7 +186,7 @@
 | Image settings | ✅ | `src/config.rs` | - | auto_resize, block |
 | Terminal settings | ✅ | `src/config.rs` | - | show_images, clear |
 | Thinking budgets | ✅ | `src/config.rs` | - | Per-level overrides |
-| Environment variables | ❌ | - | - | Partial (API keys only) |
+| Environment variables | ✅ | `src/config.rs` | - | PI_CONFIG_PATH/PI_CODING_AGENT_DIR/PI_PACKAGE_DIR/PI_SESSIONS_DIR + provider API keys |
 
 ---
 
@@ -215,10 +215,10 @@
 | Spinner animation | ✅ | `src/interactive.rs` | - | bubbles spinner |
 | Tool status display | ✅ | `src/interactive.rs` | - | Running tool indicator |
 | Keyboard navigation | ✅ | `src/interactive.rs` | - | Up/Down history, Esc quit |
-| Agent integration | 🔶 | `src/interactive.rs` | - | Events defined, not wired |
-| Multi-line editor | ❌ | - | - | Not started |
-| Slash command system | ❌ | - | - | Not started |
-| Viewport scrolling | ❌ | - | - | Viewport component unused |
+| Agent integration | ✅ | `src/interactive.rs` | - | Agent events wired |
+| Multi-line editor | ✅ | `src/interactive.rs` | - | TextArea with line wrapping |
+| Slash command system | ✅ | `src/interactive.rs` | - | /help, /clear, /model, /thinking, /exit, /history, /export |
+| Viewport scrolling | ✅ | `src/interactive.rs` | - | Viewport with scroll_to_bottom() |
 | Image display | ⬜ | - | - | Terminal dependent |
 | Autocomplete | ⬜ | - | - | Defer |
 
@@ -261,15 +261,17 @@
 | Core types | 4 | 0 | 0 | 4 |
 | Provider (Anthropic) | 2 | 0 | 0 | 2 |
 | Provider (OpenAI) | 3 | 0 | 0 | 3 |
+| Provider (Gemini) | 4 | 0 | 0 | 4 |
 | SSE parser | 11 | 0 | 0 | 11 |
 | Tools | 5 | 20 | 67 | 92 |
 | TUI (rich_rust) | 3 | 0 | 0 | 3 |
 | TUI (interactive) | 2 | 0 | 0 | 2 |
+| TUI (session picker) | 3 | 0 | 0 | 3 |
 | Agent | 2 | 0 | 0 | 2 |
 | Conformance infra | 6 | 0 | 0 | 6 |
-| **Total** | **32** | **20** | **67** | **119** |
+| **Total** | **39** | **20** | **67** | **126** |
 
-**All 67 tests pass** (32 unit + 15 fixture wrappers + 20 integration)
+**All tests pass** (39 unit + 15 fixture wrappers + 20 integration)
 
 ---
 
@@ -318,8 +320,8 @@ Fixtures are JSON files in `tests/conformance/fixtures/` with this structure:
 
 | Metric | Target | Current | Status |
 |--------|--------|---------|--------|
-| Startup time | <100ms | Not measured | ❌ |
-| Binary size (release) | <20MB | Not built | ❌ |
+| Startup time | <100ms | 11.2ms (`pi --version`) | ✅ |
+| Binary size (release) | <20MB | 7.6MB | ✅ |
 | TUI framerate | 60fps | N/A | ❌ |
 | Memory (idle) | <50MB | Not measured | ❌ |
 
@@ -327,10 +329,10 @@ Fixtures are JSON files in `tests/conformance/fixtures/` with this structure:
 
 ## Next Steps (Priority Order)
 
-1. **Complete print mode** - Non-interactive single response
-2. **Add OpenAI provider** - Second provider implementation
+1. ~~**Complete print mode** - Non-interactive single response~~ ✅ Done
+2. ~~**Add OpenAI provider** - Second provider implementation~~ ✅ Done
 3. ~~**Implement auth.json** - Credential storage~~ ✅ Done (src/auth.rs)
-4. **Session picker UI** - Basic TUI for --resume
+4. ~~**Session picker UI** - Basic TUI for --resume~~ ✅ Done (src/session_picker.rs)
 5. **Branching/navigation** - Tree operations
-6. **Benchmark harness** - Performance validation
+6. ~~**Benchmark harness** - Performance validation~~ ✅ Done (benches/tools.rs, BENCHMARKS.md)
 7. ~~**Conformance fixtures** - TypeScript reference capture~~ ✅ Done (tests/conformance/)

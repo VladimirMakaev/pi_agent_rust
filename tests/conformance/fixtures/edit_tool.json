@@ -96,8 +96,9 @@
       },
       "expected": {
         "content_exact": "Successfully replaced text in test.txt.",
-        "details": {
-          "diff": {}
+        "details_exact": {
+          "diff": "-1 function() { return x; }\n+1 const fn = () => x;",
+          "firstChangedLine": 1
         }
       }
     },
@@ -114,8 +115,9 @@
       },
       "expected": {
         "content_exact": "Successfully replaced text in test.txt.",
-        "details": {
-          "diff": {}
+        "details_exact": {
+          "diff": "-1 Hello 世界\n+1 Hello World",
+          "firstChangedLine": 1
         }
       }
     }

@@ -17,10 +17,7 @@ impl PiConsole {
     /// Create a new Pi console with auto-detected terminal capabilities.
     pub fn new() -> Self {
         let is_tty = io::stdout().is_terminal();
-        let console = Console::builder()
-            .markup(is_tty)
-            .emoji(is_tty)
-            .build();
+        let console = Console::builder().markup(is_tty).emoji(is_tty).build();
 
         Self { console, is_tty }
     }
@@ -28,16 +25,13 @@ impl PiConsole {
     /// Create a console with forced color output (for testing).
     pub fn with_color() -> Self {
         Self {
-            console: Console::builder()
-                .markup(true)
-                .emoji(true)
-                .build(),
+            console: Console::builder().markup(true).emoji(true).build(),
             is_tty: true,
         }
     }
 
     /// Check if we're running in a terminal.
-    pub fn is_terminal(&self) -> bool {
+    pub const fn is_terminal(&self) -> bool {
         self.is_tty
     }
 
@@ -182,13 +176,12 @@ impl PiConsole {
     /// Render a table.
     pub fn render_table(&self, headers: &[&str], rows: &[Vec<&str>]) {
         if self.is_tty {
-            let mut table = Table::new()
-                .header_style(Style::parse("bold").unwrap_or_default());
+            let mut table = Table::new().header_style(Style::parse("bold").unwrap_or_default());
             for header in headers {
                 table = table.with_column(Column::new(*header));
             }
             for row in rows {
-                table.add_row_cells(row.iter().map(|s| *s).collect::<Vec<_>>());
+                table.add_row_cells(row.iter().copied());
             }
             self.console.print_renderable(&table);
         } else {
@@ -203,18 +196,12 @@ impl PiConsole {
     /// Render a horizontal rule.
     pub fn render_rule(&self, title: Option<&str>) {
         if self.is_tty {
-            let rule = if let Some(t) = title {
-                Rule::with_title(t)
-            } else {
-                Rule::new()
-            };
+            let rule = title.map_or_else(Rule::new, Rule::with_title);
             self.console.print_renderable(&rule);
+        } else if let Some(t) = title {
+            println!("--- {t} ---");
         } else {
-            if let Some(t) = title {
-                println!("--- {t} ---");
-            } else {
-                println!("---");
-            }
+            println!("---");
         }
     }
 
@@ -226,11 +213,10 @@ impl PiConsole {
     pub fn render_usage(&self, input_tokens: u32, output_tokens: u32, cost_usd: Option<f64>) {
         if self.is_tty {
             let cost_str = cost_usd
-                .map(|c| format!(" [dim](${:.4})[/]", c))
+                .map(|c| format!(" [dim](${c:.4})[/]"))
                 .unwrap_or_default();
             self.print_markup(&format!(
-                "[dim]Tokens: {} in / {} out{}[/]\n",
-                input_tokens, output_tokens, cost_str
+                "[dim]Tokens: {input_tokens} in / {output_tokens} out{cost_str}[/]\n"
             ));
         }
     }
@@ -239,8 +225,7 @@ impl PiConsole {
     pub fn render_session_info(&self, session_path: &str, message_count: usize) {
         if self.is_tty {
             self.print_markup(&format!(
-                "[dim]Session: {} ({} messages)[/]\n",
-                session_path, message_count
+                "[dim]Session: {session_path} ({message_count} messages)[/]\n"
             ));
         }
     }
@@ -249,9 +234,9 @@ impl PiConsole {
     pub fn render_model_info(&self, model: &str, thinking_level: Option<&str>) {
         if self.is_tty {
             let thinking_str = thinking_level
-                .map(|t| format!(" [dim](thinking: {})[/]", t))
+                .map(|t| format!(" [dim](thinking: {t})[/]"))
                 .unwrap_or_default();
-            self.print_markup(&format!("[dim]Model: {}{}[/]\n", model, thinking_str));
+            self.print_markup(&format!("[dim]Model: {model}{thinking_str}[/]\n"));
         }
     }
 
@@ -272,9 +257,9 @@ impl PiConsole {
     /// Render a user message echo.
     pub fn render_user_message(&self, message: &str) {
         if self.is_tty {
-            self.print_markup(&format!("[bold]You:[/] {}\n\n", message));
+            self.print_markup(&format!("[bold]You:[/] {message}\n\n"));
         } else {
-            println!("You: {}\n", message);
+            println!("You: {message}\n");
         }
     }
 
@@ -299,7 +284,7 @@ impl PiConsole {
     /// Move cursor up N lines.
     pub fn cursor_up(&self, n: usize) {
         if self.is_tty {
-            print!("\x1b[{}A", n);
+            print!("\x1b[{n}A");
             let _ = io::stdout().flush();
         }
     }
@@ -353,7 +338,7 @@ pub enum SpinnerStyle {
 
 impl SpinnerStyle {
     /// Get the spinner frames for this style.
-    pub fn frames(&self) -> &'static [&'static str] {
+    pub const fn frames(&self) -> &'static [&'static str] {
         match self {
             Self::Dots => &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
             Self::Line => &["⎺", "⎻", "⎼", "⎽", "⎼", "⎻"],
@@ -362,11 +347,10 @@ impl SpinnerStyle {
     }
 
     /// Get the frame interval in milliseconds.
-    pub fn interval_ms(&self) -> u64 {
+    pub const fn interval_ms(&self) -> u64 {
         match self {
             Self::Dots => 80,
-            Self::Line => 100,
-            Self::Simple => 100,
+            Self::Line | Self::Simple => 100,
         }
     }
 }

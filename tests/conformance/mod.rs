@@ -282,9 +282,7 @@ mod tests {
     #[test]
     fn test_validate_details() {
         let expected = Expected {
-            details_exact: [("count".to_string(), serde_json::json!(5))]
-                .into_iter()
-                .collect(),
+            details_exact: std::iter::once(("count".to_string(), serde_json::json!(5))).collect(),
             ..Default::default()
         };
 

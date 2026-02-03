@@ -321,7 +321,9 @@ fn normalize_quotes(s: &str) -> String {
 
 fn normalize_dashes(s: &str) -> String {
     s.replace(
-        ['\u{2010}', '\u{2011}', '\u{2012}', '\u{2013}', '\u{2014}', '\u{2015}', '\u{2212}'],
+        [
+            '\u{2010}', '\u{2011}', '\u{2012}', '\u{2013}', '\u{2014}', '\u{2015}', '\u{2212}',
+        ],
         "-",
     )
 }
@@ -386,7 +388,7 @@ fn file_exists(path: &Path) -> bool {
 }
 
 /// Resolve a file path for reading, including macOS screenshot name variants.
-fn resolve_read_path(file_path: &str, cwd: &Path) -> PathBuf {
+pub(crate) fn resolve_read_path(file_path: &str, cwd: &Path) -> PathBuf {
     let resolved = resolve_to_cwd(file_path, cwd);
     if file_exists(&resolved) {
         return resolved;
@@ -419,13 +421,131 @@ fn resolve_read_path(file_path: &str, cwd: &Path) -> PathBuf {
     resolved
 }
 
+// ============================================================================
+// CLI @file Processor (used by src/main.rs)
+// ============================================================================
+
+/// Result of processing `@file` CLI arguments.
+#[derive(Debug, Clone, Default)]
+pub struct ProcessedFiles {
+    pub text: String,
+    pub images: Vec<ImageContent>,
+}
+
+fn normalize_dot_segments(path: &Path) -> PathBuf {
+    use std::path::Component;
+
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => out.push(prefix.as_os_str()),
+            Component::RootDir => out.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                let _ = out.pop();
+            }
+            Component::Normal(part) => out.push(part),
+        }
+    }
+    out
+}
+
+/// Process `@file` arguments into a single text prefix and image attachments.
+///
+/// Matches the legacy TypeScript behavior:
+/// - Resolves paths (including `~` expansion + macOS screenshot variants)
+/// - Skips empty files
+/// - For images: attaches image blocks and appends `<file name="...">...</file>` references
+/// - For text: embeds the file contents inside `<file>` tags
+pub fn process_file_arguments(
+    file_args: &[String],
+    cwd: &Path,
+    auto_resize_images: bool,
+) -> Result<ProcessedFiles> {
+    let mut out = ProcessedFiles::default();
+
+    for file_arg in file_args {
+        let resolved = resolve_read_path(file_arg, cwd);
+        let absolute_path = normalize_dot_segments(&resolved);
+
+        let meta = std::fs::metadata(&absolute_path).map_err(|_| {
+            Error::tool(
+                "read",
+                format!("File not found: {}", absolute_path.display()),
+            )
+        })?;
+        if meta.len() == 0 {
+            continue;
+        }
+
+        let bytes = std::fs::read(&absolute_path).map_err(|e| {
+            Error::tool(
+                "read",
+                format!("Could not read file {}: {e}", absolute_path.display()),
+            )
+        })?;
+
+        if let Some(mime_type) = detect_supported_image_mime_type_from_bytes(&bytes) {
+            let resized = if auto_resize_images {
+                resize_image_if_needed(&bytes, mime_type)?
+            } else {
+                ResizedImage::original(bytes, mime_type)
+            };
+
+            let base64_data =
+                base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &resized.bytes);
+            out.images.push(ImageContent {
+                data: base64_data,
+                mime_type: resized.mime_type.to_string(),
+            });
+
+            let note = if resized.resized {
+                if let (Some(ow), Some(oh), Some(w), Some(h)) = (
+                    resized.original_width,
+                    resized.original_height,
+                    resized.width,
+                    resized.height,
+                ) {
+                    let scale = f64::from(ow) / f64::from(w);
+                    format!(
+                        "[Image: original {ow}x{oh}, displayed at {w}x{h}. Multiply coordinates by {scale:.2} to map to original image.]"
+                    )
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            };
+
+            let path_str = absolute_path.display();
+            if note.is_empty() {
+                let _ = writeln!(out.text, "<file name=\"{path_str}\"></file>");
+            } else {
+                let _ = writeln!(out.text, "<file name=\"{path_str}\">{note}</file>");
+            }
+            continue;
+        }
+
+        let content = String::from_utf8_lossy(&bytes);
+        let path_str = absolute_path.display();
+        let _ = writeln!(out.text, "<file name=\"{path_str}\">");
+        out.text.push_str(&content);
+        if !content.ends_with('\n') {
+            out.text.push('\n');
+        }
+        let _ = writeln!(out.text, "</file>");
+    }
+
+    Ok(out)
+}
+
 /// Resolve a file path relative to the current working directory.
 /// Public alias for `resolve_to_cwd` used by tools.
 fn resolve_path(file_path: &str, cwd: &Path) -> PathBuf {
     resolve_to_cwd(file_path, cwd)
 }
 
-fn detect_supported_image_mime_type_from_bytes(bytes: &[u8]) -> Option<&'static str> {
+pub(crate) fn detect_supported_image_mime_type_from_bytes(bytes: &[u8]) -> Option<&'static str> {
     // Supported image types match the legacy tool: jpeg/png/gif/webp only.
     if bytes.len() >= 8 && bytes.starts_with(b"\x89PNG\r\n\x1A\n") {
         return Some("image/png");
@@ -443,18 +563,18 @@ fn detect_supported_image_mime_type_from_bytes(bytes: &[u8]) -> Option<&'static 
 }
 
 #[derive(Debug, Clone)]
-struct ResizedImage {
-    bytes: Vec<u8>,
-    mime_type: &'static str,
-    resized: bool,
-    width: Option<u32>,
-    height: Option<u32>,
-    original_width: Option<u32>,
-    original_height: Option<u32>,
+pub(crate) struct ResizedImage {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) mime_type: &'static str,
+    pub(crate) resized: bool,
+    pub(crate) width: Option<u32>,
+    pub(crate) height: Option<u32>,
+    pub(crate) original_width: Option<u32>,
+    pub(crate) original_height: Option<u32>,
 }
 
 impl ResizedImage {
-    fn original(bytes: Vec<u8>, mime_type: &'static str) -> Self {
+    pub(crate) const fn original(bytes: Vec<u8>, mime_type: &'static str) -> Self {
         Self {
             bytes,
             mime_type,
@@ -468,7 +588,11 @@ impl ResizedImage {
 }
 
 #[cfg(feature = "image-resize")]
-fn resize_image_if_needed(bytes: &[u8], mime_type: &'static str) -> Result<ResizedImage> {
+#[allow(clippy::too_many_lines)]
+pub(crate) fn resize_image_if_needed(
+    bytes: &[u8],
+    mime_type: &'static str,
+) -> Result<ResizedImage> {
     // Match legacy behavior from pi-mono `utils/image-resize.ts`.
     //
     // Strategy:
@@ -489,38 +613,13 @@ fn resize_image_if_needed(bytes: &[u8], mime_type: &'static str) -> Result<Resiz
     const MAX_BYTES: usize = 4_718_592; // 4.5MB (below Anthropic's 5MB limit)
     const DEFAULT_JPEG_QUALITY: u8 = 80;
     const QUALITY_STEPS: [u8; 4] = [85, 70, 55, 40];
-    const SCALE_STEPS: [f32; 5] = [1.0, 0.75, 0.5, 0.35, 0.25];
+    const SCALE_STEPS: [f64; 5] = [1.0, 0.75, 0.5, 0.35, 0.25];
 
-    let img = match image::load_from_memory(bytes) {
-        Ok(img) => img,
-        Err(_) => return Ok(ResizedImage::original(bytes.to_vec(), mime_type)),
-    };
-
-    let (original_width, original_height) = img.dimensions();
-    let original_size = bytes.len();
-
-    if original_width <= MAX_WIDTH && original_height <= MAX_HEIGHT && original_size <= MAX_BYTES {
-        return Ok(ResizedImage {
-            bytes: bytes.to_vec(),
-            mime_type,
-            resized: false,
-            width: Some(original_width),
-            height: Some(original_height),
-            original_width: Some(original_width),
-            original_height: Some(original_height),
-        });
-    }
-
-    let mut target_width = original_width;
-    let mut target_height = original_height;
-
-    if target_width > MAX_WIDTH {
-        target_height = ((target_height as f64 * MAX_WIDTH as f64) / target_width as f64).round() as u32;
-        target_width = MAX_WIDTH;
-    }
-    if target_height > MAX_HEIGHT {
-        target_width = ((target_width as f64 * MAX_HEIGHT as f64) / target_height as f64).round() as u32;
-        target_height = MAX_HEIGHT;
+    fn scale_u32(value: u32, numerator: u32, denominator: u32) -> u32 {
+        let den = u64::from(denominator).max(1);
+        let num = u64::from(value) * u64::from(numerator);
+        let rounded = (num + den / 2) / den;
+        u32::try_from(rounded).unwrap_or(u32::MAX)
     }
 
     fn encode_png(img: &image::DynamicImage) -> Result<Vec<u8>> {
@@ -567,6 +666,37 @@ fn resize_image_if_needed(bytes: &[u8], mime_type: &'static str) -> Result<Resiz
         }
     }
 
+    let Ok(img) = image::load_from_memory(bytes) else {
+        return Ok(ResizedImage::original(bytes.to_vec(), mime_type));
+    };
+
+    let (original_width, original_height) = img.dimensions();
+    let original_size = bytes.len();
+
+    if original_width <= MAX_WIDTH && original_height <= MAX_HEIGHT && original_size <= MAX_BYTES {
+        return Ok(ResizedImage {
+            bytes: bytes.to_vec(),
+            mime_type,
+            resized: false,
+            width: Some(original_width),
+            height: Some(original_height),
+            original_width: Some(original_width),
+            original_height: Some(original_height),
+        });
+    }
+
+    let mut target_width = original_width;
+    let mut target_height = original_height;
+
+    if target_width > MAX_WIDTH {
+        target_height = scale_u32(target_height, MAX_WIDTH, target_width);
+        target_width = MAX_WIDTH;
+    }
+    if target_height > MAX_HEIGHT {
+        target_width = scale_u32(target_width, MAX_HEIGHT, target_height);
+        target_height = MAX_HEIGHT;
+    }
+
     let mut best = try_both_formats(&img, target_width, target_height, DEFAULT_JPEG_QUALITY)?;
     let mut final_width = target_width;
     let mut final_height = target_height;
@@ -599,8 +729,11 @@ fn resize_image_if_needed(bytes: &[u8], mime_type: &'static str) -> Result<Resiz
     }
 
     for scale in SCALE_STEPS {
-        final_width = ((target_width as f32) * scale).round() as u32;
-        final_height = ((target_height as f32) * scale).round() as u32;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        {
+            final_width = (f64::from(target_width) * scale).round() as u32;
+            final_height = (f64::from(target_height) * scale).round() as u32;
+        }
 
         if final_width < 100 || final_height < 100 {
             break;
@@ -634,7 +767,10 @@ fn resize_image_if_needed(bytes: &[u8], mime_type: &'static str) -> Result<Resiz
 }
 
 #[cfg(not(feature = "image-resize"))]
-fn resize_image_if_needed(bytes: &[u8], mime_type: &'static str) -> Result<ResizedImage> {
+pub(crate) fn resize_image_if_needed(
+    bytes: &[u8],
+    mime_type: &'static str,
+) -> Result<ResizedImage> {
     Ok(ResizedImage::original(bytes.to_vec(), mime_type))
 }
 
@@ -653,7 +789,7 @@ impl ToolRegistry {
         let mut tools: Vec<Box<dyn Tool>> = Vec::new();
         let shell_path = config.and_then(|c| c.shell_path.clone());
         let shell_command_prefix = config.and_then(|c| c.shell_command_prefix.clone());
-        let image_auto_resize = config.map_or(true, Config::image_auto_resize);
+        let image_auto_resize = config.is_none_or(Config::image_auto_resize);
         let block_images = config
             .and_then(|c| c.images.as_ref().and_then(|i| i.block_images))
             .unwrap_or(false);
@@ -807,11 +943,10 @@ impl Tool for ReadTool {
                     resized.width,
                     resized.height,
                 ) {
-                    let scale = ow as f64 / w as f64;
+                    let scale = f64::from(ow) / f64::from(w);
                     let _ = write!(
                         note,
-                        "\n[Image: original {ow}x{oh}, displayed at {w}x{h}. Multiply coordinates by {:.2} to map to original image.]",
-                        scale
+                        "\n[Image: original {ow}x{oh}, displayed at {w}x{h}. Multiply coordinates by {scale:.2} to map to original image.]"
                     );
                 }
             }
@@ -848,21 +983,22 @@ impl Tool for ReadTool {
             ));
         }
 
-        let (selected_content, user_limited_lines): (String, Option<usize>) = match input.limit {
-            Some(limit) => {
-                let limit_usize = if limit > 0 {
-                    usize::try_from(limit).unwrap_or(0)
-                } else {
-                    0
-                };
-                let end_line = start_line.saturating_add(limit_usize).min(all_lines.len());
-                (
-                    all_lines[start_line..end_line].join("\n"),
-                    Some(end_line.saturating_sub(start_line)),
-                )
-            }
-            None => (all_lines[start_line..].join("\n"), None),
-        };
+        let (selected_content, user_limited_lines): (String, Option<usize>) =
+            input.limit.map_or_else(
+                || (all_lines[start_line..].join("\n"), None),
+                |limit| {
+                    let limit_usize = if limit > 0 {
+                        usize::try_from(limit).unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    let end_line = start_line.saturating_add(limit_usize).min(all_lines.len());
+                    (
+                        all_lines[start_line..end_line].join("\n"),
+                        Some(end_line.saturating_sub(start_line)),
+                    )
+                },
+            );
 
         let truncation = truncate_head(&selected_content, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES);
 
@@ -871,7 +1007,7 @@ impl Tool for ReadTool {
 
         if truncation.first_line_exceeds_limit {
             let first_line = all_lines.get(start_line).copied().unwrap_or("");
-            let first_line_size = format_size(first_line.as_bytes().len());
+            let first_line_size = format_size(first_line.len());
             output_text = format!(
                 "[Line {start_line_display} is {first_line_size}, exceeds {} limit. Use bash: sed -n '{start_line_display}p' {} | head -c {DEFAULT_MAX_BYTES}]",
                 format_size(DEFAULT_MAX_BYTES),
@@ -900,11 +1036,10 @@ impl Tool for ReadTool {
             details = Some(serde_json::json!({ "truncation": truncation }));
         } else if let Some(user_limited) = user_limited_lines {
             if start_line.saturating_add(user_limited) < all_lines.len() {
-                let remaining =
-                    all_lines.len().saturating_sub(start_line.saturating_add(user_limited));
-                let next_offset = start_line
-                    .saturating_add(user_limited)
-                    .saturating_add(1);
+                let remaining = all_lines
+                    .len()
+                    .saturating_sub(start_line.saturating_add(user_limited));
+                let next_offset = start_line.saturating_add(user_limited).saturating_add(1);
                 let _ = write!(
                     output_text,
                     "\n\n[{remaining} more lines in file. Use offset={next_offset} to continue.]"
@@ -1050,35 +1185,22 @@ impl Tool for BashTool {
         tokio::spawn(pump_stream(stdout, tx.clone()));
         tokio::spawn(pump_stream(stderr, tx));
 
-        let mut total_bytes: usize = 0;
-        let mut temp_file_path: Option<PathBuf> = None;
-        let mut temp_file: Option<tokio::fs::File> = None;
-        let mut chunks: VecDeque<Vec<u8>> = VecDeque::new();
-        let mut chunks_bytes: usize = 0;
         let max_chunks_bytes = DEFAULT_MAX_BYTES.saturating_mul(2);
+        let mut bash_output = BashOutputState::new(max_chunks_bytes);
 
         let mut timed_out = false;
         let mut exit_code: Option<i32> = None;
         let child_pid = child.id();
 
-        let timeout_sleep = timeout_secs.map(|t| tokio::time::sleep(tokio::time::Duration::from_secs(t)));
+        let timeout_sleep =
+            timeout_secs.map(|t| tokio::time::sleep(tokio::time::Duration::from_secs(t)));
         tokio::pin!(timeout_sleep);
 
         loop {
             tokio::select! {
                 maybe_chunk = rx.recv() => {
                     if let Some(chunk) = maybe_chunk {
-                        process_bash_chunk(
-                            &chunk,
-                            &mut total_bytes,
-                            &mut temp_file_path,
-                            &mut temp_file,
-                            &mut chunks,
-                            &mut chunks_bytes,
-                            max_chunks_bytes,
-                            on_update.as_deref(),
-                        )
-                        .await?;
+                        process_bash_chunk(&chunk, &mut bash_output, on_update.as_deref()).await?;
                     } else {
                         break;
                     }
@@ -1106,17 +1228,7 @@ impl Tool for BashTool {
 
         // Drain any remaining output.
         while let Some(chunk) = rx.recv().await {
-            process_bash_chunk(
-                &chunk,
-                &mut total_bytes,
-                &mut temp_file_path,
-                &mut temp_file,
-                &mut chunks,
-                &mut chunks_bytes,
-                max_chunks_bytes,
-                None,
-            )
-            .await?;
+            process_bash_chunk(&chunk, &mut bash_output, None).await?;
         }
 
         // Wait for exit code if we haven't gotten it yet (channel closed before child.wait() was selected)
@@ -1128,9 +1240,9 @@ impl Tool for BashTool {
                 .code();
         }
 
-        drop(temp_file);
+        drop(bash_output.temp_file.take());
 
-        let full_output = String::from_utf8_lossy(&concat_chunks(&chunks)).to_string();
+        let full_output = String::from_utf8_lossy(&concat_chunks(&bash_output.chunks)).to_string();
 
         if timed_out {
             let mut output = full_output;
@@ -1138,7 +1250,7 @@ impl Tool for BashTool {
                 output.push_str("\n\n");
             }
             let timeout_display = timeout_secs.unwrap_or(0);
-            output.push_str(&format!("Command timed out after {timeout_display} seconds"));
+            let _ = write!(output, "Command timed out after {timeout_display} seconds");
             return Err(Error::tool("bash", output));
         }
 
@@ -1152,7 +1264,7 @@ impl Tool for BashTool {
         let mut details_map = serde_json::Map::new();
         if truncation.truncated {
             details_map.insert("truncation".to_string(), serde_json::to_value(&truncation)?);
-            if let Some(path) = temp_file_path.as_ref() {
+            if let Some(path) = bash_output.temp_file_path.as_ref() {
                 details_map.insert(
                     "fullOutputPath".to_string(),
                     serde_json::Value::String(path.display().to_string()),
@@ -1165,14 +1277,14 @@ impl Tool for BashTool {
                 .saturating_add(1);
             let end_line = truncation.total_lines;
 
-            let full_output_path = temp_file_path
+            let full_output_path = bash_output
+                .temp_file_path
                 .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "undefined".to_string());
+                .map_or_else(|| "undefined".to_string(), |p| p.display().to_string());
 
             if truncation.last_line_partial {
                 let last_line = full_output.split('\n').next_back().unwrap_or("");
-                let last_line_size = format_size(last_line.as_bytes().len());
+                let last_line_size = format_size(last_line.len());
                 let _ = write!(
                     output_text,
                     "\n\n[Showing last {} of line {end_line} (line is {last_line_size}). Full output: {full_output_path}]",
@@ -1240,11 +1352,10 @@ impl EditTool {
 }
 
 fn strip_bom(s: &str) -> (String, bool) {
-    if let Some(stripped) = s.strip_prefix('\u{FEFF}') {
-        (stripped.to_string(), true)
-    } else {
-        (s.to_string(), false)
-    }
+    s.strip_prefix('\u{FEFF}').map_or_else(
+        || (s.to_string(), false),
+        |stripped| (stripped.to_string(), true),
+    )
 }
 
 fn detect_line_ending(content: &str) -> &'static str {
@@ -1257,11 +1368,7 @@ fn detect_line_ending(content: &str) -> &'static str {
         return "\n";
     };
     let lf_idx = lf_idx.unwrap_or(usize::MAX);
-    if crlf_idx < lf_idx {
-        "\r\n"
-    } else {
-        "\n"
-    }
+    if crlf_idx < lf_idx { "\r\n" } else { "\n" }
 }
 
 fn normalize_to_lf(text: &str) -> String {
@@ -1389,9 +1496,9 @@ fn generate_diff_string(old_content: &str, new_content: &str) -> (String, Option
     let parts = diff_parts(old_content, new_content);
     let mut output: Vec<String> = Vec::new();
 
-    let old_lines: Vec<&str> = old_content.split('\n').collect();
-    let new_lines: Vec<&str> = new_content.split('\n').collect();
-    let max_line_num = old_lines.len().max(new_lines.len()).max(1);
+    let old_line_count = old_content.split('\n').count();
+    let new_line_count = new_content.split('\n').count();
+    let max_line_num = old_line_count.max(new_line_count).max(1);
     let line_num_width = max_line_num.to_string().len();
 
     let mut old_line_num: usize = 1;
@@ -1415,12 +1522,12 @@ fn generate_diff_string(old_content: &str, new_content: &str) -> (String, Option
                 for line in raw {
                     match part.tag {
                         DiffTag::Added => {
-                            let line_num = format!("{:>width$}", new_line_num, width = line_num_width);
+                            let line_num = format!("{new_line_num:>line_num_width$}");
                             output.push(format!("+{line_num} {line}"));
                             new_line_num = new_line_num.saturating_add(1);
                         }
                         DiffTag::Removed => {
-                            let line_num = format!("{:>width$}", old_line_num, width = line_num_width);
+                            let line_num = format!("{old_line_num:>line_num_width$}");
                             output.push(format!("-{line_num} {line}"));
                             old_line_num = old_line_num.saturating_add(1);
                         }
@@ -1456,7 +1563,7 @@ fn generate_diff_string(old_content: &str, new_content: &str) -> (String, Option
                     }
 
                     for line in lines_to_show {
-                        let line_num = format!("{:>width$}", old_line_num, width = line_num_width);
+                        let line_num = format!("{old_line_num:>line_num_width$}");
                         output.push(format!(" {line_num} {line}"));
                         old_line_num = old_line_num.saturating_add(1);
                         new_line_num = new_line_num.saturating_add(1);
@@ -1513,6 +1620,7 @@ impl Tool for EditTool {
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn execute(
         &self,
         _tool_call_id: &str,
@@ -1532,7 +1640,10 @@ impl Tool for EditTool {
             .await
             .is_err()
         {
-            return Err(Error::tool("edit", format!("File not found: {}", input.path)));
+            return Err(Error::tool(
+                "edit",
+                format!("File not found: {}", input.path),
+            ));
         }
 
         // Read bytes and decode lossily as UTF-8 (Node Buffer.toString("utf-8") behavior).
@@ -1566,7 +1677,10 @@ impl Tool for EditTool {
         let occurrences = if fuzzy_old_text.is_empty() {
             0
         } else {
-            fuzzy_content.split(&fuzzy_old_text).count().saturating_sub(1)
+            fuzzy_content
+                .split(&fuzzy_old_text)
+                .count()
+                .saturating_sub(1)
         };
 
         if occurrences > 1 {
@@ -1689,6 +1803,7 @@ impl Tool for WriteTool {
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn execute(
         &self,
         _tool_call_id: &str,
@@ -1890,7 +2005,7 @@ impl Tool for GrepTool {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| Error::tool("grep", format!("Failed to run ripgrep: {}", e)))?;
+            .map_err(|e| Error::tool("grep", format!("Failed to run ripgrep: {e}")))?;
 
         let stdout = child
             .stdout
@@ -2008,7 +2123,7 @@ impl Tool for GrepTool {
             };
 
             for current in start..=end {
-                let line_text = lines.get(current - 1).map(String::as_str).unwrap_or("");
+                let line_text = lines.get(current - 1).map_or("", String::as_str);
                 let sanitized = line_text.replace('\r', "");
                 let truncated = truncate_line(&sanitized, GREP_MAX_LINE_LENGTH);
                 if truncated.was_truncated {
@@ -2055,7 +2170,7 @@ impl Tool for GrepTool {
         }
 
         if !notices.is_empty() {
-            output.push_str(&format!("\n\n[{}]", notices.join(". ")));
+            let _ = write!(output, "\n\n[{}]", notices.join(". "));
         }
 
         let details = if details_map.is_empty() {
@@ -2129,6 +2244,7 @@ impl Tool for FindTool {
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn execute(
         &self,
         _tool_call_id: &str,
@@ -2150,7 +2266,10 @@ impl Tool for FindTool {
         }
 
         let fd_cmd = find_fd_binary().ok_or_else(|| {
-            Error::tool("find", "fd is not available and could not be downloaded".to_string())
+            Error::tool(
+                "find",
+                "fd is not available and could not be downloaded".to_string(),
+            )
         })?;
 
         // Build fd arguments
@@ -2285,7 +2404,7 @@ impl Tool for FindTool {
         }
 
         if !notices.is_empty() {
-            result_output.push_str(&format!("\n\n[{}]", notices.join(". ")));
+            let _ = write!(result_output, "\n\n[{}]", notices.join(". "));
         }
 
         let details = if details_map.is_empty() {
@@ -2370,7 +2489,10 @@ impl Tool for LsTool {
         let effective_limit = input.limit.unwrap_or(DEFAULT_LS_LIMIT);
 
         if !dir_path.exists() {
-            return Err(Error::tool("ls", format!("Path not found: {}", dir_path.display())));
+            return Err(Error::tool(
+                "ls",
+                format!("Path not found: {}", dir_path.display()),
+            ));
         }
         if !dir_path.is_dir() {
             return Err(Error::tool(
@@ -2397,7 +2519,7 @@ impl Tool for LsTool {
         }
 
         // Sort alphabetically (case-insensitive).
-        entries.sort_by(|(a, _), (b, _)| a.to_lowercase().cmp(&b.to_lowercase()));
+        entries.sort_by_key(|(a, _)| a.to_lowercase());
 
         let mut results: Vec<String> = Vec::new();
         let mut entry_limit_reached = false;
@@ -2446,7 +2568,7 @@ impl Tool for LsTool {
         }
 
         if !notices.is_empty() {
-            output.push_str(&format!("\n\n[{}]", notices.join(". ")));
+            let _ = write!(output, "\n\n[{}]", notices.join(". "));
         }
 
         let details = if details_map.is_empty() {
@@ -2482,11 +2604,10 @@ async fn pump_stream<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
     let mut buf = vec![0u8; 8192];
     loop {
         match reader.read(&mut buf).await {
-            Ok(0) => break,
+            Ok(0) | Err(_) => break,
             Ok(n) => {
                 let _ = tx.send(buf[..n].to_vec());
             }
-            Err(_) => break,
         }
     }
 }
@@ -2500,19 +2621,36 @@ fn concat_chunks(chunks: &VecDeque<Vec<u8>>) -> Vec<u8> {
     out
 }
 
+struct BashOutputState {
+    total_bytes: usize,
+    temp_file_path: Option<PathBuf>,
+    temp_file: Option<tokio::fs::File>,
+    chunks: VecDeque<Vec<u8>>,
+    chunks_bytes: usize,
+    max_chunks_bytes: usize,
+}
+
+impl BashOutputState {
+    const fn new(max_chunks_bytes: usize) -> Self {
+        Self {
+            total_bytes: 0,
+            temp_file_path: None,
+            temp_file: None,
+            chunks: VecDeque::new(),
+            chunks_bytes: 0,
+            max_chunks_bytes,
+        }
+    }
+}
+
 async fn process_bash_chunk(
     chunk: &[u8],
-    total_bytes: &mut usize,
-    temp_file_path: &mut Option<PathBuf>,
-    temp_file: &mut Option<tokio::fs::File>,
-    chunks: &mut VecDeque<Vec<u8>>,
-    chunks_bytes: &mut usize,
-    max_chunks_bytes: usize,
+    state: &mut BashOutputState,
     on_update: Option<&(dyn Fn(ToolUpdate) + Send + Sync)>,
 ) -> Result<()> {
-    *total_bytes = total_bytes.saturating_add(chunk.len());
+    state.total_bytes = state.total_bytes.saturating_add(chunk.len());
 
-    if *total_bytes > DEFAULT_MAX_BYTES && temp_file.is_none() {
+    if state.total_bytes > DEFAULT_MAX_BYTES && state.temp_file.is_none() {
         let id_full = Uuid::new_v4().simple().to_string();
         let id = &id_full[..16];
         let path = std::env::temp_dir().join(format!("pi-bash-{id}.log"));
@@ -2521,39 +2659,39 @@ async fn process_bash_chunk(
             .map_err(|e| Error::tool("bash", e.to_string()))?;
 
         // Write buffered chunks to file first so it contains output from the beginning.
-        for existing in chunks.iter() {
+        for existing in &state.chunks {
             file.write_all(existing)
                 .await
                 .map_err(|e| Error::tool("bash", e.to_string()))?;
         }
 
-        *temp_file_path = Some(path);
-        *temp_file = Some(file);
+        state.temp_file_path = Some(path);
+        state.temp_file = Some(file);
     }
 
-    if let Some(file) = temp_file.as_mut() {
+    if let Some(file) = state.temp_file.as_mut() {
         file.write_all(chunk)
             .await
             .map_err(|e| Error::tool("bash", e.to_string()))?;
     }
 
-    chunks.push_back(chunk.to_vec());
-    *chunks_bytes = chunks_bytes.saturating_add(chunk.len());
-    while *chunks_bytes > max_chunks_bytes && chunks.len() > 1 {
-        if let Some(front) = chunks.pop_front() {
-            *chunks_bytes = chunks_bytes.saturating_sub(front.len());
+    state.chunks.push_back(chunk.to_vec());
+    state.chunks_bytes = state.chunks_bytes.saturating_add(chunk.len());
+    while state.chunks_bytes > state.max_chunks_bytes && state.chunks.len() > 1 {
+        if let Some(front) = state.chunks.pop_front() {
+            state.chunks_bytes = state.chunks_bytes.saturating_sub(front.len());
         }
     }
 
     if let Some(callback) = on_update {
-        let full_text = String::from_utf8_lossy(&concat_chunks(chunks)).to_string();
+        let full_text = String::from_utf8_lossy(&concat_chunks(&state.chunks)).to_string();
         let truncation = truncate_tail(&full_text, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES);
 
         let mut details_map = serde_json::Map::new();
         if truncation.truncated {
             details_map.insert("truncation".to_string(), serde_json::to_value(&truncation)?);
         }
-        if let Some(path) = temp_file_path.as_ref() {
+        if let Some(path) = state.temp_file_path.as_ref() {
             details_map.insert(
                 "fullOutputPath".to_string(),
                 serde_json::Value::String(path.display().to_string()),
@@ -2735,7 +2873,10 @@ mod tests {
             detect_supported_image_mime_type_from_bytes(b"RIFF1234WEBP"),
             Some("image/webp")
         );
-        assert_eq!(detect_supported_image_mime_type_from_bytes(b"not an image"), None);
+        assert_eq!(
+            detect_supported_image_mime_type_from_bytes(b"not an image"),
+            None
+        );
     }
 
     #[test]

@@ -4,7 +4,7 @@ use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::session::{Session, SessionEntry, SessionHeader};
 use fs4::fs_std::FileExt;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -76,7 +76,7 @@ impl SessionIndex {
     pub fn list_sessions(&self, cwd: Option<&str>) -> Result<Vec<SessionMeta>> {
         self.with_lock(|conn| {
             init_schema(conn)?;
-            let mut stmt = if let Some(_) = cwd {
+            let mut stmt = if cwd.is_some() {
                 conn.prepare(
                     "SELECT path,id,cwd,timestamp,message_count,last_modified_ms,size_bytes,name
                      FROM sessions WHERE cwd=?1 ORDER BY last_modified_ms DESC",
@@ -152,6 +152,7 @@ impl SessionIndex {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(&self.lock_path)?;
         let _lock = lock_file_guard(&lock_file, Duration::from_secs(5))?;
 
@@ -163,6 +164,12 @@ impl SessionIndex {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.busy_timeout(Duration::from_secs(5))?;
         f(&conn)
+    }
+}
+
+impl Default for SessionIndex {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -199,7 +206,11 @@ fn row_to_meta(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionMeta> {
     })
 }
 
-fn build_meta(path: &Path, header: &SessionHeader, entries: &[SessionEntry]) -> Result<SessionMeta> {
+fn build_meta(
+    path: &Path,
+    header: &SessionHeader,
+    entries: &[SessionEntry],
+) -> Result<SessionMeta> {
     let (message_count, name) = session_stats(entries);
     let (last_modified_ms, size_bytes) = file_stats(path)?;
     Ok(SessionMeta {
@@ -241,7 +252,7 @@ fn session_stats(entries: &[SessionEntry]) -> (u64, Option<String>) {
             SessionEntry::Message(_) => message_count += 1,
             SessionEntry::SessionInfo(info) => {
                 if info.name.is_some() {
-                    name = info.name.clone();
+                    name.clone_from(&info.name);
                 }
             }
             _ => {}
@@ -254,10 +265,11 @@ fn file_stats(path: &Path) -> Result<(i64, u64)> {
     let meta = fs::metadata(path)?;
     let size = meta.len();
     let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-    let ms = modified
+    let millis = modified
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis() as i64;
+        .as_millis();
+    let ms = i64::try_from(millis).unwrap_or(i64::MAX);
     Ok((ms, size))
 }
 
@@ -283,17 +295,17 @@ fn current_epoch_ms() -> String {
 fn lock_file_guard(file: &File, timeout: Duration) -> Result<LockGuard<'_>> {
     let start = Instant::now();
     loop {
-        match file.try_lock_exclusive() {
-            Ok(true) => return Ok(LockGuard { file }),
-            Ok(false) | Err(_) => {
-                if start.elapsed() >= timeout {
-                    return Err(Error::session(
-                        "Timed out waiting for session index lock".to_string()
-                    ));
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
+        if matches!(FileExt::try_lock_exclusive(file), Ok(true)) {
+            return Ok(LockGuard { file });
         }
+
+        if start.elapsed() >= timeout {
+            return Err(Error::session(
+                "Timed out waiting for session index lock".to_string(),
+            ));
+        }
+
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -303,6 +315,6 @@ struct LockGuard<'a> {
 
 impl Drop for LockGuard<'_> {
     fn drop(&mut self) {
-        let _ = self.file.unlock();
+        let _ = FileExt::unlock(self.file);
     }
 }

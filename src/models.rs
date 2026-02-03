@@ -102,8 +102,8 @@ impl ModelRegistry {
     pub fn get_available(&self) -> Vec<ModelEntry> {
         self.models
             .iter()
+            .filter(|&m| m.api_key.is_some())
             .cloned()
-            .filter(|m| m.api_key.is_some())
             .collect()
     }
 
@@ -223,11 +223,11 @@ fn built_in_models(auth: &AuthStorage) -> Vec<ModelEntry> {
 
 fn apply_custom_models(auth: &AuthStorage, models: &mut Vec<ModelEntry>, config: &ModelsConfig) {
     for (provider_id, provider_cfg) in &config.providers {
-        let provider_api = provider_cfg
-            .api
-            .as_deref()
-            .unwrap_or("openai-completions");
-        let provider_api_parsed: Api = provider_api.parse().unwrap_or(Api::Custom(provider_api.to_string()));
+        let provider_api = provider_cfg.api.as_deref().unwrap_or("openai-completions");
+        let provider_api_parsed: Api = provider_api
+            .parse()
+            .unwrap_or_else(|_| Api::Custom(provider_api.to_string()));
+        let provider_api_string = provider_api_parsed.to_string();
         let provider_base = provider_cfg
             .base_url
             .clone()
@@ -246,15 +246,18 @@ fn apply_custom_models(auth: &AuthStorage, models: &mut Vec<ModelEntry>, config:
         let is_override = !has_models;
 
         if is_override {
-            for entry in models.iter_mut().filter(|m| m.model.provider == *provider_id) {
-                entry.model.base_url = provider_base.clone();
-                entry.model.api = provider_api_parsed.to_string();
-                entry.headers = provider_headers.clone();
+            for entry in models
+                .iter_mut()
+                .filter(|m| m.model.provider == *provider_id)
+            {
+                entry.model.base_url.clone_from(&provider_base);
+                entry.model.api.clone_from(&provider_api_string);
+                entry.headers.clone_from(&provider_headers);
                 if provider_key.is_some() {
-                    entry.api_key = provider_key.clone();
+                    entry.api_key.clone_from(&provider_key);
                 }
                 if provider_cfg.compat.is_some() {
-                    entry.compat = provider_cfg.compat.clone();
+                    entry.compat.clone_from(&provider_cfg.compat);
                 }
                 entry.auth_header = auth_header;
             }
@@ -266,10 +269,13 @@ fn apply_custom_models(auth: &AuthStorage, models: &mut Vec<ModelEntry>, config:
 
         for model_cfg in provider_cfg.models.clone().unwrap_or_default() {
             let model_api = model_cfg.api.as_deref().unwrap_or(provider_api);
-            let model_api_parsed: Api =
-                model_api.parse().unwrap_or(Api::Custom(model_api.to_string()));
-            let model_headers =
-                merge_headers(&provider_headers, resolve_headers(model_cfg.headers.as_ref()));
+            let model_api_parsed: Api = model_api
+                .parse()
+                .unwrap_or_else(|_| Api::Custom(model_api.to_string()));
+            let model_headers = merge_headers(
+                &provider_headers,
+                resolve_headers(model_cfg.headers.as_ref()),
+            );
             let input = model_cfg
                 .input
                 .clone()
@@ -286,9 +292,12 @@ fn apply_custom_models(auth: &AuthStorage, models: &mut Vec<ModelEntry>, config:
 
             let model = Model {
                 id: model_cfg.id.clone(),
-                name: model_cfg.name.clone().unwrap_or_else(|| model_cfg.id.clone()),
+                name: model_cfg
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| model_cfg.id.clone()),
                 api: model_api_parsed.to_string(),
-                provider: provider_id.to_string(),
+                provider: provider_id.clone(),
                 base_url: provider_base.clone(),
                 reasoning: model_cfg.reasoning.unwrap_or(false),
                 input: if input_types.is_empty() {
@@ -312,7 +321,10 @@ fn apply_custom_models(auth: &AuthStorage, models: &mut Vec<ModelEntry>, config:
                 api_key: provider_key.clone(),
                 headers: model_headers,
                 auth_header,
-                compat: model_cfg.compat.clone().or_else(|| provider_cfg.compat.clone()),
+                compat: model_cfg
+                    .compat
+                    .clone()
+                    .or_else(|| provider_cfg.compat.clone()),
             });
         }
     }

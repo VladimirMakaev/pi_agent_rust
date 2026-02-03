@@ -13,6 +13,6 @@
 5. Verify counts/hashes
 6. Release lock
 
-## Commands
-- `pi sessions import-jsonl` (rebuild SQLite index from JSONL)
+## Commands (planned)
+- `pi sessions reindex` (rebuild SQLite index from JSONL)
 - `pi sessions export-jsonl` (dump indexed metadata for inspection)

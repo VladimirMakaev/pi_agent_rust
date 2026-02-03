@@ -5,14 +5,19 @@
 
 use crate::cli::Cli;
 use crate::config::Config;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::model::{
     AssistantMessage, ContentBlock, Message, ToolResultMessage, UserContent, UserMessage,
 };
+use crate::session_index::SessionIndex;
+use crate::tui::PiConsole;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Current session file format version.
 pub const SESSION_VERSION: u8 = 3;
@@ -48,7 +53,7 @@ impl Session {
         }
 
         if cli.resume {
-            return Self::continue_recent_in_dir(session_dir.as_deref(), config).await;
+            return Self::resume_with_picker(session_dir.as_deref(), config).await;
         }
 
         if cli.r#continue {
@@ -57,6 +62,99 @@ impl Session {
 
         // Create a new session
         Ok(Self::create_with_dir(session_dir))
+    }
+
+    /// Resume a session by prompting the user to select from recent sessions.
+    pub async fn resume_with_picker(override_dir: Option<&Path>, _config: &Config) -> Result<Self> {
+        let base_dir = override_dir
+            .map(PathBuf::from)
+            .unwrap_or_else(Config::sessions_dir);
+        let cwd = std::env::current_dir()?;
+        let encoded_cwd = encode_cwd(&cwd);
+        let project_session_dir = base_dir.join(&encoded_cwd);
+
+        if !project_session_dir.exists() {
+            return Ok(Self::create_with_dir(Some(base_dir)));
+        }
+
+        let mut entries = if override_dir.is_none() {
+            let index = SessionIndex::new();
+            match index.list_sessions(Some(&cwd.display().to_string())) {
+                Ok(list) => list
+                    .into_iter()
+                    .filter_map(SessionPickEntry::from_meta)
+                    .collect(),
+                Err(_) => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
+
+        if entries.is_empty() {
+            entries = scan_sessions_on_disk(&project_session_dir)?;
+        }
+
+        if entries.is_empty() {
+            return Ok(Self::create_with_dir(Some(base_dir)));
+        }
+
+        entries.sort_by_key(|entry| std::cmp::Reverse(entry.last_modified_ms));
+        let max_entries = 20usize.min(entries.len());
+        let entries = entries.into_iter().take(max_entries).collect::<Vec<_>>();
+
+        let console = PiConsole::new();
+        console.render_info("Select a session to resume:");
+
+        let mut rows: Vec<Vec<String>> = Vec::new();
+        for (idx, entry) in entries.iter().enumerate() {
+            rows.push(vec![
+                format!("{}", idx + 1),
+                entry.timestamp.clone(),
+                entry.message_count.to_string(),
+                entry.name.clone().unwrap_or_else(|| entry.id.clone()),
+                entry.path.display().to_string(),
+            ]);
+        }
+
+        let headers = ["#", "Timestamp", "Messages", "Name", "Path"];
+        let row_refs: Vec<Vec<&str>> = rows
+            .iter()
+            .map(|row| row.iter().map(String::as_str).collect())
+            .collect();
+        console.render_table(&headers, &row_refs);
+
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            if attempts > 3 {
+                console.render_warning("No selection made. Starting a new session.");
+                return Ok(Self::create_with_dir(Some(base_dir)));
+            }
+
+            print!(
+                "Enter selection (1-{}, blank to start new): ",
+                entries.len()
+            );
+            let _ = std::io::stdout().flush();
+
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input)?;
+            let input = input.trim();
+            if input.is_empty() {
+                console.render_info("Starting a new session.");
+                return Ok(Self::create_with_dir(Some(base_dir)));
+            }
+
+            match input.parse::<usize>() {
+                Ok(index) if index > 0 && index <= entries.len() => {
+                    let selected = &entries[index - 1];
+                    return Self::open(selected.path.to_string_lossy().as_ref()).await;
+                }
+                _ => {
+                    console.render_warning("Invalid selection. Try again.");
+                }
+            }
+        }
     }
 
     /// Create an in-memory (ephemeral) session.
@@ -116,10 +214,7 @@ impl Session {
 
         ensure_entry_ids(&mut entries);
 
-        let leaf_id = entries
-            .iter()
-            .rev()
-            .find_map(|e| e.base_id().cloned());
+        let leaf_id = entries.iter().rev().find_map(|e| e.base_id().cloned());
 
         Ok(Self {
             header,
@@ -135,9 +230,7 @@ impl Session {
         override_dir: Option<&Path>,
         _config: &Config,
     ) -> Result<Self> {
-        let base_dir = override_dir
-            .map(PathBuf::from)
-            .unwrap_or_else(Config::sessions_dir);
+        let base_dir = override_dir.map_or_else(Config::sessions_dir, PathBuf::from);
         let cwd = std::env::current_dir()?;
         let encoded_cwd = encode_cwd(&cwd);
         let project_session_dir = base_dir.join(&encoded_cwd);
@@ -264,6 +357,96 @@ impl Session {
         messages
     }
 
+    /// Render the session as a standalone HTML document.
+    pub fn to_html(&self) -> String {
+        let mut html = String::new();
+        html.push_str("<!doctype html><html><head><meta charset=\"utf-8\">");
+        html.push_str("<title>Pi Session</title>");
+        html.push_str("<style>");
+        html.push_str(
+            "body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:24px;background:#0b0c10;color:#e6e6e6;}
+            h1{margin:0 0 8px 0;}
+            .meta{color:#9aa0a6;margin-bottom:24px;font-size:14px;}
+            .msg{padding:16px 18px;margin:12px 0;border-radius:8px;background:#14161b;}
+            .msg.user{border-left:4px solid #4fc3f7;}
+            .msg.assistant{border-left:4px solid #81c784;}
+            .msg.tool{border-left:4px solid #ffb74d;}
+            .msg.system{border-left:4px solid #ef9a9a;}
+            .role{font-weight:600;margin-bottom:8px;}
+            pre{white-space:pre-wrap;background:#0f1115;padding:12px;border-radius:6px;overflow:auto;}
+            .thinking summary{cursor:pointer;}
+            img{max-width:100%;height:auto;border-radius:6px;margin-top:8px;}
+            .note{color:#9aa0a6;font-size:13px;margin:6px 0;}
+            ",
+        );
+        html.push_str("</style></head><body>");
+
+        let _ = write!(
+            html,
+            "<h1>Pi Session</h1><div class=\"meta\">Session {} • {} • cwd: {}</div>",
+            escape_html(&self.header.id),
+            escape_html(&self.header.timestamp),
+            escape_html(&self.header.cwd)
+        );
+
+        for entry in &self.entries {
+            match entry {
+                SessionEntry::Message(message) => {
+                    html.push_str(&render_session_message(&message.message));
+                }
+                SessionEntry::ModelChange(change) => {
+                    let _ = write!(
+                        html,
+                        "<div class=\"msg system\"><div class=\"role\">Model</div><div class=\"note\">{} / {}</div></div>",
+                        escape_html(&change.provider),
+                        escape_html(&change.model_id)
+                    );
+                }
+                SessionEntry::ThinkingLevelChange(change) => {
+                    let _ = write!(
+                        html,
+                        "<div class=\"msg system\"><div class=\"role\">Thinking</div><div class=\"note\">{}</div></div>",
+                        escape_html(&change.thinking_level)
+                    );
+                }
+                SessionEntry::Compaction(compaction) => {
+                    let _ = write!(
+                        html,
+                        "<div class=\"msg system\"><div class=\"role\">Compaction</div><pre>{}</pre></div>",
+                        escape_html(&compaction.summary)
+                    );
+                }
+                SessionEntry::BranchSummary(summary) => {
+                    let _ = write!(
+                        html,
+                        "<div class=\"msg system\"><div class=\"role\">Branch Summary</div><pre>{}</pre></div>",
+                        escape_html(&summary.summary)
+                    );
+                }
+                SessionEntry::SessionInfo(info) => {
+                    if let Some(name) = &info.name {
+                        let _ = write!(
+                            html,
+                            "<div class=\"msg system\"><div class=\"role\">Session Name</div><div class=\"note\">{}</div></div>",
+                            escape_html(name)
+                        );
+                    }
+                }
+                SessionEntry::Custom(custom) => {
+                    let _ = write!(
+                        html,
+                        "<div class=\"msg system\"><div class=\"role\">{}</div></div>",
+                        escape_html(&custom.custom_type)
+                    );
+                }
+                SessionEntry::Label(_) => {}
+            }
+        }
+
+        html.push_str("</body></html>");
+        html
+    }
+
     /// Update header model info.
     pub fn set_model_header(
         &mut self,
@@ -290,6 +473,93 @@ impl Session {
         let existing = entry_id_set(&self.entries);
         generate_entry_id(&existing)
     }
+}
+
+#[derive(Debug, Clone)]
+struct SessionPickEntry {
+    path: PathBuf,
+    id: String,
+    timestamp: String,
+    message_count: u64,
+    name: Option<String>,
+    last_modified_ms: i64,
+}
+
+impl SessionPickEntry {
+    fn from_meta(meta: crate::session_index::SessionMeta) -> Option<Self> {
+        let path = PathBuf::from(meta.path);
+        if !path.exists() {
+            return None;
+        }
+        Some(Self {
+            path,
+            id: meta.id,
+            timestamp: meta.timestamp,
+            message_count: meta.message_count,
+            name: meta.name,
+            last_modified_ms: meta.last_modified_ms,
+        })
+    }
+}
+
+fn scan_sessions_on_disk(project_session_dir: &Path) -> Result<Vec<SessionPickEntry>> {
+    let mut entries = Vec::new();
+    let dir_entries = std::fs::read_dir(project_session_dir)
+        .map_err(|e| Error::session(format!("Failed to read sessions: {e}")))?;
+    for entry in dir_entries {
+        let entry = entry.map_err(|e| Error::session(format!("Read dir entry: {e}")))?;
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "jsonl") {
+            if let Ok(meta) = load_session_meta(&path) {
+                entries.push(meta);
+            }
+        }
+    }
+    Ok(entries)
+}
+
+fn load_session_meta(path: &Path) -> Result<SessionPickEntry> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| Error::session(format!("Failed to read session: {e}")))?;
+    let mut lines = content.lines();
+    let header_line = lines
+        .next()
+        .ok_or_else(|| Error::session("Empty session file"))?;
+    let header: SessionHeader =
+        serde_json::from_str(header_line).map_err(|e| Error::session(format!("{e}")))?;
+
+    let mut message_count = 0u64;
+    let mut name = None;
+    for line in lines {
+        if let Ok(entry) = serde_json::from_str::<SessionEntry>(line) {
+            match entry {
+                SessionEntry::Message(_) => message_count += 1,
+                SessionEntry::SessionInfo(info) => {
+                    if info.name.is_some() {
+                        name = info.name;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let modified = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let last_modified_ms = modified
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+
+    Ok(SessionPickEntry {
+        path: path.to_path_buf(),
+        id: header.id,
+        timestamp: header.timestamp,
+        message_count,
+        name,
+        last_modified_ms,
+    })
 }
 
 // ============================================================================
@@ -364,7 +634,7 @@ pub enum SessionEntry {
 }
 
 impl SessionEntry {
-    pub fn base(&self) -> &EntryBase {
+    pub const fn base(&self) -> &EntryBase {
         match self {
             Self::Message(e) => &e.base,
             Self::ModelChange(e) => &e.base,
@@ -377,7 +647,7 @@ impl SessionEntry {
         }
     }
 
-    pub fn base_mut(&mut self) -> &mut EntryBase {
+    pub const fn base_mut(&mut self) -> &mut EntryBase {
         match self {
             Self::Message(e) => &mut e.base,
             Self::ModelChange(e) => &mut e.base,
@@ -390,7 +660,7 @@ impl SessionEntry {
         }
     }
 
-    pub fn base_id(&self) -> Option<&String> {
+    pub const fn base_id(&self) -> Option<&String> {
         self.base().id.as_ref()
     }
 }
@@ -485,12 +755,12 @@ pub enum SessionMessage {
 impl From<Message> for SessionMessage {
     fn from(message: Message) -> Self {
         match message {
-            Message::User(user) => SessionMessage::User {
+            Message::User(user) => Self::User {
                 content: user.content,
                 timestamp: Some(user.timestamp),
             },
-            Message::Assistant(assistant) => SessionMessage::Assistant { message: assistant },
-            Message::ToolResult(result) => SessionMessage::ToolResult {
+            Message::Assistant(assistant) => Self::Assistant { message: assistant },
+            Message::ToolResult(result) => Self::ToolResult {
                 tool_call_id: result.tool_call_id,
                 tool_name: result.tool_name,
                 content: result.content,
@@ -618,6 +888,149 @@ fn session_message_to_model(message: &SessionMessage) -> Option<Message> {
         })),
         _ => None,
     }
+}
+
+fn render_session_message(message: &SessionMessage) -> String {
+    match message {
+        SessionMessage::User { content, .. } => {
+            let mut html = String::new();
+            html.push_str("<div class=\"msg user\"><div class=\"role\">User</div>");
+            html.push_str(&render_user_content(content));
+            html.push_str("</div>");
+            html
+        }
+        SessionMessage::Assistant { message } => {
+            let mut html = String::new();
+            html.push_str("<div class=\"msg assistant\"><div class=\"role\">Assistant</div>");
+            html.push_str(&render_blocks(&message.content));
+            html.push_str("</div>");
+            html
+        }
+        SessionMessage::ToolResult {
+            tool_name,
+            content,
+            is_error,
+            details,
+            ..
+        } => {
+            let mut html = String::new();
+            let role = if *is_error { "Tool Error" } else { "Tool" };
+            let _ = write!(
+                html,
+                "<div class=\"msg tool\"><div class=\"role\">{}: {}</div>",
+                role,
+                escape_html(tool_name)
+            );
+            html.push_str(&render_blocks(content));
+            if let Some(details) = details {
+                let details_str =
+                    serde_json::to_string_pretty(details).unwrap_or_else(|_| details.to_string());
+                let _ = write!(html, "<pre>{}</pre>", escape_html(&details_str));
+            }
+            html.push_str("</div>");
+            html
+        }
+        SessionMessage::Custom {
+            custom_type,
+            content,
+            ..
+        } => {
+            let mut html = String::new();
+            let _ = write!(
+                html,
+                "<div class=\"msg system\"><div class=\"role\">{}</div><pre>{}</pre></div>",
+                escape_html(custom_type),
+                escape_html(content)
+            );
+            html
+        }
+        SessionMessage::BashExecution {
+            command,
+            output,
+            exit_code,
+            ..
+        } => {
+            let mut html = String::new();
+            let _ = write!(
+                html,
+                "<div class=\"msg tool\"><div class=\"role\">Bash (exit {exit_code})</div><pre>{}</pre><pre>{}</pre></div>",
+                escape_html(command),
+                escape_html(output)
+            );
+            html
+        }
+        SessionMessage::BranchSummary { summary, .. } => {
+            format!(
+                "<div class=\"msg system\"><div class=\"role\">Branch Summary</div><pre>{}</pre></div>",
+                escape_html(summary)
+            )
+        }
+        SessionMessage::CompactionSummary { summary, .. } => {
+            format!(
+                "<div class=\"msg system\"><div class=\"role\">Compaction</div><pre>{}</pre></div>",
+                escape_html(summary)
+            )
+        }
+    }
+}
+
+fn render_user_content(content: &UserContent) -> String {
+    match content {
+        UserContent::Text(text) => format!("<pre>{}</pre>", escape_html(text)),
+        UserContent::Blocks(blocks) => render_blocks(blocks),
+    }
+}
+
+fn render_blocks(blocks: &[ContentBlock]) -> String {
+    let mut html = String::new();
+    for block in blocks {
+        match block {
+            ContentBlock::Text(text) => {
+                let _ = write!(html, "<pre>{}</pre>", escape_html(&text.text));
+            }
+            ContentBlock::Thinking(thinking) => {
+                let _ = write!(
+                    html,
+                    "<details class=\"thinking\"><summary>Thinking</summary><pre>{}</pre></details>",
+                    escape_html(&thinking.thinking)
+                );
+            }
+            ContentBlock::Image(image) => {
+                let _ = write!(
+                    html,
+                    "<img src=\"data:{};base64,{}\" alt=\"image\"/>",
+                    escape_html(&image.mime_type),
+                    escape_html(&image.data)
+                );
+            }
+            ContentBlock::ToolCall(tool_call) => {
+                let args = serde_json::to_string_pretty(&tool_call.arguments)
+                    .unwrap_or_else(|_| tool_call.arguments.to_string());
+                let _ = write!(
+                    html,
+                    "<div class=\"note\">Tool call: {}</div><pre>{}</pre>",
+                    escape_html(&tool_call.name),
+                    escape_html(&args)
+                );
+            }
+        }
+    }
+    html
+}
+
+fn escape_html(input: &str) -> String {
+    let mut escaped = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
 }
 
 fn entry_id_set(entries: &[SessionEntry]) -> HashSet<String> {

@@ -155,7 +155,12 @@ mod edit_tool {
         let text = get_text_content(&result.content);
         assert!(text.contains("Successfully replaced text in"));
         assert!(text.contains("test.txt"));
-        assert!(result.details.as_ref().is_some_and(|d| d.get("diff").is_some()));
+        assert!(
+            result
+                .details
+                .as_ref()
+                .is_some_and(|d| d.get("diff").is_some())
+        );
     }
 
     #[tokio::test]

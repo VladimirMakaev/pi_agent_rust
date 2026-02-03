@@ -174,8 +174,10 @@ fn run_truncation_test_case(case: &TestCase) -> TestResult {
     use pi::tools::{truncate_head, truncate_tail};
 
     let content = case.input["content"].as_str().unwrap_or("");
-    let max_lines = case.input["max_lines"].as_u64().unwrap_or(2000) as usize;
-    let max_bytes = case.input["max_bytes"].as_u64().unwrap_or(50000) as usize;
+    let max_lines =
+        usize::try_from(case.input["max_lines"].as_u64().unwrap_or(2000)).unwrap_or(2000);
+    let max_bytes =
+        usize::try_from(case.input["max_bytes"].as_u64().unwrap_or(50000)).unwrap_or(50000);
 
     // Determine if this is a head or tail test based on the name
     let result = if case.name.contains("tail") {

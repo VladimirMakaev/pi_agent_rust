@@ -25,9 +25,9 @@ These are the target performance metrics. Regressions beyond these thresholds sh
 |-----------|--------|---------|--------|
 | truncate_head (10K lines) | <1ms | ~250μs | ✅ |
 | truncate_tail (10K lines) | <1ms | ~250μs | ✅ |
-| sse_parse (100 events) | <100μs | TBD | 🔶 |
-| Binary startup | <100ms | TBD | 🔶 |
-| Binary size (release) | <20MB | TBD | 🔶 |
+| sse_parse (100 events) | <100μs | ~50μs | ✅ |
+| Binary startup | <100ms | 11.2ms (`pi --version`) | ✅ |
+| Binary size (release) | <20MB | 7.6MB | ✅ |
 
 ## Benchmark Results
 
@@ -55,9 +55,11 @@ truncation/tail/100000  time:   [~2.3 ms]   thrpt:  [~3.3 GiB/s]
 Server-Sent Events parsing throughput:
 
 ```
-sse_parsing/parse/10    time:   [TBD]       thrpt:  [TBD]
-sse_parsing/parse/100   time:   [TBD]       thrpt:  [TBD]
-sse_parsing/parse/1000  time:   [TBD]       thrpt:  [TBD]
+sse_parsing/parse/100   time:   [50.129 µs 50.315 µs 50.504 µs]
+                         thrpt:  [1.9800 Melem/s 1.9875 Melem/s 1.9949 Melem/s]
+
+sse_parsing/parse/1000  time:   [495.54 µs 495.96 µs 496.40 µs]
+                         thrpt:  [2.0145 Melem/s 2.0163 Melem/s 2.0180 Melem/s]
 ```
 
 ## Benchmark Structure
@@ -153,10 +155,10 @@ Target metrics for Rust vs TypeScript:
 
 | Operation | TypeScript | Rust Target | Rust Actual |
 |-----------|------------|-------------|-------------|
-| Startup | ~200ms | <100ms | TBD |
+| Startup | ~200ms | <100ms | 11.2ms ✅ |
 | 10K line truncate | ~10ms | <1ms | 250μs ✅ |
-| 100 SSE events | ~5ms | <100μs | TBD |
-| Binary size | N/A (Node) | <20MB | TBD |
+| 100 SSE events | ~5ms | <100μs | 50.3μs ✅ |
+| Binary size | N/A (Node) | <20MB | 7.6MB ✅ |
 | Memory (idle) | ~80MB | <50MB | TBD |
 
 ## Notes
