@@ -1149,6 +1149,9 @@ impl PiApp {
                 self.input.focus();
             }
             PiMsg::ResourcesReloaded { resources, status } => {
+                let autocomplete_catalog = AutocompleteCatalog::from_resources(&resources);
+                self.autocomplete.provider.set_catalog(autocomplete_catalog);
+                self.autocomplete.close();
                 self.resources = resources;
                 self.agent_state = AgentState::Idle;
                 self.current_tool = None;
