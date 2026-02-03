@@ -354,8 +354,8 @@
 | find tool | ✅ Yes | `find_tool.json` | 6 | ✅ All pass |
 | ls tool | ✅ Yes | `ls_tool.json` | 8 | ✅ All pass |
 | truncation | ✅ Yes | `truncation.json` | 9 | ✅ All pass |
-| Session format | ❌ No | - | - | Covered by integration tests (`tests/session_conformance.rs`); fixtures out-of-scope |
-| Provider responses | ❌ No | - | - | Covered by VCR-backed streaming tests (`bd-h7r`, `bd-gd1`) |
+| Session format | ❌ No | - | - | - |
+| Provider responses | ❌ No | - | - | - |
 | CLI flags | ✅ Yes | `cli_flags.json` | 17 | ✅ All pass |
 | **Total** | **9/11** | - | **139** | ✅ |
 
