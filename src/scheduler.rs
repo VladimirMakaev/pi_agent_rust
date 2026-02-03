@@ -175,10 +175,11 @@ pub struct WallClock;
 impl Clock for WallClock {
     fn now_ms(&self) -> u64 {
         use std::time::{SystemTime, UNIX_EPOCH};
-        SystemTime::now()
+        let millis = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("time before epoch")
-            .as_millis() as u64
+            .as_millis();
+        u64::try_from(millis).unwrap_or(u64::MAX)
     }
 }
 
@@ -267,7 +268,7 @@ impl<C: Clock> Scheduler<C> {
     }
 
     /// Get the next sequence number and increment the counter.
-    fn next_seq(&mut self) -> Seq {
+    const fn next_seq(&mut self) -> Seq {
         let current = self.seq;
         self.seq = self.seq.next();
         current
@@ -341,41 +342,27 @@ impl<C: Clock> Scheduler<C> {
     /// Enqueue a hostcall completion.
     pub fn enqueue_hostcall_complete(&mut self, call_id: String, outcome: HostcallOutcome) {
         let seq = self.next_seq();
-        let task = Macrotask::new(
-            seq,
-            MacrotaskKind::HostcallComplete {
-                call_id: call_id.clone(),
-                outcome,
-            },
-        );
-        self.macrotask_queue.push_back(task);
-
         tracing::trace!(
             event = "scheduler.hostcall.enqueue",
-            call_id,
+            call_id = %call_id,
             %seq,
             "Hostcall completion enqueued"
         );
+        let task = Macrotask::new(seq, MacrotaskKind::HostcallComplete { call_id, outcome });
+        self.macrotask_queue.push_back(task);
     }
 
     /// Enqueue an inbound event from the host.
     pub fn enqueue_event(&mut self, event_id: String, payload: serde_json::Value) {
         let seq = self.next_seq();
-        let task = Macrotask::new(
-            seq,
-            MacrotaskKind::InboundEvent {
-                event_id: event_id.clone(),
-                payload,
-            },
-        );
-        self.macrotask_queue.push_back(task);
-
         tracing::trace!(
             event = "scheduler.event.enqueue",
-            event_id,
+            event_id = %event_id,
             %seq,
             "Inbound event enqueued"
         );
+        let task = Macrotask::new(seq, MacrotaskKind::InboundEvent { event_id, payload });
+        self.macrotask_queue.push_back(task);
     }
 
     /// Move due timers from the timer heap to the macrotask queue.
@@ -455,7 +442,7 @@ impl<C: Clock> Scheduler<C> {
     #[must_use]
     pub fn next_timer_deadline(&self) -> Option<u64> {
         // Skip cancelled timers when peeking
-        for entry in self.timer_heap.iter() {
+        for entry in &self.timer_heap {
             if !self.cancelled_timers.contains(&entry.timer_id) {
                 return Some(entry.deadline_ms);
             }
@@ -477,8 +464,9 @@ impl<C: Clock> fmt::Debug for Scheduler<C> {
             .field("seq", &self.seq)
             .field("macrotask_count", &self.macrotask_queue.len())
             .field("timer_count", &self.timer_heap.len())
+            .field("next_timer_id", &self.next_timer_id)
             .field("cancelled_timers", &self.cancelled_timers.len())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -620,7 +608,7 @@ mod tests {
         let mut sched = Scheduler::with_clock(clock);
 
         let t1 = sched.set_timeout(100);
-        let _t2 = sched.set_timeout(200);
+        let t2 = sched.set_timeout(200);
 
         // Cancel t1
         assert!(sched.clear_timeout(t1));
@@ -631,7 +619,7 @@ mod tests {
         // Only t2 should fire
         let task = sched.tick().unwrap();
         match task.kind {
-            MacrotaskKind::TimerFired { timer_id } => assert_eq!(timer_id, _t2),
+            MacrotaskKind::TimerFired { timer_id } => assert_eq!(timer_id, t2),
             _ => panic!("Expected t2"),
         }
 
@@ -655,7 +643,7 @@ mod tests {
                 assert_eq!(call_id, "call-1");
                 match outcome {
                     HostcallOutcome::Success(v) => assert_eq!(v["result"], 42),
-                    _ => panic!("Expected success"),
+                    HostcallOutcome::Error { .. } => panic!("Expected success"),
                 }
             }
             _ => panic!("Expected HostcallComplete"),

@@ -685,7 +685,7 @@ impl KeyBinding {
             KeyType::CtrlBackslash => ("\\", KeyModifiers::CTRL),
             KeyType::CtrlCloseBracket => ("]", KeyModifiers::CTRL),
             KeyType::CtrlCaret => ("^", KeyModifiers::CTRL),
-            KeyType::CtrlUnderscore => ("-", KeyModifiers::CTRL), // ctrl+- maps to underscore
+            KeyType::CtrlUnderscore => ("_", KeyModifiers::CTRL),
             KeyType::Backspace => ("backspace", KeyModifiers::NONE),
 
             // Arrow keys

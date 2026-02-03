@@ -314,9 +314,10 @@ where
                     let arguments: serde_json::Value = match serde_json::from_str(&tc.arguments) {
                         Ok(args) => args,
                         Err(e) => {
-                            eprintln!(
-                                "Warning: Failed to parse tool arguments as JSON: {e}. Raw: {}",
-                                &tc.arguments
+                            tracing::warn!(
+                                error = %e,
+                                raw = %tc.arguments,
+                                "Failed to parse tool arguments as JSON"
                             );
                             serde_json::Value::Null
                         }

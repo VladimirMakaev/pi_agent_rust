@@ -159,6 +159,32 @@ impl SessionIndex {
         })
     }
 
+    /// Check whether the on-disk index is stale enough to reindex.
+    pub fn should_reindex(&self, max_age: Duration) -> bool {
+        if !self.db_path.exists() {
+            return true;
+        }
+        let Ok(meta) = fs::metadata(&self.db_path) else {
+            return true;
+        };
+        let Ok(modified) = meta.modified() else {
+            return true;
+        };
+        let age = SystemTime::now()
+            .duration_since(modified)
+            .unwrap_or_default();
+        age > max_age
+    }
+
+    /// Reindex the session database if the index is stale.
+    pub fn reindex_if_stale(&self, max_age: Duration) -> Result<bool> {
+        if !self.should_reindex(max_age) {
+            return Ok(false);
+        }
+        self.reindex_all()?;
+        Ok(true)
+    }
+
     fn with_lock<T>(&self, f: impl FnOnce(&SqliteConnection) -> Result<T>) -> Result<T> {
         if let Some(parent) = self.db_path.parent() {
             fs::create_dir_all(parent)?;

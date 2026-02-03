@@ -89,7 +89,7 @@ struct MessageQueue {
 }
 
 impl MessageQueue {
-    fn new(steering_mode: QueueMode, follow_up_mode: QueueMode) -> Self {
+    const fn new(steering_mode: QueueMode, follow_up_mode: QueueMode) -> Self {
         Self {
             steering: VecDeque::new(),
             follow_up: VecDeque::new(),
@@ -99,7 +99,7 @@ impl MessageQueue {
         }
     }
 
-    fn set_modes(&mut self, steering_mode: QueueMode, follow_up_mode: QueueMode) {
+    const fn set_modes(&mut self, steering_mode: QueueMode, follow_up_mode: QueueMode) {
         self.steering_mode = steering_mode;
         self.follow_up_mode = follow_up_mode;
     }
@@ -372,7 +372,7 @@ impl Agent {
     }
 
     /// Configure queue delivery modes.
-    pub fn set_queue_modes(&mut self, steering: QueueMode, follow_up: QueueMode) {
+    pub const fn set_queue_modes(&mut self, steering: QueueMode, follow_up: QueueMode) {
         self.message_queue.set_modes(steering, follow_up);
     }
 

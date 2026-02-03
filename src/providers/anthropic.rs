@@ -437,9 +437,10 @@ where
                     match serde_json::from_str(&self.current_tool_json) {
                         Ok(args) => args,
                         Err(e) => {
-                            eprintln!(
-                                "Warning: Failed to parse tool arguments as JSON: {e}. Raw: {}",
-                                &self.current_tool_json
+                            tracing::warn!(
+                                error = %e,
+                                raw = %self.current_tool_json,
+                                "Failed to parse tool arguments as JSON"
                             );
                             serde_json::Value::Null
                         }

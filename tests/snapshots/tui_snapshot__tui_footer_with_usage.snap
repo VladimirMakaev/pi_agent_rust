@@ -12,8 +12,8 @@ expression: view
 
 
   [single-line] Enter to send
-    > Type your message... (Enter to send, Alt+Enter for multi-line, Esc to quit)
+    > Type your message... (Enter to send, Alt+Enter for multi-line, Ctrl+C twice to quit)
   >
   >
 
-  Tokens: 120 in / 45 out ($0.0030)  |  Alt+Enter: multi-line  |  /help  |  Esc: quit
+  Tokens: 120 in / 45 out ($0.0030)  |  Alt+Enter: multi-line  |  /help  |  Ctrl+C: quit

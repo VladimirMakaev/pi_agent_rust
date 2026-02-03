@@ -11,4 +11,4 @@ expression: view
   >
   >
 
-  Tokens: 0 in / 0 out  |  Alt+Enter: multi-line  |  /help  |  Esc: quit
+  Tokens: 0 in / 0 out  |  Alt+Enter: multi-line  |  /help  |  Ctrl+C: quit

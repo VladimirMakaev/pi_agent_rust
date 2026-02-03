@@ -12,6 +12,7 @@
 use std::collections::HashSet;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Result, bail};
 use asupersync::runtime::reactor::create_reactor;
@@ -31,6 +32,7 @@ use pi::provider::{InputType, StreamOptions, ThinkingBudgets};
 use pi::providers;
 use pi::resources::{ResourceCliOptions, ResourceLoader};
 use pi::session::Session;
+use pi::session_index::SessionIndex;
 use pi::tools::ToolRegistry;
 use tracing_subscriber::EnvFilter;
 
@@ -72,6 +74,7 @@ async fn run(mut cli: cli::Cli, runtime_handle: RuntimeHandle) -> Result<()> {
     }
 
     let config = Config::load()?;
+    spawn_session_index_maintenance();
     let package_manager = PackageManager::new(cwd.clone());
     let resource_cli = ResourceCliOptions {
         no_skills: cli.no_skills,
@@ -285,6 +288,19 @@ async fn handle_subcommand(command: cli::Commands, cwd: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn spawn_session_index_maintenance() {
+    const MAX_INDEX_AGE: Duration = Duration::from_secs(60 * 30);
+    let index = SessionIndex::new();
+    if !index.should_reindex(MAX_INDEX_AGE) {
+        return;
+    }
+    std::thread::spawn(move || {
+        if let Err(err) = index.reindex_all() {
+            eprintln!("Warning: failed to reindex session index: {err}");
+        }
+    });
 }
 
 const fn scope_from_flag(local: bool) -> PackageScope {
