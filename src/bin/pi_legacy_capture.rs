@@ -504,6 +504,10 @@ fn spawn_pi_mono_print_json(
         bail!("missing legacy runner: {}", pi_test.display());
     }
 
+    let agent_dir = agent_dir
+        .canonicalize()
+        .unwrap_or_else(|_| agent_dir.to_path_buf());
+
     let mut cmd = Command::new("./pi-test.sh");
     cmd.current_dir(pi_mono_root)
         .arg("--print")
@@ -530,7 +534,7 @@ fn spawn_pi_mono_print_json(
     }
     cmd.env("PI_CODING_AGENT_DIR", agent_dir);
 
-    let child = cmd.spawn().context("spawn pi-mono rpc")?;
+    let child = cmd.spawn().context("spawn pi-mono print/json")?;
     Ok(child)
 }
 
