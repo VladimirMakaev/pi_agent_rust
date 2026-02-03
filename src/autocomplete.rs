@@ -14,6 +14,7 @@
 use std::cmp::Ordering;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use crate::resources::ResourceLoader;
@@ -131,18 +132,18 @@ impl AutocompleteProvider {
     #[must_use]
     pub fn suggest(&mut self, text: &str, cursor: usize) -> AutocompleteResponse {
         let cursor = clamp_cursor(text, cursor);
-        let token = token_at_cursor(text, cursor);
+        let segment = token_at_cursor(text, cursor);
 
-        if token.text.starts_with('/') {
-            return self.suggest_slash(&token);
+        if segment.text.starts_with('/') {
+            return self.suggest_slash(&segment);
         }
 
-        if token.text.starts_with('@') {
-            return self.suggest_file_ref(&token);
+        if segment.text.starts_with('@') {
+            return self.suggest_file_ref(&segment);
         }
 
-        if is_path_like(token.text) {
-            return self.suggest_path(&token);
+        if is_path_like(segment.text) {
+            return self.suggest_path(&segment);
         }
 
         AutocompleteResponse {
@@ -406,14 +407,20 @@ fn collect_project_files(cwd: &Path) -> Vec<String> {
     walk_project_files(cwd)
 }
 
+/// Cached result of fd binary detection.
+/// Uses OnceLock to avoid spawning processes on every file cache refresh.
+static FD_BINARY_CACHE: OnceLock<Option<&'static str>> = OnceLock::new();
+
 fn find_fd_binary() -> Option<&'static str> {
-    ["fd", "fdfind"].into_iter().find(|&candidate| {
-        std::process::Command::new(candidate)
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok()
+    *FD_BINARY_CACHE.get_or_init(|| {
+        ["fd", "fdfind"].into_iter().find(|&candidate| {
+            std::process::Command::new(candidate)
+                .arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok()
+        })
     })
 }
 
@@ -649,26 +656,26 @@ fn fuzzy_match_score(candidate: &str, query: &str) -> Option<(bool, i32)> {
     Some((false, score))
 }
 
-fn is_path_like(token: &str) -> bool {
-    let token = token.trim();
-    if token.is_empty() {
+fn is_path_like(text: &str) -> bool {
+    let text = text.trim();
+    if text.is_empty() {
         return false;
     }
-    token.starts_with("./")
-        || token.starts_with("../")
-        || token.starts_with("~/")
-        || token.starts_with('/')
-        || token.contains('/')
+    text.starts_with("./")
+        || text.starts_with("../")
+        || text.starts_with("~/")
+        || text.starts_with('/')
+        || text.contains('/')
 }
 
-fn expand_tilde(token: &str) -> String {
-    let token = token.trim();
-    if let Some(rest) = token.strip_prefix("~/") {
+fn expand_tilde(text: &str) -> String {
+    let text = text.trim();
+    if let Some(rest) = text.strip_prefix("~/") {
         if let Some(home) = dirs::home_dir() {
             return home.join(rest).display().to_string();
         }
     }
-    token.to_string()
+    text.to_string()
 }
 
 fn split_path_prefix(path: &str) -> (String, String) {

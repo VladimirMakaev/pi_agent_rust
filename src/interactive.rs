@@ -33,6 +33,10 @@ use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::agent::{AbortHandle, Agent, AgentEvent};
+use crate::autocomplete::{
+    AutocompleteCatalog, AutocompleteItem, AutocompleteItemKind, AutocompleteProvider,
+    AutocompleteResponse,
+};
 use crate::compaction::{
     ResolvedCompactionSettings, compact, compaction_details_to_value, prepare_compaction,
     summarize_entries,
@@ -306,6 +310,82 @@ pub struct PiApp {
 
     // Track last Ctrl+C time for double-tap quit detection
     last_ctrlc_time: Option<std::time::Instant>,
+
+    // Autocomplete state
+    autocomplete: AutocompleteState,
+}
+
+/// Autocomplete dropdown state.
+#[derive(Debug)]
+struct AutocompleteState {
+    /// The autocomplete provider that generates suggestions.
+    provider: AutocompleteProvider,
+    /// Whether the dropdown is currently visible.
+    open: bool,
+    /// Current list of suggestions.
+    items: Vec<AutocompleteItem>,
+    /// Index of the currently selected item.
+    selected: usize,
+    /// The range of text to replace when accepting a suggestion.
+    replace_range: std::ops::Range<usize>,
+    /// Maximum number of items to display in the dropdown.
+    max_visible: usize,
+}
+
+impl AutocompleteState {
+    fn new(cwd: PathBuf, catalog: AutocompleteCatalog) -> Self {
+        Self {
+            provider: AutocompleteProvider::new(cwd, catalog),
+            open: false,
+            items: Vec::new(),
+            selected: 0,
+            replace_range: 0..0,
+            max_visible: 10,
+        }
+    }
+
+    fn close(&mut self) {
+        self.open = false;
+        self.items.clear();
+        self.selected = 0;
+        self.replace_range = 0..0;
+    }
+
+    fn open_with(&mut self, response: AutocompleteResponse) {
+        if response.items.is_empty() {
+            self.close();
+            return;
+        }
+        self.open = true;
+        self.items = response.items;
+        self.selected = 0;
+        self.replace_range = response.replace;
+    }
+
+    fn select_next(&mut self) {
+        if !self.items.is_empty() {
+            self.selected = (self.selected + 1) % self.items.len();
+        }
+    }
+
+    fn select_prev(&mut self) {
+        if !self.items.is_empty() {
+            self.selected = self.selected.checked_sub(1).unwrap_or(self.items.len() - 1);
+        }
+    }
+
+    fn selected_item(&self) -> Option<&AutocompleteItem> {
+        self.items.get(self.selected)
+    }
+
+    /// Returns the scroll offset for the dropdown view.
+    fn scroll_offset(&self) -> usize {
+        if self.selected < self.max_visible {
+            0
+        } else {
+            self.selected - self.max_visible + 1
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -492,6 +572,10 @@ impl PiApp {
         }
         let keybindings = keybindings_result.bindings;
 
+        // Initialize autocomplete with catalog from resources
+        let autocomplete_catalog = AutocompleteCatalog::from_resources(&resources);
+        let autocomplete = AutocompleteState::new(cwd.clone(), autocomplete_catalog);
+
         let mut app = Self {
             input,
             input_history: Vec::new(),
@@ -533,6 +617,7 @@ impl PiApp {
             extensions,
             keybindings,
             last_ctrlc_time: None,
+            autocomplete,
         };
 
         if let Some(manager) = app.extensions.clone() {
@@ -587,6 +672,36 @@ impl PiApp {
             // Clear status message on any key press
             self.status_message = None;
 
+            // Handle autocomplete navigation when dropdown is open
+            if self.autocomplete.open {
+                match key.key_type {
+                    KeyType::Up => {
+                        self.autocomplete.select_prev();
+                        return None;
+                    }
+                    KeyType::Down => {
+                        self.autocomplete.select_next();
+                        return None;
+                    }
+                    KeyType::Tab | KeyType::Enter => {
+                        // Accept the selected item
+                        if let Some(item) = self.autocomplete.selected_item().cloned() {
+                            self.accept_autocomplete(&item);
+                        }
+                        self.autocomplete.close();
+                        return None;
+                    }
+                    KeyType::Esc => {
+                        self.autocomplete.close();
+                        return None;
+                    }
+                    _ => {
+                        // Close autocomplete on other keys, then process normally
+                        self.autocomplete.close();
+                    }
+                }
+            }
+
             // Convert KeyMsg to KeyBinding and resolve action
             if let Some(binding) = KeyBinding::from_bubbletea_key(key) {
                 let candidates = self.keybindings.matching_actions(&binding);
@@ -609,7 +724,12 @@ impl PiApp {
 
         // Forward to appropriate component based on state
         if self.agent_state == AgentState::Idle {
-            BubbleteaModel::update(&mut self.input, msg)
+            let result = BubbleteaModel::update(&mut self.input, msg);
+
+            // After text area update, check if we should trigger autocomplete
+            self.maybe_trigger_autocomplete();
+
+            result
         } else {
             // While processing, forward to spinner
             self.spinner.update(msg)
@@ -679,6 +799,11 @@ impl PiApp {
         // Input area (only when idle)
         if self.agent_state == AgentState::Idle {
             output.push_str(&self.render_input());
+
+            // Autocomplete dropdown (if open)
+            if self.autocomplete.open && !self.autocomplete.items.is_empty() {
+                output.push_str(&self.render_autocomplete_dropdown());
+            }
         } else {
             // Show spinner when processing
             let style = Style::new().foreground("212");
@@ -1806,6 +1931,17 @@ impl PiApp {
             }
 
             // =========================================================
+            // Autocomplete
+            // =========================================================
+            AppAction::Tab => {
+                // Tab triggers/advances autocomplete when idle
+                if self.agent_state == AgentState::Idle {
+                    self.trigger_autocomplete();
+                }
+                None
+            }
+
+            // =========================================================
             // Actions not yet implemented - let through to component
             // =========================================================
             _ => {
@@ -1822,13 +1958,9 @@ impl PiApp {
     /// to prevent the TextArea from also handling the key.
     fn should_consume_action(&self, action: AppAction) -> bool {
         match action {
-            // History navigation consumes in single-line mode
-            AppAction::CursorUp | AppAction::CursorDown => {
-                self.agent_state == AgentState::Idle && self.input_mode == InputMode::SingleLine
-            }
-
-            // Submit consumes in single-line mode (otherwise TextArea inserts a newline)
-            AppAction::Submit => {
+            // History navigation and Submit consume in single-line mode (otherwise TextArea
+            // handles arrow keys or inserts a newline on Enter)
+            AppAction::CursorUp | AppAction::CursorDown | AppAction::Submit => {
                 self.agent_state == AgentState::Idle && self.input_mode == InputMode::SingleLine
             }
 
@@ -1841,6 +1973,7 @@ impl PiApp {
             // FollowUp (Alt+Enter) should be consumed so TextArea doesn't insert text.
             // Interrupt/Clear/Copy are always consumed.
             // Suspend/ExternalEditor are always consumed.
+            // Tab is consumed (autocomplete).
             AppAction::PageUp
             | AppAction::PageDown
             | AppAction::FollowUp
@@ -1848,7 +1981,8 @@ impl PiApp {
             | AppAction::Clear
             | AppAction::Copy
             | AppAction::Suspend
-            | AppAction::ExternalEditor => true,
+            | AppAction::ExternalEditor
+            | AppAction::Tab => true,
 
             // Other actions pass through to TextArea
             _ => false,
@@ -3366,6 +3500,192 @@ impl PiApp {
             "Tokens: {input} in / {output_tokens} out{cost_str}  |  {mode_hint}  |  /help  |  Esc: quit"
         );
         format!("\n  {}\n", style.render(&footer))
+    }
+
+    // =========================================================================
+    // Autocomplete helpers
+    // =========================================================================
+
+    /// Trigger autocomplete from Tab key press.
+    fn trigger_autocomplete(&mut self) {
+        let text = self.input.value();
+        // Use text length as cursor position (common case: typing at end).
+        // TODO: Expose cursor position from TextArea for proper mid-text autocomplete.
+        let cursor = text.len();
+        let response = self.autocomplete.provider.suggest(&text, cursor);
+        self.autocomplete.open_with(response);
+    }
+
+    /// Check if we should auto-trigger autocomplete after text input.
+    /// This is called after each keystroke to show suggestions for `/` and `@`.
+    fn maybe_trigger_autocomplete(&mut self) {
+        let text = self.input.value();
+        // Use text length as cursor position (common case: typing at end).
+        let cursor = text.len();
+
+        // Only trigger on `/` or `@` at the start of a token
+        let should_trigger = text
+            .get(..cursor)
+            .and_then(|before| before.chars().last())
+            .is_some_and(|c| c == '/' || c == '@');
+
+        if should_trigger {
+            let response = self.autocomplete.provider.suggest(&text, cursor);
+            self.autocomplete.open_with(response);
+        } else if self.autocomplete.open {
+            // Update suggestions as user types more
+            let response = self.autocomplete.provider.suggest(&text, cursor);
+            if response.items.is_empty() {
+                self.autocomplete.close();
+            } else {
+                self.autocomplete.items = response.items;
+                self.autocomplete.replace_range = response.replace;
+                // Keep selection in bounds
+                if self.autocomplete.selected >= self.autocomplete.items.len() {
+                    self.autocomplete.selected = 0;
+                }
+            }
+        }
+    }
+
+    /// Accept the selected autocomplete item by replacing text in the editor.
+    fn accept_autocomplete(&mut self, item: &AutocompleteItem) {
+        let text = self.input.value();
+        let range = self.autocomplete.replace_range.clone();
+
+        // Build new text with the replacement
+        let mut new_text = String::with_capacity(text.len() + item.insert.len());
+        new_text.push_str(&text[..range.start]);
+        new_text.push_str(&item.insert);
+        new_text.push_str(&text[range.end..]);
+
+        // Update the text area (cursor moves to end after set_value)
+        self.input.set_value(&new_text);
+        // Move cursor to end (default behavior after insertion is acceptable)
+        self.input.cursor_end();
+    }
+
+    /// Render the autocomplete dropdown.
+    fn render_autocomplete_dropdown(&self) -> String {
+        let mut output = String::new();
+
+        let offset = self.autocomplete.scroll_offset();
+        let visible_count = self
+            .autocomplete
+            .max_visible
+            .min(self.autocomplete.items.len());
+        let end = (offset + visible_count).min(self.autocomplete.items.len());
+
+        // Styles
+        let border_style = Style::new().foreground("241");
+        let selected_style = Style::new().foreground("black").background("cyan");
+        let normal_style = Style::new();
+        let kind_style = Style::new().foreground("yellow");
+        let desc_style = Style::new().foreground("241").italic();
+
+        // Top border
+        let width = 60;
+        let _ = write!(
+            output,
+            "\n  {}",
+            border_style.render(&format!("┌{:─<width$}┐", ""))
+        );
+
+        for (idx, item) in self.autocomplete.items[offset..end].iter().enumerate() {
+            let global_idx = offset + idx;
+            let is_selected = global_idx == self.autocomplete.selected;
+
+            // Kind icon
+            let kind_icon = match item.kind {
+                AutocompleteItemKind::SlashCommand => "⚡",
+                AutocompleteItemKind::PromptTemplate => "📄",
+                AutocompleteItemKind::Skill => "🔧",
+                AutocompleteItemKind::File => "📁",
+                AutocompleteItemKind::Path => "📂",
+            };
+
+            // Truncate label if needed
+            let max_label_len = width - 6;
+            let label = if item.label.len() > max_label_len {
+                format!("{}…", &item.label[..max_label_len - 1])
+            } else {
+                item.label.clone()
+            };
+
+            // Format the line
+            let line_content = format!("{kind_icon} {label:<max_label_len$}");
+            let styled_line = if is_selected {
+                selected_style.render(&line_content)
+            } else {
+                format!(
+                    "{}{}",
+                    kind_style.render(kind_icon),
+                    normal_style.render(&format!(" {label}"))
+                )
+            };
+
+            let _ = write!(
+                output,
+                "\n  {}{}{}",
+                border_style.render("│"),
+                styled_line,
+                border_style.render("│")
+            );
+
+            // Show description for selected item
+            if is_selected {
+                if let Some(desc) = &item.description {
+                    let truncated_desc = if desc.len() > width - 4 {
+                        format!("{}…", &desc[..width - 5])
+                    } else {
+                        desc.clone()
+                    };
+                    let _ = write!(
+                        output,
+                        "\n  {}  {}{}",
+                        border_style.render("│"),
+                        desc_style.render(&truncated_desc),
+                        border_style.render(&format!(
+                            "{:>pad$}│",
+                            "",
+                            pad = width - 2 - truncated_desc.len()
+                        ))
+                    );
+                }
+            }
+        }
+
+        // Scroll indicator
+        if self.autocomplete.items.len() > visible_count {
+            let shown = format!(
+                "{}-{} of {}",
+                offset + 1,
+                end,
+                self.autocomplete.items.len()
+            );
+            let _ = write!(
+                output,
+                "\n  {}",
+                border_style.render(&format!("│{shown:^width$}│", width = width))
+            );
+        }
+
+        // Bottom border
+        let _ = write!(
+            output,
+            "\n  {}",
+            border_style.render(&format!("└{:─<width$}┘", ""))
+        );
+
+        // Navigation hint
+        let hint_style = Style::new().foreground("241").italic();
+        let _ = write!(
+            output,
+            "\n  {}",
+            hint_style.render("↑/↓ navigate  Enter/Tab accept  Esc cancel")
+        );
+
+        output
     }
 }
 

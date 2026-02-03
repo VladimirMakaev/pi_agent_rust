@@ -40,6 +40,7 @@ pub mod provider;
 pub mod providers;
 pub mod resources;
 pub mod rpc;
+pub mod scheduler;
 pub mod session;
 pub mod session_index;
 pub mod session_picker;

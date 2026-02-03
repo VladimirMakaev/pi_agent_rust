@@ -435,6 +435,10 @@ impl Buffer {
         self.available().len()
     }
 
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     fn consume(&mut self, n: usize) {
         self.pos = self.pos.saturating_add(n);
         if self.pos == self.bytes.len() {
@@ -514,7 +518,7 @@ impl BodyStreamState {
     }
 
     async fn next_eof(&mut self) -> std::io::Result<Option<Vec<u8>>> {
-        if self.buf.len() > 0 {
+        if !self.buf.is_empty() {
             return Ok(Some(self.buf.split_to_vec(self.buf.len())));
         }
 
@@ -530,7 +534,7 @@ impl BodyStreamState {
             return Ok(None);
         }
 
-        if self.buf.len() == 0 {
+        if self.buf.is_empty() {
             let n = Box::pin(self.read_more()).await?;
             if n == 0 {
                 return Err(std::io::Error::new(
@@ -585,7 +589,7 @@ impl BodyStreamState {
                         continue;
                     }
 
-                    if self.buf.len() == 0 {
+                    if self.buf.is_empty() {
                         let n = Box::pin(self.read_more()).await?;
                         if n == 0 {
                             return Err(std::io::Error::new(

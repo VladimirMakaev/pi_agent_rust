@@ -26,6 +26,7 @@ use futures::FutureExt;
 use futures::StreamExt;
 use futures::future::BoxFuture;
 use serde::Serialize;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -58,6 +59,102 @@ impl Default for AgentConfig {
 
 /// Async fetcher for queued messages (steering or follow-up).
 pub type MessageFetcher = Arc<dyn Fn() -> BoxFuture<'static, Vec<Message>> + Send + Sync + 'static>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueMode {
+    All,
+    OneAtATime,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum QueueKind {
+    Steering,
+    FollowUp,
+}
+
+#[derive(Debug, Clone)]
+struct QueuedMessage {
+    seq: u64,
+    enqueued_at: i64,
+    message: Message,
+}
+
+#[derive(Debug)]
+struct MessageQueue {
+    steering: VecDeque<QueuedMessage>,
+    follow_up: VecDeque<QueuedMessage>,
+    steering_mode: QueueMode,
+    follow_up_mode: QueueMode,
+    next_seq: u64,
+}
+
+impl MessageQueue {
+    fn new(steering_mode: QueueMode, follow_up_mode: QueueMode) -> Self {
+        Self {
+            steering: VecDeque::new(),
+            follow_up: VecDeque::new(),
+            steering_mode,
+            follow_up_mode,
+            next_seq: 0,
+        }
+    }
+
+    fn set_modes(&mut self, steering_mode: QueueMode, follow_up_mode: QueueMode) {
+        self.steering_mode = steering_mode;
+        self.follow_up_mode = follow_up_mode;
+    }
+
+    fn pending_count(&self) -> usize {
+        self.steering.len() + self.follow_up.len()
+    }
+
+    fn push(&mut self, kind: QueueKind, message: Message) -> u64 {
+        let seq = self.next_seq;
+        self.next_seq = self.next_seq.saturating_add(1);
+        let entry = QueuedMessage {
+            seq,
+            enqueued_at: Utc::now().timestamp_millis(),
+            message,
+        };
+        match kind {
+            QueueKind::Steering => self.steering.push_back(entry),
+            QueueKind::FollowUp => self.follow_up.push_back(entry),
+        }
+        seq
+    }
+
+    fn push_steering(&mut self, message: Message) -> u64 {
+        self.push(QueueKind::Steering, message)
+    }
+
+    fn push_follow_up(&mut self, message: Message) -> u64 {
+        self.push(QueueKind::FollowUp, message)
+    }
+
+    fn pop_steering(&mut self) -> Vec<Message> {
+        self.pop_kind(QueueKind::Steering)
+    }
+
+    fn pop_follow_up(&mut self) -> Vec<Message> {
+        self.pop_kind(QueueKind::FollowUp)
+    }
+
+    fn pop_kind(&mut self, kind: QueueKind) -> Vec<Message> {
+        let (queue, mode) = match kind {
+            QueueKind::Steering => (&mut self.steering, self.steering_mode),
+            QueueKind::FollowUp => (&mut self.follow_up, self.follow_up_mode),
+        };
+
+        match mode {
+            QueueMode::All => queue.drain(..).map(|entry| entry.message).collect(),
+            QueueMode::OneAtATime => queue
+                .pop_front()
+                .into_iter()
+                .map(|entry| entry.message)
+                .collect(),
+        }
+    }
+}
 
 // ============================================================================
 // Agent Event
@@ -209,6 +306,9 @@ pub struct Agent {
 
     /// Follow-up message fetcher (after idle).
     follow_up_fetcher: Option<MessageFetcher>,
+
+    /// Internal queue for steering/follow-up messages.
+    message_queue: MessageQueue,
 }
 
 impl Agent {
@@ -221,6 +321,7 @@ impl Agent {
             messages: Vec::new(),
             steering_fetcher: None,
             follow_up_fetcher: None,
+            message_queue: MessageQueue::new(QueueMode::OneAtATime, QueueMode::OneAtATime),
         }
     }
 
@@ -258,6 +359,27 @@ impl Agent {
     ) {
         self.steering_fetcher = steering;
         self.follow_up_fetcher = follow_up;
+    }
+
+    /// Queue a steering message (delivered after tool completion).
+    pub fn queue_steering(&mut self, message: Message) -> u64 {
+        self.message_queue.push_steering(message)
+    }
+
+    /// Queue a follow-up message (delivered when agent becomes idle).
+    pub fn queue_follow_up(&mut self, message: Message) -> u64 {
+        self.message_queue.push_follow_up(message)
+    }
+
+    /// Configure queue delivery modes.
+    pub fn set_queue_modes(&mut self, steering: QueueMode, follow_up: QueueMode) {
+        self.message_queue.set_modes(steering, follow_up);
+    }
+
+    /// Count queued messages (steering + follow-up).
+    #[must_use]
+    pub fn queued_message_count(&self) -> usize {
+        self.message_queue.pending_count()
     }
 
     pub fn provider(&self) -> Arc<dyn Provider> {
@@ -401,7 +523,8 @@ impl Agent {
             on_event(AgentEvent::MessageEnd { message: prompt });
         }
 
-        let mut pending_messages = self.fetch_messages(self.steering_fetcher.as_ref()).await;
+        // Delivery boundary: start of turn (steering messages queued while idle).
+        let mut pending_messages = self.drain_steering_messages().await;
         let mut turn_started = true; // already emitted turn_start
 
         loop {
@@ -515,11 +638,13 @@ impl Agent {
                 if let Some(steering) = steering_after_tools.take() {
                     pending_messages = steering;
                 } else {
-                    pending_messages = self.fetch_messages(self.steering_fetcher.as_ref()).await;
+                    // Delivery boundary: after assistant completion (no tool calls).
+                    pending_messages = self.drain_steering_messages().await;
                 }
             }
 
-            let follow_up = self.fetch_messages(self.follow_up_fetcher.as_ref()).await;
+            // Delivery boundary: agent idle (after all tool calls + steering).
+            let follow_up = self.drain_follow_up_messages().await;
             if follow_up.is_empty() {
                 break;
             }
@@ -543,6 +668,18 @@ impl Agent {
         } else {
             Vec::new()
         }
+    }
+
+    async fn drain_steering_messages(&mut self) -> Vec<Message> {
+        let mut messages = self.message_queue.pop_steering();
+        messages.extend(self.fetch_messages(self.steering_fetcher.as_ref()).await);
+        messages
+    }
+
+    async fn drain_follow_up_messages(&mut self) -> Vec<Message> {
+        let mut messages = self.message_queue.pop_follow_up();
+        messages.extend(self.fetch_messages(self.follow_up_fetcher.as_ref()).await);
+        messages
     }
 
     /// Stream an assistant response and emit message events.
@@ -866,8 +1003,8 @@ impl Agent {
 
             results.push(tool_result);
 
-            // Check for steering messages after each tool
-            let steering = self.fetch_messages(self.steering_fetcher.as_ref()).await;
+            // Delivery boundary: after tool completion (steering interrupts).
+            let steering = self.drain_steering_messages().await;
             if !steering.is_empty() {
                 steering_messages = Some(steering);
 
@@ -1008,6 +1145,77 @@ pub struct AgentSession {
     pub agent: Agent,
     pub session: Session,
     save_enabled: bool,
+}
+
+#[cfg(test)]
+mod message_queue_tests {
+    use super::*;
+
+    fn user_message(text: &str) -> Message {
+        Message::User(UserMessage {
+            content: UserContent::Text(text.to_string()),
+            timestamp: 0,
+        })
+    }
+
+    #[test]
+    fn message_queue_one_at_a_time() {
+        let mut queue = MessageQueue::new(QueueMode::OneAtATime, QueueMode::OneAtATime);
+        queue.push_steering(user_message("a"));
+        queue.push_steering(user_message("b"));
+
+        let first = queue.pop_steering();
+        assert_eq!(first.len(), 1);
+        assert!(matches!(
+            first.first(),
+            Some(Message::User(UserMessage { content, .. }))
+                if matches!(content, UserContent::Text(text) if text == "a")
+        ));
+
+        let second = queue.pop_steering();
+        assert_eq!(second.len(), 1);
+        assert!(matches!(
+            second.first(),
+            Some(Message::User(UserMessage { content, .. }))
+                if matches!(content, UserContent::Text(text) if text == "b")
+        ));
+
+        assert!(queue.pop_steering().is_empty());
+    }
+
+    #[test]
+    fn message_queue_all_mode() {
+        let mut queue = MessageQueue::new(QueueMode::All, QueueMode::OneAtATime);
+        queue.push_steering(user_message("a"));
+        queue.push_steering(user_message("b"));
+
+        let drained = queue.pop_steering();
+        assert_eq!(drained.len(), 2);
+        assert!(queue.pop_steering().is_empty());
+    }
+
+    #[test]
+    fn message_queue_separates_kinds() {
+        let mut queue = MessageQueue::new(QueueMode::OneAtATime, QueueMode::OneAtATime);
+        queue.push_steering(user_message("steer"));
+        queue.push_follow_up(user_message("follow"));
+
+        let steering = queue.pop_steering();
+        assert_eq!(steering.len(), 1);
+        assert_eq!(queue.pending_count(), 1);
+
+        let follow = queue.pop_follow_up();
+        assert_eq!(follow.len(), 1);
+        assert_eq!(queue.pending_count(), 0);
+    }
+
+    #[test]
+    fn message_queue_seq_increments() {
+        let mut queue = MessageQueue::new(QueueMode::OneAtATime, QueueMode::OneAtATime);
+        let first = queue.push_steering(user_message("a"));
+        let second = queue.push_follow_up(user_message("b"));
+        assert!(second > first);
+    }
 }
 
 impl AgentSession {

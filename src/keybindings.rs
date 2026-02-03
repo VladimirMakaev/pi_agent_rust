@@ -859,13 +859,11 @@ fn normalize_key_name(key: &str) -> Option<String> {
         "esc" => "escape",
         "return" => "enter",
 
-        // Valid special keys (already canonical)
+        // Valid special keys and function keys (f1-f20 to match bubbletea KeyType coverage)
         "escape" | "enter" | "tab" | "space" | "backspace" | "delete" | "insert" | "clear"
-        | "home" | "end" | "pageup" | "pagedown" | "up" | "down" | "left" | "right" => &lower,
-
-        // Function keys (f1-f20 to match bubbletea KeyType coverage)
-        "f1" | "f2" | "f3" | "f4" | "f5" | "f6" | "f7" | "f8" | "f9" | "f10" | "f11" | "f12"
-        | "f13" | "f14" | "f15" | "f16" | "f17" | "f18" | "f19" | "f20" => &lower,
+        | "home" | "end" | "pageup" | "pagedown" | "up" | "down" | "left" | "right" | "f1"
+        | "f2" | "f3" | "f4" | "f5" | "f6" | "f7" | "f8" | "f9" | "f10" | "f11" | "f12" | "f13"
+        | "f14" | "f15" | "f16" | "f17" | "f18" | "f19" | "f20" => &lower,
 
         // Single letters (a-z)
         s if s.len() == 1 && s.chars().next().is_some_and(|c| c.is_ascii_lowercase()) => &lower,
