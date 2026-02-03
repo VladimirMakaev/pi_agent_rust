@@ -2,6 +2,12 @@
 
 > **Goal:** 100% feature/functionality coverage with clear conformance harness and benchmarking, fully leveraging asupersync, rich_rust, and charmed_rust.
 
+> **Important:** This document is a historical overview, not the live backlog.
+> For the authoritative plan, use Beads:
+> - `bv --robot-triage`
+> - `br ready`
+> - `br show <id>`
+
 ---
 
 ## Executive Summary
@@ -21,9 +27,9 @@
 - Benchmark harness proving performance targets (including extension hostcall dispatch)
 
 **Primary Remaining Work:**
-1. **Extensions runtime** (connector dispatch, event loop, hostcalls) + conformance harness (`EXTENSIONS.md`, `CONFORMANCE.md`)
-2. **Themes discovery/hot reload** (resource pipeline + UI integration)
-3. **asupersync migration** (HTTP/TLS + task orchestration), then reduce/remove tokio usage
+1. **Extensions runtime** + conformance harness: `bd-btq`, `bd-1e0`, `bd-2i5`, `bd-269`
+2. **Themes integration** (apply/switch, `/theme`, settings): `bd-22p`, `bd-qpm`, `bd-3d8`, `bd-ieym`
+3. **asupersync capability hardening** (AgentCx, cancel-correctness): `bd-3i7u`, `bd-1xf`
 
 ---
 
@@ -31,14 +37,9 @@
 
 ### 1.1 asupersync Integration
 
-**Purpose:** Replace tokio for async runtime, HTTP, TLS, SQLite
+**Status (today):** `pi_agent_rust` runs on `asupersync` for runtime + HTTP/TLS and provider streaming (see `src/http/client.rs` + `src/sse.rs`).
 
-**Migration Plan:**
-1. Add features: `asupersync = { path = "../asupersync", features = ["tls", "tls-native-roots", "sqlite", "http2"] }`
-2. Create `AgentCx` wrapper around `Cx` for capability-secure operations
-3. Migrate HTTP client from reqwest → asupersync HTTP + TLS
-4. Migrate session storage to asupersync SQLite (index) + JSONL (source of truth)
-5. Remove tokio once migration complete
+**Remaining:** Capability wrapper (`AgentCx`) and deeper context wiring are tracked in `bd-3i7u` and `bd-1xf`.
 
 **Key APIs to Leverage:**
 ```rust
@@ -169,7 +170,7 @@ glamour = { path = "../charmed_rust", package = "glamour" }
 **1.1 Fix Failing Fixture Tests**
 - [x] Investigated detail field serialization in bash, edit, read, write tools
 - [x] Fixed `details` field expectations in fixtures
-- [x] Fixed bash exit code bug (race condition in tokio::select!)
+- [x] Fixed bash exit code bug (legacy race; no tokio dependency now)
 - [x] All 67 fixture cases pass
 
 **1.2 Clean Up Existing Code**
@@ -189,7 +190,7 @@ glamour = { path = "../charmed_rust/crates/glamour" }
 ```
 
 **2.2 Create Wrapper Types**
-- [ ] `AgentCx` - Capability context for agent operations
+- 🔶 `AgentCx` - Capability context for agent operations (tracked in `bd-3i7u`)
 - [x] `RichConsole` - Wrapper for rich_rust Console with Pi-specific methods (`PiConsole`)
 - [x] `TuiApp` - bubbletea Model implementation (`src/interactive.rs`)
 
@@ -209,15 +210,15 @@ glamour = { path = "../charmed_rust/crates/glamour" }
 - [x] History navigation (up/down)
 - [x] Ctrl+C to cancel/quit
 - [x] Esc to quit when idle
-- [ ] Completions popup (slash commands, file paths) - deferred
-- [ ] Shift+Enter for newline, Enter to submit - deferred (TextArea handles this)
+- 🔶 Completions popup (slash commands, file paths) - tracked in `bd-1iwi` (see also `bd-3dr9`)
+- ⬜ Shift+Enter for newline, Enter to submit - deferred (TextArea already handles this)
 
 **3.3 Message Display**
 - [x] Assistant responses with markdown rendering (glamour)
 - [x] Thinking blocks (displayed inline)
 - [x] Tool execution status (spinner + tool name)
 - [x] Tool results (formatted output)
-- [ ] Images (if terminal supports via rich_rust) - deferred
+- ⬜ Images (terminal-dependent) - tracked in `bd-1iwi`
 
 **3.4 Slash Commands** ✅ IMPLEMENTED
 - [x] `/help` - Show available commands
@@ -241,7 +242,7 @@ glamour = { path = "../charmed_rust/crates/glamour" }
 - [x] Handle streaming events via channel
 - [x] Session persistence after each turn
 
-### Phase 4: HTTP Migration to asupersync (2-3 days)
+### Phase 4: Provider streaming over asupersync ✅ COMPLETE
 
 **4.1 Create HTTP Module**
 - [x] `src/http/mod.rs` - HTTP client abstraction
@@ -249,15 +250,13 @@ glamour = { path = "../charmed_rust/crates/glamour" }
 - [x] `src/http/sse.rs` - SSE streaming parser (reuse existing)
 
 **4.2 Migrate Anthropic Provider**
-- [ ] Replace reqwest with asupersync HTTP client
-- [ ] Use asupersync TLS with native roots
-- [ ] Implement cancel-correct streaming
-- [ ] Test with deterministic LabRuntime
+- ✅ Provider streaming uses the asupersync HTTP client (`src/http/client.rs`) + SSE parser (`src/sse.rs`)
+- ✅ TLS uses asupersync connector with native roots
+- 🔶 Additional cancel-correctness + deterministic LabRuntime coverage tracked in `bd-1xf`
 
-**4.3 Remove tokio Dependencies**
-- [ ] Remove `tokio` from Cargo.toml
-- [ ] Remove `reqwest` from Cargo.toml
-- [ ] Update all async code to use asupersync
+**4.3 Legacy cleanup**
+- ✅ No tokio/reqwest dependencies remain in `Cargo.toml`
+- 🔶 Remaining capability wiring tracked in `bd-3i7u` (AgentCx)
 
 ### Phase 5: Additional Providers ✅ COMPLETE
 
@@ -285,10 +284,9 @@ glamour = { path = "../charmed_rust/crates/glamour" }
 ### Phase 6: Session Enhancements ✅ MOSTLY COMPLETE
 
 **6.1 SQLite Index**
-- [ ] `src/session/index.rs` - SQLite-based session index (deferred)
-- [ ] Search by content, date, model (deferred)
+- ⬜ SQLite-based session index + search (deferred; consider adding a dedicated bead if/when needed)
 - [x] Fast session listing (via filesystem mtime sort)
-- [ ] Sync from JSONL source of truth (deferred)
+- ⬜ Sync-from-JSONL index (deferred)
 
 **6.2 Tree Navigation** ✅
 - [x] Branch creation (`create_branch_from`)
@@ -305,35 +303,25 @@ glamour = { path = "../charmed_rust/crates/glamour" }
 ### Phase 7: Conformance Testing (2-3 days)
 
 **7.1 Reference Capture Infrastructure**
-- [ ] `tests/conformance/reference/` - Reference implementation captures
-- [ ] Go reference program for each tool
-- [ ] TypeScript reference program (legacy behavior)
-- [ ] JSON fixture generation scripts
+- ⬜ Tool reference-capture programs (TS/Go) - deferred; current focus is no-mock Rust coverage (`bd-26s`)
 
 **7.2 Tool Conformance**
-- [ ] Capture TypeScript tool outputs for edge cases
-- [ ] Expand fixture coverage to 100+ cases per tool
-- [ ] Add fuzzing-discovered edge cases
+- ✅ Tool fixture suite lives in `tests/conformance/fixtures/` and is executed by `tests/conformance_fixtures.rs` (see `FEATURE_PARITY.md`)
+- 🔶 Expand fixture coverage / add fuzz-discovered edge cases - track under `bd-26s`
 
 **7.3 Provider Conformance**
-- [ ] Mock API responses
-- [ ] SSE parsing conformance
-- [ ] Error handling conformance
-- [ ] Rate limiting behavior
+- ✅ VCR-backed provider streaming tests (no mocks) - `bd-h7r`, `bd-gd1`
+- ⬜ Additional error/rate-limit conformance - track under `bd-26s`
 
 **7.4 Session Format Conformance**
-- [ ] JSONL parsing/writing
-- [ ] Entry type serialization
-- [ ] Tree structure operations
-- [ ] Migration from older versions
+- ✅ Covered by integration tests (`tests/session_conformance.rs`)
+- ⬜ Migration tests (older versions) - deferred
 
 ### Phase 8: Benchmarking Harness (1-2 days)
 
 **8.1 Benchmark Infrastructure**
-- [ ] `benches/startup.rs` - Startup time (<100ms target)
-- [ ] `benches/tui_render.rs` - TUI frame rate (60fps target)
-- [ ] `benches/tools.rs` - Tool execution latency
-- [ ] `benches/streaming.rs` - SSE parsing throughput
+- ✅ Existing benches live in `benches/` (see `BENCHMARKS.md`)
+- ⬜ Add startup/TUI/streaming micro-benchmarks - defer until needed
 
 **8.2 Performance Targets**
 | Metric | Target | Measurement |
@@ -345,65 +333,44 @@ glamour = { path = "../charmed_rust/crates/glamour" }
 | SSE throughput | >10MB/s | Parse rate for streaming events |
 
 **8.3 CI Integration**
-- [ ] GitHub Actions workflow for benchmarks
-- [ ] Performance regression detection
-- [ ] Badge in README
+- ⬜ CI benchmark automation + regression detection - tracked in `bd-gqtd`
+- ⬜ Bench/status badges in README - `bd-3nrc`
 
 ### Phase 9: Polish & Documentation (1-2 days)
 
 **9.1 Error Messages**
 - [x] User-friendly error formatting (rich_rust panels)
-- [ ] Actionable suggestions
-- [ ] Context-aware hints
+- 🔶 Actionable suggestions + context-aware hints - `bd-3am2`
 
 **9.2 Documentation**
 - [x] README.md with architecture
-- [ ] API documentation (rustdoc)
-- [ ] Configuration reference
-- [ ] Troubleshooting guide
+- 🔶 Rust API docs (rustdoc) - `bd-14od`
+- 🔶 Configuration reference + troubleshooting - `bd-3m7f`
 
 **9.3 Release Preparation**
-- [ ] Version bump to 1.0.0
-- [ ] CHANGELOG.md
-- [ ] Cross-compilation testing (Linux/macOS/Windows)
-- [ ] Binary distribution (GitHub Releases)
+- 🔶 Release engineering (versioning/changelog/cross-compilation/releases) - `bd-gqtd`
 
 ### Phase 10: Extensions Runtime (NEW - Primary Remaining Work)
 
 **10.1 PiJS Runtime** (see `EXTENSIONS.md` for full spec)
-- [ ] QuickJS integration for JavaScript execution
-- [ ] Connector model implementation (`pi.tool()`, `pi.exec()`, `pi.http()`)
-- [ ] Deterministic event loop (`tick()` algorithm)
-- [ ] Hostcall ABI (`host_call`/`host_result`)
+- 🔶 Tracked in `bd-btq` (PiJS runtime umbrella; see `br show bd-btq`)
 
 **10.2 Extension API**
-- [ ] `registerTool()` - Extension tool registration
-- [ ] `registerCommand()` - Slash command registration
-- [ ] Event handlers (`onAgentStart`, `onToolExecutionEnd`, etc.)
-- [ ] Session event handlers with cancellation (`onSessionBeforeSwitch`, `onSessionBeforeFork`)
+- 🔶 Tracked under `bd-btq` (wiring work: `bd-2i5`)
 
 **10.3 Extension UI**
-- [ ] Dialog methods (`select`, `confirm`, `input`, `editor`) with RPC integration
-- [ ] Fire-and-forget methods (`notify`, `setStatus`, `setWidget`)
-- [ ] Cancellation semantics (timeout, Esc key)
+- 🔶 UI surface tracked under `bd-btq` (RPC protocol exists; runtime integration pending)
 
 **10.4 Extension Discovery & Loading**
-- [ ] Package manifest parsing (`package.json` `pi` field)
-- [ ] Extension path resolution (npm, git, local)
-- [ ] Hot reload support
+- 🔶 Discovery + install resolution tracked in `bd-1e0`
 
 **10.5 Conformance Testing**
-- [ ] Extension API fixture suite
-- [ ] Hostcall dispatch benchmarks (p95 < 50μs)
-- [ ] Cold/warm start benchmarks
+- 🔶 Harness + fixtures tracked in `bd-269` (benchmarks: `bd-1fg`)
 
 ### Phase 11: Themes Discovery (NEW)
 
 **11.1 Theme System**
-- [ ] Theme JSON schema validation
-- [ ] Theme discovery (global/project/package)
-- [ ] Theme application to rich_rust Console
-- [ ] Hot reload on file change
+- 🔶 Theme system tracked in `bd-22p` (apply colors `bd-qpm`, `/theme` `bd-3d8`, settings `bd-ieym`)
 
 ---
 
@@ -545,14 +512,14 @@ Each tool has a JSON fixture file with this structure:
 | Phase 1: Fix Issues | 1-2 days | ✅ Complete | None |
 | Phase 2: Dependencies | 1 day | ✅ Complete | Phase 1 |
 | Phase 3: Interactive TUI | 3-5 days | ✅ Complete | Phase 2 |
-| Phase 4: HTTP Migration | 2-3 days | 🔶 In Progress | Phase 2 |
+| Phase 4: Provider streaming (asupersync) | 2-3 days | ✅ Complete | Phase 2 |
 | Phase 5: Providers | 2-3 days | ✅ Complete | Phase 4 |
 | Phase 6: Sessions | 2 days | ✅ Mostly Complete | Phase 3 |
-| Phase 7: Conformance | 2-3 days | ✅ Complete (122 cases) | Phases 1-6 |
+| Phase 7: Tool conformance | 2-3 days | ✅ Complete (see `FEATURE_PARITY.md`) | Phases 1-6 |
 | Phase 8: Benchmarks | 1-2 days | ✅ Complete | Phase 7 |
 | Phase 9: Polish | 1-2 days | 🔶 In Progress | Phase 8 |
-| **Phase 10: Extensions** | **3-5 days** | ❌ Not Started | Phase 4 |
-| **Phase 11: Themes** | **1-2 days** | ❌ Not Started | Phase 9 |
+| **Phase 10: Extensions** | **3-5 days** | 🔶 In Progress (`bd-btq`) | Phase 4 |
+| **Phase 11: Themes** | **1-2 days** | 🔶 In Progress (`bd-22p`) | Phase 9 |
 | **Remaining** | **~5-8 days** | | |
 
 ---
@@ -561,33 +528,26 @@ Each tool has a JSON fixture file with this structure:
 
 ### Functional Requirements
 
-- [ ] All 7 tools pass conformance tests (100% fixture coverage)
-- [ ] Interactive TUI works on Linux/macOS (Windows best-effort)
-- [ ] Anthropic provider with full streaming and thinking support
-- [ ] OpenAI provider with function calling
-- [ ] Session persistence with tree navigation
-- [ ] Print mode for non-interactive use
+- ✅ Core parity status is tracked in `FEATURE_PARITY.md`
+- 🔶 Extensions runtime parity is tracked in `bd-btq` (+ children)
+- 🔶 Theme parity is tracked in `bd-22p` (+ `bd-qpm`, `bd-3d8`, `bd-ieym`)
 
 ### Performance Requirements
 
-- [ ] Startup: <100ms cold start
-- [ ] TUI: 60fps rendering
-- [ ] Binary: <15MB stripped
-- [ ] Memory: <30MB idle
+- ✅ Size/startup targets are tracked in README + `BENCHMARKS.md`
+- 🔶 Extension performance targets + evidence tracked in `bd-20p` (benchmarks: `bd-1fg`)
 
 ### Quality Requirements
 
-- [ ] Zero unsafe code (`#![forbid(unsafe_code)]`)
-- [ ] Zero clippy warnings (pedantic + nursery)
-- [ ] 100% test pass rate
-- [ ] rustdoc for all public APIs
+- ✅ `unsafe` is forbidden (`#![forbid(unsafe_code)]`)
+- 🔶 Zero-clippy + full gates are enforced in CI / release workstream (`bd-gqtd`)
+- 🔶 Rust API docs (rustdoc) tracked in `bd-14od`
 
 ### Conformance Requirements
 
-- [ ] 240+ fixture test cases
-- [ ] TypeScript reference capture for all tools
-- [ ] Provider response conformance tests
-- [ ] Session format migration tests
+- ✅ Tool fixtures exist and run in CI (see `FEATURE_PARITY.md` for counts)
+- 🔶 Provider streaming conformance via VCR (no mocks): `bd-h7r`, `bd-gd1`
+- ⬜ Session format migration fixtures/tests - deferred
 
 ---
 
@@ -626,7 +586,7 @@ tests/conformance/fixtures/     # Expanded fixtures
 
 ```
 Cargo.toml               # Add charmed_rust, update asupersync features
-src/main.rs              # Wire up TUI, remove tokio
+src/main.rs              # Wire up TUI
 src/agent.rs             # Use AgentCx
 src/providers/anthropic.rs # Migrate to asupersync HTTP
 src/session.rs           # Add SQLite index, tree navigation
@@ -646,7 +606,12 @@ FEATURE_PARITY.md        # Update as features complete
 
 **Current Priorities:**
 
-1. **Extensions runtime (Phase 10)** - PiJS connector model + QuickJS integration (bd-1ii)
-2. **Themes discovery (Phase 11)** - Theme loading + application (bd-3ev)
-3. **asupersync HTTP migration** - Replace remaining reqwest usage (Phase 4)
-4. **VCR test infrastructure** - Provider cassette recording/playback (bd-30u)
+Use Beads for the live queue:
+- `bv --robot-triage`
+- `br ready`
+
+High-level workstreams:
+1. **Extensions runtime** - `bd-btq` (discovery: `bd-1e0`)
+2. **Themes** - `bd-22p` (apply colors: `bd-qpm`)
+3. **asupersync capability hardening** - `bd-3i7u`, `bd-1xf`
+4. **VCR test infrastructure** - `bd-30u`, `bd-h7r`, `bd-gd1`
