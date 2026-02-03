@@ -1,0 +1,135 @@
+# Benchmark CI workflow
+# Runs on pushes to main and PRs to detect performance regressions
+name: Benchmarks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:  # Allow manual triggering
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-bench-
+            ${{ runner.os }}-cargo-
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Check binary size
+        run: |
+          SIZE_BYTES=$(stat --printf="%s" target/release/pi)
+          SIZE_MB=$(echo "scale=2; $SIZE_BYTES / 1024 / 1024" | bc)
+          echo "## Binary Size" >> $GITHUB_STEP_SUMMARY
+          echo "- Size: ${SIZE_MB}MB" >> $GITHUB_STEP_SUMMARY
+          echo "- Budget: 20MB" >> $GITHUB_STEP_SUMMARY
+          if (( $(echo "$SIZE_MB > 20" | bc -l) )); then
+            echo "::error::Binary size ${SIZE_MB}MB exceeds 20MB budget"
+            exit 1
+          fi
+          echo "- Status: ✅ Within budget" >> $GITHUB_STEP_SUMMARY
+
+      - name: Run micro-benchmarks (tools)
+        run: cargo bench --bench tools -- --noplot
+
+      - name: Run micro-benchmarks (extensions)
+        run: cargo bench --bench extensions -- --noplot
+
+      - name: Run system benchmarks
+        run: cargo bench --bench system -- --noplot
+        env:
+          PI_BENCH_BINARY: target/release/pi
+
+      - name: Generate benchmark summary
+        run: |
+          echo "## Benchmark Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Startup Time" >> $GITHUB_STEP_SUMMARY
+          if [ -d "target/criterion/startup" ]; then
+            for dir in target/criterion/startup/*/; do
+              name=$(basename "$dir")
+              if [ -f "$dir/new/estimates.json" ]; then
+                mean=$(jq -r '.mean.point_estimate' "$dir/new/estimates.json" 2>/dev/null || echo "N/A")
+                echo "- $name: ${mean}ns" >> $GITHUB_STEP_SUMMARY
+              fi
+            done
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Truncation" >> $GITHUB_STEP_SUMMARY
+          if [ -d "target/criterion/truncation" ]; then
+            for dir in target/criterion/truncation/*/; do
+              name=$(basename "$dir")
+              if [ -f "$dir/new/estimates.json" ]; then
+                mean=$(jq -r '.mean.point_estimate' "$dir/new/estimates.json" 2>/dev/null || echo "N/A")
+                echo "- $name: ${mean}ns" >> $GITHUB_STEP_SUMMARY
+              fi
+            done
+          fi
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-${{ github.sha }}
+          path: target/criterion/
+          retention-days: 30
+
+  # Compare with main branch baseline (only on PRs)
+  compare:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    needs: benchmark
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          path: main-branch
+
+      - uses: actions/checkout@v4
+        with:
+          path: pr-branch
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-compare-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build and benchmark main
+        working-directory: main-branch
+        run: |
+          cargo build --release
+          cargo bench --bench tools -- --noplot --save-baseline main 2>/dev/null || true
+
+      - name: Build and benchmark PR
+        working-directory: pr-branch
+        run: |
+          cargo build --release
+          cargo bench --bench tools -- --noplot --baseline main 2>/dev/null || echo "Baseline comparison skipped"

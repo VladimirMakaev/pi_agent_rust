@@ -22,17 +22,35 @@ cargo bench -- --baseline main
 
 These are the target performance metrics. Regressions beyond these thresholds should be investigated.
 
+### Core Metrics (Hard Budgets)
+
+| Benchmark | Budget | Current | Status |
+|-----------|--------|---------|--------|
+| **startup/version** | <100ms (p95) | ~11ms | ✅ |
+| **startup/help** | <150ms (p95) | ~15ms | ✅ |
+| **startup/list_models** | <200ms (p95) | ~25ms | ✅ |
+| **binary/size_mb** | <20MB | ~7.6MB | ✅ |
+| **memory/version_peak** | <50MB RSS | TBD | ⬜ |
+
+### Micro-Benchmarks
+
 | Benchmark | Budget | Current | Status |
 |-----------|--------|---------|--------|
 | truncate_head (10K lines) | <1ms | ~250μs | ✅ |
 | truncate_tail (10K lines) | <1ms | ~250μs | ✅ |
 | sse_parse (100 events) | <100μs | ~50μs | ✅ |
+| ext_policy/evaluate | <1μs | ~20ns | ✅ |
+| ext_dispatch/decision | <10μs | ~100ns | ✅ |
+| ext_protocol/parse | <100μs | ~5μs | ✅ |
+
+### Extension Runtime (Planned)
+
+| Benchmark | Budget | Current | Status |
+|-----------|--------|---------|--------|
 | ext_runtime_cold_start (no-op extension) | p95 < 200ms (p99 < 400ms) | TBD | ⬜ |
 | ext_runtime_warm_start (no-op extension) | p95 < 25ms (p99 < 50ms) | TBD | ⬜ |
 | ext_tool_hook_overhead (no-op extension) | p95 < 500μs (p99 < 1ms) | TBD | ⬜ |
 | ext_hostcall_dispatch (single call) | p95 < 50μs (p99 < 100μs) | TBD | ⬜ |
-| Binary startup | <100ms | 11.2ms (`pi --version`) | ✅ |
-| Binary size (release) | <20MB | 7.6MB | ✅ |
 
 ### Extension Runtime Budget Definitions
 
@@ -92,11 +110,15 @@ benches/
 ├── tools.rs          # Core operation benchmarks
 │   ├── truncation    # Text truncation (head/tail)
 │   └── sse_parsing   # SSE event parsing
-└── extensions.rs     # Connector dispatch + policy / protocol parsing
-    ├── ext_policy
-    ├── ext_required_capability
-    ├── ext_dispatch
-    └── ext_protocol
+├── extensions.rs     # Connector dispatch + policy / protocol parsing
+│   ├── ext_policy
+│   ├── ext_required_capability
+│   ├── ext_dispatch
+│   └── ext_protocol
+└── system.rs         # System-level benchmarks (process spawn)
+    ├── startup       # Startup time (version, help, list_models)
+    ├── memory        # RSS memory measurement
+    └── binary        # Binary size tracking
 ```
 
 ## Adding New Benchmarks
@@ -137,7 +159,14 @@ Performance regression detection in GitHub Actions:
 ```yaml
 # .github/workflows/bench.yml
 name: Benchmarks
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
   benchmark:
@@ -145,10 +174,62 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release binary (for system benchmarks)
+        run: cargo build --release
+
       - name: Run benchmarks
-        run: cargo bench -- --noplot
-      # Compare against baseline in future
+        run: |
+          # Run all benchmarks, save results
+          cargo bench -- --noplot --save-baseline current
+
+          # Check binary size budget
+          SIZE_MB=$(stat --printf="%s" target/release/pi | awk '{printf "%.2f", $1/1024/1024}')
+          echo "Binary size: ${SIZE_MB}MB"
+          if (( $(echo "$SIZE_MB > 20" | bc -l) )); then
+            echo "::error::Binary size ${SIZE_MB}MB exceeds 20MB budget"
+            exit 1
+          fi
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: target/criterion/
+          retention-days: 30
 ```
+
+### Regression Detection (Manual)
+
+Compare against a known good baseline:
+
+```bash
+# Save baseline on main branch
+cargo bench -- --save-baseline main
+
+# After changes, compare
+cargo bench -- --baseline main
+
+# Look for regressions > 10%
+```
+
+### Variance Handling
+
+System benchmarks spawn real processes, so variance is higher than micro-benchmarks:
+
+- **Micro-benchmarks** (tools.rs, extensions.rs): Use criterion defaults (100+ samples)
+- **System benchmarks** (system.rs): Use 20 samples, 10s measurement time
+- **CI runners**: Expect 2-3x variance vs local machines; focus on relative changes
+- **Percentiles**: Report p95/p99 for budgets, not just mean
 
 ## Profiling Tips
 
