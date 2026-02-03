@@ -27,6 +27,7 @@ use crate::error::{Error, Result};
 use crate::scheduler::{Clock as SchedulerClock, HostcallOutcome, Scheduler, WallClock};
 use rquickjs::function::Func;
 use rquickjs::{AsyncContext, AsyncRuntime, Ctx, Function, IntoJs, Object, Value};
+use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
@@ -34,6 +35,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::time::{SystemTime, UNIX_EPOCH};
+use uuid::Uuid;
 
 pub struct QuickJsRuntime {
     runtime: AsyncRuntime,
@@ -704,6 +706,23 @@ pub struct PiJsTickStats {
     pub pending_hostcalls: usize,
 }
 
+#[derive(Debug, Clone)]
+pub struct PiJsRuntimeConfig {
+    pub cwd: String,
+    pub args: Vec<String>,
+    pub env: HashMap<String, String>,
+}
+
+impl Default for PiJsRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            cwd: ".".to_string(),
+            args: Vec::new(),
+            env: HashMap::new(),
+        }
+    }
+}
+
 /// Integrated PiJS runtime combining QuickJS, scheduler, and Promise bridge.
 ///
 /// This is the main entry point for running JavaScript extensions with
@@ -741,9 +760,10 @@ pub struct PiJsTickStats {
 pub struct PiJsRuntime<C: SchedulerClock = WallClock> {
     runtime: AsyncRuntime,
     context: AsyncContext,
-    scheduler: std::cell::RefCell<Scheduler<C>>,
+    scheduler: Rc<RefCell<Scheduler<C>>>,
     hostcall_queue: HostcallQueue,
     trace_seq: AtomicU64,
+    config: PiJsRuntimeConfig,
 }
 
 #[allow(clippy::future_not_send)]
@@ -760,12 +780,18 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
     /// Create a new PiJS runtime with a custom clock.
     #[allow(clippy::future_not_send)]
     pub async fn with_clock(clock: C) -> Result<Self> {
+        Self::with_clock_and_config(clock, PiJsRuntimeConfig::default()).await
+    }
+
+    /// Create a new PiJS runtime with a custom clock and runtime config.
+    #[allow(clippy::future_not_send)]
+    pub async fn with_clock_and_config(clock: C, config: PiJsRuntimeConfig) -> Result<Self> {
         let runtime = AsyncRuntime::new().map_err(|err| map_js_error(&err))?;
         let context = AsyncContext::full(&runtime)
             .await
             .map_err(|err| map_js_error(&err))?;
 
-        let scheduler = std::cell::RefCell::new(Scheduler::with_clock(clock));
+        let scheduler = Rc::new(RefCell::new(Scheduler::with_clock(clock)));
         let hostcall_queue: HostcallQueue = Rc::new(RefCell::new(VecDeque::new()));
 
         let instance = Self {
@@ -774,6 +800,7 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
             scheduler,
             hostcall_queue,
             trace_seq: AtomicU64::new(1),
+            config,
         };
 
         instance.install_pi_bridge().await?;
@@ -1003,6 +1030,10 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
     #[allow(clippy::too_many_lines)]
     async fn install_pi_bridge(&self) -> Result<()> {
         let hostcall_queue = self.hostcall_queue.clone();
+        let scheduler = Rc::clone(&self.scheduler);
+        let process_cwd = self.config.cwd.clone();
+        let process_args = self.config.args.clone();
+        let env = self.config.env.clone();
 
         self.context
             .with(|ctx| {
@@ -1146,6 +1177,104 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
                     }),
                 )?;
 
+                // __pi_set_timeout_native(delay_ms) -> timer_id
+                global.set(
+                    "__pi_set_timeout_native",
+                    Func::from({
+                        let scheduler = Rc::clone(&scheduler);
+                        move |_ctx: Ctx<'_>, delay_ms: u64| -> rquickjs::Result<u64> {
+                            Ok(scheduler.borrow_mut().set_timeout(delay_ms))
+                        }
+                    }),
+                )?;
+
+                // __pi_clear_timeout_native(timer_id) -> bool
+                global.set(
+                    "__pi_clear_timeout_native",
+                    Func::from({
+                        let scheduler = Rc::clone(&scheduler);
+                        move |_ctx: Ctx<'_>, timer_id: u64| -> rquickjs::Result<bool> {
+                            Ok(scheduler.borrow_mut().clear_timeout(timer_id))
+                        }
+                    }),
+                )?;
+
+                // __pi_now_ms_native() -> u64
+                global.set(
+                    "__pi_now_ms_native",
+                    Func::from({
+                        let scheduler = Rc::clone(&scheduler);
+                        move |_ctx: Ctx<'_>| -> rquickjs::Result<u64> {
+                            Ok(scheduler.borrow().now_ms())
+                        }
+                    }),
+                )?;
+
+                // __pi_process_cwd_native() -> String
+                global.set(
+                    "__pi_process_cwd_native",
+                    Func::from({
+                        let process_cwd = process_cwd.clone();
+                        move |_ctx: Ctx<'_>| -> rquickjs::Result<String> { Ok(process_cwd.clone()) }
+                    }),
+                )?;
+
+                // __pi_process_args_native() -> string[]
+                global.set(
+                    "__pi_process_args_native",
+                    Func::from({
+                        let process_args = process_args.clone();
+                        move |_ctx: Ctx<'_>| -> rquickjs::Result<Vec<String>> {
+                            Ok(process_args.clone())
+                        }
+                    }),
+                )?;
+
+                // __pi_env_get_native(key) -> string | null
+                global.set(
+                    "__pi_env_get_native",
+                    Func::from({
+                        let env = env.clone();
+                        move |_ctx: Ctx<'_>, key: String| -> rquickjs::Result<Option<String>> {
+                            tracing::debug!(event = "pijs.env.get", key = %key, "env get");
+                            Ok(env.get(&key).cloned())
+                        }
+                    }),
+                )?;
+
+                // __pi_crypto_sha256_hex_native(text) -> hex string
+                global.set(
+                    "__pi_crypto_sha256_hex_native",
+                    Func::from(
+                        move |_ctx: Ctx<'_>, text: String| -> rquickjs::Result<String> {
+                            tracing::debug!(
+                                event = "pijs.crypto.sha256_hex",
+                                input_len = text.len(),
+                                "crypto sha256"
+                            );
+                            let mut hasher = Sha256::new();
+                            hasher.update(text.as_bytes());
+                            let digest = hasher.finalize();
+                            Ok(hex_lower(&digest))
+                        },
+                    ),
+                )?;
+
+                // __pi_crypto_random_bytes_native(len) -> number[] (0-255)
+                global.set(
+                    "__pi_crypto_random_bytes_native",
+                    Func::from(
+                        move |_ctx: Ctx<'_>, len: usize| -> rquickjs::Result<Vec<u8>> {
+                            tracing::debug!(
+                                event = "pijs.crypto.random_bytes",
+                                len,
+                                "crypto random bytes"
+                            );
+                            Ok(random_bytes(len))
+                        },
+                    ),
+                )?;
+
                 // Install the JS bridge that creates Promises and wraps the native functions
                 ctx.eval::<(), _>(PI_BRIDGE_JS)?;
 
@@ -1163,6 +1292,29 @@ fn generate_call_id() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(1);
     COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: [char; 16] = [
+        '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
+    ];
+
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        output.push(HEX[usize::from(byte >> 4)]);
+        output.push(HEX[usize::from(byte & 0x0f)]);
+    }
+    output
+}
+
+fn random_bytes(len: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(len);
+    while out.len() < len {
+        let bytes = Uuid::new_v4().into_bytes();
+        let remaining = len - out.len();
+        out.extend_from_slice(&bytes[..remaining.min(bytes.len())]);
+    }
+    out
 }
 
 /// JavaScript bridge code for managing pending hostcalls and timer callbacks.
@@ -1263,6 +1415,70 @@ function __pi_make_hostcall(nativeFn) {
     };
 }
 
+function __pi_env_get(key) {
+    const value = __pi_env_get_native(key);
+    if (value === null || value === undefined) {
+        return undefined;
+    }
+    return value;
+}
+
+function __pi_path_join(...parts) {
+    let out = '';
+    for (const part of parts) {
+        if (!part) continue;
+        if (part.startsWith('/')) {
+            out = part;
+            continue;
+        }
+        if (out === '' || out.endsWith('/')) {
+            out += part;
+        } else {
+            out += '/' + part;
+        }
+    }
+    return __pi_path_normalize(out);
+}
+
+function __pi_path_basename(path) {
+    if (!path) return '';
+    let p = path;
+    while (p.length > 1 && p.endsWith('/')) {
+        p = p.slice(0, -1);
+    }
+    const idx = p.lastIndexOf('/');
+    return idx === -1 ? p : p.slice(idx + 1);
+}
+
+function __pi_path_normalize(path) {
+    if (!path) return '';
+    const isAbs = path.startsWith('/');
+    const parts = path.split('/').filter(p => p.length > 0);
+    const stack = [];
+    for (const part of parts) {
+        if (part === '.') continue;
+        if (part === '..') {
+            if (stack.length > 0 && stack[stack.length - 1] !== '..') {
+                stack.pop();
+            } else if (!isAbs) {
+                stack.push('..');
+            }
+            continue;
+        }
+        stack.push(part);
+    }
+    const joined = stack.join('/');
+    return isAbs ? '/' + joined : joined || (isAbs ? '/' : '');
+}
+
+function __pi_sleep(ms) {
+    return new Promise((resolve) => {
+        const delay = Math.max(0, ms | 0);
+        const timer_id = __pi_set_timeout_native(delay);
+        __pi_register_timer(timer_id, resolve);
+    });
+}
+
 // Create the pi global object with Promise-returning methods
 const pi = {
     // pi.tool(name, input) - invoke a tool
@@ -1282,6 +1498,31 @@ const pi = {
 
     // pi.events(op, args) - event operations
     events: __pi_make_hostcall(__pi_events_native),
+};
+
+pi.env = {
+    get: __pi_env_get,
+};
+
+pi.process = {
+    cwd: __pi_process_cwd_native(),
+    args: __pi_process_args_native(),
+};
+
+pi.path = {
+    join: __pi_path_join,
+    basename: __pi_path_basename,
+    normalize: __pi_path_normalize,
+};
+
+pi.crypto = {
+    sha256Hex: __pi_crypto_sha256_hex_native,
+    randomBytes: __pi_crypto_random_bytes_native,
+};
+
+pi.time = {
+    nowMs: __pi_now_ms_native,
+    sleep: __pi_sleep,
 };
 
 // Make pi available globally
@@ -1706,6 +1947,137 @@ mod tests {
 
             let order = get_global_json(&runtime, "order").await;
             assert_eq!(order, serde_json::json!([]));
+        });
+    }
+
+    #[test]
+    fn pijs_env_get_honors_allowlist() {
+        futures::executor::block_on(async {
+            let clock = Arc::new(DeterministicClock::new(0));
+            let mut env = HashMap::new();
+            env.insert("HOME".to_string(), "/virtual/home".to_string());
+            env.insert("PI_IMAGE_SAVE_MODE".to_string(), "tmp".to_string());
+            let config = PiJsRuntimeConfig {
+                cwd: "/virtual/cwd".to_string(),
+                args: vec!["--flag".to_string()],
+                env,
+            };
+            let runtime = PiJsRuntime::with_clock_and_config(Arc::clone(&clock), config)
+                .await
+                .expect("create runtime");
+
+            runtime
+                .eval(
+                    r#"
+                    globalThis.home = pi.env.get("HOME");
+                    globalThis.mode = pi.env.get("PI_IMAGE_SAVE_MODE");
+                    globalThis.missing_is_undefined = (pi.env.get("NOPE") === undefined);
+                    "#,
+                )
+                .await
+                .expect("eval env");
+
+            assert_eq!(
+                get_global_json(&runtime, "home").await,
+                serde_json::json!("/virtual/home")
+            );
+            assert_eq!(
+                get_global_json(&runtime, "mode").await,
+                serde_json::json!("tmp")
+            );
+            assert_eq!(
+                get_global_json(&runtime, "missing_is_undefined").await,
+                serde_json::json!(true)
+            );
+        });
+    }
+
+    #[test]
+    fn pijs_process_path_crypto_time_apis_smoke() {
+        futures::executor::block_on(async {
+            let clock = Arc::new(DeterministicClock::new(123));
+            let config = PiJsRuntimeConfig {
+                cwd: "/virtual/cwd".to_string(),
+                args: vec!["a".to_string(), "b".to_string()],
+                env: HashMap::new(),
+            };
+            let runtime = PiJsRuntime::with_clock_and_config(Arc::clone(&clock), config)
+                .await
+                .expect("create runtime");
+
+            runtime
+                .eval(
+                    r#"
+                    globalThis.cwd = pi.process.cwd;
+                    globalThis.args = pi.process.args;
+
+                    globalThis.joined = pi.path.join("/a", "b", "..", "c");
+                    globalThis.base = pi.path.basename("/a/b/c.txt");
+                    globalThis.norm = pi.path.normalize("/a/./b//../c/");
+
+                    globalThis.hash = pi.crypto.sha256Hex("abc");
+                    globalThis.bytes = pi.crypto.randomBytes(32);
+
+                    globalThis.now = pi.time.nowMs();
+                    globalThis.done = false;
+                    pi.time.sleep(10).then(() => { globalThis.done = true; });
+                    "#,
+                )
+                .await
+                .expect("eval apis");
+
+            assert_eq!(
+                get_global_json(&runtime, "cwd").await,
+                serde_json::json!("/virtual/cwd")
+            );
+            assert_eq!(
+                get_global_json(&runtime, "args").await,
+                serde_json::json!(["a", "b"])
+            );
+
+            assert_eq!(
+                get_global_json(&runtime, "joined").await,
+                serde_json::json!("/a/c")
+            );
+            assert_eq!(
+                get_global_json(&runtime, "base").await,
+                serde_json::json!("c.txt")
+            );
+            assert_eq!(
+                get_global_json(&runtime, "norm").await,
+                serde_json::json!("/a/c")
+            );
+
+            assert_eq!(
+                get_global_json(&runtime, "hash").await,
+                serde_json::json!(
+                    "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+                )
+            );
+
+            let bytes = get_global_json(&runtime, "bytes").await;
+            let bytes_arr = bytes.as_array().expect("bytes array");
+            assert_eq!(bytes_arr.len(), 32);
+            for value in bytes_arr {
+                let n = value.as_u64().expect("byte number");
+                assert!(n <= 255);
+            }
+
+            assert_eq!(
+                get_global_json(&runtime, "now").await,
+                serde_json::json!(123)
+            );
+            assert_eq!(
+                get_global_json(&runtime, "done").await,
+                serde_json::json!(false)
+            );
+
+            clock.set(133);
+            runtime.tick().await.expect("tick sleep");
+            assert_eq!(
+                get_global_json(&runtime, "done").await,
+                serde_json::json!(true)
+            );
         });
     }
 
