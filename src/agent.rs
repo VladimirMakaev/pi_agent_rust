@@ -66,6 +66,15 @@ pub enum QueueMode {
     OneAtATime,
 }
 
+impl QueueMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::OneAtATime => "one-at-a-time",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum QueueKind {
     Steering,
@@ -1345,7 +1354,7 @@ mod tests {
                 content: UserContent::Text(text),
                 ..
             }) => assert_eq!(text, expected),
-            other => panic!("expected user text message, got {other:?}"),
+            other => assert!(false, "expected user text message, got {other:?}"),
         }
     }
 
