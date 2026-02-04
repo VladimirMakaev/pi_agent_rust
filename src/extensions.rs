@@ -3642,28 +3642,213 @@ struct JsTaskError {
     stack: Option<String>,
 }
 
-#[allow(clippy::future_not_send)]
-async fn dispatch_hostcall(host: &JsRuntimeHost, request: HostcallRequest) -> HostcallOutcome {
+fn js_hostcall_timeout_ms(request: &HostcallRequest) -> Option<u64> {
+    fn timeout_value(value: &Value) -> Option<u64> {
+        value
+            .get("timeout")
+            .and_then(Value::as_u64)
+            .or_else(|| value.get("timeoutMs").and_then(Value::as_u64))
+            .or_else(|| value.get("timeout_ms").and_then(Value::as_u64))
+            .filter(|ms| *ms > 0)
+    }
+
     match request.kind {
-        HostcallKind::Tool { name } => {
-            dispatch_hostcall_tool(&host.tools, &request.call_id, &name, request.payload).await
+        HostcallKind::Exec { .. } => request
+            .payload
+            .get("options")
+            .and_then(timeout_value)
+            .or_else(|| timeout_value(&request.payload)),
+        HostcallKind::Http => timeout_value(&request.payload),
+        _ => None,
+    }
+}
+
+async fn prompt_capability_once(
+    manager: &ExtensionManager,
+    extension_id: &str,
+    capability: &str,
+) -> bool {
+    let title = format!("Allow extension capability: {capability}");
+    let message = format!("Extension {extension_id} requests capability '{capability}'. Allow?");
+    let payload = json!({
+        "title": title,
+        "message": message,
+        "extension_id": extension_id,
+        "capability": capability,
+    });
+    let request = ExtensionUiRequest::new("", "confirm", payload);
+
+    match manager.request_ui(request).await {
+        Ok(Some(response)) => {
+            response
+                .value
+                .as_ref()
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                && !response.cancelled
         }
-        HostcallKind::Exec { cmd } => {
-            dispatch_hostcall_exec(&request.call_id, &cmd, request.payload).await
-        }
-        HostcallKind::Http => {
-            dispatch_hostcall_http(&request.call_id, &host.http, request.payload).await
-        }
-        HostcallKind::Session { op } => {
-            dispatch_hostcall_session(&request.call_id, &host.manager, &op, request.payload).await
-        }
-        HostcallKind::Ui { op } => {
-            dispatch_hostcall_ui(&request.call_id, &host.manager, &op, request.payload).await
-        }
-        HostcallKind::Events { op } => {
-            dispatch_hostcall_events(&request.call_id, &host.manager, &op, request.payload).await
+        Ok(None) | Err(_) => false,
+    }
+}
+
+#[allow(clippy::future_not_send)]
+#[allow(clippy::too_many_lines)]
+async fn dispatch_hostcall(host: &JsRuntimeHost, request: HostcallRequest) -> HostcallOutcome {
+    const UNKNOWN_EXTENSION_ID: &str = "<unknown>";
+
+    let call_id = request.call_id.clone();
+    let extension_id = request.extension_id.clone();
+    let extension_key = extension_id.as_deref().unwrap_or(UNKNOWN_EXTENSION_ID);
+    let method = request.method();
+    let required = request.required_capability();
+    let params_hash = request.params_hash();
+    let call_timeout_ms = js_hostcall_timeout_ms(&request);
+    let started_at = Instant::now();
+
+    tracing::info!(
+        event = "host_call.start",
+        runtime = "js",
+        call_id = %call_id,
+        extension_id = ?extension_id.as_deref(),
+        capability = %required,
+        method = %method,
+        params_hash = %params_hash,
+        timeout_ms = call_timeout_ms,
+        "Hostcall start"
+    );
+
+    let policy_check = host.policy.evaluate(&required);
+    let mut decision = policy_check.decision.clone();
+    let mut reason = policy_check.reason.clone();
+    let capability = policy_check.capability;
+
+    if decision == PolicyDecision::Prompt {
+        if let Some(allow) = host
+            .manager
+            .cached_policy_prompt_decision(extension_key, &capability)
+        {
+            decision = if allow {
+                PolicyDecision::Allow
+            } else {
+                PolicyDecision::Deny
+            };
+            reason = if allow {
+                "prompt_cache_allow".to_string()
+            } else {
+                "prompt_cache_deny".to_string()
+            };
+        } else {
+            let allow = prompt_capability_once(&host.manager, extension_key, &capability).await;
+            host.manager
+                .cache_policy_prompt_decision(extension_key, &capability, allow);
+            decision = if allow {
+                PolicyDecision::Allow
+            } else {
+                PolicyDecision::Deny
+            };
+            reason = if allow {
+                "prompt_user_allow".to_string()
+            } else {
+                "prompt_user_deny".to_string()
+            };
         }
     }
+
+    if decision == PolicyDecision::Allow {
+        tracing::info!(
+            event = "policy.decision",
+            runtime = "js",
+            call_id = %call_id,
+            extension_id = ?extension_id.as_deref(),
+            capability = %capability,
+            decision = ?decision,
+            reason = %reason,
+            params_hash = %params_hash,
+            "Hostcall allowed by policy"
+        );
+    } else {
+        tracing::warn!(
+            event = "policy.decision",
+            runtime = "js",
+            call_id = %call_id,
+            extension_id = ?extension_id.as_deref(),
+            capability = %capability,
+            decision = ?decision,
+            reason = %reason,
+            params_hash = %params_hash,
+            "Hostcall denied by policy"
+        );
+    }
+
+    let outcome = if decision == PolicyDecision::Allow {
+        let HostcallRequest {
+            call_id: request_call_id,
+            kind,
+            payload,
+            ..
+        } = request;
+
+        match kind {
+            HostcallKind::Tool { name } => {
+                dispatch_hostcall_tool(&host.tools, &request_call_id, &name, payload).await
+            }
+            HostcallKind::Exec { cmd } => {
+                dispatch_hostcall_exec(&request_call_id, &cmd, payload).await
+            }
+            HostcallKind::Http => {
+                dispatch_hostcall_http(&request_call_id, &host.http, payload).await
+            }
+            HostcallKind::Session { op } => {
+                dispatch_hostcall_session(&request_call_id, &host.manager, &op, payload).await
+            }
+            HostcallKind::Ui { op } => {
+                dispatch_hostcall_ui(&request_call_id, &host.manager, &op, payload).await
+            }
+            HostcallKind::Events { op } => {
+                dispatch_hostcall_events(&request_call_id, &host.manager, &op, payload).await
+            }
+        }
+    } else {
+        HostcallOutcome::Error {
+            code: "denied".to_string(),
+            message: format!("Capability '{capability}' denied by policy ({reason})"),
+        }
+    };
+
+    let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let (is_error, error_code) = match &outcome {
+        HostcallOutcome::Success(_) => (false, None),
+        HostcallOutcome::Error { code, .. } => (true, Some(code.as_str())),
+    };
+
+    if is_error {
+        tracing::warn!(
+            event = "host_call.end",
+            runtime = "js",
+            call_id = %call_id,
+            extension_id = ?extension_id.as_deref(),
+            capability = %required,
+            method = %method,
+            params_hash = %params_hash,
+            duration_ms,
+            error_code = error_code,
+            "Hostcall end (error)"
+        );
+    } else {
+        tracing::info!(
+            event = "host_call.end",
+            runtime = "js",
+            call_id = %call_id,
+            extension_id = ?extension_id.as_deref(),
+            capability = %required,
+            method = %method,
+            params_hash = %params_hash,
+            duration_ms,
+            "Hostcall end (success)"
+        );
+    }
+
+    outcome
 }
 
 #[allow(clippy::future_not_send)]
@@ -5036,6 +5221,77 @@ mod tests {
             let request = ExtensionUiRequest::new("", "confirm", json!({ "title": "Confirm" }));
             let response = manager.request_ui(request).await.unwrap();
             assert_eq!(response.unwrap().value, Some(json!(true)));
+        });
+    }
+
+    #[test]
+    fn js_hostcall_prompt_mode_asks_once_per_capability() {
+        let manager = ExtensionManager::new();
+        let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+            .build()
+            .expect("runtime build");
+        let handle = runtime.handle();
+
+        runtime.block_on(async move {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+
+            let (ui_tx, ui_rx) = mpsc::channel(16);
+            manager.set_ui_sender(ui_tx);
+
+            let prompt_count = Arc::new(AtomicUsize::new(0));
+            let prompt_count_clone = Arc::clone(&prompt_count);
+
+            let responder = manager.clone();
+            handle.spawn(async move {
+                let cx = Cx::for_request();
+                while let Ok(req) = ui_rx.recv(&cx).await {
+                    prompt_count_clone.fetch_add(1, Ordering::SeqCst);
+                    responder.respond_ui(ExtensionUiResponse {
+                        id: req.id,
+                        value: Some(json!(true)),
+                        cancelled: false,
+                    });
+                }
+            });
+
+            let dir = tempdir().expect("tempdir");
+            let host = JsRuntimeHost {
+                tools: Arc::new(ToolRegistry::new(&[], dir.path(), None)),
+                manager: manager.clone(),
+                http: Arc::new(HttpConnector::with_defaults()),
+                policy: ExtensionPolicy {
+                    mode: ExtensionPolicyMode::Prompt,
+                    max_memory_mb: 256,
+                    default_caps: Vec::new(),
+                    deny_caps: Vec::new(),
+                },
+            };
+
+            let request = HostcallRequest {
+                call_id: "call-1".to_string(),
+                kind: HostcallKind::Tool {
+                    name: "nonexistent".to_string(),
+                },
+                payload: json!({}),
+                trace_id: 1,
+                extension_id: Some("ext.test".to_string()),
+            };
+
+            let _ = dispatch_hostcall(&host, request).await;
+
+            let request = HostcallRequest {
+                call_id: "call-2".to_string(),
+                kind: HostcallKind::Tool {
+                    name: "nonexistent".to_string(),
+                },
+                payload: json!({}),
+                trace_id: 2,
+                extension_id: Some("ext.test".to_string()),
+            };
+
+            let _ = dispatch_hostcall(&host, request).await;
+
+            assert_eq!(prompt_count.load(Ordering::SeqCst), 1);
         });
     }
 

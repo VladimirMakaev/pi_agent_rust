@@ -4008,6 +4008,34 @@ mod tests {
         assert_eq!(drain_calls, 3);
     }
 
+    #[test]
+    fn compile_module_source_reports_missing_file() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let missing_path = temp_dir.path().join("missing.js");
+        let err = compile_module_source(&HashMap::new(), missing_path.to_string_lossy().as_ref())
+            .expect_err("missing module should error");
+        let message = err.to_string();
+        assert!(
+            message.contains("Module is not a file"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
+    fn compile_module_source_reports_unsupported_extension() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let bad_path = temp_dir.path().join("module.txt");
+        std::fs::write(&bad_path, "hello").expect("write module.txt");
+
+        let err = compile_module_source(&HashMap::new(), bad_path.to_string_lossy().as_ref())
+            .expect_err("unsupported extension should error");
+        let message = err.to_string();
+        assert!(
+            message.contains("Unsupported module extension"),
+            "unexpected error: {message}"
+        );
+    }
+
     // Tests for the Promise bridge (bd-2ke)
 
     #[test]
