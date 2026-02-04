@@ -459,6 +459,20 @@ fn has_multiple_non_none_styles(segments: &[Segment<'_>]) -> bool {
     false
 }
 
+fn render_syntax_line_by_line(
+    code: &str,
+    language: &str,
+    width: usize,
+) -> Option<Vec<Segment<'static>>> {
+    let mut rendered: Vec<Segment<'static>> = Vec::new();
+    for line in code.split_inclusive('\n') {
+        let syntax = Syntax::new(line, language);
+        let items = syntax.render(Some(width)).ok()?;
+        rendered.extend(items.into_iter().map(Segment::into_owned));
+    }
+    Some(rendered)
+}
+
 fn render_markdown_with_syntax(markdown: &str, width: usize) -> Vec<Segment<'static>> {
     if !markdown.contains("```") {
         return Markdown::new(markdown)
@@ -508,6 +522,16 @@ fn render_markdown_with_syntax(markdown: &str, width: usize) -> Vec<Segment<'sta
                             && candidate != "text"
                             && !has_multiple_non_none_styles(&items)
                         {
+                            if candidate == "javascript" {
+                                if let Some(line_items) =
+                                    render_syntax_line_by_line(code.as_str(), candidate, width)
+                                {
+                                    if has_multiple_non_none_styles(&line_items) {
+                                        rendered_items = Some(line_items);
+                                        break;
+                                    }
+                                }
+                            }
                             continue;
                         }
                         rendered_items = Some(items.into_iter().map(Segment::into_owned).collect());
@@ -780,8 +804,11 @@ mod tests {
             1,
             "expected a single Text chunk, got {chunks:?}"
         );
-        let MarkdownChunk::Text(text) = &chunks[0] else {
-            panic!("expected text fallback, got {chunks:?}");
+        let text = if let MarkdownChunk::Text(text) = &chunks[0] {
+            text
+        } else {
+            assert!(false, "expected text fallback, got {chunks:?}");
+            return;
         };
         assert!(text.contains("```rust"));
         assert!(text.contains("fn main"));
