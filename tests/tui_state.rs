@@ -1135,6 +1135,129 @@ fn tui_state_slash_model_no_args_reports_current_model() {
 }
 
 #[test]
+fn tui_state_slash_history_shows_previous_inputs() {
+    let harness = TestHarness::new("tui_state_slash_history_shows_previous_inputs");
+    let mut app = build_app(&harness, Vec::new());
+    log_initial_state(&harness, &app);
+
+    type_text(&harness, &mut app, "hello");
+    let step = press_enter(&harness, &mut app);
+    assert_after_contains(&harness, &step, "You: hello");
+
+    // Return to idle deterministically (we don't need real provider output for this test).
+    apply_pi(
+        &harness,
+        &mut app,
+        "PiMsg::AgentError",
+        PiMsg::AgentError("boom".to_string()),
+    );
+
+    type_text(&harness, &mut app, "/history");
+    let step = press_enter(&harness, &mut app);
+    assert_after_contains(&harness, &step, "Input history (most recent first):");
+    assert_after_contains(&harness, &step, "1. hello");
+}
+
+#[test]
+fn tui_state_slash_session_shows_basic_info() {
+    let harness = TestHarness::new("tui_state_slash_session_shows_basic_info");
+    let mut app = build_app(&harness, Vec::new());
+    log_initial_state(&harness, &app);
+
+    type_text(&harness, &mut app, "/session");
+    let step = press_enter(&harness, &mut app);
+    assert_after_contains(&harness, &step, "Session info:");
+    assert_after_contains(&harness, &step, "(not saved yet)");
+}
+
+#[test]
+fn tui_state_slash_settings_shows_summary() {
+    let harness = TestHarness::new("tui_state_slash_settings_shows_summary");
+    let mut app = build_app(&harness, Vec::new());
+    log_initial_state(&harness, &app);
+
+    type_text(&harness, &mut app, "/settings");
+    let step = press_enter(&harness, &mut app);
+    assert_after_contains(&harness, &step, "Settings:");
+    assert_after_contains(&harness, &step, "Resources:");
+}
+
+#[test]
+fn tui_state_slash_export_writes_html_and_reports_path() {
+    let harness = TestHarness::new("tui_state_slash_export_writes_html_and_reports_path");
+    let mut app = build_app(&harness, Vec::new());
+    log_initial_state(&harness, &app);
+
+    type_text(&harness, &mut app, "/export");
+    let step = press_enter(&harness, &mut app);
+    assert_after_contains(&harness, &step, "Exported HTML:");
+}
+
+#[test]
+fn tui_state_slash_share_writes_temp_html_and_reports_path() {
+    let harness = TestHarness::new("tui_state_slash_share_writes_temp_html_and_reports_path");
+    let mut app = build_app(&harness, Vec::new());
+    log_initial_state(&harness, &app);
+
+    type_text(&harness, &mut app, "/share");
+    let step = press_enter(&harness, &mut app);
+    assert_after_contains(&harness, &step, "Shared HTML:");
+}
+
+#[test]
+fn tui_state_slash_resume_without_sessions_sets_status() {
+    let harness = TestHarness::new("tui_state_slash_resume_without_sessions_sets_status");
+    let mut app = build_app(&harness, Vec::new());
+    log_initial_state(&harness, &app);
+
+    type_text(&harness, &mut app, "/resume");
+    let step = press_enter(&harness, &mut app);
+    assert_after_contains(&harness, &step, "No sessions found for this project");
+}
+
+#[test]
+fn tui_state_slash_copy_reports_clipboard_unavailable_or_success() {
+    let harness = TestHarness::new("tui_state_slash_copy_reports_clipboard_unavailable_or_success");
+    let mut app = build_app(&harness, Vec::new());
+    log_initial_state(&harness, &app);
+
+    let messages = vec![assistant_msg("hello from assistant")];
+    apply_pi(
+        &harness,
+        &mut app,
+        "PiMsg::ConversationReset",
+        PiMsg::ConversationReset {
+            messages,
+            usage: Usage::default(),
+            status: None,
+        },
+    );
+
+    type_text(&harness, &mut app, "/copy");
+    let step = press_enter(&harness, &mut app);
+    if !step.after.contains("Copied to clipboard")
+        && !step.after.contains("Clipboard support is disabled")
+    {
+        fail_step(
+            &harness,
+            &step,
+            "Expected /copy to report clipboard success or unavailable",
+        );
+    }
+}
+
+#[test]
+fn tui_state_slash_reload_sets_status_message() {
+    let harness = TestHarness::new("tui_state_slash_reload_sets_status_message");
+    let mut app = build_app(&harness, Vec::new());
+    log_initial_state(&harness, &app);
+
+    type_text(&harness, &mut app, "/reload");
+    let step = press_enter(&harness, &mut app);
+    assert_after_contains(&harness, &step, "Reloading resources...");
+}
+
+#[test]
 fn tui_state_slash_thinking_sets_level() {
     let harness = TestHarness::new("tui_state_slash_thinking_sets_level");
     let mut app = build_app(&harness, Vec::new());

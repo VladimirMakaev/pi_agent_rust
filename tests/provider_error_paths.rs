@@ -44,7 +44,11 @@ fn openai_http_500_is_reported() {
         let context = context_for("Trigger server error.");
         let options = options_with_key("test-key");
 
-        let err = provider.stream(&context, &options).await.unwrap_err();
+        let err = provider
+            .stream(&context, &options)
+            .await
+            .err()
+            .expect("expected error");
         let message = err.to_string();
         assert!(message.contains("HTTP 500"), "unexpected error: {message}");
         assert!(message.contains("boom"), "unexpected error: {message}");
@@ -67,7 +71,11 @@ fn anthropic_http_500_is_reported() {
         let context = context_for("Trigger server error.");
         let options = options_with_key("test-key");
 
-        let err = provider.stream(&context, &options).await.unwrap_err();
+        let err = provider
+            .stream(&context, &options)
+            .await
+            .err()
+            .expect("expected error");
         let message = err.to_string();
         assert!(message.contains("HTTP 500"), "unexpected error: {message}");
         assert!(message.contains("boom"), "unexpected error: {message}");
@@ -94,7 +102,11 @@ fn gemini_http_500_is_reported() {
         let context = context_for("Trigger server error.");
         let options = options_with_key(api_key);
 
-        let err = provider.stream(&context, &options).await.unwrap_err();
+        let err = provider
+            .stream(&context, &options)
+            .await
+            .err()
+            .expect("expected error");
         let message = err.to_string();
         assert!(message.contains("HTTP 500"), "unexpected error: {message}");
         assert!(message.contains("boom"), "unexpected error: {message}");
@@ -123,7 +135,11 @@ fn azure_http_500_is_reported() {
         let context = context_for("Trigger server error.");
         let options = options_with_key("test-key");
 
-        let err = provider.stream(&context, &options).await.unwrap_err();
+        let err = provider
+            .stream(&context, &options)
+            .await
+            .err()
+            .expect("expected error");
         let message = err.to_string();
         assert!(message.contains("HTTP 500"), "unexpected error: {message}");
         assert!(message.contains("boom"), "unexpected error: {message}");
