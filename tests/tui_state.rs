@@ -1252,6 +1252,9 @@ fn tui_state_slash_copy_reports_clipboard_unavailable_or_success() {
     let step = press_enter(&harness, &mut app);
     if !step.after.contains("Copied to clipboard")
         && !step.after.contains("Clipboard support is disabled")
+        && !step
+            .after
+            .contains("Clipboard support not available in this build")
         && !step.after.contains("Clipboard unavailable")
     {
         fail_step(

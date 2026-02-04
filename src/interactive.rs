@@ -5641,13 +5641,13 @@ impl PiApp {
                         Err(err) => match write_fallback(&text) {
                             Ok(path) => {
                                 self.status_message = Some(format!(
-                                    "Clipboard unavailable ({err}). Wrote to {}",
+                                    "Clipboard support is disabled or unavailable ({err}). Wrote to {}",
                                     path.display()
                                 ));
                             }
                             Err(io_err) => {
                                 self.status_message = Some(format!(
-                                    "Clipboard unavailable ({err}); also failed to write fallback file: {io_err}"
+                                    "Clipboard support is disabled or unavailable ({err}); also failed to write fallback file: {io_err}"
                                 ));
                             }
                         },
@@ -5659,13 +5659,13 @@ impl PiApp {
                     match write_fallback(&text) {
                         Ok(path) => {
                             self.status_message = Some(format!(
-                                "Clipboard support not available in this build. Wrote to {}",
+                                "Clipboard support is disabled. Wrote to {}",
                                 path.display()
                             ));
                         }
                         Err(err) => {
                             self.status_message = Some(format!(
-                                "Clipboard support not available in this build; failed to write fallback file: {err}"
+                                "Clipboard support is disabled; failed to write fallback file: {err}"
                             ));
                         }
                     }
