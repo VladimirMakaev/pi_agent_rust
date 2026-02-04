@@ -1,7 +1,12 @@
 //! LLM provider abstraction layer.
 //!
-//! This module defines the provider trait and common types for interacting
-//! with different LLM APIs.
+//! This module defines the [`Provider`] trait and shared request/response types used by all
+//! backends (Anthropic/OpenAI/Gemini/etc).
+//!
+//! Providers are responsible for:
+//! - Translating [`crate::model::Message`] history into provider-specific HTTP requests.
+//! - Emitting [`StreamEvent`] values as SSE/HTTP chunks arrive.
+//! - Advertising tool schemas to the model (so it can call [`crate::tools`] by name).
 
 pub use crate::model::StreamEvent;
 use crate::model::{Message, ThinkingLevel};
@@ -15,7 +20,10 @@ use std::pin::Pin;
 // Provider Trait
 // ============================================================================
 
-/// A provider for LLM completions.
+/// An LLM backend capable of streaming assistant output (and tool calls).
+///
+/// A `Provider` is typically configured for a specific API + model and is used by the agent loop
+/// to produce a stream of [`StreamEvent`] updates.
 #[async_trait]
 pub trait Provider: Send + Sync {
     /// Get the provider name.
@@ -27,7 +35,10 @@ pub trait Provider: Send + Sync {
     /// Get the model identifier used by this provider.
     fn model_id(&self) -> &str;
 
-    /// Stream a completion.
+    /// Start streaming a completion.
+    ///
+    /// Implementations should yield [`StreamEvent`] items as soon as they are decoded, and should
+    /// stop promptly when the request is cancelled.
     async fn stream(
         &self,
         context: &Context,
@@ -39,11 +50,17 @@ pub trait Provider: Send + Sync {
 // Context
 // ============================================================================
 
-/// Context for a completion request.
+/// Inputs to a single completion request.
+///
+/// The agent loop builds a `Context` from the current session state and tool registry, then hands
+/// it to a [`Provider`] implementation to perform provider-specific request encoding.
 #[derive(Debug, Clone, Default)]
 pub struct Context {
+    /// Provider-specific system prompt content.
     pub system_prompt: Option<String>,
+    /// Conversation history (user/assistant/tool results).
     pub messages: Vec<Message>,
+    /// Tool definitions available to the model for this request.
     pub tools: Vec<ToolDef>,
 }
 
@@ -51,7 +68,10 @@ pub struct Context {
 // Tool Definition
 // ============================================================================
 
-/// A tool definition for the API.
+/// A tool definition exposed to the model.
+///
+/// Providers translate this struct into the backend's tool/schema representation (typically JSON
+/// Schema) so the model can emit tool calls that the host executes locally.
 #[derive(Debug, Clone)]
 pub struct ToolDef {
     pub name: String,
@@ -63,7 +83,10 @@ pub struct ToolDef {
 // Stream Options
 // ============================================================================
 
-/// Options for streaming completion.
+/// Options that control streaming completion behavior.
+///
+/// Most options are passed through to the provider request (temperature, max tokens, headers).
+/// Some fields are Pi-specific conveniences (e.g. `session_id` for logging/correlation).
 #[derive(Debug, Clone, Default)]
 pub struct StreamOptions {
     pub temperature: Option<f32>,
@@ -81,8 +104,10 @@ pub struct StreamOptions {
 pub enum CacheRetention {
     #[default]
     None,
+    /// Provider-managed short-lived caching (provider-specific semantics).
     Short,
-    Long, // 1 hour TTL on Anthropic
+    /// Provider-managed long-lived caching (e.g. ~1 hour TTL on Anthropic).
+    Long,
 }
 
 /// Custom thinking token budgets per level.
@@ -111,7 +136,10 @@ impl Default for ThinkingBudgets {
 // Model Definition
 // ============================================================================
 
-/// A model definition.
+/// A model definition loaded from the models registry.
+///
+/// This struct is used to drive provider selection, request limits (context window/max tokens),
+/// and cost accounting.
 #[derive(Debug, Clone, Serialize)]
 pub struct Model {
     pub id: String,

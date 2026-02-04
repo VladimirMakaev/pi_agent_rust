@@ -1,6 +1,10 @@
 //! Built-in tool implementations.
 //!
 //! Pi provides 7 built-in tools: read, bash, edit, write, grep, find, ls.
+//!
+//! Tools are exposed to the model via JSON Schema (see [`crate::provider::ToolDef`]) and executed
+//! locally by the agent loop. Each tool returns structured [`ContentBlock`] output suitable for
+//! rendering in the TUI and for inclusion in provider messages as tool results.
 
 use crate::config::Config;
 use crate::error::{Error, Result};
@@ -39,6 +43,10 @@ pub trait Tool: Send + Sync {
     fn parameters(&self) -> serde_json::Value;
 
     /// Execute the tool.
+    ///
+    /// Tools may call `on_update` to stream incremental results (e.g. while a long-running `bash`
+    /// command is still producing output). The final return value is a [`ToolOutput`] which is
+    /// persisted into the session as a tool result message.
     async fn execute(
         &self,
         tool_call_id: &str,
@@ -781,7 +789,11 @@ pub(crate) fn resize_image_if_needed(
 // Tool Registry
 // ============================================================================
 
-/// Registry of available tools.
+/// Registry of enabled tools for a Pi run.
+///
+/// The registry is constructed from configuration (enabled tool names + settings) and is used for:
+/// - Looking up a tool implementation by name during tool-call execution.
+/// - Enumerating tool schemas when building provider requests.
 pub struct ToolRegistry {
     tools: Vec<Box<dyn Tool>>,
 }

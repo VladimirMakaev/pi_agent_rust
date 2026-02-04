@@ -121,6 +121,9 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --all-targets -- -D warnings
 
+      - name: cargo doc
+        run: cargo doc --no-deps
+
       - name: cargo test
         run: cargo test --all-targets
 

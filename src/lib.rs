@@ -13,8 +13,8 @@
 //! all modules/types as **unstable** and subject to change.
 //!
 //! Currently intended stable exports:
-//! - [`Error`](crate::Error)
-//! - [`PiResult`](crate::PiResult)
+//! - [`Error`]
+//! - [`PiResult`]
 
 #![forbid(unsafe_code)]
 #![allow(dead_code, clippy::unused_async, unused_attributes)]
