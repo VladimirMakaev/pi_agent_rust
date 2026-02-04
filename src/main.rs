@@ -22,7 +22,7 @@ use pi::app::StartupError;
 use pi::auth::{AuthCredential, AuthStorage};
 use pi::cli;
 use pi::config::Config;
-use pi::model::{AssistantMessage, StopReason};
+use pi::model::{AssistantMessage, ContentBlock, StopReason};
 use pi::models::{ModelEntry, ModelRegistry, default_models_path};
 use pi::package_manager::{PackageEntry, PackageManager, PackageScope};
 use pi::provider::InputType;
@@ -881,7 +881,20 @@ async fn run_print_mode(
     }
 
     if mode == "text" {
-        pi::app::output_final_text(&last_message);
+        let mut markdown = String::new();
+        for block in &last_message.content {
+            if let ContentBlock::Text(text) = block {
+                markdown.push_str(&text.text);
+                if !markdown.ends_with('\n') {
+                    markdown.push('\n');
+                }
+            }
+        }
+
+        if !markdown.is_empty() {
+            let console = PiConsole::new();
+            console.render_markdown(&markdown);
+        }
     }
 
     io::stdout().flush()?;
