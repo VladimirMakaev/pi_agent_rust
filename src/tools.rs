@@ -1243,7 +1243,13 @@ pub(crate) async fn run_bash_command(
         if let Some(timeout) = timeout {
             if start.elapsed() >= timeout {
                 timed_out = true;
-                break; // Guard drop will kill process tree
+                if let Some(status) = guard
+                    .kill()
+                    .map_err(|err| Error::tool("bash", format!("Failed to kill process: {err}")))?
+                {
+                    exit_code = status.code();
+                }
+                break; // Guard now owns no child after kill()
             }
         }
 
@@ -3040,6 +3046,19 @@ impl ProcessGuard {
             child: Some(child),
             kill_tree,
         }
+    }
+
+    fn kill(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        if let Some(mut child) = self.child.take() {
+            if self.kill_tree {
+                let pid = child.id();
+                kill_process_tree(Some(pid));
+            }
+            let _ = child.kill();
+            let status = child.wait()?;
+            return Ok(Some(status));
+        }
+        Ok(None)
     }
 
     fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
