@@ -487,6 +487,56 @@ fn e2e_cli_extension_compat_ledger_logged_when_enabled() {
 }
 
 #[test]
+fn e2e_cli_extension_compat_ledger_keeps_cli_extensions_with_no_extensions() {
+    let mut harness = CliTestHarness::new(
+        "e2e_cli_extension_compat_ledger_keeps_cli_extensions_with_no_extensions",
+    );
+    harness
+        .env
+        .insert("PI_EXT_COMPAT_SCAN".to_string(), "1".to_string());
+    harness
+        .env
+        .insert("RUST_LOG".to_string(), "info".to_string());
+
+    let ext_path = harness.harness.temp_path("ext.ts");
+    std::fs::write(
+        &ext_path,
+        "import fs from 'fs';\npi.tool('read', { path: 'README.md' });\n",
+    )
+    .expect("write ext.ts");
+
+    let ext_arg = ext_path.display().to_string();
+    let result = harness.run(&[
+        "--list-models",
+        "--no-extensions",
+        "--extension",
+        ext_arg.as_str(),
+    ]);
+
+    assert_exit_code(&harness.harness, &result, 0);
+    let combined = format!("{}\n{}", result.stdout, result.stderr);
+    assert_contains(&harness.harness, &combined, "pi.ext.compat_ledger.v1");
+
+    let log_path = harness.harness.temp_path("extension-cli-log.jsonl");
+    harness
+        .harness
+        .write_jsonl_logs(&log_path)
+        .expect("write jsonl log");
+    harness
+        .harness
+        .record_artifact("extension-cli-log.jsonl", &log_path);
+
+    let artifact_index = harness.harness.temp_path("extension-cli-artifacts.jsonl");
+    harness
+        .harness
+        .write_artifact_index_jsonl(&artifact_index)
+        .expect("write artifact index");
+    harness
+        .harness
+        .record_artifact("extension-cli-artifacts.jsonl", &artifact_index);
+}
+
+#[test]
 fn e2e_cli_version_flag() {
     let harness = CliTestHarness::new("e2e_cli_version_flag");
     let result = harness.run(&["--version"]);

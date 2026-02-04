@@ -3222,6 +3222,7 @@ struct JsRuntimeHost {
     tools: Arc<ToolRegistry>,
     manager: ExtensionManager,
     http: Arc<HttpConnector>,
+    policy: ExtensionPolicy,
 }
 
 #[derive(Debug)]
@@ -3271,6 +3272,7 @@ impl JsExtensionRuntimeHandle {
             tools,
             manager,
             http: Arc::new(HttpConnector::with_defaults()),
+            policy: ExtensionPolicy::default(),
         };
 
         thread::spawn(move || {
@@ -4211,6 +4213,7 @@ struct ExtensionManagerInner {
     cwd: Option<String>,
     model_registry_values: HashMap<String, String>,
     host_actions: Option<Arc<dyn ExtensionHostActions>>,
+    policy_prompt_cache: HashMap<String, HashMap<String, bool>>,
 }
 
 impl std::fmt::Debug for ExtensionManager {
@@ -4266,6 +4269,24 @@ impl ExtensionManager {
     fn host_actions(&self) -> Option<Arc<dyn ExtensionHostActions>> {
         let guard = self.inner.lock().unwrap();
         guard.host_actions.clone()
+    }
+
+    fn cached_policy_prompt_decision(&self, extension_id: &str, capability: &str) -> Option<bool> {
+        let guard = self.inner.lock().unwrap();
+        guard
+            .policy_prompt_cache
+            .get(extension_id)
+            .and_then(|by_cap| by_cap.get(capability))
+            .copied()
+    }
+
+    fn cache_policy_prompt_decision(&self, extension_id: &str, capability: &str, allow: bool) {
+        let mut guard = self.inner.lock().unwrap();
+        guard
+            .policy_prompt_cache
+            .entry(extension_id.to_string())
+            .or_default()
+            .insert(capability.to_string(), allow);
     }
 
     pub fn active_tools(&self) -> Option<Vec<String>> {

@@ -1554,6 +1554,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn test_parse_command_args() {
@@ -1612,5 +1613,76 @@ mod tests {
         assert!(prompt.contains("<available_skills>"));
         assert!(prompt.contains("<name>a</name>"));
         assert!(!prompt.contains("<name>b</name>"));
+    }
+
+    #[test]
+    fn test_cli_extensions_load_when_no_extensions_flag_set() {
+        asupersync::test_utils::run_test(|| async {
+            let temp_dir = tempfile::tempdir().expect("tempdir");
+            let extension_path = temp_dir.path().join("ext.js");
+            fs::write(&extension_path, "export default function() {}").expect("write extension");
+
+            let manager = PackageManager::new(temp_dir.path().to_path_buf());
+            let config = Config::default();
+            let cli = ResourceCliOptions {
+                no_skills: true,
+                no_prompt_templates: true,
+                no_extensions: true,
+                no_themes: true,
+                skill_paths: Vec::new(),
+                prompt_paths: Vec::new(),
+                extension_paths: vec![extension_path.to_string_lossy().to_string()],
+                theme_paths: Vec::new(),
+            };
+
+            let loader = ResourceLoader::load(&manager, temp_dir.path(), &config, &cli)
+                .await
+                .expect("load resources");
+            assert!(loader.extensions().contains(&extension_path));
+        });
+    }
+
+    #[test]
+    fn test_extension_paths_deduped_between_settings_and_cli() {
+        asupersync::test_utils::run_test(|| async {
+            let temp_dir = tempfile::tempdir().expect("tempdir");
+            let extension_path = temp_dir.path().join("ext.js");
+            fs::write(&extension_path, "export default function() {}").expect("write extension");
+
+            let settings_dir = temp_dir.path().join(".pi");
+            fs::create_dir_all(&settings_dir).expect("create settings dir");
+            let settings_path = settings_dir.join("settings.json");
+            let settings = json!({
+                "extensions": [extension_path.to_string_lossy().to_string()]
+            });
+            fs::write(
+                &settings_path,
+                serde_json::to_string_pretty(&settings).expect("serialize settings"),
+            )
+            .expect("write settings");
+
+            let manager = PackageManager::new(temp_dir.path().to_path_buf());
+            let config = Config::default();
+            let cli = ResourceCliOptions {
+                no_skills: true,
+                no_prompt_templates: true,
+                no_extensions: false,
+                no_themes: true,
+                skill_paths: Vec::new(),
+                prompt_paths: Vec::new(),
+                extension_paths: vec![extension_path.to_string_lossy().to_string()],
+                theme_paths: Vec::new(),
+            };
+
+            let loader = ResourceLoader::load(&manager, temp_dir.path(), &config, &cli)
+                .await
+                .expect("load resources");
+            let matches = loader
+                .extensions()
+                .iter()
+                .filter(|path| *path == &extension_path)
+                .count();
+            assert_eq!(matches, 1);
+        });
     }
 }

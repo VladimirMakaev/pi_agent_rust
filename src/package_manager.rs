@@ -2539,6 +2539,8 @@ fn maybe_emit_compat_ledgers(extensions: &[ResolvedResource]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+    use std::fs;
 
     #[test]
     fn test_parse_npm_spec_scoped_and_unscoped() {
@@ -2626,5 +2628,193 @@ mod tests {
                 .join("github.com")
                 .join("user/repo")
         );
+    }
+
+    #[test]
+    fn test_project_settings_override_global_package_filters() {
+        asupersync::test_utils::run_test(|| async {
+            let temp_dir = tempfile::tempdir().expect("tempdir");
+            let project_root = temp_dir.path().join("project");
+            fs::create_dir_all(project_root.join(".pi")).expect("create project settings dir");
+
+            let package_root = temp_dir.path().join("pkg");
+            fs::create_dir_all(package_root.join("extensions")).expect("create extensions dir");
+            fs::write(package_root.join("extensions/a.js"), "a").expect("write a.js");
+            fs::write(package_root.join("extensions/b.js"), "b").expect("write b.js");
+
+            let global_settings_path = temp_dir.path().join("global-settings.json");
+            let project_settings_path = project_root.join(".pi/settings.json");
+
+            let global_settings = json!({
+                "packages": [{
+                    "source": package_root.to_string_lossy(),
+                    "extensions": ["extensions/a.js"]
+                }]
+            });
+            fs::write(
+                &global_settings_path,
+                serde_json::to_string_pretty(&global_settings).expect("serialize global settings"),
+            )
+            .expect("write global settings");
+
+            let project_settings = json!({
+                "packages": [{
+                    "source": package_root.to_string_lossy(),
+                    "extensions": ["extensions/b.js"]
+                }]
+            });
+            fs::write(
+                &project_settings_path,
+                serde_json::to_string_pretty(&project_settings)
+                    .expect("serialize project settings"),
+            )
+            .expect("write project settings");
+
+            let roots = ResolveRoots {
+                global_settings_path: global_settings_path.clone(),
+                project_settings_path: project_settings_path.clone(),
+                global_base_dir: temp_dir.path().join("global-base"),
+                project_base_dir: project_root.join(".pi"),
+            };
+            fs::create_dir_all(&roots.global_base_dir).expect("create global base dir");
+
+            let manager = PackageManager::new(project_root);
+            let resolved = manager.resolve_with_roots(&roots).await.expect("resolve");
+
+            let enabled_extensions = resolved
+                .extensions
+                .iter()
+                .filter(|entry| entry.enabled)
+                .collect::<Vec<_>>();
+            assert_eq!(enabled_extensions.len(), 1);
+            let expected_path = package_root.join("extensions/b.js");
+            assert_eq!(enabled_extensions[0].path, expected_path);
+            assert_eq!(enabled_extensions[0].metadata.scope, PackageScope::Project);
+
+            let disabled = resolved
+                .extensions
+                .iter()
+                .find(|entry| entry.path == package_root.join("extensions/a.js"))
+                .expect("a.js entry");
+            assert!(!disabled.enabled);
+            assert!(
+                resolved
+                    .extensions
+                    .iter()
+                    .all(|entry| entry.metadata.scope == PackageScope::Project)
+            );
+        });
+    }
+
+    #[test]
+    fn test_resolve_extension_sources_uses_temporary_scope() {
+        asupersync::test_utils::run_test(|| async {
+            let temp_dir = tempfile::tempdir().expect("tempdir");
+            let extension_path = temp_dir.path().join("ext.js");
+            fs::write(&extension_path, "export default function() {}").expect("write extension");
+
+            let manager = PackageManager::new(temp_dir.path().to_path_buf());
+            let sources = vec![extension_path.to_string_lossy().to_string()];
+            let resolved = manager
+                .resolve_extension_sources(
+                    &sources,
+                    ResolveExtensionSourcesOptions {
+                        local: false,
+                        temporary: true,
+                    },
+                )
+                .await
+                .expect("resolve extension sources");
+
+            assert_eq!(resolved.extensions.len(), 1);
+            let entry = &resolved.extensions[0];
+            assert!(entry.enabled);
+            assert_eq!(entry.path, extension_path);
+            assert_eq!(entry.metadata.scope, PackageScope::Temporary);
+            assert_eq!(entry.metadata.origin, ResourceOrigin::Package);
+            assert_eq!(entry.metadata.source, sources[0]);
+        });
+    }
+
+    #[test]
+    fn test_resolve_local_path_normalizes_dot_segments() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let resolved = resolve_local_path("./foo/../bar", temp_dir.path());
+        assert_eq!(resolved, temp_dir.path().join("bar"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_resolve_local_extension_source_accepts_symlink() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let extension_path = temp_dir.path().join("ext.js");
+        fs::write(&extension_path, "export default function() {}").expect("write extension");
+
+        let symlink_path = temp_dir.path().join("ext-link.js");
+        std::os::unix::fs::symlink(&extension_path, &symlink_path).expect("create symlink");
+
+        let mut accumulator = ResourceAccumulator::new();
+        let mut metadata = PathMetadata {
+            source: symlink_path.to_string_lossy().to_string(),
+            scope: PackageScope::Temporary,
+            origin: ResourceOrigin::Package,
+            base_dir: None,
+        };
+
+        PackageManager::resolve_local_extension_source(
+            &symlink_path,
+            &mut accumulator,
+            None,
+            &mut metadata,
+        );
+
+        assert_eq!(accumulator.extensions.items.len(), 1);
+        assert_eq!(accumulator.extensions.items[0].path, symlink_path);
+    }
+
+    #[test]
+    fn test_manifest_extensions_resolve_with_patterns() {
+        asupersync::test_utils::run_test(|| async {
+            let temp_dir = tempfile::tempdir().expect("tempdir");
+            let package_root = temp_dir.path().join("pkg");
+            let extensions_dir = package_root.join("extensions");
+            fs::create_dir_all(&extensions_dir).expect("create extensions dir");
+            fs::write(extensions_dir.join("a.js"), "a").expect("write a.js");
+            fs::write(extensions_dir.join("b.js"), "b").expect("write b.js");
+
+            let manifest = json!({
+                "name": "pkg",
+                "version": "1.0.0",
+                "pi": {
+                    "extensions": ["extensions", "!extensions/b.js"]
+                }
+            });
+            fs::write(
+                package_root.join("package.json"),
+                serde_json::to_string_pretty(&manifest).expect("serialize manifest"),
+            )
+            .expect("write manifest");
+
+            let manager = PackageManager::new(temp_dir.path().to_path_buf());
+            let sources = vec![package_root.to_string_lossy().to_string()];
+            let resolved = manager
+                .resolve_extension_sources(
+                    &sources,
+                    ResolveExtensionSourcesOptions {
+                        local: false,
+                        temporary: true,
+                    },
+                )
+                .await
+                .expect("resolve extension sources");
+
+            let paths = resolved
+                .extensions
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect::<Vec<_>>();
+            assert!(paths.contains(&package_root.join("extensions/a.js")));
+            assert!(!paths.contains(&package_root.join("extensions/b.js")));
+        });
     }
 }
