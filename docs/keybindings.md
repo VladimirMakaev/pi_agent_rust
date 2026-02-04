@@ -28,9 +28,12 @@ Keys are specified as `modifier+key`.
 - **Keys**:
   - Letters: `a`, `b`, `c`...
   - Numbers: `1`, `2`...
-  - Function keys: `f1`, `f2`...
-  - Special keys: `enter`, `escape`, `tab`, `backspace`, `delete`, `insert`, `home`, `end`, `pageup`, `pagedown`, `up`, `down`, `left`, `right`, `space`.
-  - Symbols: `-`, `=`, `[`, `]`, ``, `;`, `'`, `,`, `.`, `/`, etc.
+  - Function keys: `f1`–`f20`
+  - Special keys: `enter`, `escape`, `tab`, `space`, `backspace`, `delete`, `insert`, `clear`,
+    `home`, `end`, `pageup`, `pagedown`, `up`, `down`, `left`, `right`
+  - Symbols: single-character keys like `` ` ``, `-`, `=`, `[`, `]`, `\`, `;`, `'`, `,`, `.`, `/`,
+    and their shifted variants (`!`, `@`, `#`, `$`, `%`, `^`, `&`, `*`, `(`, `)`, `_`, `+`, `{`, `}`,
+    `|`, `:`, `"`, `<`, `>`, `?`)
 
 **Synonyms**:
 - `return` -> `enter`
@@ -50,6 +53,8 @@ Keys are specified as `modifier+key`.
 | `cursorWordRight` | `alt+right`, `ctrl+right`, `alt+f` | Move cursor word right |
 | `cursorLineStart` | `home`, `ctrl+a` | Move to line start |
 | `cursorLineEnd` | `end`, `ctrl+e` | Move to line end |
+| `jumpForward` | `ctrl+]` | Jump forward to character |
+| `jumpBackward` | `ctrl+alt+]` | Jump backward to character |
 | `pageUp` | `pageup` | Scroll up by page |
 | `pageDown` | `pagedown` | Scroll down by page |
 
@@ -129,6 +134,8 @@ Keys are specified as `modifier+key`.
 |-----------|--------------|-------------|
 | `selectUp` | `up` | Move selection up |
 | `selectDown` | `down` | Move selection down |
+| `selectPageUp` | `pageup` | Page up in list |
+| `selectPageDown` | `pagedown` | Page down in list |
 | `selectConfirm` | `enter` | Confirm selection |
 | `selectCancel` | `escape`, `ctrl+c` | Cancel selection |
 
@@ -136,5 +143,18 @@ Keys are specified as `modifier+key`.
 
 | Action ID | Default Keys | Description |
 |-----------|--------------|-------------|
+| `toggleSessionPath` | `ctrl+p` | Toggle path display |
+| `toggleSessionSort` | `ctrl+s` | Toggle sort mode |
+| `toggleSessionNamedFilter` | `ctrl+n` | Toggle named-only filter |
 | `renameSession` | `ctrl+r` | Rename session |
 | `deleteSession` | `ctrl+d` | Delete session |
+| `deleteSessionNoninvasive` | `ctrl+backspace` | Delete session when query is empty |
+
+## Context-dependent conflicts
+
+Some keys are intentionally bound to multiple actions and are resolved based on UI state:
+
+- `ctrl+c` can mean **Copy** (selection), **Clear** (editor), or **abort** (when running).
+- `ctrl+d` is **DeleteCharForward** in the editor, **Exit** when the editor is empty, and
+  **DeleteSession** inside the session picker.
+- `ctrl+p` cycles models in the editor but toggles session path display in the picker.

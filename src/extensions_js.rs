@@ -2468,6 +2468,31 @@ async function __pi_with_extension_async(extension_id, fn) {
     }
 }
 
+async function __pi_load_extension(extension_id, entry_specifier, meta) {
+    const id = String(extension_id || '').trim();
+    const entry = String(entry_specifier || '').trim();
+    if (!id) {
+        throw new Error('load_extension: extension_id is required');
+    }
+    if (!entry) {
+        throw new Error('load_extension: entry_specifier is required');
+    }
+
+    const prev = __pi_current_extension_id;
+    __pi_begin_extension(id, meta);
+    try {
+        const mod = await import(entry);
+        const init = mod && mod.default;
+        if (typeof init !== 'function') {
+            throw new Error('load_extension: entry module must default-export a function');
+        }
+        await init(pi);
+        return true;
+    } finally {
+        __pi_current_extension_id = prev;
+    }
+}
+
 function __pi_register_tool(spec) {
     const ext = __pi_current_extension_or_throw();
     if (!spec || typeof spec !== 'object') {

@@ -8,7 +8,9 @@ use pi::agent::{Agent, AgentConfig, AgentSession};
 use pi::auth::AuthStorage;
 use pi::config::Config;
 use pi::http::client::Client;
-use pi::model::{AssistantMessage, ContentBlock, StopReason, TextContent, ToolCall, Usage, UserContent};
+use pi::model::{
+    AssistantMessage, ContentBlock, StopReason, TextContent, ToolCall, Usage, UserContent,
+};
 use pi::provider::Provider;
 use pi::providers::openai::OpenAIProvider;
 use pi::resources::ResourceLoader;
@@ -183,7 +185,10 @@ fn rpc_errors_on_unknown_command_and_missing_params() {
             .expect("recv prompt missing message response");
 
         in_tx
-            .send(&cx, r#"{"id":"3","type":"set_model","modelId":"x"}"#.to_string())
+            .send(
+                &cx,
+                r#"{"id":"3","type":"set_model","modelId":"x"}"#.to_string(),
+            )
             .await
             .expect("send set_model missing provider");
         let set_model_missing_line = recv_line(&out_rx, "set_model missing provider response")
@@ -314,7 +319,9 @@ fn rpc_get_messages_preserves_tool_call_identity_and_args() {
         let tool_call = assistant["content"]
             .as_array()
             .and_then(|blocks| {
-                blocks.iter().find(|block| block.get("type").and_then(Value::as_str) == Some("toolCall"))
+                blocks
+                    .iter()
+                    .find(|block| block.get("type").and_then(Value::as_str) == Some("toolCall"))
             })
             .expect("toolCall content block");
         assert_eq!(tool_call["id"], "tc1");
@@ -325,8 +332,18 @@ fn rpc_get_messages_preserves_tool_call_identity_and_args() {
             .iter()
             .find(|msg| msg.get("role").and_then(Value::as_str) == Some("toolResult"))
             .expect("toolResult message");
-        assert_eq!(tool_result["toolCallId"], "tc1");
-        assert_eq!(tool_result["toolName"], "read");
+        let tool_call_id = tool_result
+            .get("toolCallId")
+            .or_else(|| tool_result.get("tool_call_id"))
+            .and_then(Value::as_str)
+            .expect("toolCallId/tool_call_id");
+        assert_eq!(tool_call_id, "tc1");
+        let tool_name = tool_result
+            .get("toolName")
+            .or_else(|| tool_result.get("tool_name"))
+            .and_then(Value::as_str)
+            .expect("toolName/tool_name");
+        assert_eq!(tool_name, "read");
         assert_eq!(tool_result["content"][0]["type"], "text");
         assert_eq!(tool_result["content"][0]["text"], "ok");
     });

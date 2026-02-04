@@ -1265,7 +1265,11 @@ pub struct MessageEntry {
 
 /// Session message payload.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "role", rename_all = "camelCase")]
+#[serde(
+    tag = "role",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum SessionMessage {
     User {
         content: UserContent,
