@@ -170,6 +170,46 @@ fn installed_path_resolves_project_and_user_scopes_without_external_commands() {
 }
 
 #[test]
+fn resolve_with_roots_auto_discovery_ignores_parent_gitignore() {
+    let harness = TestHarness::new("resolve_with_roots_auto_discovery_ignores_parent_gitignore");
+
+    let cwd = harness.create_dir("cwd");
+    std::fs::write(cwd.join(".gitignore"), ".pi\n").expect("write .gitignore");
+    let manager = PackageManager::new(cwd.clone());
+
+    let global_base_dir = harness.create_dir("global");
+    let project_base_dir = cwd.join(".pi");
+    std::fs::create_dir_all(&project_base_dir).expect("create project base dir");
+
+    let global_settings_path = global_base_dir.join("settings.json");
+    let project_settings_path = project_base_dir.join("settings.json");
+
+    let extensions_dir = project_base_dir.join("extensions");
+    std::fs::create_dir_all(&extensions_dir).expect("create extensions dir");
+    let auto_ext = extensions_dir.join("auto.js");
+    std::fs::write(&auto_ext, "export const x = 1;\n").expect("write auto extension");
+
+    write_json(&global_settings_path, &serde_json::json!({}));
+    write_json(&project_settings_path, &serde_json::json!({}));
+
+    let roots = ResolveRoots {
+        global_settings_path,
+        project_settings_path,
+        global_base_dir,
+        project_base_dir,
+    };
+
+    let resolved = run_async(manager.resolve_with_roots(&roots)).expect("resolve_with_roots");
+    log_resolved(&harness, "extensions", &resolved.extensions);
+    let item = resolved
+        .extensions
+        .iter()
+        .find(|r| r.path == auto_ext)
+        .expect("auto extension present");
+    assert!(item.enabled, "auto extension should still be discovered");
+}
+
+#[test]
 fn resolve_with_roots_applies_auto_discovery_override_patterns() {
     let harness = TestHarness::new("resolve_with_roots_applies_auto_discovery_override_patterns");
 
