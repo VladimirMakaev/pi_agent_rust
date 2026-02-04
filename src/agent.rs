@@ -1443,9 +1443,145 @@ mod abort_tests {
             started_wait.await;
             abort_handle.abort();
 
-            let message = join.await.expect("join");
+            let message = join.await.expect("run_text_with_abort");
             assert_eq!(message.stop_reason, StopReason::Aborted);
             assert_eq!(message.error_message.as_deref(), Some("Aborted"));
+        });
+    }
+}
+
+#[cfg(test)]
+mod turn_event_tests {
+    use super::*;
+    use crate::session::Session;
+    use crate::tools::ToolRegistry;
+    use asupersync::runtime::RuntimeBuilder;
+    use async_trait::async_trait;
+    use futures::Stream;
+    use std::path::Path;
+    use std::pin::Pin;
+    use std::sync::Mutex;
+
+    fn assistant_message(text: &str) -> AssistantMessage {
+        AssistantMessage {
+            content: vec![ContentBlock::Text(TextContent::new(text))],
+            api: "test-api".to_string(),
+            provider: "test-provider".to_string(),
+            model: "test-model".to_string(),
+            usage: Usage::default(),
+            stop_reason: StopReason::Stop,
+            error_message: None,
+            timestamp: 0,
+        }
+    }
+
+    struct SingleShotProvider;
+
+    #[async_trait]
+    #[allow(clippy::unnecessary_literal_bound)]
+    impl Provider for SingleShotProvider {
+        fn name(&self) -> &str {
+            "test-provider"
+        }
+
+        fn api(&self) -> &str {
+            "test-api"
+        }
+
+        fn model_id(&self) -> &str {
+            "test-model"
+        }
+
+        async fn stream(
+            &self,
+            _context: &Context,
+            _options: &StreamOptions,
+        ) -> crate::error::Result<
+            Pin<Box<dyn Stream<Item = crate::error::Result<StreamEvent>> + Send>>,
+        > {
+            let partial = assistant_message("");
+            let final_message = assistant_message("hello");
+            let events = vec![
+                Ok(StreamEvent::Start { partial }),
+                Ok(StreamEvent::Done {
+                    reason: StopReason::Stop,
+                    message: final_message,
+                }),
+            ];
+            Ok(Box::pin(futures::stream::iter(events)))
+        }
+    }
+
+    #[test]
+    fn turn_events_wrap_assistant_response() {
+        let runtime = RuntimeBuilder::current_thread()
+            .build()
+            .expect("runtime build");
+        let handle = runtime.handle();
+
+        let provider = Arc::new(SingleShotProvider);
+        let tools = ToolRegistry::new(&[], Path::new("."), None);
+        let agent = Agent::new(provider, tools, AgentConfig::default());
+        let session = Session::in_memory();
+        let mut agent_session = AgentSession::new(agent, session, false);
+
+        let events: Arc<Mutex<Vec<AgentEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_capture = Arc::clone(&events);
+
+        let join = handle.spawn(async move {
+            agent_session
+                .run_text("hello".to_string(), move |event| {
+                    events_capture.lock().unwrap().push(event);
+                })
+                .await
+                .expect("run_text")
+        });
+
+        runtime.block_on(async move {
+            let message = join.await;
+            assert_eq!(message.stop_reason, StopReason::Stop);
+
+            let events = events.lock().unwrap();
+            let turn_start_indices = events
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, event)| matches!(event, AgentEvent::TurnStart).then_some(idx))
+                .collect::<Vec<_>>();
+            let turn_end_indices = events
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, event)| {
+                    matches!(event, AgentEvent::TurnEnd { .. }).then_some(idx)
+                })
+                .collect::<Vec<_>>();
+
+            assert_eq!(turn_start_indices.len(), 1);
+            assert_eq!(turn_end_indices.len(), 1);
+            assert!(turn_start_indices[0] < turn_end_indices[0]);
+
+            let assistant_message_end = events
+                .iter()
+                .enumerate()
+                .find_map(|(idx, event)| match event {
+                    AgentEvent::MessageEnd {
+                        message: Message::Assistant(_),
+                    } => Some(idx),
+                    _ => None,
+                })
+                .expect("assistant message end");
+
+            assert!(assistant_message_end < turn_end_indices[0]);
+
+            if let AgentEvent::TurnEnd {
+                message,
+                tool_results,
+            } = &events[turn_end_indices[0]]
+            {
+                assert!(matches!(message, Message::Assistant(_)));
+                assert!(tool_results.is_empty());
+            } else {
+                panic!("Expected TurnEnd event");
+            }
         });
     }
 }
