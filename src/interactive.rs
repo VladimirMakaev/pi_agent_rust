@@ -28,7 +28,7 @@ use serde_json::{Value, json};
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -49,6 +49,7 @@ use crate::model::{
     ThinkingLevel, Usage, UserContent, UserMessage,
 };
 use crate::models::ModelEntry;
+use crate::providers;
 use crate::resources::{ResourceCliOptions, ResourceLoader};
 use crate::session::{Session, SessionEntry, SessionMessage, bash_execution_to_text};
 use crate::session_index::SessionMeta;
@@ -4242,6 +4243,8 @@ impl PiApp {
         }
 
         self.bash_running = true;
+        self.agent_state = AgentState::ToolRunning;
+        self.current_tool = Some("bash".to_string());
         self.input_history.push(raw_message.to_string());
         self.history_index = None;
 
@@ -4251,7 +4254,6 @@ impl PiApp {
 
         let event_tx = self.event_tx.clone();
         let session = Arc::clone(&self.session);
-        let agent = Arc::clone(&self.agent);
         let save_enabled = self.save_enabled;
         let cwd = self.cwd.clone();
         let shell_path = self.config.shell_path.clone();
@@ -4272,54 +4274,49 @@ impl PiApp {
 
             match result {
                 Ok(result) => {
-                    let mut extra = HashMap::new();
+                    let display = bash_execution_to_text(&command, &result.output, 0, false, false, None);
+
                     if exclude_from_context {
+                        let mut extra = HashMap::new();
                         extra.insert("excludeFromContext".to_string(), Value::Bool(true));
-                    }
 
-                    let bash_message = SessionMessage::BashExecution {
-                        command: command.clone(),
-                        output: result.output.clone(),
-                        exit_code: result.exit_code,
-                        cancelled: Some(result.cancelled),
-                        truncated: Some(result.truncated),
-                        full_output_path: result.full_output_path.clone(),
-                        timestamp: Some(Utc::now().timestamp_millis()),
-                        extra,
-                    };
+                        let bash_message = SessionMessage::BashExecution {
+                            command: command.clone(),
+                            output: result.output.clone(),
+                            exit_code: result.exit_code,
+                            cancelled: Some(result.cancelled),
+                            truncated: Some(result.truncated),
+                            full_output_path: result.full_output_path.clone(),
+                            timestamp: Some(Utc::now().timestamp_millis()),
+                            extra,
+                        };
 
-                    if let Ok(mut agent_guard) = agent.lock(&cx).await {
-                        if let Some(model_message) =
-                            crate::session::session_message_to_model(&bash_message)
-                        {
-                            agent_guard.add_message(model_message);
+                        if let Ok(mut session_guard) = session.lock(&cx).await {
+                            session_guard.append_message(bash_message);
+                            if save_enabled {
+                                let _ = session_guard.save().await;
+                            }
                         }
-                    }
 
-                    if let Ok(mut session_guard) = session.lock(&cx).await {
-                        session_guard.append_message(bash_message);
-                        if save_enabled {
-                            let _ = session_guard.save().await;
-                        }
-                    }
-
-                    let mut display = bash_execution_to_text(
-                        &command,
-                        &result.output,
-                        result.exit_code,
-                        result.cancelled,
-                        result.truncated,
-                        result.full_output_path.as_deref(),
-                    );
-                    if exclude_from_context {
+                        let mut display = display;
                         display.push_str("\n\n[Output excluded from model context]");
+                        let _ = event_tx.try_send(PiMsg::BashResult {
+                            display,
+                            content_for_agent: None,
+                        });
+                    } else {
+                        let content_for_agent =
+                            vec![ContentBlock::Text(TextContent::new(display.clone()))];
+                        let _ = event_tx.try_send(PiMsg::BashResult {
+                            display,
+                            content_for_agent: Some(content_for_agent),
+                        });
                     }
-
-                    let _ = event_tx.try_send(PiMsg::BashResult { display });
                 }
                 Err(err) => {
                     let _ = event_tx.try_send(PiMsg::BashResult {
                         display: format!("Bash command failed: {err}"),
+                        content_for_agent: None,
                     });
                 }
             }
@@ -5870,15 +5867,274 @@ impl PiApp {
                 None
             }
             SlashCommand::Compact => {
-                self.status_message = Some("Compact not implemented yet".to_string());
+                if self.agent_state != AgentState::Idle {
+                    self.status_message = Some("Cannot compact while processing".to_string());
+                    return None;
+                }
+
+                let Ok(agent_guard) = self.agent.try_lock() else {
+                    self.status_message = Some("Agent busy; try again".to_string());
+                    return None;
+                };
+                let provider = agent_guard.provider();
+                let api_key_opt = agent_guard.stream_options().api_key.clone();
+                drop(agent_guard);
+
+                let Some(api_key) = api_key_opt else {
+                    self.status_message =
+                        Some("No API key configured; cannot run compaction".to_string());
+                    return None;
+                };
+
+                let event_tx = self.event_tx.clone();
+                let session = Arc::clone(&self.session);
+                let agent = Arc::clone(&self.agent);
+                let extensions = self.extensions.clone();
+                let runtime_handle = self.runtime_handle.clone();
+                let reserve_tokens = self.config.compaction_reserve_tokens();
+                let keep_recent_tokens = self.config.compaction_keep_recent_tokens();
+                let custom_instructions = args.trim().to_string();
+                let custom_instructions =
+                    if custom_instructions.is_empty() { None } else { Some(custom_instructions) };
+                let is_compacting = Arc::clone(&self.extension_compacting);
+
+                self.agent_state = AgentState::Processing;
+                self.status_message = Some("Compacting session...".to_string());
+                self.extension_compacting.store(true, Ordering::SeqCst);
+
+                runtime_handle.spawn(async move {
+                    let cx = Cx::for_request();
+
+                    let (session_id, path_entries) = {
+                        let mut guard = match session.lock(&cx).await {
+                            Ok(guard) => guard,
+                            Err(err) => {
+                                is_compacting.store(false, Ordering::SeqCst);
+                                let _ = event_tx.try_send(PiMsg::AgentError(format!(
+                                    "Failed to lock session: {err}"
+                                )));
+                                return;
+                            }
+                        };
+                        guard.ensure_entry_ids();
+                        let session_id = guard.header.id.clone();
+                        let entries = guard
+                            .entries_for_current_path()
+                            .into_iter()
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        (session_id, entries)
+                    };
+
+                    if let Some(manager) = extensions.clone() {
+                        let cancelled = manager
+                            .dispatch_cancellable_event(
+                                ExtensionEventName::SessionBeforeCompact,
+                                Some(json!({
+                                    "sessionId": session_id,
+                                    "notes": custom_instructions.as_deref(),
+                                })),
+                                EXTENSION_EVENT_TIMEOUT_MS,
+                            )
+                            .await
+                            .unwrap_or(false);
+                        if cancelled {
+                            is_compacting.store(false, Ordering::SeqCst);
+                            let _ = event_tx.try_send(PiMsg::System(
+                                "Compaction cancelled by extension".to_string(),
+                            ));
+                            return;
+                        }
+                    }
+
+                    let settings = crate::compaction::ResolvedCompactionSettings {
+                        enabled: true,
+                        reserve_tokens,
+                        keep_recent_tokens,
+                    };
+                    let Some(prep) = crate::compaction::prepare_compaction(&path_entries, settings)
+                    else {
+                        is_compacting.store(false, Ordering::SeqCst);
+                        let _ = event_tx.try_send(PiMsg::System(
+                            "Nothing to compact (already compacted or too little history)".to_string(),
+                        ));
+                        return;
+                    };
+
+                    let result = match crate::compaction::compact(
+                        prep,
+                        Arc::clone(&provider),
+                        &api_key,
+                        custom_instructions.as_deref(),
+                    )
+                    .await
+                    {
+                        Ok(result) => result,
+                        Err(err) => {
+                            is_compacting.store(false, Ordering::SeqCst);
+                            let _ = event_tx.try_send(PiMsg::AgentError(format!(
+                                "Compaction failed: {err}"
+                            )));
+                            return;
+                        }
+                    };
+
+                    let details = crate::compaction::compaction_details_to_value(&result.details)
+                        .ok();
+
+                    let messages_for_agent = {
+                        let mut guard = match session.lock(&cx).await {
+                            Ok(guard) => guard,
+                            Err(err) => {
+                                is_compacting.store(false, Ordering::SeqCst);
+                                let _ = event_tx.try_send(PiMsg::AgentError(format!(
+                                    "Failed to lock session: {err}"
+                                )));
+                                return;
+                            }
+                        };
+
+                        guard.append_compaction(
+                            result.summary.clone(),
+                            result.first_kept_entry_id.clone(),
+                            result.tokens_before,
+                            details,
+                            None,
+                        );
+                        let _ = guard.save().await;
+                        guard.to_messages_for_current_path()
+                    };
+
+                    {
+                        let mut agent_guard = match agent.lock(&cx).await {
+                            Ok(guard) => guard,
+                            Err(err) => {
+                                is_compacting.store(false, Ordering::SeqCst);
+                                let _ = event_tx.try_send(PiMsg::AgentError(format!(
+                                    "Failed to lock agent: {err}"
+                                )));
+                                return;
+                            }
+                        };
+                        agent_guard.replace_messages(messages_for_agent);
+                    }
+
+                    let (messages, usage) = {
+                        let guard = match session.lock(&cx).await {
+                            Ok(guard) => guard,
+                            Err(err) => {
+                                is_compacting.store(false, Ordering::SeqCst);
+                                let _ = event_tx.try_send(PiMsg::AgentError(format!(
+                                    "Failed to lock session: {err}"
+                                )));
+                                return;
+                            }
+                        };
+                        load_conversation_from_session(&guard)
+                    };
+
+                    is_compacting.store(false, Ordering::SeqCst);
+                    let _ = event_tx.try_send(PiMsg::ConversationReset {
+                        messages,
+                        usage,
+                        status: Some("Compaction complete".to_string()),
+                    });
+
+                    if let Some(manager) = extensions {
+                        let _ = manager
+                            .dispatch_event(
+                                ExtensionEventName::SessionCompact,
+                                Some(json!({
+                                    "tokensBefore": result.tokens_before,
+                                    "firstKeptEntryId": result.first_kept_entry_id,
+                                })),
+                            )
+                            .await;
+                    }
+                });
                 None
             }
             SlashCommand::Reload => {
-                self.status_message = Some("Reload not implemented yet".to_string());
+                if self.agent_state != AgentState::Idle {
+                    self.status_message = Some("Cannot reload while processing".to_string());
+                    return None;
+                }
+
+                let config = self.config.clone();
+                let cli = self.resource_cli.clone();
+                let cwd = self.cwd.clone();
+                let event_tx = self.event_tx.clone();
+                let runtime_handle = self.runtime_handle.clone();
+
+                runtime_handle.spawn(async move {
+                    let manager = PackageManager::new(cwd.clone());
+                    match ResourceLoader::load(&manager, &cwd, &config, &cli).await {
+                        Ok(resources) => {
+                            let status = format!(
+                                "Reloaded resources: {} skills, {} prompts, {} themes",
+                                resources.skills().len(),
+                                resources.prompts().len(),
+                                resources.themes().len()
+                            );
+                            let _ =
+                                event_tx.try_send(PiMsg::ResourcesReloaded { resources, status });
+                        }
+                        Err(err) => {
+                            let _ = event_tx.try_send(PiMsg::AgentError(format!(
+                                "Failed to reload resources: {err}"
+                            )));
+                        }
+                    }
+                });
+
+                self.status_message = Some("Reloading resources...".to_string());
                 None
             }
             SlashCommand::Share => {
-                self.status_message = Some("Share not implemented yet".to_string());
+                if self.agent_state != AgentState::Idle {
+                    self.status_message = Some("Cannot share while processing".to_string());
+                    return None;
+                }
+
+                let html = {
+                    let Ok(session_guard) = self.session.try_lock() else {
+                        self.status_message = Some("Session busy; try again".to_string());
+                        return None;
+                    };
+                    session_guard.to_html()
+                };
+
+                let temp = tempfile::Builder::new()
+                    .prefix("pi-share-")
+                    .suffix(".html")
+                    .tempfile();
+                let mut temp = match temp {
+                    Ok(temp) => temp,
+                    Err(err) => {
+                        self.status_message = Some(format!("Failed to create temp file: {err}"));
+                        return None;
+                    }
+                };
+                if let Err(err) = std::io::Write::write_all(&mut temp, html.as_bytes()) {
+                    self.status_message = Some(format!("Failed to write temp file: {err}"));
+                    return None;
+                }
+
+                let (_file, path) = match temp.keep() {
+                    Ok(kept) => kept,
+                    Err(err) => {
+                        self.status_message = Some(format!("Failed to keep temp file: {err}"));
+                        return None;
+                    }
+                };
+
+                self.messages.push(ConversationMessage {
+                    role: MessageRole::System,
+                    content: format!("Shared HTML: {}", path.display()),
+                    thinking: None,
+                });
+                self.scroll_to_bottom();
+                self.status_message = Some(format!("Shared: {}", path.display()));
                 None
             }
         }
