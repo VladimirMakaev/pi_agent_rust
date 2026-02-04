@@ -200,11 +200,10 @@ impl PiApp {
     }
 
     fn format_session_info(&self, session: &Session) -> String {
-        let file = session
-            .path
-            .as_ref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "(not saved yet)".to_string());
+        let file = session.path.as_ref().map_or_else(
+            || "(not saved yet)".to_string(),
+            |p| p.display().to_string(),
+        );
         let name = session.get_name().unwrap_or_else(|| "-".to_string());
         let thinking = session
             .header
@@ -1178,21 +1177,10 @@ fn load_conversation_from_session(session: &Session) -> (Vec<ConversationMessage
             SessionMessage::BashExecution {
                 command,
                 output,
-                exit_code,
-                cancelled,
-                truncated,
-                full_output_path,
                 extra,
                 ..
             } => {
-                let mut text = bash_execution_to_text(
-                    command,
-                    output,
-                    *exit_code,
-                    cancelled.unwrap_or(false),
-                    truncated.unwrap_or(false),
-                    full_output_path.as_deref(),
-                );
+                let mut text = bash_execution_to_text(command, output, 0, false, false, None);
                 if extra
                     .get("excludeFromContext")
                     .and_then(Value::as_bool)
@@ -1216,26 +1204,6 @@ fn load_conversation_from_session(session: &Session) -> (Vec<ConversationMessage
                         thinking: None,
                     });
                 }
-            }
-            SessionMessage::BashExecution {
-                command,
-                output,
-                extra,
-                ..
-            } => {
-                let mut text = bash_execution_to_text(command, output, 0, false, false, None);
-                if extra
-                    .get("excludeFromContext")
-                    .and_then(Value::as_bool)
-                    .is_some_and(|v| v)
-                {
-                    text.push_str("\n\n[Output excluded from model context]");
-                }
-                messages.push(ConversationMessage {
-                    role: MessageRole::System,
-                    content: text,
-                    thinking: None,
-                });
             }
             _ => {}
         }
@@ -4298,7 +4266,8 @@ impl PiApp {
 
             match result {
                 Ok(result) => {
-                    let display = bash_execution_to_text(&command, &result.output, 0, false, false, None);
+                    let display =
+                        bash_execution_to_text(&command, &result.output, 0, false, false, None);
 
                     if exclude_from_context {
                         let mut extra = HashMap::new();
@@ -5246,7 +5215,8 @@ impl PiApp {
                 let mut exact_matches = Vec::new();
                 for entry in &self.available_models {
                     let full = format!("{}/{}", entry.model.provider, entry.model.id);
-                    if full.eq_ignore_ascii_case(pattern) || entry.model.id.eq_ignore_ascii_case(pattern)
+                    if full.eq_ignore_ascii_case(pattern)
+                        || entry.model.id.eq_ignore_ascii_case(pattern)
                     {
                         exact_matches.push(entry.clone());
                     }
@@ -5300,10 +5270,7 @@ impl PiApp {
                     return None;
                 }
 
-                let next = matches
-                    .into_iter()
-                    .next()
-                    .expect("matches is non-empty");
+                let next = matches.into_iter().next().expect("matches is non-empty");
 
                 if next.model.provider == self.model_entry.model.provider
                     && next.model.id == self.model_entry.model.id
@@ -5333,7 +5300,8 @@ impl PiApp {
                 };
                 session_guard.header.provider = Some(next.model.provider.clone());
                 session_guard.header.model_id = Some(next.model.id.clone());
-                session_guard.append_model_change(next.model.provider.clone(), next.model.id.clone());
+                session_guard
+                    .append_model_change(next.model.provider.clone(), next.model.id.clone());
                 drop(session_guard);
                 self.spawn_save_session();
 
@@ -5515,8 +5483,10 @@ impl PiApp {
                     .try_lock()
                     .ok()
                     .and_then(|guard| guard.session_dir.clone());
-                let sessions =
-                    crate::session_picker::list_sessions_for_project(&self.cwd, override_dir.as_deref());
+                let sessions = crate::session_picker::list_sessions_for_project(
+                    &self.cwd,
+                    override_dir.as_deref(),
+                );
                 if sessions.is_empty() {
                     self.status_message = Some("No sessions found for this project".to_string());
                     return None;
@@ -5595,7 +5565,6 @@ impl PiApp {
                         Ok(()) => self.status_message = Some("Copied to clipboard".to_string()),
                         Err(err) => self.status_message = Some(format!("Clipboard error: {err}")),
                     }
-                    return None;
                 }
 
                 #[cfg(not(feature = "clipboard"))]
@@ -5605,8 +5574,9 @@ impl PiApp {
                         "Clipboard support is disabled. Build with: cargo build --features clipboard"
                             .to_string(),
                     );
-                    return None;
                 }
+
+                None
             }
             SlashCommand::Name => {
                 let name = args.trim();
@@ -5647,8 +5617,10 @@ impl PiApp {
                         self.scroll_to_last_match("# ");
                     }
                     Err(err) => {
-                        self.status_message =
-                            Some(format!("Failed to read changelog {}: {err}", path.display()));
+                        self.status_message = Some(format!(
+                            "Failed to read changelog {}: {err}",
+                            path.display()
+                        ));
                     }
                 }
                 None
@@ -5918,8 +5890,11 @@ impl PiApp {
                 let reserve_tokens = self.config.compaction_reserve_tokens();
                 let keep_recent_tokens = self.config.compaction_keep_recent_tokens();
                 let custom_instructions = args.trim().to_string();
-                let custom_instructions =
-                    if custom_instructions.is_empty() { None } else { Some(custom_instructions) };
+                let custom_instructions = if custom_instructions.is_empty() {
+                    None
+                } else {
+                    Some(custom_instructions)
+                };
                 let is_compacting = Arc::clone(&self.extension_compacting);
 
                 self.agent_state = AgentState::Processing;
@@ -5980,7 +5955,8 @@ impl PiApp {
                     else {
                         is_compacting.store(false, Ordering::SeqCst);
                         let _ = event_tx.try_send(PiMsg::System(
-                            "Nothing to compact (already compacted or too little history)".to_string(),
+                            "Nothing to compact (already compacted or too little history)"
+                                .to_string(),
                         ));
                         return;
                     };
@@ -5996,15 +5972,14 @@ impl PiApp {
                         Ok(result) => result,
                         Err(err) => {
                             is_compacting.store(false, Ordering::SeqCst);
-                            let _ = event_tx.try_send(PiMsg::AgentError(format!(
-                                "Compaction failed: {err}"
-                            )));
+                            let _ = event_tx
+                                .try_send(PiMsg::AgentError(format!("Compaction failed: {err}")));
                             return;
                         }
                     };
 
-                    let details = crate::compaction::compaction_details_to_value(&result.details)
-                        .ok();
+                    let details =
+                        crate::compaction::compaction_details_to_value(&result.details).ok();
 
                     let messages_for_agent = {
                         let mut guard = match session.lock(&cx).await {

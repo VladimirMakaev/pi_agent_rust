@@ -1261,6 +1261,7 @@ mod abort_tests {
     struct HangingProvider;
 
     #[async_trait]
+    #[allow(clippy::unnecessary_literal_bound)]
     impl Provider for HangingProvider {
         fn name(&self) -> &str {
             "test-provider"

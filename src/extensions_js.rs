@@ -756,7 +756,7 @@ struct InterruptBudget {
 }
 
 impl InterruptBudget {
-    fn new(configured: Option<u64>) -> Self {
+    const fn new(configured: Option<u64>) -> Self {
         Self {
             configured,
             remaining: std::cell::Cell::new(configured),
@@ -955,7 +955,7 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
         Ok(instance)
     }
 
-    fn map_quickjs_error(&self, err: rquickjs::Error) -> Error {
+    fn map_quickjs_error(&self, err: &rquickjs::Error) -> Error {
         if self.interrupt_budget.did_trip() {
             self.interrupt_budget.clear_trip();
             return Error::extension("PiJS execution budget exceeded".to_string());
@@ -963,7 +963,7 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
         map_js_error(&err)
     }
 
-    fn map_quickjs_job_error(&self, err: rquickjs::AsyncJobException) -> Error {
+    fn map_quickjs_job_error<E: std::fmt::Display>(&self, err: E) -> Error {
         if self.interrupt_budget.did_trip() {
             self.interrupt_budget.clear_trip();
             return Error::extension("PiJS execution budget exceeded".to_string());
@@ -976,7 +976,7 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
         self.interrupt_budget.reset();
         match self.context.with(|ctx| ctx.eval::<(), _>(source)).await {
             Ok(()) => {}
-            Err(err) => return Err(self.map_quickjs_error(err)),
+            Err(err) => return Err(self.map_quickjs_error(&err)),
         }
         // Drain any immediate jobs (Promise.resolve chains, etc.)
         self.drain_jobs().await?;
@@ -988,7 +988,7 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
         self.interrupt_budget.reset();
         match self.context.with(|ctx| ctx.eval_file::<(), _>(path)).await {
             Ok(()) => {}
-            Err(err) => return Err(self.map_quickjs_error(err)),
+            Err(err) => return Err(self.map_quickjs_error(&err)),
         }
         self.drain_jobs().await?;
         Ok(())
@@ -1070,7 +1070,7 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
                 })
                 .await;
             if let Err(err) = result {
-                return Err(self.map_quickjs_error(err));
+                return Err(self.map_quickjs_error(&err));
             }
 
             // Drain microtasks until fixpoint
@@ -2220,10 +2220,10 @@ mod tests {
 
             let err = runtime
                 .eval(
-                    r#"
+                    r"
                     let sum = 0;
                     for (let i = 0; i < 1000000; i++) { sum += i; }
-                    "#,
+                    ",
                 )
                 .await
                 .expect_err("expected budget exceed");
