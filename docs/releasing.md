@@ -23,6 +23,14 @@ This repo ships:
 
 Note: dependencies that specify both `version` and `path` are expected to publish using the `version` constraint; ensure those versions exist on crates.io before tagging.
 
+### Publishing GitHub Releases binaries
+`.github/workflows/release.yml` is triggered on tag pushes matching `v*` and will:
+- build `pi` for Linux/macOS/Windows (release profile)
+- attach binaries, per-target build manifests, and `SHA256SUMS` to a GitHub Release
+- mark the GitHub Release as a pre-release if the tag contains `-` (e.g. `-rc.1`)
+
+Release notes are extracted from `CHANGELOG.md` on a best-effort basis; ensure the changelog contains a `##` heading with the version string for the tag you are cutting.
+
 ## When do we call it 1.0?
 We call it `1.0.0` when:
 - CI is green on Linux/macOS/Windows (`.github/workflows/ci.yml`)
@@ -47,7 +55,9 @@ Until then, `0.x` releases are allowed to break behavior when it improves correc
 6) **Tag**:
    - `git tag vX.Y.Z`
    - `git push origin vX.Y.Z`
-7) **Verify** GitHub Actions publish job and/or dry-run output.
+7) **Verify** GitHub Actions:
+   - `Publish` workflow (crates.io publish) behaves as expected
+   - `Release (GitHub binaries)` workflow creates a GitHub Release with binaries + `SHA256SUMS`
 
 ## Pre-release flow (rc)
 Use a pre-release tag to exercise CI/publish validation without publishing to crates.io:
@@ -55,3 +65,17 @@ Use a pre-release tag to exercise CI/publish validation without publishing to cr
 
 This should run the `Publish` workflow planning step and skip the crates publish step.
 
+## Pre-release checklist
+- CI is green on `main` (Linux/macOS/Windows).
+- Local gates are green:
+  - `cargo fmt --check`
+  - `cargo clippy --all-targets -- -D warnings`
+  - `cargo test --all-targets`
+- `CHANGELOG.md` updated for the version you’re tagging.
+- Benchmarks run if this release is performance-sensitive (see `BENCHMARKS.md`).
+
+## Post-release checklist
+- GitHub Release exists and includes expected artifacts for each platform.
+- `SHA256SUMS` matches downloaded artifacts.
+- Crates.io publish succeeded (if configured) and the version matches the tag.
+- Smoke test install paths (download binary + run `pi --version`).
