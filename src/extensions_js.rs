@@ -3058,15 +3058,22 @@ function __pi_make_extension_ui(hasUI) {
             void pi.ui('notify', payload).catch(() => {});
         },
         setStatus: (statusKey, statusText) => {
+            const key = String(statusKey === undefined || statusKey === null ? '' : statusKey);
+            const text = String(statusText === undefined || statusText === null ? '' : statusText);
             void pi.ui('setStatus', {
-                statusKey: String(statusKey === undefined || statusKey === null ? '' : statusKey),
-                statusText: String(statusText === undefined || statusText === null ? '' : statusText),
+                statusKey: key,
+                statusText: text,
+                text: text, // compat: some UI surfaces only consume `text`
             }).catch(() => {});
         },
         setWidget: (widgetKey, lines) => {
             if (!hasUI) return;
             const payload = { widgetKey: String(widgetKey === undefined || widgetKey === null ? '' : widgetKey) };
-            if (Array.isArray(lines)) payload.lines = lines.map((v) => String(v));
+            if (Array.isArray(lines)) {
+                payload.lines = lines.map((v) => String(v));
+                payload.widgetLines = payload.lines; // compat with pi-mono RPC naming
+                payload.content = payload.lines.join('\n'); // compat: some UI surfaces expect a single string
+            }
             void pi.ui('setWidget', payload).catch(() => {});
         },
         setTitle: (title) => {
