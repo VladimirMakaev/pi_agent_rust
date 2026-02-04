@@ -3151,73 +3151,112 @@ async fn dispatch_hostcall_tool(
 
 #[allow(clippy::future_not_send)]
 async fn dispatch_hostcall_exec(_call_id: &str, cmd: &str, payload: Value) -> HostcallOutcome {
-    let args = payload
-        .get("args")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .map(|v| {
-                    v.as_str()
-                        .map_or_else(|| v.to_string(), ToString::to_string)
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let args_value = payload.get("args").cloned().unwrap_or(Value::Null);
+    let args_array = match args_value {
+        Value::Null => Vec::new(),
+        Value::Array(items) => items,
+        _ => {
+            return HostcallOutcome::Error {
+                code: "invalid_request".to_string(),
+                message: "exec args must be an array".to_string(),
+            };
+        }
+    };
+
+    let args = args_array
+        .iter()
+        .map(|v| v.as_str().map_or_else(|| v.to_string(), ToString::to_string))
+        .collect::<Vec<_>>();
+
     let options = payload.get("options").cloned().unwrap_or_else(|| json!({}));
-    let cwd = options
-        .get("cwd")
-        .and_then(Value::as_str)
-        .map(PathBuf::from);
+    let cwd = options.get("cwd").and_then(Value::as_str).map(ToString::to_string);
     let timeout_ms = options
-        .get("timeout_ms")
+        .get("timeout")
         .and_then(Value::as_u64)
-        .or_else(|| options.get("timeoutMs").and_then(Value::as_u64));
+        .or_else(|| options.get("timeoutMs").and_then(Value::as_u64))
+        .or_else(|| options.get("timeout_ms").and_then(Value::as_u64))
+        .filter(|ms| *ms > 0);
 
     let cmd = cmd.to_string();
     let (tx, rx) = oneshot::channel();
     thread::spawn(move || {
-        let result = Command::new(&cmd)
-            .args(&args)
-            .current_dir(cwd.unwrap_or_else(|| PathBuf::from(".")))
-            .output()
-            .map_err(|err| err.to_string())
-            .map(|output| {
-                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                let exit_code = output.status.code().unwrap_or(-1);
-                json!({
-                    "stdout": stdout,
-                    "stderr": stderr,
-                    "exitCode": exit_code,
-                })
+        let result: std::result::Result<Value, String> = (|| {
+            let mut command = Command::new(&cmd);
+            command
+                .args(&args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+
+            if let Some(cwd) = cwd.as_ref() {
+                command.current_dir(cwd);
+            }
+
+            let mut child = command.spawn().map_err(|err| err.to_string())?;
+            let pid = child.id();
+
+            let mut stdout = child.stdout.take().ok_or("Missing stdout pipe")?;
+            let mut stderr = child.stderr.take().ok_or("Missing stderr pipe")?;
+
+            let stdout_handle = thread::spawn(move || {
+                let mut buf = Vec::new();
+                let _ = stdout.read_to_end(&mut buf);
+                buf
             });
+            let stderr_handle = thread::spawn(move || {
+                let mut buf = Vec::new();
+                let _ = stderr.read_to_end(&mut buf);
+                buf
+            });
+
+            let start = Instant::now();
+            let mut killed = false;
+            let status = loop {
+                if let Some(status) = child.try_wait().map_err(|err| err.to_string())? {
+                    break status;
+                }
+
+                if let Some(timeout_ms) = timeout_ms {
+                    if start.elapsed() >= Duration::from_millis(timeout_ms) {
+                        killed = true;
+                        crate::tools::kill_process_tree(Some(pid));
+                        let _ = child.kill();
+                        break child.wait().map_err(|err| err.to_string())?;
+                    }
+                }
+
+                thread::sleep(Duration::from_millis(10));
+            };
+
+            let stdout_bytes = stdout_handle.join().unwrap_or_else(|_| Vec::new());
+            let stderr_bytes = stderr_handle.join().unwrap_or_else(|_| Vec::new());
+
+            let stdout = String::from_utf8_lossy(&stdout_bytes).to_string();
+            let stderr = String::from_utf8_lossy(&stderr_bytes).to_string();
+            let code = status.code().unwrap_or(0);
+
+            Ok(json!({
+                "stdout": stdout,
+                "stderr": stderr,
+                "code": code,
+                "killed": killed,
+            }))
+        })();
+
         let cx = Cx::for_request();
         let _ = tx.send(&cx, result);
     });
 
     let cx = Cx::for_request();
-    let result = if let Some(timeout_ms) = timeout_ms {
-        match timeout(wall_now(), Duration::from_millis(timeout_ms), rx.recv(&cx)).await {
-            Ok(Ok(res)) => Ok(res),
-            Ok(Err(_)) => Err(Error::extension("exec task cancelled")),
-            Err(_) => Err(Error::extension("exec timeout")),
-        }
-    } else {
-        rx.recv(&cx)
-            .await
-            .map_err(|_| Error::extension("exec task cancelled"))
-    };
-
-    match result {
+    match rx.recv(&cx).await {
         Ok(Ok(value)) => HostcallOutcome::Success(value),
         Ok(Err(err)) => HostcallOutcome::Error {
             code: "io".to_string(),
             message: err,
         },
-        Err(err) => HostcallOutcome::Error {
-            code: "timeout".to_string(),
-            message: err.to_string(),
+        Err(_) => HostcallOutcome::Error {
+            code: "internal".to_string(),
+            message: "exec task cancelled".to_string(),
         },
     }
 }
