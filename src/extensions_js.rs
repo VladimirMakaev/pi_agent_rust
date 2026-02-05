@@ -38,11 +38,11 @@ use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
+use std::fmt::Write as _;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::fmt::Write as _;
 use std::{fs, path::Path, path::PathBuf};
 use swc_common::{FileName, GLOBALS, Globals, Mark, SourceMap, sync::Lrc};
 use swc_ecma_ast::{Module as SwcModule, Pass, Program as SwcProgram};
@@ -1047,6 +1047,7 @@ impl JsModuleResolver for PiJsResolver {
             "string_decoder" => "node:string_decoder",
             "querystring" => "node:querystring",
             "process" => "node:process",
+            "stream/promises" => "node:stream/promises",
             other => other,
         };
 
@@ -1115,9 +1116,12 @@ fn compile_module_source(
         .map_err(|err| rquickjs::Error::new_loading_message(name, format!("read: {err}")))?;
 
     let compiled = match extension {
-        "ts" | "tsx" => transpile_typescript_module(&raw, name).map_err(|message| {
-            rquickjs::Error::new_loading_message(name, format!("transpile: {message}"))
-        })?,
+        "ts" | "tsx" => {
+            let transpiled = transpile_typescript_module(&raw, name).map_err(|message| {
+                rquickjs::Error::new_loading_message(name, format!("transpile: {message}"))
+            })?;
+            maybe_cjs_to_esm(&transpiled)
+        }
         "js" | "mjs" => maybe_cjs_to_esm(&raw),
         "json" => json_module_to_esm(&raw, name).map_err(|message| {
             rquickjs::Error::new_loading_message(name, format!("json: {message}"))
@@ -1215,33 +1219,29 @@ fn resolve_existing_module_candidate(path: PathBuf) -> Option<PathBuf> {
 /// Detect if a JavaScript source uses CommonJS patterns (`require(...)` or
 /// `module.exports`) and transform it into an ESM-compatible wrapper.
 ///
-/// The transformation:
-/// 1. Extracts all `require("...")` / `require('...')` specifiers
-/// 2. Generates ESM `import` statements for each unique specifier
-/// 3. Wraps the original code with `module`/`exports`/`require` shim
-/// 4. Re-exports `module.exports` as the default ESM export
+/// Handles two cases:
+/// 1. **Pure CJS** (no ESM `import`/`export`): full wrapper with
+///    `module`/`exports`/`require` shim + `export default module.exports`
+/// 2. **Mixed** (ESM imports + `require()` calls): inject `import` statements
+///    for require targets and a `require()` function, preserving existing ESM
+#[allow(clippy::too_many_lines)]
 fn maybe_cjs_to_esm(source: &str) -> String {
-    // Quick check: skip if the file doesn't use CJS patterns
-    if !source.contains("require(") && !source.contains("module.exports") {
+    let has_require = source.contains("require(");
+    let has_module_exports = source.contains("module.exports");
+
+    if !has_require && !has_module_exports {
         return source.to_string();
     }
 
-    // Also skip files that already use ESM patterns (import/export)
-    // But be careful not to match require("...") in comments
     let has_esm = source.lines().any(|line| {
         let trimmed = line.trim();
         (trimmed.starts_with("import ") || trimmed.starts_with("export "))
             && !trimmed.starts_with("//")
     });
-    if has_esm {
-        return source.to_string();
-    }
 
-    // Extract all require() specifiers using a simple pattern matcher
+    // Extract all require() specifiers
     let mut specifiers: Vec<String> = Vec::new();
     let mut seen = HashSet::new();
-
-    // Match require("...") and require('...')
     let re = regex::Regex::new(r#"require\(\s*["']([^"']+)["']\s*\)"#).unwrap();
     for cap in re.captures_iter(source) {
         let spec = cap[1].to_string();
@@ -1250,65 +1250,56 @@ fn maybe_cjs_to_esm(source: &str) -> String {
         }
     }
 
-    // Generate ESM imports
+    if specifiers.is_empty() && !has_module_exports {
+        return source.to_string();
+    }
+    if specifiers.is_empty() && has_esm {
+        return source.to_string();
+    }
+
     let mut output = String::with_capacity(source.len() + 512);
+
+    // Generate ESM imports for require targets
     for (i, spec) in specifiers.iter().enumerate() {
         let _ = writeln!(output, "import * as __cjs_req_{i} from {spec:?};");
     }
 
-    // Build require map + shim
-    output.push_str("const __cjs_req_map = {");
-    for (i, spec) in specifiers.iter().enumerate() {
-        if i > 0 {
-            output.push(',');
+    // Build require map + function
+    if !specifiers.is_empty() {
+        output.push_str("const __cjs_req_map = {");
+        for (i, spec) in specifiers.iter().enumerate() {
+            if i > 0 {
+                output.push(',');
+            }
+            let _ = write!(output, "\n  {spec:?}: __cjs_req_{i}");
         }
-        let _ = write!(output, "\n  {spec:?}: __cjs_req_{i}");
+        output.push_str("\n};\n");
+        output.push_str(
+            "function require(s) {\n\
+             \x20 const m = __cjs_req_map[s];\n\
+             \x20 if (!m) throw new Error('Cannot find module: ' + s);\n\
+             \x20 return m.default !== undefined && typeof m.default === 'object' \
+                  ? m.default : m;\n\
+             }\n",
+        );
     }
-    output.push_str("\n};\n");
-    output.push_str(
-        "const module = { exports: {} };\n\
-         const exports = module.exports;\n\
-         function require(s) {\n\
-         \x20 const m = __cjs_req_map[s];\n\
-         \x20 if (!m) throw new Error('Cannot find module: ' + s);\n\
-         \x20 return m.default !== undefined && typeof m.default === 'object' ? m.default : m;\n\
-         }\n",
-    );
 
-    // Append original source
+    if !has_esm {
+        // Pure CJS: also add module/exports wrapper
+        output.push_str(
+            "const module = { exports: {} };\n\
+             const exports = module.exports;\n",
+        );
+    }
+
     output.push_str(source);
     output.push('\n');
 
-    // Export module.exports
-    output.push_str("export default module.exports;\n");
-
-    // Try to extract named exports from module.exports = { ... } pattern
-    let exports_re = regex::Regex::new(r"module\.exports\s*=\s*\{([^}]+)\}").unwrap();
-    if let Some(cap) = exports_re.captures(source) {
-        let names: Vec<&str> = cap[1]
-            .split(',')
-            .filter_map(|s| {
-                let trimmed = s.trim();
-                // Handle "name" and "name: value" patterns
-                let name = trimmed.split(':').next()?.trim();
-                if name.is_empty()
-                    || !name
-                        .chars()
-                        .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
-                {
-                    return None;
-                }
-                Some(name)
-            })
-            .collect();
-        if !names.is_empty() {
-            let name_list = names.join(", ");
-            let _ = write!(
-                output,
-                "const {{ {name_list} }} = module.exports;\n\
-                 export {{ {name_list} }};\n"
-            );
-        }
+    if !has_esm {
+        // Pure CJS: export module.exports as default only.
+        // Named re-exports are omitted to avoid "invalid redefinition"
+        // errors when the original source already declares matching names.
+        output.push_str("export default module.exports;\n");
     }
 
     output
@@ -1462,7 +1453,12 @@ export function getApiProvider() {
   return "anthropic";
 }
 
-export default { StringEnum, calculateCost, createAssistantMessageEventStream, streamSimpleAnthropic, streamSimpleOpenAIResponses, complete, completeSimple, getModel, getApiProvider };
+export function getModels() {
+  // Return a list of available model identifiers
+  return ["claude-sonnet-4-5", "claude-haiku-3-5"];
+}
+
+export default { StringEnum, calculateCost, createAssistantMessageEventStream, streamSimpleAnthropic, streamSimpleOpenAIResponses, complete, completeSimple, getModel, getApiProvider, getModels };
 "#
         .trim()
         .to_string(),
@@ -3005,6 +3001,25 @@ export default { Stream, Readable, Writable, Duplex, Transform, PassThrough };
         .to_string(),
     );
 
+    // node:stream/promises — promise-based stream utilities
+    modules.insert(
+        "node:stream/promises".to_string(),
+        r"
+import { Readable, Writable } from 'node:stream';
+export async function pipeline(...streams) {
+  // Stub pipeline: just resolves immediately
+  return;
+}
+export async function finished(stream) {
+  // Stub finished: resolves immediately
+  return;
+}
+export default { pipeline, finished };
+"
+        .trim()
+        .to_string(),
+    );
+
     // node:string_decoder — often imported by stream consumers
     modules.insert(
         "node:string_decoder".to_string(),
@@ -4448,7 +4463,7 @@ function __pi_register_tool(spec) {
 
     const toolSpec = {
         name: name,
-        label: spec.label ? String(spec.label) : name,
+        label: spec.label != null ? String(spec.label) : name,
         description: spec.description ? String(spec.description) : '',
         parameters: spec.parameters || { type: 'object', properties: {} },
     };
