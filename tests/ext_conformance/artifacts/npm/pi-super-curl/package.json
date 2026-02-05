@@ -1,0 +1,46 @@
+{
+  "name": "pi-super-curl",
+  "version": "1.1.1",
+  "pi": {
+    "extensions": ["./index.ts"],
+    "video": "https://raw.githubusercontent.com/Graffioh/pi-super-curl/main/demo.mp4"
+  },
+  "description": "HTTP request extension for pi shitty coding agent with auto-config, JWT generation, and named endpoints",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "extension",
+    "http",
+    "curl",
+    "api",
+    "rest",
+    "jwt",
+    "postman",
+    "claude",
+    "gemini",
+    "codex"
+  ],
+  "author": "Graffioh",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Graffioh/pi-super-curl"
+  },
+  "homepage": "https://github.com/Graffioh/pi-super-curl#readme",
+  "bugs": {
+    "url": "https://github.com/Graffioh/pi-super-curl/issues"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.0",
+    "jsonwebtoken": "^9.0.2",
+    "uuid": "^11.0.0"
+  },
+  "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.9",
+    "@types/node": "^25.1.0",
+    "@types/uuid": "^10.0.0",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,3 @@
+[submodule "mcphub"]
+	path = mcphub
+	url = https://github.com/vaayne/mcphub

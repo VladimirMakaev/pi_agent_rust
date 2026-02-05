@@ -1,0 +1,44 @@
+{
+  "name": "pi-wakatime",
+  "version": "1.0.0",
+  "description": "WakaTime extension for pi coding agent - track AI coding activity and metrics",
+  "main": "src/index.ts",
+  "files": [
+    "src/",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "pi-package",
+    "wakatime",
+    "pi",
+    "coding-agent",
+    "ai",
+    "metrics",
+    "time-tracking",
+    "productivity"
+  ],
+  "author": "ttttmr",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ttttmr/pi-wakatime.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ttttmr/pi-wakatime/issues"
+  },
+  "homepage": "https://github.com/ttttmr/pi-wakatime#readme",
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.10"
+  },
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  }
+}

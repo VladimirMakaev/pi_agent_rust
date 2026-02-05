@@ -1,0 +1,37 @@
+{
+  "name": "@aliou/pi-providers",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi",
+    "providers",
+    "usage"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aliou/pi-extensions"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "*.ts",
+    "providers",
+    "rate-limits",
+    "commands",
+    "hooks",
+    "collectors",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": ">=0.51.0"
+  }
+}

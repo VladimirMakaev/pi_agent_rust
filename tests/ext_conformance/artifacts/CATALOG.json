@@ -1,0 +1,795 @@
+{
+  "extensions": [
+    {
+      "name": "antigravity-image-gen",
+      "type": "single-file",
+      "tier": "complex",
+      "capabilities_used": [
+        "http",
+        "tool"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 12549
+    },
+    {
+      "name": "auto-commit-on-exit",
+      "type": "single-file",
+      "tier": "simple",
+      "capabilities_used": [
+        "event_hook",
+        "exec",
+        "session",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 1569
+    },
+    {
+      "name": "bash-spawn-hook",
+      "type": "single-file",
+      "tier": "simple",
+      "capabilities_used": [
+        "tool"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 692
+    },
+    {
+      "name": "bookmark",
+      "type": "single-file",
+      "tier": "medium",
+      "capabilities_used": [
+        "session",
+        "slash_command",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 1553
+    },
+    {
+      "name": "claude-rules",
+      "type": "single-file",
+      "tier": "simple",
+      "capabilities_used": [
+        "event_hook",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 2486
+    },
+    {
+      "name": "confirm-destructive",
+      "type": "single-file",
+      "tier": "simple",
+      "capabilities_used": [
+        "event_hook",
+        "session",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 1678
+    },
+    {
+      "name": "custom-compaction",
+      "type": "single-file",
+      "tier": "medium",
+      "capabilities_used": [
+        "event_hook",
+        "session",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 4069
+    },
+    {
+      "name": "custom-footer",
+      "type": "single-file",
+      "tier": "medium",
+      "capabilities_used": [
+        "session",
+        "slash_command",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 2143
+    },
+    {
+      "name": "custom-header",
+      "type": "single-file",
+      "tier": "medium",
+      "capabilities_used": [
+        "event_hook",
+        "slash_command",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 2395
+    },
+    {
+      "name": "custom-provider-anthropic",
+      "type": "single-file",
+      "tier": "complex",
+      "capabilities_used": [
+        "provider"
+      ],
+      "has_deps": true,
+      "file_count": 4,
+      "total_bytes": 20192
+    },
+    {
+      "name": "custom-provider-gitlab-duo",
+      "type": "multi-file",
+      "tier": "complex",
+      "capabilities_used": [
+        "provider"
+      ],
+      "has_deps": true,
+      "file_count": 4,
+      "total_bytes": 13722
+    },
+    {
+      "name": "custom-provider-qwen-cli",
+      "type": "single-file",
+      "tier": "complex",
+      "capabilities_used": [
+        "provider"
+      ],
+      "has_deps": true,
+      "file_count": 3,
+      "total_bytes": 10442
+    },
+    {
+      "name": "dirty-repo-guard",
+      "type": "single-file",
+      "tier": "medium",
+      "capabilities_used": [
+        "event_hook",
+        "exec",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 1477
+    },
+    {
+      "name": "doom-overlay",
+      "type": "multi-file",
+      "tier": "complex",
+      "capabilities_used": [
+        "slash_command",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 11,
+      "total_bytes": 466917
+    },
+    {
+      "name": "dynamic-resources",
+      "type": "single-file",
+      "tier": "simple",
+      "capabilities_used": [
+        "event_hook"
+      ],
+      "has_deps": false,
+      "file_count": 4,
+      "total_bytes": 2826
+    },
+    {
+      "name": "event-bus",
+      "type": "single-file",
+      "tier": "medium",
+      "capabilities_used": [
+        "event_hook",
+        "slash_command",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 1346
+    },
+    {
+      "name": "file-trigger",
+      "type": "single-file",
+      "tier": "medium",
+      "capabilities_used": [
+        "event_hook",
+        "session",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 1031
+    },
+    {
+      "name": "git-checkpoint",
+      "type": "single-file",
+      "tier": "medium",
+      "capabilities_used": [
+        "event_hook",
+        "exec",
+        "session",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 1466
+    },
+    {
+      "name": "handoff",
+      "type": "single-file",
+      "tier": "complex",
+      "capabilities_used": [
+        "session",
+        "slash_command",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 4628
+    },
+    {
+      "name": "hello",
+      "type": "single-file",
+      "tier": "minimal",
+      "capabilities_used": [
+        "tool"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 627
+    },
+    {
+      "name": "inline-bash",
+      "type": "single-file",
+      "tier": "medium",
+      "capabilities_used": [
+        "event_hook",
+        "exec",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 2956
+    },
+    {
+      "name": "input-transform",
+      "type": "single-file",
+      "tier": "simple",
+      "capabilities_used": [
+        "event_hook",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 1442
+    },
+    {
+      "name": "interactive-shell",
+      "type": "single-file",
+      "tier": "complex",
+      "capabilities_used": [
+        "event_hook",
+        "exec",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 4778
+    },
+    {
+      "name": "mac-system-theme",
+      "type": "single-file",
+      "tier": "simple",
+      "capabilities_used": [
+        "event_hook",
+        "exec",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 1195
+    },
+    {
+      "name": "message-renderer",
+      "type": "single-file",
+      "tier": "medium",
+      "capabilities_used": [
+        "session",
+        "slash_command",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 1906
+    },
+    {
+      "name": "modal-editor",
+      "type": "single-file",
+      "tier": "medium",
+      "capabilities_used": [
+        "event_hook",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 2413
+    },
+    {
+      "name": "model-status",
+      "type": "single-file",
+      "tier": "simple",
+      "capabilities_used": [
+        "event_hook",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 955
+    },
+    {
+      "name": "notify",
+      "type": "single-file",
+      "tier": "minimal",
+      "capabilities_used": [
+        "event_hook"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 776
+    },
+    {
+      "name": "overlay-qa-tests",
+      "type": "single-file",
+      "tier": "complex",
+      "capabilities_used": [
+        "exec",
+        "slash_command",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 28484
+    },
+    {
+      "name": "overlay-test",
+      "type": "single-file",
+      "tier": "medium",
+      "capabilities_used": [
+        "slash_command",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 5367
+    },
+    {
+      "name": "permission-gate",
+      "type": "single-file",
+      "tier": "simple",
+      "capabilities_used": [
+        "event_hook",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 1017
+    },
+    {
+      "name": "pirate",
+      "type": "single-file",
+      "tier": "simple",
+      "capabilities_used": [
+        "event_hook",
+        "slash_command"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 1459
+    },
+    {
+      "name": "plan-mode",
+      "type": "multi-file",
+      "tier": "complex",
+      "capabilities_used": [
+        "event_hook",
+        "flag",
+        "session",
+        "shortcut",
+        "slash_command",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 3,
+      "total_bytes": 16764
+    },
+    {
+      "name": "preset",
+      "type": "single-file",
+      "tier": "complex",
+      "capabilities_used": [
+        "event_hook",
+        "flag",
+        "session",
+        "shortcut",
+        "slash_command",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 13339
+    },
+    {
+      "name": "protected-paths",
+      "type": "single-file",
+      "tier": "simple",
+      "capabilities_used": [
+        "event_hook",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 806
+    },
+    {
+      "name": "qna",
+      "type": "single-file",
+      "tier": "medium",
+      "capabilities_used": [
+        "session",
+        "slash_command",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 3554
+    },
+    {
+      "name": "question",
+      "type": "single-file",
+      "tier": "complex",
+      "capabilities_used": [
+        "tool",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 7764
+    },
+    {
+      "name": "questionnaire",
+      "type": "single-file",
+      "tier": "complex",
+      "capabilities_used": [
+        "tool",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 12807
+    },
+    {
+      "name": "rainbow-editor",
+      "type": "single-file",
+      "tier": "medium",
+      "capabilities_used": [
+        "event_hook",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 2384
+    },
+    {
+      "name": "rpc-demo",
+      "type": "single-file",
+      "tier": "medium",
+      "capabilities_used": [
+        "event_hook",
+        "session",
+        "slash_command",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 3771
+    },
+    {
+      "name": "sandbox",
+      "type": "single-file",
+      "tier": "complex",
+      "capabilities_used": [
+        "event_hook",
+        "exec",
+        "flag",
+        "slash_command",
+        "tool",
+        "ui"
+      ],
+      "has_deps": true,
+      "file_count": 4,
+      "total_bytes": 12213
+    },
+    {
+      "name": "send-user-message",
+      "type": "single-file",
+      "tier": "medium",
+      "capabilities_used": [
+        "session",
+        "slash_command",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 2830
+    },
+    {
+      "name": "session-name",
+      "type": "single-file",
+      "tier": "simple",
+      "capabilities_used": [
+        "session",
+        "slash_command",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 783
+    },
+    {
+      "name": "shutdown-command",
+      "type": "single-file",
+      "tier": "medium",
+      "capabilities_used": [
+        "slash_command",
+        "tool",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 2053
+    },
+    {
+      "name": "snake",
+      "type": "single-file",
+      "tier": "complex",
+      "capabilities_used": [
+        "slash_command",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 9409
+    },
+    {
+      "name": "space-invaders",
+      "type": "single-file",
+      "tier": "complex",
+      "capabilities_used": [
+        "slash_command",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 15162
+    },
+    {
+      "name": "ssh",
+      "type": "single-file",
+      "tier": "complex",
+      "capabilities_used": [
+        "event_hook",
+        "exec",
+        "flag",
+        "tool",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 7289
+    },
+    {
+      "name": "status-line",
+      "type": "single-file",
+      "tier": "simple",
+      "capabilities_used": [
+        "event_hook",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 1137
+    },
+    {
+      "name": "subagent",
+      "type": "multi-file",
+      "tier": "complex",
+      "capabilities_used": [
+        "exec",
+        "session",
+        "slash_command",
+        "tool",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 10,
+      "total_bytes": 47908
+    },
+    {
+      "name": "summarize",
+      "type": "single-file",
+      "tier": "medium",
+      "capabilities_used": [
+        "session",
+        "slash_command",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 5006
+    },
+    {
+      "name": "system-prompt-header",
+      "type": "single-file",
+      "tier": "minimal",
+      "capabilities_used": [
+        "event_hook",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 526
+    },
+    {
+      "name": "timed-confirm",
+      "type": "single-file",
+      "tier": "simple",
+      "capabilities_used": [
+        "slash_command",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 2236
+    },
+    {
+      "name": "titlebar-spinner",
+      "type": "single-file",
+      "tier": "simple",
+      "capabilities_used": [
+        "event_hook",
+        "session",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 1617
+    },
+    {
+      "name": "todo",
+      "type": "single-file",
+      "tier": "complex",
+      "capabilities_used": [
+        "event_hook",
+        "session",
+        "slash_command",
+        "tool",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 8966
+    },
+    {
+      "name": "tool-override",
+      "type": "single-file",
+      "tier": "medium",
+      "capabilities_used": [
+        "slash_command",
+        "tool",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 4756
+    },
+    {
+      "name": "tools",
+      "type": "single-file",
+      "tier": "medium",
+      "capabilities_used": [
+        "event_hook",
+        "session",
+        "slash_command",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 3872
+    },
+    {
+      "name": "trigger-compact",
+      "type": "single-file",
+      "tier": "simple",
+      "capabilities_used": [
+        "event_hook",
+        "session",
+        "slash_command",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 1025
+    },
+    {
+      "name": "truncated-tool",
+      "type": "single-file",
+      "tier": "medium",
+      "capabilities_used": [
+        "exec",
+        "tool",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 6367
+    },
+    {
+      "name": "widget-placement",
+      "type": "single-file",
+      "tier": "minimal",
+      "capabilities_used": [
+        "event_hook",
+        "ui"
+      ],
+      "has_deps": false,
+      "file_count": 1,
+      "total_bytes": 526
+    },
+    {
+      "name": "with-deps",
+      "type": "single-file",
+      "tier": "simple",
+      "capabilities_used": [
+        "tool"
+      ],
+      "has_deps": true,
+      "file_count": 4,
+      "total_bytes": 2403
+    }
+  ],
+  "summary": {
+    "total": 60,
+    "by_tier": {
+      "minimal": 4,
+      "simple": 17,
+      "medium": 21,
+      "complex": 18
+    },
+    "by_type": {
+      "single-file": 56,
+      "multi-file": 4
+    },
+    "with_deps": 5,
+    "capability_counts": {
+      "ui": 50,
+      "event_hook": 33,
+      "slash_command": 27,
+      "session": 21,
+      "tool": 13,
+      "exec": 11,
+      "flag": 4,
+      "provider": 3,
+      "shortcut": 2,
+      "http": 1
+    }
+  }
+}

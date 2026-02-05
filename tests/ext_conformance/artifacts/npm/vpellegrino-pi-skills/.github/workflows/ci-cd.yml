@@ -1,0 +1,235 @@
+name: CI/CD
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Validate package.json
+        run: |
+          echo "Validating package.json..."
+          npm pack --dry-run
+          echo "✓ package.json is valid"
+
+      - name: Validate skills structure
+        run: |
+          echo "Validating skills..."
+          FAILED=0
+
+          for skill in skills/*; do
+            if [ -d "$skill" ]; then
+              SKILL_NAME=$(basename "$skill")
+
+              # Check for SKILL.md
+              if [ ! -f "$skill/SKILL.md" ]; then
+                echo "❌ Error: $SKILL_NAME is missing SKILL.md"
+                FAILED=1
+                continue
+              fi
+
+              # Extract frontmatter
+              FRONTMATTER=$(sed -n '/^---$/,/^---$/p' "$skill/SKILL.md")
+
+              # Check for required fields
+              if ! echo "$FRONTMATTER" | grep -q 'name:'; then
+                echo "❌ Error: $SKILL_NAME is missing 'name' in frontmatter"
+                FAILED=1
+              fi
+
+              if ! echo "$FRONTMATTER" | grep -q 'description:'; then
+                echo "❌ Error: $SKILL_NAME is missing 'description' in frontmatter"
+                FAILED=1
+              fi
+
+              # Validate name matches directory
+              SKILL_NAME_FROM_FILE=$(echo "$FRONTMATTER" | grep 'name:' | sed 's/.*name: *//' | xargs)
+              if [ "$SKILL_NAME_FROM_FILE" != "$SKILL_NAME" ]; then
+                echo "❌ Error: $SKILL_NAME frontmatter name ($SKILL_NAME_FROM_FILE) doesn't match directory name"
+                FAILED=1
+              fi
+
+              # Check name format (lowercase, hyphens only)
+              if ! echo "$SKILL_NAME" | grep -qE '^[a-z0-9]+(-[a-z0-9]+)*$'; then
+                echo "❌ Error: $SKILL_NAME has invalid name format (use lowercase, numbers, hyphens only)"
+                FAILED=1
+              fi
+
+              # Check description length
+              DESCRIPTION=$(echo "$FRONTMATTER" | grep 'description:' | sed 's/.*description: *//' | xargs)
+              if [ ${#DESCRIPTION} -gt 1024 ]; then
+                echo "❌ Error: $SKILL_NAME description is too long (max 1024 chars)"
+                FAILED=1
+              fi
+
+              echo "✓ Skill $SKILL_NAME is valid"
+            fi
+          done
+
+          if [ $FAILED -eq 1 ]; then
+            exit 1
+          fi
+
+      - name: Validate extensions
+        run: |
+          echo "Validating extensions..."
+          if [ -d "pi-extensions" ]; then
+            for ext in pi-extensions/*.ts; do
+              if [ -f "$ext" ]; then
+                echo "✓ Extension $ext"
+              fi
+            done
+          else
+            echo "No extensions directory found"
+          fi
+
+      - name: Validate themes
+        run: |
+          echo "Validating themes..."
+          if [ -d "pi-themes" ]; then
+            for theme in pi-themes/*.json; do
+              if [ -f "$theme" ]; then
+                echo "✓ Theme $theme"
+              fi
+            done
+          else
+            echo "No themes directory found"
+          fi
+
+      - name: Check documentation
+        run: |
+          echo "Checking documentation..."
+          REQUIRED_DOCS=("README.md" "SKILLS.md" "EXTENSIONS.md" "THEMES.md" "PROMPTS.md" "CHANGELOG.md")
+
+          for doc in "${REQUIRED_DOCS[@]}"; do
+            if [ ! -f "$doc" ]; then
+              echo "❌ Error: Missing $doc"
+              exit 1
+            fi
+            echo "✓ $doc exists"
+          done
+
+      - name: Validate CHANGELOG.md
+        run: |
+          echo "Validating CHANGELOG.md..."
+          if ! grep -q "## \[Unreleased\]" CHANGELOG.md; then
+            echo "❌ Error: CHANGELOG.md missing [Unreleased] section"
+            exit 1
+          fi
+          echo "✓ CHANGELOG.md is valid"
+
+      - name: Set validation status
+        run: echo "✅ All validations passed!"
+
+  check-version:
+    name: Check Version
+    runs-on: ubuntu-latest
+    needs: validate
+    # Only run version check on push to main, not on PRs
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    outputs:
+      version_changed: ${{ steps.check.outputs.version_changed }}
+      current_version: ${{ steps.check.outputs.current_version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Check if version changed
+        id: check
+        run: |
+          # Get version from package.json in current commit
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+
+          # Get version from package.json in previous commit
+          PREVIOUS_VERSION=$(git show HEAD^:package.json 2>/dev/null | node -p "require('.').version" || echo "0.0.0")
+          echo "previous_version=$PREVIOUS_VERSION" >> $GITHUB_OUTPUT
+
+          # Check if version changed
+          if [ "$CURRENT_VERSION" != "$PREVIOUS_VERSION" ]; then
+            echo "version_changed=true" >> $GITHUB_OUTPUT
+            echo "✓ Version changed from $PREVIOUS_VERSION to $CURRENT_VERSION"
+          else
+            echo "version_changed=false" >> $GITHUB_OUTPUT
+            echo "ℹ️ Version unchanged ($CURRENT_VERSION) - skipping publish"
+          fi
+
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    needs: check-version
+    # Only publish if validation passed AND version changed AND on main branch
+    if: needs.check-version.outputs.version_changed == 'true'
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Build package
+        run: |
+          echo "Building package for npm..."
+          npm pack
+          echo "✓ Package built successfully"
+
+      - name: Publish to npm
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ needs.check-version.outputs.current_version }}
+          release_name: Release v${{ needs.check-version.outputs.current_version }}
+          body: |
+            See [CHANGELOG.md](https://github.com/vitor-duolingo/pi-skills/blob/main/CHANGELOG.md) for details.
+          draft: false
+          prerelease: false
+
+      - name: Notify success
+        run: |
+          echo "✅ Published version ${{ needs.check-version.outputs.current_version }} to npm"
+          echo "🚀 Created GitHub release v${{ needs.check-version.outputs.current_version }}"
+
+  notify-skipped:
+    name: Publish Skipped
+    runs-on: ubuntu-latest
+    needs: check-version
+    # Run if validation passed but version didn't change
+    if: needs.check-version.outputs.version_changed == 'false'
+    steps:
+      - name: Notify
+        run: |
+          echo "ℹ️ Version not changed - skipping npm publish"
+          echo "ℹ️ To publish a new version, update the version in package.json"

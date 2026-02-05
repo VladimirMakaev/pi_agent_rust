@@ -1,0 +1,24 @@
+{
+  "name": "pi-search-agent",
+  "version": "1.0.0",
+  "description": "Semantic codebase search with sub-agent processing",
+  "keywords": ["pi-package", "pi-extension", "semantic-search"],
+  "main": "index.ts",
+  "files": [
+    "index.ts",
+    "SEARCH_AGENT.md",
+    "README.md"
+  ],
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "openai": "^4.56.0"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

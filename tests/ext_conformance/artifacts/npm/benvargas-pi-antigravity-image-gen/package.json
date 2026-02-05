@@ -1,0 +1,44 @@
+{
+  "name": "@benvargas/pi-antigravity-image-gen",
+  "version": "1.1.1",
+  "description": "Google Antigravity image generation tool for pi - Generate images via Gemini and Imagen models with inline terminal rendering",
+  "keywords": [
+    "pi",
+    "pi-package",
+    "pi-extension",
+    "pi-coding-agent",
+    "ai",
+    "image-generation",
+    "antigravity",
+    "gemini",
+    "imagen",
+    "google"
+  ],
+  "type": "module",
+  "files": [
+    "extensions/",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-ai": "*",
+    "@sinclair/typebox": "*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ben-vargas/pi-packages.git",
+    "directory": "packages/pi-antigravity-image-gen"
+  },
+  "author": "Ben Vargas",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/ben-vargas/pi-packages/issues"
+  },
+  "homepage": "https://github.com/ben-vargas/pi-packages/tree/main/packages/pi-antigravity-image-gen#readme"
+}

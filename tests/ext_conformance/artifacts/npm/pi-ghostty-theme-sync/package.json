@@ -1,0 +1,23 @@
+{
+  "name": "pi-ghostty-theme-sync",
+  "version": "0.1.0",
+  "description": "Sync pi theme with Ghostty terminal colors",
+  "keywords": ["pi-package", "ghostty", "theme"],
+  "author": "Can Celik",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ogulcancelik/pi-ghostty-theme-sync.git"
+  },
+  "homepage": "https://github.com/ogulcancelik/pi-ghostty-theme-sync",
+  "bugs": {
+    "url": "https://github.com/ogulcancelik/pi-ghostty-theme-sync/issues"
+  },
+  "files": ["extensions", "README.md", "package.json", "LICENSE"],
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*"
+  },
+  "pi": {
+    "extensions": ["./extensions"]
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "name": "@vpellegrino/pi-skills",
+  "version": "1.0.5",
+  "description": "Vitor's collection of pi coding agent skills, extensions, and themes",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vitor-duolingo/pi-skills.git"
+  },
+  "readme": "README.md",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-skill",
+    "pi-extension",
+    "pi-theme"
+  ],
+  "pi": {
+    "extensions": [
+      "./pi-extensions"
+    ],
+    "skills": [
+      "./skills"
+    ],
+    "themes": [
+      "./pi-themes"
+    ],
+    "prompts": [
+      "./prompts"
+    ]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-tui": "*"
+  }
+}

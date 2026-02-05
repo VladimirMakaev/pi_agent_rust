@@ -1,0 +1,23 @@
+[settings]
+env_file = '.env'
+idiomatic_version_file_enable_tools = []
+experimental = true
+npm.package_manager = 'bun'
+pipx.uvx = true
+python.uv_venv_auto = true
+trusted_config_paths = [
+  '~/workspace',
+]
+
+[env]
+LIBUNWIND_PRINT_DWARF = "0"
+
+[tools]
+rg = "latest"
+jq = "latest"
+uv = "latest"
+bun = "latest"
+node = "23"
+gh = "latest"
+fd = "latest"
+python = "3.12"

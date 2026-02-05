@@ -1,0 +1,52 @@
+{
+  "name": "@imsus/pi-extension-minimax-coding-plan-mcp",
+  "version": "1.0.1",
+  "description": "MiniMax Coding Plan extension for pi coding agent - provides web_search and understand_image tools",
+  "type": "module",
+  "overrides": {
+    "node-domexception": "^2.0.0"
+  },
+  "keywords": [
+    "pi",
+    "pi-coding-agent",
+    "pi-package",
+    "minimax",
+    "coding-plan",
+    "mcp",
+    "web-search",
+    "image-understanding",
+    "extension"
+  ],
+  "author": "imsus <github@imsus.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/imsus/pi-extension-minimax-coding-plan-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/imsus/pi-extension-minimax-coding-plan-mcp/issues"
+  },
+  "homepage": "https://github.com/imsus/pi-extension-minimax-coding-plan-mcp#readme",
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.48"
+  },
+  "devDependencies": {
+    "@mariozechner/pi-coding-agent": "^0.50.3",
+    "@mariozechner/pi-tui": "^0.50.3",
+    "@types/node": "^25.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "extensions/",
+    "skills/",
+    "package.json",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ]
+}

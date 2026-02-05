@@ -1,0 +1,101 @@
+[tools]
+dprint = "latest"
+
+[tasks.format]
+description = "Format code using dprint"
+run = """
+# uvx ruff check --fix
+# Format other supported files using dprint
+dprint fmt
+"""
+
+[tasks."sandbox:build"]
+description = "Build agent sandbox image"
+dir = "sandbox"
+run = """
+docker build \
+    -t vaayne/agent-sandbox:latest \
+    -f Dockerfile \
+    .
+"""
+
+[tasks."sandbox:push"]
+description = "Build agent sandbox image and push to registry"
+dir = "sandbox"
+run = """
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -t vaayne/agent-sandbox:latest \
+  -f Dockerfile \
+  --push .
+"""
+
+[tasks.sync]
+description = "Sync components to various local agent frameworks"
+depends = [
+  "sync:pi",
+  "sync:codex",
+  "sync:claude",
+  "sync:droid",
+  "sync:amp",
+]
+
+[tasks."sync:pi"]
+description = "Sync Pi components to ~/.pi/agent"
+run = """
+mkdir -p ~/.pi/agent
+
+# Remove symlinks if they exist (migration from old setup)
+for item in agents prompts skills extensions AGENTS.md; do
+  [ -L ~/.pi/agent/$item ] && rm ~/.pi/agent/$item
+done
+
+rsync -av --delete ./agents/ ~/.pi/agent/agents/
+rsync -av --delete ./prompts/ ~/.pi/agent/prompts/
+# rsync -av --delete ./skills/ ~/.pi/agent/skills/
+rsync -av ./skills/ ~/.pi/agent/skills/
+# rsync -av --delete ./pi/extensions/ ~/.pi/agent/extensions/
+rsync -av ./_AGENTS.md ~/.pi/agent/AGENTS.md
+
+echo "Synced Pi components to ~/.pi/agent"
+"""
+
+[tasks."sync:codex"]
+description = "Sync components to ~/.codex"
+run = """
+mkdir -p ~/.codex/skills
+rsync -av --delete ./skills/ ~/.codex/skills/
+rsync -av ./_AGENTS.md ~/.codex/AGENTS.md
+echo "Synced components to ~/.codex"
+"""
+
+[tasks."sync:claude"]
+description = "Sync components to ~/.claude"
+run = """
+mkdir -p ~/.claude/skills
+rsync -av --delete ./skills/ ~/.claude/skills/
+rsync -av --delete ./agents/ ~/.claude/agents/
+rsync -av --delete ./prompts/ ~/.claude/commands/
+rsync -av ./_AGENTS.md ~/.claude/CLAUDE.md
+echo "Synced components to ~/.claude"
+"""
+
+[tasks."sync:droid"]
+description = "Sync components to ~/.factory"
+run = """
+mkdir -p ~/.factory/skills
+rsync -av --delete ./skills/ ~/.factory/skills/
+rsync -av --delete ./agents/ ~/.factory/droids/
+rsync -av --delete ./prompts/ ~/.factory/commands/
+rsync -av ./_AGENTS.md ~/.factory/AGENTS.md
+echo "Synced components to ~/.factory"
+"""
+
+[tasks."sync:amp"]
+description = "Sync components to ~/.config/amp"
+run = """
+mkdir -p ~/.config/amp
+# skills read claude skills
+rsync -av --delete ./prompts/ ~/.config/amp/commands/
+rsync -av ./_AGENTS.md ~/.config/amp/AGENTS.md
+echo "Synced components to ~/.config/amp"
+"""

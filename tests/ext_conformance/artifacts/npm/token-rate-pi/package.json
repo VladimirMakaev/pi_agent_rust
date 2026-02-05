@@ -1,0 +1,27 @@
+{
+  "name": "token-rate-pi",
+  "version": "1.0.2",
+  "description": "Token rate status extension for pi-coding-agent - shows average output tokens per second",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"No tests yet\""
+  },
+  "keywords": [
+    "token-rate",
+    "pi-coding-agent",
+    "extension",
+    "pi-package"
+  ],
+  "author": "",
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./token-rate.ts"
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.3",
+    "tsx": "^4.19.2",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,23 @@
+{"ts":1767562703081,"event":"session_start","agent":"test-agent","turn":0}
+{"ts":1767562703152,"event":"turn_start","agent":"test-agent","turn":0}
+{"ts":1767562708675,"event":"turn_end","agent":"test-agent","turn":0,"toolResultCount":0}
+{"ts":1767562708705,"event":"agent_end","agent":"test-agent","turn":0,"messageCount":2}
+{"ts":1767562708733,"event":"turn_start","agent":"test-agent","turn":0}
+{"ts":1767562711514,"event":"tool_call","agent":"test-agent","turn":0,"tool":"read","toolCallId":"toolu_014WW9HkwNH6149aMP2aBbSw","input":{"path":"plan.md"}}
+{"ts":1767562711518,"event":"tool_result","agent":"test-agent","turn":0,"tool":"read","toolCallId":"toolu_014WW9HkwNH6149aMP2aBbSw","error":false}
+{"ts":1767562711597,"event":"turn_end","agent":"test-agent","turn":1,"toolResultCount":1}
+{"ts":1767562711599,"event":"turn_start","agent":"test-agent","turn":1}
+{"ts":1767562715191,"event":"tool_call","agent":"test-agent","turn":1,"tool":"write","toolCallId":"toolu_01E2LPygMgofmPSFd5toB5Yi","input":{"path":"output/test.txt","content":"Hello from test agent"}}
+{"ts":1767562715195,"event":"tool_result","agent":"test-agent","turn":1,"tool":"write","toolCallId":"toolu_01E2LPygMgofmPSFd5toB5Yi","error":false}
+{"ts":1767562715307,"event":"turn_end","agent":"test-agent","turn":2,"toolResultCount":1}
+{"ts":1767562715309,"event":"turn_start","agent":"test-agent","turn":2}
+{"ts":1767562720640,"event":"tool_call","agent":"test-agent","turn":2,"tool":"read","toolCallId":"toolu_01Dk2Cx5QechAbq2HvxWjjXS","input":{"path":"output/test.txt"}}
+{"ts":1767562720645,"event":"tool_result","agent":"test-agent","turn":2,"tool":"read","toolCallId":"toolu_01Dk2Cx5QechAbq2HvxWjjXS","error":false}
+{"ts":1767562720735,"event":"turn_end","agent":"test-agent","turn":3,"toolResultCount":1}
+{"ts":1767562720737,"event":"turn_start","agent":"test-agent","turn":3}
+{"ts":1767562723756,"event":"tool_call","agent":"test-agent","turn":3,"tool":"write","toolCallId":"toolu_01CQoKbbtsdDxUSjTXQxEbNg","input":{"path":"output/status.txt","content":"complete"}}
+{"ts":1767562723759,"event":"tool_result","agent":"test-agent","turn":3,"tool":"write","toolCallId":"toolu_01CQoKbbtsdDxUSjTXQxEbNg","error":false}
+{"ts":1767562723844,"event":"turn_end","agent":"test-agent","turn":4,"toolResultCount":1}
+{"ts":1767562723846,"event":"turn_start","agent":"test-agent","turn":4}
+{"ts":1767562726858,"event":"turn_end","agent":"test-agent","turn":5,"toolResultCount":0}
+{"ts":1767562726871,"event":"agent_end","agent":"test-agent","turn":4,"messageCount":10}

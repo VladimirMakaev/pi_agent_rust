@@ -1,0 +1,28 @@
+name: Update Dependencies
+
+on:
+  schedule:
+    # Run every Monday at 9 AM UTC
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Check for outdated dependencies
+        run: |
+          echo "Checking for outdated npm dependencies..."
+          if [ -f "package.json" ] && [ -d "node_modules" ]; then
+            npm outdated || echo "No outdated dependencies found"
+          else
+            echo "No dependencies to check"
+          fi

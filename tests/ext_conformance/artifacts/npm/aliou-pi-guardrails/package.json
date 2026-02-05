@@ -1,0 +1,41 @@
+{
+  "name": "@aliou/pi-guardrails",
+  "version": "0.6.1",
+  "type": "module",
+  "private": false,
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi",
+    "guardrails",
+    "security"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aliou/pi-extensions"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "video": "https://assets.aliou.me/pi-extensions/demos/pi-guardrails.mp4"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "*.ts",
+    "hooks",
+    "commands",
+    "components",
+    "utils",
+    "README.md"
+  ],
+  "dependencies": {
+    "@aliou/pi-utils-settings": "^0.1.0",
+    "@aliou/sh": "^0.1.0"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": ">=0.51.0"
+  }
+}

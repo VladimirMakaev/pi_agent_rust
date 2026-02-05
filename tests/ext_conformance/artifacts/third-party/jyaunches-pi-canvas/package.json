@@ -1,0 +1,25 @@
+{
+  "name": "pi-canvas",
+  "version": "0.2.0",
+  "description": "Interactive TUI canvases for Pi Coding Agent - calendar, document viewer",
+  "type": "module",
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "keywords": [
+    "pi-coding-agent",
+    "extension",
+    "tui",
+    "calendar",
+    "canvas"
+  ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jyaunches/pi-canvas.git"
+  },
+  "engines": {
+    "pi": ">=0.35.0"
+  }
+}

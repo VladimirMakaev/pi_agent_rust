@@ -1,0 +1,40 @@
+{
+  "name": "@vaayne/pi-subagent",
+  "version": "0.1.0",
+  "description": "Pi extension for delegating tasks to specialized subagents",
+  "author": "Vaayne <liu.vaayne@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vaayne/agent-kit.git",
+    "directory": "extensions/subagent"
+  },
+  "homepage": "https://github.com/vaayne/agent-kit/tree/main/extensions/subagent",
+  "bugs": {
+    "url": "https://github.com/vaayne/agent-kit/issues"
+  },
+  "keywords": ["pi-package", "pi-extension", "subagent", "agent", "delegation", "ai"],
+  "type": "module",
+  "files": [
+    "*.ts",
+    "*.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "scripts": {
+    "lint": "biome lint --write .",
+    "format": "biome format --write ."
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@sinclair/typebox": "*",
+    "typescript": "^5"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.11",
+    "@mariozechner/pi-coding-agent": "^0.51.0",
+    "@types/bun": "latest"
+  }
+}

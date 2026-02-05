@@ -1,0 +1,42 @@
+{
+  "name": "@benvargas/pi-ancestor-discovery",
+  "version": "1.1.1",
+  "description": "Recursive ancestor discovery for pi resources (skills, prompts, themes)",
+  "keywords": [
+    "pi",
+    "pi-package",
+    "pi-extension",
+    "pi-coding-agent",
+    "discovery",
+    "recursive",
+    "ancestor",
+    "skills",
+    "prompts",
+    "themes"
+  ],
+  "type": "module",
+  "files": [
+    "extensions/",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ben-vargas/pi-packages.git",
+    "directory": "packages/pi-ancestor-discovery"
+  },
+  "author": "Ben Vargas",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/ben-vargas/pi-packages/issues"
+  },
+  "homepage": "https://github.com/ben-vargas/pi-packages/tree/main/packages/pi-ancestor-discovery#readme"
+}

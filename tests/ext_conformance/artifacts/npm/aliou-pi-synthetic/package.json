@@ -1,0 +1,35 @@
+{
+  "name": "@aliou/pi-synthetic",
+  "version": "0.4.2",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aliou/pi-synthetic"
+  },
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "video": "https://assets.aliou.me/pi-extensions/demos/pi-synthetic.mp4"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.13",
+    "@changesets/cli": "^2.27.11",
+    "@mariozechner/pi-coding-agent": "0.51.0",
+    "@mariozechner/pi-tui": "0.51.0",
+    "@sinclair/typebox": "^0.34.48",
+    "@types/node": "^25.0.10",
+    "husky": "^9.1.7",
+    "typescript": "^5.9.3"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check",
+    "format": "biome check --write",
+    "changeset": "changeset",
+    "version": "changeset version",
+    "release": "pnpm changeset publish"
+  }
+}

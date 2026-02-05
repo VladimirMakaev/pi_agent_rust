@@ -1,0 +1,467 @@
+================================================================================
+INVENTORY OF PI EXTENSION NPM PACKAGES
+================================================================================
+Generated: 2026-02-05 06:53:28 UTC
+Source: npm registry via 'npm pack'
+Total packages downloaded: 68
+
+================================================================================
+PACKAGES WITH TYPESCRIPT EXTENSION CODE (copied to artifacts)
+================================================================================
+
+--- aliou-pi-extension-dev ---
+  Extension entry points:
+    aliou-pi-extension-dev/index.ts
+    aliou-pi-extension-dev/tools/docs-tool.ts
+    aliou-pi-extension-dev/tools/version-tool.ts
+    aliou-pi-extension-dev/tools/index.ts
+    aliou-pi-extension-dev/commands/index.ts
+    aliou-pi-extension-dev/commands/update.ts
+    aliou-pi-extension-dev/tools/changelog-tool.ts
+    aliou-pi-extension-dev/tools/package-manager-tool.ts
+  API patterns: registerTool ExtensionAPI export-default-function
+  TypeScript files: 9
+
+--- aliou-pi-guardrails ---
+  Extension entry points:
+    aliou-pi-guardrails/index.ts
+    aliou-pi-guardrails/commands/settings-command.ts
+    aliou-pi-guardrails/hooks/permission-gate.ts
+    aliou-pi-guardrails/hooks/index.ts
+    aliou-pi-guardrails/hooks/protect-env-files.ts
+    aliou-pi-guardrails/utils/events.ts
+  API patterns: pi.events ExtensionAPI
+  TypeScript files: 12
+
+--- aliou-pi-linkup ---
+  Extension entry points:
+    aliou-pi-linkup/src/index.ts
+    aliou-pi-linkup/src/tools/web-search.ts
+    aliou-pi-linkup/src/commands/balance.ts
+    aliou-pi-linkup/src/tools/web-fetch.ts
+    aliou-pi-linkup/src/components/index.ts
+    aliou-pi-linkup/src/tools/web-answer.ts
+    aliou-pi-linkup/src/components/balance-renderer.ts
+  API patterns: registerTool ExtensionAPI export-default-function
+  TypeScript files: 9
+
+--- aliou-pi-processes ---
+  Extension entry points:
+    aliou-pi-processes/index.ts
+    aliou-pi-processes/commands/index.ts
+    aliou-pi-processes/tools/index.ts
+    aliou-pi-processes/hooks/index.ts
+    aliou-pi-processes/hooks/process-end.ts
+    aliou-pi-processes/hooks/widget.ts
+    aliou-pi-processes/hooks/cleanup.ts
+    aliou-pi-processes/hooks/message-renderer.ts
+  API patterns: registerTool ExtensionAPI export-default-function
+  TypeScript files: 16
+
+--- aliou-pi-synthetic ---
+  Extension entry points:
+    aliou-pi-synthetic/src/index.ts
+    aliou-pi-synthetic/src/tools/search.ts
+    aliou-pi-synthetic/src/providers/index.ts
+    aliou-pi-synthetic/src/commands/quotas.ts
+  API patterns: registerTool registerProvider ExtensionAPI
+  TypeScript files: 9
+
+--- aliou-pi-toolchain ---
+  Extension entry points:
+    aliou-pi-toolchain/index.ts
+    aliou-pi-toolchain/blockers/brew.ts
+    aliou-pi-toolchain/commands/settings-command.ts
+    aliou-pi-toolchain/blockers/index.ts
+    aliou-pi-toolchain/blockers/python-confirm.ts
+  API patterns: registerTool ExtensionAPI
+  TypeScript files: 11
+
+--- benvargas-pi-ancestor-discovery ---
+  Extension entry points:
+    benvargas-pi-ancestor-discovery/extensions/index.ts
+  API patterns: ExtensionAPI export-default-function
+  TypeScript files: 1
+
+--- benvargas-pi-antigravity-image-gen ---
+  Extension entry points:
+    benvargas-pi-antigravity-image-gen/extensions/index.ts
+  API patterns: registerTool ExtensionAPI export-default-function
+  TypeScript files: 1
+
+--- benvargas-pi-synthetic-provider ---
+  Extension entry points:
+    benvargas-pi-synthetic-provider/extensions/index.ts
+  API patterns: registerProvider ExtensionAPI export-default-function
+  TypeScript files: 1
+
+--- checkpoint-pi ---
+  Extension entry points:
+    checkpoint-pi/checkpoint.ts
+  API patterns: ExtensionAPI export-default-function
+  TypeScript files: 3
+
+--- imsus-pi-extension-minimax-coding-plan-mcp ---
+  Extension entry points:
+    imsus-pi-extension-minimax-coding-plan-mcp/extensions/index.ts
+  API patterns: registerTool ExtensionAPI export-default-function
+  TypeScript files: 1
+
+--- juanibiapina-pi-extension-settings ---
+  Extension entry points:
+    juanibiapina-pi-extension-settings/dist/index.d.ts
+    juanibiapina-pi-extension-settings/dist/extension.d.ts
+  API patterns: pi.events ExtensionAPI export-default-function
+  TypeScript files: 5
+
+--- juanibiapina-pi-files ---
+  Extension entry points:
+    juanibiapina-pi-files/dist/index.d.ts
+  API patterns: ExtensionAPI export-default-function
+  TypeScript files: 1
+
+--- juanibiapina-pi-gob ---
+  Extension entry points:
+    juanibiapina-pi-gob/dist/index.d.ts
+  API patterns: ExtensionAPI export-default-function
+  TypeScript files: 4
+
+--- lsp-pi ---
+  Extension entry points:
+    lsp-pi/lsp.ts
+    lsp-pi/lsp-tool.ts
+  API patterns: registerTool ExtensionAPI export-default-function
+  TypeScript files: 6
+
+--- marckrenn-pi-sub-bar ---
+  Extension entry points:
+    marckrenn-pi-sub-bar/index.ts
+    marckrenn-pi-sub-bar/node_modules/@marckrenn/pi-sub-core/index.ts
+  API patterns: registerTool pi.events ExtensionAPI export-default-function
+  TypeScript files: 73
+
+--- marckrenn-pi-sub-core ---
+  Extension entry points:
+    marckrenn-pi-sub-core/index.ts
+  API patterns: registerTool pi.events ExtensionAPI export-default-function
+  TypeScript files: 43
+
+--- ogulcancelik-pi-sketch ---
+  Extension entry points:
+    ogulcancelik-pi-sketch/extensions/index.ts
+  API patterns: ExtensionAPI export-default-function
+  TypeScript files: 1
+
+--- permission-pi ---
+  Extension entry points:
+    permission-pi/permission.ts
+  API patterns: ExtensionAPI export-default-function
+  TypeScript files: 3
+
+--- pi-agentic-compaction ---
+  Extension entry points:
+    pi-agentic-compaction/index.ts
+  API patterns: ExtensionAPI export-default-function
+  TypeScript files: 1
+
+--- pi-amplike ---
+  Extension entry points:
+    pi-amplike/extensions/handoff.ts
+    pi-amplike/extensions/session-query.ts
+  API patterns: registerTool ExtensionAPI export-default-function
+  TypeScript files: 2
+
+--- pi-annotate ---
+  Extension entry points:
+    pi-annotate/index.ts
+  API patterns: registerTool ExtensionAPI export-default-function
+  TypeScript files: 2
+
+--- pi-bash-confirm ---
+  Extension entry points:
+    pi-bash-confirm/examples/test-extension.ts
+    pi-bash-confirm/extensions/bash-confirm.ts
+  API patterns: ExtensionAPI export-default-function
+  TypeScript files: 3
+
+--- pi-brave-search ---
+  Extension entry points:
+    pi-brave-search/extensions/brave-search/index.ts
+  API patterns: registerTool ExtensionAPI export-default-function
+  TypeScript files: 1
+
+--- pi-command-center ---
+  Extension entry points:
+    pi-command-center/extensions/command-center/index.ts
+  API patterns: ExtensionAPI export-default-function
+  TypeScript files: 1
+
+--- pi-ephemeral ---
+  Extension entry points:
+    pi-ephemeral/extensions/ephemeral-mode.ts
+  API patterns: ExtensionAPI export-default-function
+  TypeScript files: 1
+
+--- pi-ghostty-theme-sync ---
+  Extension entry points:
+    pi-ghostty-theme-sync/extensions/index.ts
+  API patterns: ExtensionAPI export-default-function
+  TypeScript files: 1
+
+--- pi-md-export ---
+  Extension entry points:
+    pi-md-export/extensions/md.ts
+  API patterns: ExtensionAPI export-default-function
+  TypeScript files: 1
+
+--- pi-mermaid ---
+  Extension entry points:
+    pi-mermaid/index.ts
+  API patterns: ExtensionAPI export-default-function
+  TypeScript files: 1
+
+--- pi-messenger ---
+  Extension entry points:
+    pi-messenger/index.ts
+  API patterns: registerTool ExtensionAPI export-default-function
+  TypeScript files: 30
+
+--- pi-model-switch ---
+  Extension entry points:
+    pi-model-switch/index.ts
+  API patterns: registerTool
+  TypeScript files: 1
+
+--- pi-moonshot ---
+  Extension entry points:
+    pi-moonshot/extensions/index.ts
+  API patterns: registerProvider ExtensionAPI export-default-function
+  TypeScript files: 1
+
+--- pi-multicodex ---
+  Extension entry points:
+    pi-multicodex/index.ts
+  API patterns: registerProvider ExtensionAPI export-default-function streamSimple
+  TypeScript files: 1
+
+--- pi-notify ---
+  Extension entry points:
+    pi-notify/index.ts
+  API patterns: ExtensionAPI export-default-function
+  TypeScript files: 1
+
+--- pi-poly-notify ---
+  Extension entry points:
+    pi-poly-notify/extensions/poly-notify/index.ts
+  API patterns: ExtensionAPI export-default-function
+  TypeScript files: 1
+
+--- pi-prompt-template-model ---
+  Extension entry points:
+    pi-prompt-template-model/index.ts
+  API patterns: ExtensionAPI export-default-function
+  TypeScript files: 1
+
+--- pi-repoprompt-mcp ---
+  Extension entry points:
+    pi-repoprompt-mcp/extensions/repoprompt-mcp/src/index.ts
+    pi-repoprompt-mcp/extensions/repoprompt-mcp/src/binding.ts
+  API patterns: registerTool ExtensionAPI export-default-function
+  TypeScript files: 9
+
+--- pi-review-loop ---
+  Extension entry points:
+    pi-review-loop/index.ts
+  API patterns: registerTool ExtensionAPI export-default-function
+  TypeScript files: 2
+
+--- pi-screenshots-picker ---
+  Extension entry points:
+    pi-screenshots-picker/index.ts
+  API patterns: ExtensionAPI export-default-function
+  TypeScript files: 1
+
+--- pi-search-agent ---
+  Extension entry points:
+    pi-search-agent/index.ts
+  API patterns: registerTool ExtensionAPI export-default-function
+  TypeScript files: 1
+
+--- pi-session-ask ---
+  Extension entry points:
+    pi-session-ask/extensions/session-ask/index.ts
+  API patterns: registerTool ExtensionAPI export-default-function
+  TypeScript files: 1
+
+--- pi-shadow-git ---
+  Extension entry points:
+    pi-shadow-git/extensions/lib/mission-control.ts
+    pi-shadow-git/extensions/shadow-git.ts
+  API patterns: ExtensionAPI export-default-function
+  TypeScript files: 2
+
+--- pi-shell-completions ---
+  Extension entry points:
+    pi-shell-completions/index.ts
+  API patterns: ExtensionAPI export-default-function
+  TypeScript files: 5
+
+--- pi-skill-palette ---
+  Extension entry points:
+    pi-skill-palette/index.ts
+  API patterns: ExtensionAPI export-default-function
+  TypeScript files: 1
+
+--- pi-subdir-context ---
+  Extension entry points:
+    pi-subdir-context/src/index.ts
+    pi-subdir-context/dist/index.d.ts
+  API patterns: ExtensionAPI export-default-function
+  TypeScript files: 2
+
+--- pi-super-curl ---
+  Extension entry points:
+    pi-super-curl/index.ts
+  API patterns: ExtensionAPI export-default-function
+  TypeScript files: 1
+
+--- pi-telemetry-otel ---
+  Extension entry points:
+    pi-telemetry-otel/extensions/index.ts
+  API patterns: pi.session ExtensionAPI export-default-function
+  TypeScript files: 7
+
+--- pi-threads ---
+  Extension entry points:
+    pi-threads/index.ts
+  API patterns: registerTool ExtensionAPI export-default-function
+  TypeScript files: 1
+
+--- pi-voice-of-god ---
+  Extension entry points:
+    pi-voice-of-god/extensions/vog/index.ts
+  API patterns: ExtensionAPI export-default-function
+  TypeScript files: 1
+
+--- pi-wakatime ---
+  Extension entry points:
+    pi-wakatime/src/index.ts
+  API patterns: ExtensionAPI export-default-function
+  TypeScript files: 3
+
+--- pi-watch ---
+  Extension entry points:
+    pi-watch/index.ts
+  API patterns: registerFlag ExtensionAPI export-default-function
+  TypeScript files: 6
+
+--- pi-web-access ---
+  Extension entry points:
+    pi-web-access/index.ts
+  API patterns: registerTool ExtensionAPI export-default-function
+  TypeScript files: 17
+
+--- ralph-loop-pi ---
+  Extension entry points:
+    ralph-loop-pi/types.d.ts
+    ralph-loop-pi/ralph-loop.ts
+  API patterns: registerTool ExtensionAPI export-default-function
+  TypeScript files: 3
+
+--- repeat-pi ---
+  Extension entry points:
+    repeat-pi/repeat.ts
+    repeat-pi/types.d.ts
+  API patterns: ExtensionAPI export-default-function
+  TypeScript files: 2
+
+--- token-rate-pi ---
+  Extension entry points:
+    token-rate-pi/token-rate.ts
+  API patterns: ExtensionAPI export-default-function
+  TypeScript files: 1
+
+--- vaayne-agent-kit ---
+  Extension entry points:
+    vaayne-agent-kit/extensions/powerline-status.ts
+    vaayne-agent-kit/extensions/notify.ts
+    vaayne-agent-kit/extensions/mcp/index.ts
+    vaayne-agent-kit/extensions/subagent/index.ts
+  API patterns: registerTool ExtensionAPI export-default-function
+  TypeScript files: 6
+
+--- vaayne-pi-mcp ---
+  Extension entry points:
+    vaayne-pi-mcp/index.ts
+  API patterns: registerTool ExtensionAPI export-default-function
+  TypeScript files: 2
+
+--- vaayne-pi-subagent ---
+  Extension entry points:
+    vaayne-pi-subagent/index.ts
+  API patterns: registerTool ExtensionAPI export-default-function
+  TypeScript files: 2
+
+--- vaayne-pi-web-tools ---
+  Extension entry points:
+    vaayne-pi-web-tools/index.ts
+  API patterns: registerTool ExtensionAPI export-default-function
+  TypeScript files: 3
+
+--- vpellegrino-pi-skills ---
+  Extension entry points:
+    vpellegrino-pi-skills/pi-extensions/bash-compat.ts
+  API patterns: registerTool ExtensionAPI export-default-function
+  TypeScript files: 1
+
+--- walterra-pi-charts ---
+  Extension entry points:
+    walterra-pi-charts/extensions/vega-chart/index.ts
+  API patterns: registerTool ExtensionAPI export-default-function
+  TypeScript files: 1
+
+--- walterra-pi-graphviz ---
+  Extension entry points:
+    walterra-pi-graphviz/extensions/graphviz-chart/index.ts
+  API patterns: registerTool ExtensionAPI export-default-function
+  TypeScript files: 1
+
+--- zenobius-pi-dcp ---
+  Extension entry points:
+    zenobius-pi-dcp/index.ts
+    zenobius-pi-dcp/src/types.ts
+    zenobius-pi-dcp/src/config.ts
+  API patterns: ExtensionAPI
+  TypeScript files: 23
+
+================================================================================
+PACKAGES WITHOUT TYPESCRIPT EXTENSION CODE (not copied)
+================================================================================
+
+  ferologics-pi-skills       (JS only, no TS extension patterns)
+  jay-zod-speak              (TS files but no extension API usage)
+  jay-zod-speakturbo         (no TS files)
+  pi-planning-with-files     (no TS/JS files)
+  zenobius-pi-worktrees      (JS only, no extension patterns)
+
+================================================================================
+SUMMARY
+================================================================================
+Total packages downloaded from npm: 68
+Packages with TS extension code:   63
+Packages without TS extension code: 5
+
+================================================================================
+API PATTERN FREQUENCY
+================================================================================
+
+  registerTool:           29 packages
+  registerSlashCommand:   0 packages
+  registerProvider:       4 packages
+  registerFlag:           1 packages
+  pi.events:              4 packages
+  pi.session:             1 packages
+  ExtensionAPI (type):    62 packages
+  export default function: 58 packages
+  streamSimple:           1 packages
+  event_hooks:            0 packages

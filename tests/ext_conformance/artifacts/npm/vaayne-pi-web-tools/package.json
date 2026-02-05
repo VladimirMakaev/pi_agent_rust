@@ -1,0 +1,46 @@
+{
+  "name": "@vaayne/pi-web-tools",
+  "version": "0.1.0",
+  "description": "Pi extension for web fetching and search capabilities",
+  "author": "Vaayne <liu.vaayne@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vaayne/agent-kit.git",
+    "directory": "extensions/web-tools"
+  },
+  "homepage": "https://github.com/vaayne/agent-kit/tree/main/extensions/web-tools",
+  "bugs": {
+    "url": "https://github.com/vaayne/agent-kit/issues"
+  },
+  "keywords": ["pi-package", "pi-extension", "web", "fetch", "search", "exa", "ai", "agent"],
+  "type": "module",
+  "files": [
+    "*.ts",
+    "*.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "scripts": {
+    "lint": "biome lint --write .",
+    "format": "biome format --write ."
+  },
+  "dependencies": {
+    "jsdom": "^26.0.0",
+    "turndown": "^7.2.0"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@sinclair/typebox": "*",
+    "typescript": "^5"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.11",
+    "@mariozechner/pi-coding-agent": "^0.51.0",
+    "@types/bun": "latest",
+    "@types/jsdom": "^27.0.0",
+    "@types/turndown": "^5.0.5"
+  }
+}

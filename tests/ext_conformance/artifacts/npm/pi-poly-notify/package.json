@@ -1,0 +1,54 @@
+{
+  "name": "pi-poly-notify",
+  "version": "0.1.2",
+  "description": "Highly configurable desktop/sound/Pushover notifications when Pi agent turn finishes and took longer than a definable threshold",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/w-winter/dot314.git",
+    "directory": "packages/pi-poly-notify"
+  },
+  "bugs": {
+    "url": "https://github.com/w-winter/dot314/issues"
+  },
+  "homepage": "https://github.com/w-winter/dot314#readme",
+  "pi": {
+    "extensions": [
+      "extensions/poly-notify/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*"
+  },
+  "scripts": {
+    "prepack": "node ../../scripts/pi-package-prepack.mjs"
+  },
+  "files": [
+    "extensions/poly-notify/**",
+    "README.md",
+    "LICENSE",
+    "package.json"
+  ],
+  "dot314Prepack": {
+    "copy": [
+      {
+        "from": "../../extensions/poly-notify/index.ts",
+        "to": "extensions/poly-notify/index.ts"
+      },
+      {
+        "from": "../../extensions/poly-notify/notify.json.example",
+        "to": "extensions/poly-notify/notify.json.example"
+      },
+      {
+        "from": "../../LICENSE",
+        "to": "LICENSE"
+      }
+    ]
+  }
+}

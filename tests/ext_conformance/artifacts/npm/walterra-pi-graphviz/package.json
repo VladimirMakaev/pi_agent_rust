@@ -1,0 +1,46 @@
+{
+  "name": "@walterra/pi-graphviz",
+  "version": "0.0.4",
+  "description": "Graphviz chart extension for pi coding agent - render DOT diagrams as inline images",
+  "type": "module",
+  "files": [
+    "extensions",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/graphviz-chart/index.ts"
+    ],
+    "video": "https://www.rafelsberger.at/assets/pi-graphviz-sm-0001.mp4"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/walterra/agent-tools.git",
+    "directory": "packages/pi-graphviz"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "extension",
+    "graphviz",
+    "dot",
+    "diagrams",
+    "flowcharts",
+    "graphs"
+  ],
+  "author": "walterra",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "^0.32.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0"
+  }
+}

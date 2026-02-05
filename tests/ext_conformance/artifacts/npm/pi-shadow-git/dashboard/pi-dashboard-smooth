@@ -1,0 +1,806 @@
+#!/bin/bash
+#
+# Pi Dashboard - Smooth Edition
+# No page refresh. JSON data + JS polling + AnimeJS transitions.
+#
+
+set -e
+
+WORKSPACE="${1:-.}"
+REFRESH="${2:-2}"
+
+if [ ! -d "$WORKSPACE" ]; then
+  echo "Usage: pi-dashboard-smooth /path/to/workspace [refresh_seconds]"
+  exit 1
+fi
+
+WORKSPACE="$(cd "$WORKSPACE" && pwd)"
+HTML_FILE="$WORKSPACE/.dashboard.html"
+DATA_FILE="$WORKSPACE/.dashboard-data.json"
+SESSION_ID="SES-$(date +%s | tail -c 6)"
+SESSION_START=$(date '+%Y-%m-%d %H:%M:%S')
+
+cleanup() {
+  rm -f "$DATA_FILE" 2>/dev/null
+  # Keep HTML so user can see final state
+}
+trap cleanup EXIT INT TERM
+
+# Count helper
+count_matches() {
+  local file="$1"
+  local pattern="$2"
+  if [ -f "$file" ]; then
+    grep -c "$pattern" "$file" 2>/dev/null | tr -d '\n\r ' || echo "0"
+  else
+    echo "0"
+  fi
+}
+
+# Generate JSON data
+generate_data() {
+  local timestamp=$(date '+%H:%M:%S')
+  
+  local agents_json="["
+  local first_agent=true
+  local total_turns=0
+  local total_tools=0
+  local total_errors=0
+  local running=0
+  local done_count=0
+  
+  for agent_dir in "$WORKSPACE/agents"/*/; do
+    [ -d "$agent_dir" ] || continue
+    local agent=$(basename "$agent_dir")
+    local audit="$agent_dir/audit.jsonl"
+    
+    # Status
+    local status="pending"
+    # Check if agent completed (agent_end in audit)
+    if [ -f "$audit" ] && grep -q '"event":"agent_end"' "$audit" 2>/dev/null; then
+      status="done"
+      status_class="status-done"
+      status_label="DONE"
+      status_color="var(--accent-green)"
+      done_count=$((done_count + 1))
+    elif tmux has-session -t "$agent" 2>/dev/null; then
+      status="running"
+      running=$((running + 1))
+    elif [ -f "$agent_dir/pid" ] && ps -p "$(cat "$agent_dir/pid" 2>/dev/null)" >/dev/null 2>&1; then
+      status="running"
+      running=$((running + 1))
+    elif ls "$agent_dir/output/"*.md >/dev/null 2>&1; then
+      status="done"
+      done_count=$((done_count + 1))
+    elif [ -f "$audit" ] && grep -q '"event":"agent_end"' "$audit" 2>/dev/null; then
+      status="done"
+      done_count=$((done_count + 1))
+    fi
+    
+    # Metrics
+    local turns=$(count_matches "$audit" '"event":"turn_end"')
+    local tools=$(count_matches "$audit" '"event":"tool_call"')
+    local errors=$(count_matches "$audit" '"error":true')
+    turns=${turns:-0}; tools=${tools:-0}; errors=${errors:-0}
+    
+    total_turns=$((total_turns + turns))
+    total_tools=$((total_tools + tools))
+    total_errors=$((total_errors + errors))
+    
+    # Elapsed
+    local elapsed="0"
+    if [ -f "$audit" ]; then
+      local first=$(head -1 "$audit" 2>/dev/null | grep -oE '"ts":[0-9]+' | cut -d: -f2)
+      local last=$(tail -1 "$audit" 2>/dev/null | grep -oE '"ts":[0-9]+' | cut -d: -f2)
+      if [ -n "$first" ] && [ -n "$last" ] && [ "$first" != "$last" ]; then
+        elapsed=$(( (last - first) / 1000 ))
+      fi
+    fi
+    
+    # Hot tools
+    local hot_tools="[]"
+    if [ -f "$audit" ]; then
+      hot_tools=$(grep '"event":"tool_call"' "$audit" 2>/dev/null | \
+        grep -oE '"tool":"[^"]+"' | cut -d'"' -f4 | \
+        sort | uniq -c | sort -rn | head -3 | \
+        awk 'BEGIN{printf "["} NR>1{printf ","} {printf "{\"name\":\"%s\",\"count\":%d}", $2, $1} END{printf "]"}')
+      [ -z "$hot_tools" ] && hot_tools="[]"
+    fi
+    
+    # Output lines
+    local output_lines=0
+    local output_file=$(ls -1 "$agent_dir/output/"*.md 2>/dev/null | head -1)
+    if [ -n "$output_file" ] && [ -f "$output_file" ]; then
+      output_lines=$(wc -l < "$output_file" 2>/dev/null | tr -d ' ')
+    fi
+    
+    $first_agent || agents_json+=","
+    first_agent=false
+    agents_json+="{\"name\":\"$agent\",\"status\":\"$status\",\"turns\":$turns,\"tools\":$tools,\"errors\":$errors,\"elapsed\":$elapsed,\"hotTools\":$hot_tools,\"outputLines\":$output_lines}"
+  done
+  agents_json+="]"
+  
+  # Recent commits
+  local commits_json="["
+  local first_commit=true
+  if [ -d "$WORKSPACE/.git" ]; then
+    cd "$WORKSPACE"
+    while IFS= read -r line; do
+      local hash=$(echo "$line" | cut -d' ' -f1)
+      local msg=$(echo "$line" | cut -d' ' -f2- | sed 's/"/\\"/g')
+      local type="other"
+      echo "$msg" | grep -q ":tool]" && type="tool"
+      echo "$msg" | grep -q ":turn]" && type="turn"
+      echo "$msg" | grep -q ":end]" && type="end"
+      echo "$msg" | grep -q ":start]" && type="start"
+      
+      $first_commit || commits_json+=","
+      first_commit=false
+      commits_json+="{\"hash\":\"$hash\",\"message\":\"$msg\",\"type\":\"$type\"}"
+    done < <(git log --oneline -15 2>/dev/null || echo "")
+  fi
+  commits_json+="]"
+  
+  # Write JSON atomically
+  cat > "${DATA_FILE}.tmp" << EOF
+{
+  "timestamp": "$timestamp",
+  "sessionId": "$SESSION_ID",
+  "sessionStart": "$SESSION_START",
+  "summary": {
+    "running": $running,
+    "done": $done_count,
+    "turns": $total_turns,
+    "tools": $total_tools,
+    "errors": $total_errors
+  },
+  "agents": $agents_json,
+  "commits": $commits_json
+}
+EOF
+  mv "${DATA_FILE}.tmp" "$DATA_FILE"
+}
+
+# Generate static HTML (only once)
+generate_html() {
+  cat > "$HTML_FILE" << 'HTMLEOF'
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>pi dashboard</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/animejs/3.2.1/anime.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    
+    :root {
+      --bg: #0a0a0a;
+      --surface: #111;
+      --border: #1a1a1a;
+      --text: #e8e8e8;
+      --muted: #555;
+      --cyan: #00f2ea;
+      --green: #00ff9d;
+      --purple: #a78bfa;
+      --red: #ff3e3e;
+    }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 48px;
+      overflow-x: hidden;
+    }
+    
+    /* Floating particles */
+    .particles {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      pointer-events: none;
+      overflow: hidden;
+      z-index: 0;
+    }
+    
+    .particle {
+      position: absolute;
+      width: 2px;
+      height: 2px;
+      background: var(--cyan);
+      border-radius: 50%;
+      opacity: 0.3;
+    }
+    
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      position: relative;
+      z-index: 1;
+    }
+    
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 48px;
+      padding-bottom: 24px;
+      border-bottom: 1px solid var(--border);
+    }
+    
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    
+    h1 {
+      font-size: 13px;
+      font-weight: 500;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    
+    .live-dot {
+      width: 8px;
+      height: 8px;
+      background: var(--cyan);
+      border-radius: 50%;
+      animation: pulse 2s ease-in-out infinite;
+    }
+    
+    @keyframes pulse {
+      0%, 100% { opacity: 1; box-shadow: 0 0 8px var(--cyan); }
+      50% { opacity: 0.5; box-shadow: 0 0 4px var(--cyan); }
+    }
+    
+    .meta {
+      font-size: 12px;
+      color: var(--muted);
+      text-align: right;
+    }
+    
+    .meta span { display: block; }
+    .timestamp { font-variant-numeric: tabular-nums; color: var(--text); }
+    
+    /* Summary */
+    .summary {
+      display: flex;
+      gap: 64px;
+      margin-bottom: 56px;
+    }
+    
+    .stat {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    
+    .stat-value {
+      font-size: 42px;
+      font-weight: 200;
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+      transition: color 0.3s ease;
+    }
+    
+    .stat-value.running { color: var(--cyan); }
+    .stat-value.errors { color: var(--red); }
+    
+    .stat-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      color: var(--muted);
+    }
+    
+    /* Section */
+    .section-title {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.2em;
+      color: var(--muted);
+      margin-bottom: 20px;
+    }
+    
+    /* Agents */
+    .agents {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 16px;
+      margin-bottom: 56px;
+    }
+    
+    .agent {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      transition: all 0.4s ease;
+      position: relative;
+      overflow: hidden;
+    }
+    
+    .agent::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 2px;
+      background: var(--border);
+      transition: background 0.4s ease;
+    }
+    
+    .agent.running::before {
+      background: linear-gradient(90deg, var(--cyan), var(--green));
+      box-shadow: 0 0 20px var(--cyan);
+    }
+    
+    .agent.done::before {
+      background: var(--green);
+    }
+    
+    .agent-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+    
+    .agent-name {
+      font-size: 15px;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--muted);
+      transition: all 0.4s ease;
+    }
+    
+    .agent.running .status-dot {
+      background: var(--cyan);
+      box-shadow: 0 0 12px var(--cyan);
+      animation: pulse 2s ease-in-out infinite;
+    }
+    
+    .agent.done .status-dot {
+      background: var(--green);
+    }
+    
+    .status-badge {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      padding: 4px 10px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      transition: all 0.4s ease;
+    }
+    
+    .agent.running .status-badge {
+      color: var(--cyan);
+      border-color: var(--cyan);
+    }
+    
+    .agent.done .status-badge {
+      color: var(--green);
+      border-color: var(--green);
+    }
+    
+    .metrics {
+      display: flex;
+      gap: 32px;
+      margin-bottom: 16px;
+    }
+    
+    .metric {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    
+    .metric-value {
+      font-size: 24px;
+      font-weight: 300;
+      font-variant-numeric: tabular-nums;
+    }
+    
+    .metric-label {
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+    }
+    
+    .hot-tools {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      min-height: 28px;
+    }
+    
+    .tool-tag {
+      font-size: 11px;
+      font-family: "SF Mono", Menlo, monospace;
+      background: var(--bg);
+      padding: 5px 10px;
+      border-radius: 4px;
+      color: var(--muted);
+      opacity: 0;
+      transform: translateY(10px);
+      transition: opacity 0.3s, transform 0.3s;
+    }
+    
+    .tool-tag.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    
+    .tool-count {
+      color: var(--text);
+      margin-left: 6px;
+      opacity: 0.7;
+    }
+    
+    .output-badge {
+      margin-top: 16px;
+      font-size: 11px;
+      color: var(--green);
+      opacity: 0;
+      transition: opacity 0.4s ease;
+    }
+    
+    .output-badge.visible {
+      opacity: 1;
+    }
+    
+    /* Activity */
+    .activity {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+    
+    .commit {
+      font-family: "SF Mono", Menlo, monospace;
+      font-size: 11px;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+      color: var(--muted);
+      display: flex;
+      gap: 12px;
+      opacity: 0;
+      transform: translateX(-20px);
+      transition: opacity 0.3s, transform 0.3s;
+    }
+    
+    .commit.visible {
+      opacity: 1;
+      transform: translateX(0);
+    }
+    
+    .commit:last-child { border-bottom: none; }
+    
+    .commit-hash { color: var(--cyan); min-width: 60px; }
+    .commit-msg { flex: 1; }
+    
+    .commit.tool .commit-msg { color: var(--text); }
+    .commit.end .commit-msg { color: var(--green); }
+    .commit.start .commit-msg { color: var(--purple); }
+    
+    .empty {
+      color: var(--muted);
+      font-size: 13px;
+      padding: 20px 0;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="particles" id="particles"></div>
+  
+  <div class="container">
+    <header>
+      <div class="logo">
+        <h1>pi dashboard</h1>
+        <div class="live-dot"></div>
+      </div>
+      <div class="meta">
+        <span class="timestamp" id="timestamp">--:--:--</span>
+        <span id="session">Loading...</span>
+      </div>
+    </header>
+    
+    <div class="summary">
+      <div class="stat">
+        <div class="stat-value running" id="running">0</div>
+        <div class="stat-label">Running</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value" id="done">0</div>
+        <div class="stat-label">Done</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value" id="turns">0</div>
+        <div class="stat-label">Turns</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value" id="tools">0</div>
+        <div class="stat-label">Tools</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value errors" id="errors">0</div>
+        <div class="stat-label">Errors</div>
+      </div>
+    </div>
+    
+    <div class="section-title">Agents</div>
+    <div class="agents" id="agents">
+      <div class="empty">Waiting for agents...</div>
+    </div>
+    
+    <div class="section-title">Activity</div>
+    <div class="activity" id="activity">
+      <div class="empty">No activity yet</div>
+    </div>
+  </div>
+  
+  <script>
+    // Particles
+    const particlesEl = document.getElementById('particles');
+    for (let i = 0; i < 30; i++) {
+      const p = document.createElement('div');
+      p.className = 'particle';
+      p.style.left = Math.random() * 100 + '%';
+      p.style.top = Math.random() * 100 + '%';
+      particlesEl.appendChild(p);
+      
+      anime({
+        targets: p,
+        translateX: () => anime.random(-100, 100),
+        translateY: () => anime.random(-100, 100),
+        opacity: [0.1, 0.4, 0.1],
+        duration: () => anime.random(8000, 15000),
+        easing: 'easeInOutQuad',
+        loop: true,
+        direction: 'alternate'
+      });
+    }
+    
+    // Smooth number animation
+    function animateValue(el, newValue) {
+      const current = parseInt(el.textContent) || 0;
+      if (current === newValue) return;
+      
+      anime({
+        targets: { val: current },
+        val: newValue,
+        duration: 600,
+        easing: 'easeOutExpo',
+        round: 1,
+        update: (anim) => {
+          el.textContent = Math.round(anim.animations[0].currentValue);
+        }
+      });
+    }
+    
+    // Format elapsed time
+    function formatElapsed(secs) {
+      if (secs < 60) return secs + 's';
+      return Math.floor(secs / 60) + 'm ' + (secs % 60) + 's';
+    }
+    
+    // Render agents
+    function renderAgents(agents) {
+      const container = document.getElementById('agents');
+      
+      if (!agents || agents.length === 0) {
+        container.innerHTML = '<div class="empty">Waiting for agents...</div>';
+        return;
+      }
+      
+      const existingAgents = new Map();
+      container.querySelectorAll('.agent').forEach(el => {
+        existingAgents.set(el.dataset.name, el);
+      });
+      
+      agents.forEach((agent, i) => {
+        let el = existingAgents.get(agent.name);
+        
+        if (!el) {
+          // New agent - create and animate in
+          el = document.createElement('div');
+          el.className = 'agent ' + agent.status;
+          el.dataset.name = agent.name;
+          el.innerHTML = `
+            <div class="agent-header">
+              <div class="agent-name">
+                <div class="status-dot"></div>
+                ${agent.name}
+              </div>
+              <div class="status-badge">${agent.status.toUpperCase()}</div>
+            </div>
+            <div class="metrics">
+              <div class="metric">
+                <div class="metric-value turns">0</div>
+                <div class="metric-label">Turns</div>
+              </div>
+              <div class="metric">
+                <div class="metric-value tools">0</div>
+                <div class="metric-label">Tools</div>
+              </div>
+              <div class="metric">
+                <div class="metric-value elapsed">0s</div>
+                <div class="metric-label">Time</div>
+              </div>
+            </div>
+            <div class="hot-tools"></div>
+            <div class="output-badge"></div>
+          `;
+          el.style.opacity = '0';
+          el.style.transform = 'translateY(20px)';
+          container.appendChild(el);
+          
+          anime({
+            targets: el,
+            opacity: 1,
+            translateY: 0,
+            duration: 500,
+            delay: i * 100,
+            easing: 'easeOutExpo'
+          });
+        }
+        
+        // Update status
+        el.className = 'agent ' + agent.status;
+        el.querySelector('.status-badge').textContent = agent.status.toUpperCase();
+        
+        // Update metrics with animation
+        animateValue(el.querySelector('.turns'), agent.turns);
+        animateValue(el.querySelector('.tools'), agent.tools);
+        el.querySelector('.elapsed').textContent = formatElapsed(agent.elapsed);
+        
+        // Hot tools
+        const hotToolsEl = el.querySelector('.hot-tools');
+        const newToolsHtml = agent.hotTools.map(t => 
+          `<span class="tool-tag">${t.name}<span class="tool-count">${t.count}</span></span>`
+        ).join('');
+        
+        if (hotToolsEl.innerHTML !== newToolsHtml) {
+          hotToolsEl.innerHTML = newToolsHtml;
+          setTimeout(() => {
+            hotToolsEl.querySelectorAll('.tool-tag').forEach((tag, i) => {
+              setTimeout(() => tag.classList.add('visible'), i * 50);
+            });
+          }, 100);
+        }
+        
+        // Output badge
+        const outputEl = el.querySelector('.output-badge');
+        if (agent.outputLines > 0) {
+          outputEl.textContent = '✓ ' + agent.outputLines + ' lines output';
+          outputEl.classList.add('visible');
+        }
+        
+        existingAgents.delete(agent.name);
+      });
+      
+      // Remove old empty message
+      const empty = container.querySelector('.empty');
+      if (empty) empty.remove();
+    }
+    
+    // Render commits
+    function renderCommits(commits) {
+      const container = document.getElementById('activity');
+      
+      if (!commits || commits.length === 0) {
+        container.innerHTML = '<div class="empty">No activity yet</div>';
+        return;
+      }
+      
+      const currentHashes = new Set();
+      container.querySelectorAll('.commit').forEach(el => {
+        currentHashes.add(el.dataset.hash);
+      });
+      
+      // Check if we have new commits
+      const newHashes = commits.map(c => c.hash);
+      const hasNew = newHashes.some(h => !currentHashes.has(h));
+      
+      if (hasNew) {
+        container.innerHTML = commits.map(c => `
+          <div class="commit ${c.type}" data-hash="${c.hash}">
+            <span class="commit-hash">${c.hash}</span>
+            <span class="commit-msg">${c.message}</span>
+          </div>
+        `).join('');
+        
+        container.querySelectorAll('.commit').forEach((el, i) => {
+          setTimeout(() => el.classList.add('visible'), i * 30);
+        });
+      }
+    }
+    
+    // Poll for updates
+    let lastData = null;
+    
+    async function poll() {
+      try {
+        const res = await fetch('.dashboard-data.json?t=' + Date.now());
+        if (!res.ok) return;
+        
+        const data = await res.json();
+        
+        // Update timestamp
+        document.getElementById('timestamp').textContent = data.timestamp;
+        document.getElementById('session').textContent = data.sessionId + ' · ' + data.sessionStart;
+        
+        // Update summary with animations
+        animateValue(document.getElementById('running'), data.summary.running);
+        animateValue(document.getElementById('done'), data.summary.done);
+        animateValue(document.getElementById('turns'), data.summary.turns);
+        animateValue(document.getElementById('tools'), data.summary.tools);
+        animateValue(document.getElementById('errors'), data.summary.errors);
+        
+        // Update agents
+        renderAgents(data.agents);
+        
+        // Update commits
+        renderCommits(data.commits);
+        
+        lastData = data;
+      } catch (e) {
+        // Silently ignore fetch errors
+      }
+    }
+    
+    // Start polling
+    poll();
+    setInterval(poll, 2000);
+  </script>
+</body>
+</html>
+HTMLEOF
+}
+
+# Main
+echo "╔═══════════════════════════════════════════════════════════╗"
+echo "║           PI DASHBOARD — SMOOTH EDITION                   ║"
+echo "╚═══════════════════════════════════════════════════════════╝"
+echo ""
+echo "  Workspace: $WORKSPACE"
+echo "  Session:   $SESSION_ID"
+echo "  Refresh:   ${REFRESH}s (smooth, no page reload)"
+echo ""
+
+# Generate static HTML once
+generate_html
+echo "  Generated: $HTML_FILE"
+
+# Initial data
+generate_data
+echo "  Data file: $DATA_FILE"
+
+# Open browser
+open "$HTML_FILE"
+echo ""
+echo "  Dashboard opened. Updating data every ${REFRESH}s..."
+echo "  Press Ctrl+C to stop."
+echo ""
+
+# Update data file in loop
+while true; do
+  sleep "$REFRESH"
+  generate_data
+done

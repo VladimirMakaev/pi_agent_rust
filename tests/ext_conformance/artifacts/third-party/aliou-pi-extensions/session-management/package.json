@@ -1,0 +1,12 @@
+{
+  "name": "@aliou/pi-session-management",
+  "private": true,
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": ">=0.51.0"
+  }
+}
