@@ -2006,7 +2006,10 @@ export function relative(from, to) {
   return result.join("/") || ".";
 }
 
-export default { join, dirname, resolve, basename, relative };
+export const sep = "/";
+export const delimiter = ":";
+
+export default { join, dirname, resolve, basename, relative, sep, delimiter };
 "#
         .trim()
         .to_string(),
@@ -2166,7 +2169,8 @@ export async function rmdir(_path, _opts) { return; }
 export async function stat(_path) { throw new Error('stat unavailable'); }
 export async function realpath(path, _opts) { return String(path ?? ''); }
 export async function readdir(_path, _opts) { return []; }
-export default { access, mkdir, mkdtemp, readFile, writeFile, unlink, rmdir, stat, realpath, readdir };
+export async function rm(_path, _opts) { return; }
+export default { access, mkdir, mkdtemp, readFile, writeFile, unlink, rmdir, stat, realpath, readdir, rm };
 "
         .trim()
         .to_string(),
