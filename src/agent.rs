@@ -682,10 +682,34 @@ impl Agent {
                 if has_more_tool_calls {
                     iterations += 1;
                     if iterations > self.config.max_tool_iterations {
-                        return Err(Error::api(format!(
+                        let error_message = format!(
                             "Maximum tool iterations ({}) exceeded",
                             self.config.max_tool_iterations
-                        )));
+                        );
+                        let mut stop_message = assistant_message.clone();
+                        stop_message.stop_reason = StopReason::Error;
+                        stop_message.error_message = Some(error_message.clone());
+
+                        let turn_end_event = AgentEvent::TurnEnd {
+                            session_id: session_id.clone(),
+                            turn_index: current_turn_index,
+                            message: assistant_event_message.clone(),
+                            tool_results: Vec::new(),
+                        };
+                        on_event(turn_end_event.clone());
+                        self.dispatch_extension_lifecycle_event(&turn_end_event)
+                            .await;
+
+                        let agent_end_event = AgentEvent::AgentEnd {
+                            session_id: session_id.clone(),
+                            messages: new_messages.clone(),
+                            error: Some(error_message),
+                        };
+                        on_event(agent_end_event.clone());
+                        self.dispatch_extension_lifecycle_event(&agent_end_event)
+                            .await;
+
+                        return Ok(stop_message);
                     }
 
                     let outcome = self
