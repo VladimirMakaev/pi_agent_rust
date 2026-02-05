@@ -1061,7 +1061,8 @@ impl PiApp {
         let bash_badge = is_bash_mode.then(|| self.styles.warning_bold.render("[bash]"));
 
         let max_width = self.term_width.saturating_sub(2);
-        let reserved = 2 + thinking_plain.chars().count()
+        let reserved = 2
+            + thinking_plain.chars().count()
             + if is_bash_mode {
                 2 + "[bash]".chars().count()
             } else {
@@ -1122,8 +1123,9 @@ impl PiApp {
         let footer_long = format!(
             "Tokens: {input} in / {output_tokens} out{cost_str}  |  {mode_hint}  |  /help  |  Ctrl+C: quit"
         );
-        let footer_short =
-            format!("Tokens: {input} in / {output_tokens} out{cost_str}  |  /help  |  Ctrl+C: quit");
+        let footer_short = format!(
+            "Tokens: {input} in / {output_tokens} out{cost_str}  |  /help  |  Ctrl+C: quit"
+        );
         let max_width = self.term_width.saturating_sub(2);
         let mut footer = if footer_long.chars().count() <= max_width {
             footer_long
@@ -6720,7 +6722,7 @@ impl PiApp {
                 if let Some(last_time) = self.last_ctrlc_time {
                     // Double-tap within 500ms quits
                     if now.duration_since(last_time) < std::time::Duration::from_millis(500) {
-                        return Some(quit());
+                        return Some(self.quit_cmd());
                     }
                 }
                 // Record this Ctrl+C and show hint
@@ -6738,7 +6740,7 @@ impl PiApp {
             AppAction::Exit => {
                 // Ctrl+D: Exit only when editor is empty (legacy behavior)
                 if self.agent_state == AgentState::Idle && self.input.value().is_empty() {
-                    return Some(quit());
+                    return Some(self.quit_cmd());
                 }
                 // Editor has text - don't consume, let TextArea handle as delete char forward
                 None
@@ -7348,7 +7350,7 @@ impl PiApp {
                 }
                 None
             }
-            SlashCommand::Exit => Some(quit()),
+            SlashCommand::Exit => Some(self.quit_cmd()),
             SlashCommand::History => {
                 self.messages.push(ConversationMessage {
                     role: MessageRole::System,
