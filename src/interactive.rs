@@ -9234,4 +9234,103 @@ mod tests {
         assert!(path.exists());
         assert_eq!(path.extension().and_then(|s| s.to_str()), Some("png"));
     }
+
+    // --- parse_extension_command tests ---
+
+    #[test]
+    fn parse_ext_cmd_basic() {
+        let result = parse_extension_command("/deploy");
+        assert_eq!(result, Some(("deploy".to_string(), vec![])));
+    }
+
+    #[test]
+    fn parse_ext_cmd_with_args() {
+        let result = parse_extension_command("/deploy staging fast");
+        assert_eq!(
+            result,
+            Some((
+                "deploy".to_string(),
+                vec!["staging".to_string(), "fast".to_string()]
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_ext_cmd_builtin_filtered() {
+        // Built-in slash commands should return None
+        assert!(parse_extension_command("/help").is_none());
+        assert!(parse_extension_command("/clear").is_none());
+        assert!(parse_extension_command("/model").is_none());
+        assert!(parse_extension_command("/exit").is_none());
+        assert!(parse_extension_command("/compact").is_none());
+    }
+
+    #[test]
+    fn parse_ext_cmd_no_slash() {
+        assert!(parse_extension_command("deploy").is_none());
+        assert!(parse_extension_command("hello world").is_none());
+    }
+
+    #[test]
+    fn parse_ext_cmd_empty_slash() {
+        assert!(parse_extension_command("/").is_none());
+        assert!(parse_extension_command("/  ").is_none());
+    }
+
+    #[test]
+    fn parse_ext_cmd_whitespace_trimming() {
+        let result = parse_extension_command("  /deploy  arg1  arg2  ");
+        assert_eq!(
+            result,
+            Some((
+                "deploy".to_string(),
+                vec!["arg1".to_string(), "arg2".to_string()]
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_ext_cmd_single_arg() {
+        let result = parse_extension_command("/greet world");
+        assert_eq!(
+            result,
+            Some(("greet".to_string(), vec!["world".to_string()]))
+        );
+    }
+
+    // --- extension_commands_for_catalog tests ---
+
+    #[test]
+    fn ext_commands_catalog_builds_entries() {
+        let manager = crate::extensions::ExtensionManager::new();
+        manager.register(crate::extensions::RegisterPayload {
+            name: "test-ext".to_string(),
+            version: "1.0.0".to_string(),
+            api_version: crate::extensions::PROTOCOL_VERSION.to_string(),
+            capabilities: Vec::new(),
+            capability_manifest: None,
+            tools: Vec::new(),
+            slash_commands: vec![
+                json!({"name": "deploy", "description": "Deploy the app"}),
+                json!({"name": "rollback"}),
+            ],
+            shortcuts: Vec::new(),
+            flags: Vec::new(),
+            event_hooks: Vec::new(),
+        });
+
+        let entries = extension_commands_for_catalog(&manager);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "deploy");
+        assert_eq!(entries[0].description.as_deref(), Some("Deploy the app"));
+        assert_eq!(entries[1].name, "rollback");
+        assert!(entries[1].description.is_none());
+    }
+
+    #[test]
+    fn ext_commands_catalog_empty_manager() {
+        let manager = crate::extensions::ExtensionManager::new();
+        let entries = extension_commands_for_catalog(&manager);
+        assert!(entries.is_empty());
+    }
 }

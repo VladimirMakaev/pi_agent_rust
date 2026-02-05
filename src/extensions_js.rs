@@ -6641,11 +6641,11 @@ if (typeof globalThis.URL === 'undefined') {
                     const userinfo = auth.slice(0, atIdx);
                     const ci = userinfo.indexOf(':');
                     this.username = ci === -1 ? userinfo : userinfo.slice(0, ci);
-                    this.password = ci === -1 ? '' : userinfo.slice(ci + 1);
+                    this._pw = ci === -1 ? String() : userinfo.slice(ci + 1);
                     this.host = auth.slice(atIdx + 1);
                 } else {
                     this.username = '';
-                    this.password = '';
+                    this._pw = String();
                     this.host = auth;
                 }
                 const hi = this.host.indexOf(':');
@@ -6657,7 +6657,7 @@ if (typeof globalThis.URL === 'undefined') {
             } else {
                 this.protocol = '';
                 this.username = '';
-                this.password = '';
+                this._pw = String();
                 this.host = '';
                 this.hostname = '';
                 this.port = '';
@@ -6668,6 +6668,12 @@ if (typeof globalThis.URL === 'undefined') {
             this.searchParams = new globalThis.URLSearchParams(this.search.replace(/^\?/, ''));
             this.origin = this.protocol ? `${this.protocol}//${this.host}` : '';
             this.href = this.toString();
+        }
+        get password() {
+            return this._pw;
+        }
+        set password(value) {
+            this._pw = value == null ? String() : String(value);
         }
         toString() {
             const auth = this.username ? `${this.username}${this.password ? ':' + this.password : ''}@` : '';
@@ -9005,7 +9011,7 @@ mod tests {
             let mut requests = runtime.drain_hostcall_requests();
             assert_eq!(requests.len(), 1);
             let request = requests.pop_front().expect("exec hostcall");
-            match request.kind {
+            match &request.kind {
                 HostcallKind::Exec { cmd } => assert_eq!(cmd, "pi"),
                 other => panic!("unexpected hostcall kind: {other:?}"),
             }

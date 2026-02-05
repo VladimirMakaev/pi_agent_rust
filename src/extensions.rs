@@ -5322,6 +5322,14 @@ async fn execute_extension_tool(
     ctx_payload: Value,
     timeout_ms: u64,
 ) -> Result<Value> {
+    let started_at = Instant::now();
+    tracing::info!(
+        event = "ext.tool.start",
+        tool_name = %tool_name,
+        tool_call_id = %tool_call_id,
+        timeout_ms,
+        "Extension tool execution start"
+    );
     let task_id = format!("task-tool-{}", Uuid::new_v4());
     runtime
         .with_ctx(|ctx| {
@@ -5341,7 +5349,18 @@ async fn execute_extension_tool(
         })
         .await?;
 
-    await_js_task(runtime, host, &task_id, Duration::from_millis(timeout_ms)).await
+    let result = await_js_task(runtime, host, &task_id, Duration::from_millis(timeout_ms)).await;
+    let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let is_err = result.is_err();
+    tracing::info!(
+        event = "ext.tool.end",
+        tool_name = %tool_name,
+        tool_call_id = %tool_call_id,
+        duration_ms,
+        is_error = is_err,
+        "Extension tool execution end"
+    );
+    result
 }
 
 #[allow(clippy::future_not_send)]
@@ -5353,6 +5372,13 @@ async fn execute_extension_command(
     ctx_payload: Value,
     timeout_ms: u64,
 ) -> Result<Value> {
+    let started_at = Instant::now();
+    tracing::info!(
+        event = "ext.command.start",
+        command = %command_name,
+        timeout_ms,
+        "Extension command execution start"
+    );
     let task_id = format!("task-cmd-{}", Uuid::new_v4());
     runtime
         .with_ctx(|ctx| {
@@ -5367,7 +5393,17 @@ async fn execute_extension_command(
         })
         .await?;
 
-    await_js_task(runtime, host, &task_id, Duration::from_millis(timeout_ms)).await
+    let result = await_js_task(runtime, host, &task_id, Duration::from_millis(timeout_ms)).await;
+    let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let is_err = result.is_err();
+    tracing::info!(
+        event = "ext.command.end",
+        command = %command_name,
+        duration_ms,
+        is_error = is_err,
+        "Extension command execution end"
+    );
+    result
 }
 
 #[allow(clippy::future_not_send)]
@@ -5378,6 +5414,13 @@ async fn execute_extension_shortcut(
     ctx_payload: Value,
     timeout_ms: u64,
 ) -> Result<Value> {
+    let started_at = Instant::now();
+    tracing::info!(
+        event = "ext.shortcut.start",
+        key_id = %key_id,
+        timeout_ms,
+        "Extension shortcut execution start"
+    );
     let task_id = format!("task-shortcut-{}", Uuid::new_v4());
     runtime
         .with_ctx(|ctx| {
@@ -5391,7 +5434,17 @@ async fn execute_extension_shortcut(
         })
         .await?;
 
-    await_js_task(runtime, host, &task_id, Duration::from_millis(timeout_ms)).await
+    let result = await_js_task(runtime, host, &task_id, Duration::from_millis(timeout_ms)).await;
+    let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let is_err = result.is_err();
+    tracing::info!(
+        event = "ext.shortcut.end",
+        key_id = %key_id,
+        duration_ms,
+        is_error = is_err,
+        "Extension shortcut execution end"
+    );
+    result
 }
 
 #[derive(Debug, Deserialize)]
@@ -7668,6 +7721,7 @@ impl ExtensionManager {
         data: Option<Value>,
         timeout_ms: u64,
     ) -> Result<Option<Value>> {
+        let started_at = Instant::now();
         let timeout_ms = self.effective_timeout(timeout_ms);
         let event_name = event.to_string();
         let (runtime, has_ui, session, cwd_override, model_registry_values, has_hook) = {
@@ -7710,6 +7764,13 @@ impl ExtensionManager {
         if !has_any_hook {
             return Ok(None);
         }
+
+        tracing::info!(
+            event = "ext.event.start",
+            event_name = %event_name,
+            timeout_ms,
+            "Extension event dispatch start"
+        );
 
         let mut ctx = serde_json::Map::new();
         ctx.insert("hasUI".to_string(), Value::Bool(has_ui));
@@ -7783,6 +7844,15 @@ impl ExtensionManager {
                 response = Some(value);
             }
         }
+
+        let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+        tracing::info!(
+            event = "ext.event.end",
+            event_name = %event_name,
+            duration_ms,
+            has_response = response.is_some(),
+            "Extension event dispatch end"
+        );
 
         Ok(response)
     }
