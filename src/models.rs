@@ -14,6 +14,18 @@ pub struct ModelEntry {
     pub headers: HashMap<String, String>,
     pub auth_header: bool,
     pub compat: Option<CompatConfig>,
+    /// OAuth config for extension-registered providers that require browser-based auth.
+    pub oauth_config: Option<OAuthConfig>,
+}
+
+/// OAuth configuration for extension-registered providers.
+#[derive(Debug, Clone)]
+pub struct OAuthConfig {
+    pub auth_url: String,
+    pub token_url: String,
+    pub client_id: String,
+    pub scopes: Vec<String>,
+    pub redirect_uri: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -135,6 +147,7 @@ impl ModelRegistry {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn built_in_models(auth: &AuthStorage) -> Vec<ModelEntry> {
     let mut models = Vec::new();
 
@@ -171,6 +184,7 @@ fn built_in_models(auth: &AuthStorage) -> Vec<ModelEntry> {
             headers: HashMap::new(),
             auth_header: false,
             compat: None,
+            oauth_config: None,
         });
     }
 
@@ -203,6 +217,7 @@ fn built_in_models(auth: &AuthStorage) -> Vec<ModelEntry> {
             headers: HashMap::new(),
             auth_header: true,
             compat: None,
+            oauth_config: None,
         });
     }
 
@@ -236,6 +251,7 @@ fn built_in_models(auth: &AuthStorage) -> Vec<ModelEntry> {
             headers: HashMap::new(),
             auth_header: false,
             compat: None,
+            oauth_config: None,
         });
     }
 
@@ -346,6 +362,7 @@ fn apply_custom_models(auth: &AuthStorage, models: &mut Vec<ModelEntry>, config:
                     .compat
                     .clone()
                     .or_else(|| provider_cfg.compat.clone()),
+                oauth_config: None,
             });
         }
     }

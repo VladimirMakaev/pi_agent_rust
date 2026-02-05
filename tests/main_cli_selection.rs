@@ -90,6 +90,7 @@ fn custom_model_entry(provider: &str, api_key: Option<&str>) -> ModelEntry {
         headers: HashMap::new(),
         auth_header: false,
         compat: None,
+        oauth_config: None,
     }
 }
 

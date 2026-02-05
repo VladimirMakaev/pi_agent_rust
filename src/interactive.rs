@@ -56,7 +56,7 @@ use crate::model::{
     AssistantMessageEvent, ContentBlock, CustomMessage, ImageContent, Message as ModelMessage,
     StopReason, TextContent, ThinkingLevel, Usage, UserContent, UserMessage,
 };
-use crate::models::{ModelEntry, ModelRegistry, default_models_path};
+use crate::models::{ModelEntry, ModelRegistry, OAuthConfig, default_models_path};
 use crate::package_manager::PackageManager;
 use crate::providers;
 use crate::resources::{DiagnosticKind, ResourceCliOptions, ResourceDiagnostic, ResourceLoader};
@@ -3988,6 +3988,8 @@ impl SessionPickerOverlay {
 struct PendingOAuth {
     provider: String,
     verifier: String,
+    /// OAuth config for extension-registered providers (None for built-in like anthropic).
+    oauth_config: Option<OAuthConfig>,
 }
 
 struct InteractiveExtensionSession {
@@ -6785,7 +6787,11 @@ impl PiApp {
         self.scroll_to_bottom();
 
         let event_tx = self.event_tx.clone();
-        let PendingOAuth { provider, verifier } = pending;
+        let PendingOAuth {
+            provider,
+            verifier,
+            oauth_config,
+        } = pending;
         let code_input = code_input.to_string();
 
         let runtime_handle = self.runtime_handle.clone();
@@ -6799,17 +6805,23 @@ impl PiApp {
                 }
             };
 
-            let credential = match provider.as_str() {
-                "anthropic" => {
-                    Box::pin(crate::auth::complete_anthropic_oauth(
-                        &code_input,
-                        &verifier,
-                    ))
-                    .await
-                }
-                _ => Err(crate::error::Error::auth(format!(
+            let credential = if provider == "anthropic" {
+                Box::pin(crate::auth::complete_anthropic_oauth(
+                    &code_input,
+                    &verifier,
+                ))
+                .await
+            } else if let Some(config) = &oauth_config {
+                Box::pin(crate::auth::complete_extension_oauth(
+                    config,
+                    &code_input,
+                    &verifier,
+                ))
+                .await
+            } else {
+                Err(crate::error::Error::auth(format!(
                     "OAuth provider not supported: {provider}"
-                ))),
+                )))
             };
 
             let credential = match credential {
@@ -7499,15 +7511,29 @@ impl PiApp {
                     args.to_string()
                 };
 
-                if provider != "anthropic" {
-                    self.status_message = Some(format!(
-                        "OAuth login not supported for {provider} (supported: anthropic)"
-                    ));
-                    return None;
-                }
+                // Look up OAuth config: built-in (anthropic) or extension-registered.
+                let oauth_result = if provider == "anthropic" {
+                    crate::auth::start_anthropic_oauth().map(|info| (info, None))
+                } else {
+                    // Check extension providers for OAuth config.
+                    let ext_oauth = self
+                        .available_models
+                        .iter()
+                        .find(|m| m.model.provider == provider)
+                        .and_then(|m| m.oauth_config.clone());
+                    if let Some(config) = ext_oauth {
+                        crate::auth::start_extension_oauth(&provider, &config)
+                            .map(|info| (info, Some(config)))
+                    } else {
+                        self.status_message = Some(format!(
+                            "OAuth login not supported for {provider} (no OAuth config)"
+                        ));
+                        return None;
+                    }
+                };
 
-                match crate::auth::start_anthropic_oauth() {
-                    Ok(info) => {
+                match oauth_result {
+                    Ok((info, ext_config)) => {
                         let mut message = format!(
                             "OAuth login: {}\n\nOpen this URL:\n{}\n",
                             info.provider, info.url
@@ -7530,6 +7556,7 @@ impl PiApp {
                         self.pending_oauth = Some(PendingOAuth {
                             provider: info.provider,
                             verifier: info.verifier,
+                            oauth_config: ext_config,
                         });
                         self.input_mode = InputMode::SingleLine;
                         self.input.set_height(3);

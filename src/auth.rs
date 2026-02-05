@@ -246,6 +246,47 @@ impl AuthStorage {
 
         Ok(())
     }
+
+    /// Refresh expired OAuth tokens for extension-registered providers.
+    ///
+    /// `extension_configs` maps provider ID to its [`OAuthConfig`](crate::models::OAuthConfig).
+    /// Providers already handled by [`refresh_expired_oauth_tokens_with_client`] (e.g. "anthropic")
+    /// are skipped.
+    pub async fn refresh_expired_extension_oauth_tokens(
+        &mut self,
+        client: &crate::http::client::Client,
+        extension_configs: &HashMap<String, crate::models::OAuthConfig>,
+    ) -> Result<()> {
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut refreshes = Vec::new();
+
+        for (provider, cred) in &self.entries {
+            if let AuthCredential::OAuth {
+                refresh_token,
+                expires,
+                ..
+            } = cred
+            {
+                // Skip built-in providers (handled by refresh_expired_oauth_tokens_with_client).
+                if provider == "anthropic" {
+                    continue;
+                }
+                if *expires <= now {
+                    if let Some(config) = extension_configs.get(provider) {
+                        refreshes.push((provider.clone(), refresh_token.clone(), config.clone()));
+                    }
+                }
+            }
+        }
+
+        for (provider, refresh_token, config) in refreshes {
+            let refreshed = refresh_extension_oauth_token(client, &config, &refresh_token).await?;
+            self.entries.insert(provider, refreshed);
+            self.save_async().await?;
+        }
+
+        Ok(())
+    }
 }
 
 fn env_key_for_provider(provider: &str) -> Option<&'static str> {
@@ -458,6 +499,133 @@ async fn refresh_anthropic_oauth_token(
     })
 }
 
+/// Start OAuth for an extension-registered provider using its [`OAuthConfig`](crate::models::OAuthConfig).
+pub fn start_extension_oauth(
+    provider_name: &str,
+    config: &crate::models::OAuthConfig,
+) -> Result<OAuthStartInfo> {
+    let (verifier, challenge) = generate_pkce();
+    let scopes = config.scopes.join(" ");
+
+    let mut params: Vec<(&str, &str)> = vec![
+        ("client_id", &config.client_id),
+        ("response_type", "code"),
+        ("scope", &scopes),
+        ("code_challenge", &challenge),
+        ("code_challenge_method", "S256"),
+        ("state", &verifier),
+    ];
+
+    let redirect_uri_ref = config.redirect_uri.as_deref();
+    if let Some(uri) = redirect_uri_ref {
+        params.push(("redirect_uri", uri));
+    }
+
+    let url = build_url_with_query(&config.auth_url, &params);
+
+    Ok(OAuthStartInfo {
+        provider: provider_name.to_string(),
+        url,
+        verifier,
+        instructions: Some(
+            "Open the URL, complete login, then paste the callback URL or authorization code."
+                .to_string(),
+        ),
+    })
+}
+
+/// Complete OAuth for an extension-registered provider by exchanging an authorization code.
+pub async fn complete_extension_oauth(
+    config: &crate::models::OAuthConfig,
+    code_input: &str,
+    verifier: &str,
+) -> Result<AuthCredential> {
+    let (code, state) = parse_oauth_code_input(code_input);
+
+    let Some(code) = code else {
+        return Err(Error::auth("Missing authorization code".to_string()));
+    };
+
+    let state = state.unwrap_or_else(|| verifier.to_string());
+
+    let client = crate::http::client::Client::new();
+
+    let mut body = serde_json::json!({
+        "grant_type": "authorization_code",
+        "client_id": config.client_id,
+        "code": code,
+        "state": state,
+        "code_verifier": verifier,
+    });
+
+    if let Some(ref redirect_uri) = config.redirect_uri {
+        body["redirect_uri"] = serde_json::Value::String(redirect_uri.clone());
+    }
+
+    let request = client.post(&config.token_url).json(&body)?;
+
+    let response = Box::pin(request.send())
+        .await
+        .map_err(|e| Error::auth(format!("Token exchange failed: {e}")))?;
+
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .unwrap_or_else(|_| "<failed to read body>".to_string());
+
+    if !(200..300).contains(&status) {
+        return Err(Error::auth(format!("Token exchange failed: {text}")));
+    }
+
+    let oauth_response: OAuthTokenResponse = serde_json::from_str(&text)
+        .map_err(|e| Error::auth(format!("Invalid token response: {e}")))?;
+
+    Ok(AuthCredential::OAuth {
+        access_token: oauth_response.access_token,
+        refresh_token: oauth_response.refresh_token,
+        expires: oauth_expires_at_ms(oauth_response.expires_in),
+    })
+}
+
+/// Refresh an OAuth token for an extension-registered provider.
+async fn refresh_extension_oauth_token(
+    client: &crate::http::client::Client,
+    config: &crate::models::OAuthConfig,
+    refresh_token: &str,
+) -> Result<AuthCredential> {
+    let request = client.post(&config.token_url).json(&serde_json::json!({
+        "grant_type": "refresh_token",
+        "client_id": config.client_id,
+        "refresh_token": refresh_token,
+    }))?;
+
+    let response = Box::pin(request.send())
+        .await
+        .map_err(|e| Error::auth(format!("Extension OAuth token refresh failed: {e}")))?;
+
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .unwrap_or_else(|_| "<failed to read body>".to_string());
+
+    if !(200..300).contains(&status) {
+        return Err(Error::auth(format!(
+            "Extension OAuth token refresh failed: {text}"
+        )));
+    }
+
+    let oauth_response: OAuthTokenResponse = serde_json::from_str(&text)
+        .map_err(|e| Error::auth(format!("Invalid refresh response: {e}")))?;
+
+    Ok(AuthCredential::OAuth {
+        access_token: oauth_response.access_token,
+        refresh_token: oauth_response.refresh_token,
+        expires: oauth_expires_at_ms(oauth_response.expires_in),
+    })
+}
+
 #[derive(Debug, Deserialize)]
 struct OAuthTokenResponse {
     access_token: String,
@@ -634,5 +802,376 @@ mod tests {
         let (code, state) = parse_oauth_code_input("abc");
         assert_eq!(code.as_deref(), Some("abc"));
         assert!(state.is_none());
+    }
+
+    fn sample_oauth_config() -> crate::models::OAuthConfig {
+        crate::models::OAuthConfig {
+            auth_url: "https://auth.example.com/authorize".to_string(),
+            token_url: "https://auth.example.com/token".to_string(),
+            client_id: "ext-client-123".to_string(),
+            scopes: vec!["read".to_string(), "write".to_string()],
+            redirect_uri: Some("http://localhost:9876/callback".to_string()),
+        }
+    }
+
+    #[test]
+    fn test_start_extension_oauth_url_contains_required_params() {
+        let config = sample_oauth_config();
+        let info = start_extension_oauth("my-ext-provider", &config).expect("start");
+
+        assert_eq!(info.provider, "my-ext-provider");
+        assert!(!info.verifier.is_empty());
+
+        let (base, query) = info.url.split_once('?').expect("missing query");
+        assert_eq!(base, "https://auth.example.com/authorize");
+
+        let params: std::collections::HashMap<_, _> =
+            parse_query_pairs(query).into_iter().collect();
+        assert_eq!(
+            params.get("client_id").map(String::as_str),
+            Some("ext-client-123")
+        );
+        assert_eq!(
+            params.get("response_type").map(String::as_str),
+            Some("code")
+        );
+        assert_eq!(
+            params.get("redirect_uri").map(String::as_str),
+            Some("http://localhost:9876/callback")
+        );
+        assert_eq!(params.get("scope").map(String::as_str), Some("read write"));
+        assert_eq!(
+            params.get("code_challenge_method").map(String::as_str),
+            Some("S256")
+        );
+        assert_eq!(
+            params.get("state").map(String::as_str),
+            Some(info.verifier.as_str())
+        );
+        assert!(params.contains_key("code_challenge"));
+    }
+
+    #[test]
+    fn test_start_extension_oauth_no_redirect_uri() {
+        let config = crate::models::OAuthConfig {
+            auth_url: "https://auth.example.com/authorize".to_string(),
+            token_url: "https://auth.example.com/token".to_string(),
+            client_id: "ext-client-123".to_string(),
+            scopes: vec!["read".to_string()],
+            redirect_uri: None,
+        };
+        let info = start_extension_oauth("no-redirect", &config).expect("start");
+
+        let (_, query) = info.url.split_once('?').expect("missing query");
+        let params: std::collections::HashMap<_, _> =
+            parse_query_pairs(query).into_iter().collect();
+        assert!(!params.contains_key("redirect_uri"));
+    }
+
+    #[test]
+    fn test_start_extension_oauth_empty_scopes() {
+        let config = crate::models::OAuthConfig {
+            auth_url: "https://auth.example.com/authorize".to_string(),
+            token_url: "https://auth.example.com/token".to_string(),
+            client_id: "ext-client-123".to_string(),
+            scopes: vec![],
+            redirect_uri: None,
+        };
+        let info = start_extension_oauth("empty-scopes", &config).expect("start");
+
+        let (_, query) = info.url.split_once('?').expect("missing query");
+        let params: std::collections::HashMap<_, _> =
+            parse_query_pairs(query).into_iter().collect();
+        // scope param still present but empty string
+        assert_eq!(params.get("scope").map(String::as_str), Some(""));
+    }
+
+    #[test]
+    fn test_start_extension_oauth_pkce_format() {
+        let config = sample_oauth_config();
+        let info = start_extension_oauth("pkce-test", &config).expect("start");
+
+        // Verifier should be base64url without padding
+        assert!(!info.verifier.contains('+'));
+        assert!(!info.verifier.contains('/'));
+        assert!(!info.verifier.contains('='));
+        assert_eq!(info.verifier.len(), 43);
+    }
+
+    #[test]
+    fn test_refresh_expired_extension_oauth_tokens_skips_anthropic() {
+        // Verify that the extension refresh method skips "anthropic" (handled separately).
+        let rt = asupersync::runtime::RuntimeBuilder::current_thread().build();
+        rt.expect("runtime").block_on(async {
+            let dir = tempfile::tempdir().expect("tmpdir");
+            let auth_path = dir.path().join("auth.json");
+            let mut auth = AuthStorage {
+                path: auth_path,
+                entries: HashMap::new(),
+            };
+            // Insert an expired anthropic OAuth credential.
+            auth.entries.insert(
+                "anthropic".to_string(),
+                AuthCredential::OAuth {
+                    access_token: "old".to_string(),
+                    refresh_token: "refresh-tok".to_string(),
+                    expires: 0, // expired
+                },
+            );
+
+            let client = crate::http::client::Client::new();
+            let mut extension_configs = HashMap::new();
+            extension_configs.insert("anthropic".to_string(), sample_oauth_config());
+
+            // Should succeed and NOT attempt refresh (anthropic is skipped).
+            let result = auth
+                .refresh_expired_extension_oauth_tokens(&client, &extension_configs)
+                .await;
+            assert!(result.is_ok());
+
+            // Credential should remain unchanged.
+            assert!(
+                matches!(
+                    auth.entries.get("anthropic"),
+                    Some(AuthCredential::OAuth { access_token, .. }) if access_token == "old"
+                ),
+                "expected OAuth credential"
+            );
+        });
+    }
+
+    #[test]
+    fn test_refresh_expired_extension_oauth_tokens_skips_unexpired() {
+        let rt = asupersync::runtime::RuntimeBuilder::current_thread().build();
+        rt.expect("runtime").block_on(async {
+            let dir = tempfile::tempdir().expect("tmpdir");
+            let auth_path = dir.path().join("auth.json");
+            let mut auth = AuthStorage {
+                path: auth_path,
+                entries: HashMap::new(),
+            };
+            // Insert a NOT expired credential.
+            let far_future = chrono::Utc::now().timestamp_millis() + 3_600_000;
+            auth.entries.insert(
+                "my-ext".to_string(),
+                AuthCredential::OAuth {
+                    access_token: "valid".to_string(),
+                    refresh_token: "refresh-tok".to_string(),
+                    expires: far_future,
+                },
+            );
+
+            let client = crate::http::client::Client::new();
+            let mut extension_configs = HashMap::new();
+            extension_configs.insert("my-ext".to_string(), sample_oauth_config());
+
+            let result = auth
+                .refresh_expired_extension_oauth_tokens(&client, &extension_configs)
+                .await;
+            assert!(result.is_ok());
+
+            // Credential should remain unchanged (not expired, no refresh attempted).
+            assert!(
+                matches!(
+                    auth.entries.get("my-ext"),
+                    Some(AuthCredential::OAuth { access_token, .. }) if access_token == "valid"
+                ),
+                "expected OAuth credential"
+            );
+        });
+    }
+
+    #[test]
+    fn test_refresh_expired_extension_oauth_tokens_skips_unknown_provider() {
+        let rt = asupersync::runtime::RuntimeBuilder::current_thread().build();
+        rt.expect("runtime").block_on(async {
+            let dir = tempfile::tempdir().expect("tmpdir");
+            let auth_path = dir.path().join("auth.json");
+            let mut auth = AuthStorage {
+                path: auth_path,
+                entries: HashMap::new(),
+            };
+            // Expired credential for a provider not in extension_configs.
+            auth.entries.insert(
+                "unknown-ext".to_string(),
+                AuthCredential::OAuth {
+                    access_token: "old".to_string(),
+                    refresh_token: "refresh-tok".to_string(),
+                    expires: 0,
+                },
+            );
+
+            let client = crate::http::client::Client::new();
+            let extension_configs = HashMap::new(); // empty
+
+            let result = auth
+                .refresh_expired_extension_oauth_tokens(&client, &extension_configs)
+                .await;
+            assert!(result.is_ok());
+
+            // Credential should remain unchanged (no config to refresh with).
+            assert!(
+                matches!(
+                    auth.entries.get("unknown-ext"),
+                    Some(AuthCredential::OAuth { access_token, .. }) if access_token == "old"
+                ),
+                "expected OAuth credential"
+            );
+        });
+    }
+
+    #[test]
+    fn test_oauth_token_storage_round_trip() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let auth_path = dir.path().join("auth.json");
+
+        // Save OAuth credential.
+        {
+            let mut auth = AuthStorage {
+                path: auth_path.clone(),
+                entries: HashMap::new(),
+            };
+            auth.set(
+                "ext-provider",
+                AuthCredential::OAuth {
+                    access_token: "access-tok-123".to_string(),
+                    refresh_token: "refresh-tok-456".to_string(),
+                    expires: 9_999_999_999_000,
+                },
+            );
+            auth.save().expect("save");
+        }
+
+        // Load and verify.
+        let loaded = AuthStorage::load(auth_path).expect("load");
+        let cred = loaded.get("ext-provider").expect("credential present");
+        match cred {
+            AuthCredential::OAuth {
+                access_token,
+                refresh_token,
+                expires,
+            } => {
+                assert_eq!(access_token, "access-tok-123");
+                assert_eq!(refresh_token, "refresh-tok-456");
+                assert_eq!(*expires, 9_999_999_999_000);
+            }
+            other => panic!("expected OAuth credential, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_oauth_api_key_returns_access_token_when_unexpired() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let auth_path = dir.path().join("auth.json");
+        let far_future = chrono::Utc::now().timestamp_millis() + 3_600_000;
+        let mut auth = AuthStorage {
+            path: auth_path,
+            entries: HashMap::new(),
+        };
+        auth.set(
+            "ext-provider",
+            AuthCredential::OAuth {
+                access_token: "live-token".to_string(),
+                refresh_token: "refresh".to_string(),
+                expires: far_future,
+            },
+        );
+
+        assert_eq!(
+            auth.api_key("ext-provider").as_deref(),
+            Some("live-token")
+        );
+    }
+
+    #[test]
+    fn test_oauth_api_key_returns_none_when_expired() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let auth_path = dir.path().join("auth.json");
+        let mut auth = AuthStorage {
+            path: auth_path,
+            entries: HashMap::new(),
+        };
+        auth.set(
+            "ext-provider",
+            AuthCredential::OAuth {
+                access_token: "stale-token".to_string(),
+                refresh_token: "refresh".to_string(),
+                expires: 0, // expired
+            },
+        );
+
+        assert_eq!(auth.api_key("ext-provider"), None);
+    }
+
+    #[test]
+    fn test_auth_remove_credential() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let auth_path = dir.path().join("auth.json");
+        let mut auth = AuthStorage {
+            path: auth_path,
+            entries: HashMap::new(),
+        };
+        auth.set(
+            "ext-provider",
+            AuthCredential::ApiKey {
+                key: "key-123".to_string(),
+            },
+        );
+
+        assert!(auth.get("ext-provider").is_some());
+        assert!(auth.remove("ext-provider"));
+        assert!(auth.get("ext-provider").is_none());
+        assert!(!auth.remove("ext-provider")); // already removed
+    }
+
+    #[test]
+    fn test_auth_env_key_returns_none_for_extension_providers() {
+        // Extension providers don't have hard-coded env vars.
+        assert!(env_key_for_provider("my-ext-provider").is_none());
+        assert!(env_key_for_provider("custom-llm").is_none());
+        // Built-in providers do.
+        assert_eq!(env_key_for_provider("anthropic"), Some("ANTHROPIC_API_KEY"));
+        assert_eq!(env_key_for_provider("openai"), Some("OPENAI_API_KEY"));
+    }
+
+    #[test]
+    fn test_extension_oauth_config_special_chars_in_scopes() {
+        let config = crate::models::OAuthConfig {
+            auth_url: "https://auth.example.com/authorize".to_string(),
+            token_url: "https://auth.example.com/token".to_string(),
+            client_id: "ext-client".to_string(),
+            scopes: vec![
+                "api:read".to_string(),
+                "api:write".to_string(),
+                "user:profile".to_string(),
+            ],
+            redirect_uri: None,
+        };
+        let info = start_extension_oauth("scoped", &config).expect("start");
+
+        let (_, query) = info.url.split_once('?').expect("missing query");
+        let params: std::collections::HashMap<_, _> =
+            parse_query_pairs(query).into_iter().collect();
+        assert_eq!(
+            params.get("scope").map(String::as_str),
+            Some("api:read api:write user:profile")
+        );
+    }
+
+    #[test]
+    fn test_extension_oauth_url_encodes_special_chars() {
+        let config = crate::models::OAuthConfig {
+            auth_url: "https://auth.example.com/authorize".to_string(),
+            token_url: "https://auth.example.com/token".to_string(),
+            client_id: "client with spaces".to_string(),
+            scopes: vec!["scope&dangerous".to_string()],
+            redirect_uri: Some("http://localhost:9876/call back".to_string()),
+        };
+        let info = start_extension_oauth("encoded", &config).expect("start");
+
+        // The URL should be valid and contain encoded values.
+        assert!(info.url.contains("client%20with%20spaces"));
+        assert!(info.url.contains("scope%26dangerous"));
+        assert!(info.url.contains("call%20back"));
     }
 }
