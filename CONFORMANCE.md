@@ -181,6 +181,61 @@ All extension-related logs must conform to the **ext.log.v1** schema
 - Archive `target/ext_conformance/logs/**` as CI artifacts.
 - Diffs should be grouped by `event` and `correlation` IDs to speed triage.
 
+### NPM Registry Conformance (bd-3dd7)
+
+Most npm extensions are **tier 3+** and therefore `#[ignore]` by default. To attempt all npm-registry
+extensions, include ignored tests:
+
+```bash
+CARGO_TARGET_DIR=/tmp/pi_target cargo test --test ext_conformance_generated ext_npm_ -- --include-ignored
+```
+
+**Snapshot (2026-02-05):**
+- npm extensions attempted: 63
+- passed: 28
+- failed: 35
+- self-contained subset (`conformance_tier <= 2` and `has_npm_deps = false`): 14/17 passed (82.4%)
+
+**Failure summary (one row per failing extension):**
+
+| Extension | Category | Detail |
+|---|---|---|
+| `npm/aliou-pi-guardrails` | `missing_npm_dependency` | @aliou/pi-utils-settings |
+| `npm/aliou-pi-linkup` | `missing_global_console` | console is not defined |
+| `npm/aliou-pi-processes` | `relative_import_resolution` | ../components/processes-component |
+| `npm/aliou-pi-synthetic` | `manifest_mismatch` | expected command 'synthetic:quotas' not found in actual commands: [] |
+| `npm/aliou-pi-toolchain` | `missing_npm_dependency` | @aliou/sh |
+| `npm/benvargas-pi-ancestor-discovery` | `missing_node_shim_export` | Could not find export 'isAbsolute' in module 'node:path' |
+| `npm/imsus-pi-extension-minimax-coding-plan-mcp` | `missing_node_shim_export` | Could not find export 'readFile' in module 'node:fs' |
+| `npm/juanibiapina-pi-files` | `missing_npm_dependency` | @juanibiapina/pi-extension-settings |
+| `npm/lsp-pi` | `missing_npm_dependency` | vscode-languageserver-protocol/node.js |
+| `npm/marckrenn-pi-sub-bar` | `missing_npm_dependency` | @marckrenn/pi-sub-shared |
+| `npm/marckrenn-pi-sub-core` | `missing_npm_dependency` | @marckrenn/pi-sub-shared |
+| `npm/permission-pi` | `missing_npm_dependency` | shell-quote |
+| `npm/pi-agentic-compaction` | `missing_npm_dependency` | just-bash |
+| `npm/pi-amplike` | `manifest_mismatch` | manifest says it registers tools, but no tool defs were captured |
+| `npm/pi-bash-confirm` | `manifest_mismatch` | expected command 'demo-bash-confirm' not found in actual commands: ["bash-confirm"] |
+| `npm/pi-brave-search` | `missing_npm_dependency` | @mozilla/readability |
+| `npm/pi-ghostty-theme-sync` | `missing_node_shim_export` | Could not find export 'createHash' in module 'node:crypto' |
+| `npm/pi-mermaid` | `missing_npm_dependency` | beautiful-mermaid |
+| `npm/pi-messenger` | `missing_node_shim_export` | Could not find export 'isAbsolute' in module 'node:path' |
+| `npm/pi-multicodex` | `missing_virtual_module_export` | Could not find export 'getApiProvider' in module '@mariozechner/pi-ai' |
+| `npm/pi-repoprompt-mcp` | `missing_npm_dependency` | @modelcontextprotocol/sdk |
+| `npm/pi-screenshots-picker` | `missing_npm_dependency` | glob |
+| `npm/pi-search-agent` | `missing_npm_dependency` | dotenv |
+| `npm/pi-session-ask` | `runtime_error` | not a function |
+| `npm/pi-shadow-git` | `missing_node_shim_export` | Could not find export 'isAbsolute' in module 'node:path' |
+| `npm/pi-super-curl` | `missing_npm_dependency` | uuid |
+| `npm/pi-telemetry-otel` | `missing_npm_dependency` | @opentelemetry/api |
+| `npm/pi-wakatime` | `missing_node_builtin` | node:stream |
+| `npm/pi-watch` | `missing_npm_dependency` | chokidar |
+| `npm/pi-web-access` | `missing_npm_dependency` | @mozilla/readability |
+| `npm/ralph-loop-pi` | `missing_virtual_module_export` | Could not find export 'AssistantMessageComponent' in module '@mariozechner/pi-coding-agent' |
+| `npm/vaayne-agent-kit` | `missing_npm_dependency` | @modelcontextprotocol/sdk/client/index.js |
+| `npm/vaayne-pi-mcp` | `missing_npm_dependency` | @modelcontextprotocol/sdk/client/index.js |
+| `npm/vaayne-pi-web-tools` | `missing_npm_dependency` | jsdom |
+| `npm/zenobius-pi-dcp` | `missing_npm_dependency` | bunfig |
+
 ---
 
 ## Test Logging (JSONL + Artifact Index)
