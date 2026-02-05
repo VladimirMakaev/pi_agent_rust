@@ -23,6 +23,7 @@ use ignore::WalkBuilder;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutocompleteItemKind {
     SlashCommand,
+    ExtensionCommand,
     PromptTemplate,
     Skill,
     File,
@@ -47,6 +48,7 @@ pub struct AutocompleteResponse {
 pub struct AutocompleteCatalog {
     pub prompt_templates: Vec<NamedEntry>,
     pub skills: Vec<NamedEntry>,
+    pub extension_commands: Vec<NamedEntry>,
     pub enable_skill_commands: bool,
 }
 
@@ -84,6 +86,7 @@ impl AutocompleteCatalog {
         Self {
             prompt_templates,
             skills,
+            extension_commands: Vec::new(),
             enable_skill_commands: resources.enable_skill_commands(),
         }
     }
@@ -236,6 +239,25 @@ impl AutocompleteProvider {
                         label: label.clone(),
                         insert: label,
                         description: Some(cmd.description.to_string()),
+                    },
+                });
+            }
+        }
+
+        // Extension commands.
+        for cmd in &self.catalog.extension_commands {
+            if let Some((is_prefix, score)) = fuzzy_match_score(&cmd.name, query) {
+                let label = format!("/{}", cmd.name);
+                items.push(ScoredItem {
+                    is_prefix,
+                    score,
+                    kind_rank: kind_rank(AutocompleteItemKind::ExtensionCommand),
+                    label: label.clone(),
+                    item: AutocompleteItem {
+                        kind: AutocompleteItemKind::ExtensionCommand,
+                        label: label.clone(),
+                        insert: label,
+                        description: cmd.description.clone(),
                     },
                 });
             }
@@ -637,10 +659,11 @@ const fn builtin_slash_commands() -> &'static [BuiltinSlashCommand] {
 const fn kind_rank(kind: AutocompleteItemKind) -> u8 {
     match kind {
         AutocompleteItemKind::SlashCommand => 0,
-        AutocompleteItemKind::PromptTemplate => 1,
-        AutocompleteItemKind::Skill => 2,
-        AutocompleteItemKind::File => 3,
-        AutocompleteItemKind::Path => 4,
+        AutocompleteItemKind::ExtensionCommand => 1,
+        AutocompleteItemKind::PromptTemplate => 2,
+        AutocompleteItemKind::Skill => 3,
+        AutocompleteItemKind::File => 4,
+        AutocompleteItemKind::Path => 5,
     }
 }
 
@@ -834,6 +857,7 @@ mod tests {
                 description: Some("Code review".to_string()),
             }],
             skills: Vec::new(),
+            extension_commands: Vec::new(),
             enable_skill_commands: false,
         };
         let mut provider = AutocompleteProvider::new(PathBuf::from("."), catalog);
@@ -852,6 +876,7 @@ mod tests {
                 name: "rustfmt".to_string(),
                 description: None,
             }],
+            extension_commands: Vec::new(),
             enable_skill_commands: true,
         };
         let mut provider = AutocompleteProvider::new(PathBuf::from("."), catalog);
@@ -866,6 +891,7 @@ mod tests {
                 name: "rustfmt".to_string(),
                 description: None,
             }],
+            extension_commands: Vec::new(),
             enable_skill_commands: false,
         });
         let resp = provider.suggest("/skill:ru", "/skill:ru".len());
@@ -893,6 +919,7 @@ mod tests {
                 description: None,
             }],
             skills: Vec::new(),
+            extension_commands: Vec::new(),
             enable_skill_commands: false,
         });
         let resp = provider.suggest(query, query.len());

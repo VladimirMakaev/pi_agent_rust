@@ -5982,6 +5982,49 @@ impl ExtensionManager {
             .any(|cmd| normalize_command(&cmd) == needle)
     }
 
+    /// Dynamically register a slash command at runtime (from a hostcall).
+    pub fn register_command(&self, name: &str, description: Option<&str>) {
+        let mut guard = self.inner.lock().unwrap();
+        let entry = json!({
+            "name": name,
+            "description": description,
+        });
+        if let Some(ext) = guard.extensions.first_mut() {
+            ext.slash_commands.push(entry);
+        } else {
+            guard.extensions.push(RegisterPayload {
+                name: "__dynamic__".to_string(),
+                version: "1.0.0".to_string(),
+                api_version: PROTOCOL_VERSION.to_string(),
+                capabilities: Vec::new(),
+                capability_manifest: None,
+                tools: Vec::new(),
+                slash_commands: vec![entry],
+                event_hooks: Vec::new(),
+            });
+        }
+    }
+
+    /// Execute an extension slash command via the JS runtime.
+    pub async fn execute_command(
+        &self,
+        command_name: &str,
+        args: &str,
+        timeout_ms: u64,
+    ) -> Result<Value> {
+        let runtime = self
+            .js_runtime()
+            .ok_or_else(|| Error::extension("JS extension runtime not configured"))?;
+        runtime
+            .execute_command(
+                command_name.to_string(),
+                args.to_string(),
+                json!({}),
+                timeout_ms,
+            )
+            .await
+    }
+
     pub fn list_commands(&self) -> Vec<Value> {
         let guard = self.inner.lock().unwrap();
         let mut commands = Vec::new();

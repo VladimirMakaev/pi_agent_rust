@@ -1621,6 +1621,23 @@ fn parse_extension_command(input: &str) -> Option<(String, Vec<String>)> {
     Some((cmd.to_string(), args))
 }
 
+fn extension_commands_for_catalog(
+    manager: &ExtensionManager,
+) -> Vec<crate::autocomplete::NamedEntry> {
+    manager
+        .list_commands()
+        .into_iter()
+        .filter_map(|cmd| {
+            let name = cmd.get("name")?.as_str()?.to_string();
+            let description = cmd
+                .get("description")
+                .and_then(|d| d.as_str())
+                .map(std::string::ToString::to_string);
+            Some(crate::autocomplete::NamedEntry { name, description })
+        })
+        .collect()
+}
+
 fn parse_bash_command(input: &str) -> Option<(String, bool)> {
     let trimmed = input.trim_start();
     if trimmed.starts_with("!!") {
@@ -2703,6 +2720,12 @@ pub enum PiMsg {
     },
     /// Extension UI request (select/confirm/input/editor/notify).
     ExtensionUiRequest(ExtensionUiRequest),
+    /// Extension command finished execution.
+    ExtensionCommandDone {
+        command: String,
+        display: String,
+        is_error: bool,
+    },
 }
 
 // ============================================================================
@@ -4072,7 +4095,10 @@ impl PiApp {
         });
 
         // Initialize autocomplete with catalog from resources
-        let autocomplete_catalog = AutocompleteCatalog::from_resources(&resources);
+        let mut autocomplete_catalog = AutocompleteCatalog::from_resources(&resources);
+        if let Some(manager) = &extensions {
+            autocomplete_catalog.extension_commands = extension_commands_for_catalog(manager);
+        }
         let mut autocomplete = AutocompleteState::new(cwd.clone(), autocomplete_catalog);
         autocomplete.max_visible = autocomplete_max_visible;
 
@@ -5359,7 +5385,11 @@ impl PiApp {
                 status,
                 diagnostics,
             } => {
-                let autocomplete_catalog = AutocompleteCatalog::from_resources(&resources);
+                let mut autocomplete_catalog = AutocompleteCatalog::from_resources(&resources);
+                if let Some(manager) = &self.extensions {
+                    autocomplete_catalog.extension_commands =
+                        extension_commands_for_catalog(manager);
+                }
                 self.autocomplete.provider.set_catalog(autocomplete_catalog);
                 self.autocomplete.close();
                 self.resources = resources;
@@ -5380,6 +5410,26 @@ impl PiApp {
             }
             PiMsg::ExtensionUiRequest(request) => {
                 return self.handle_extension_ui_request(request);
+            }
+            PiMsg::ExtensionCommandDone {
+                command: _,
+                display,
+                is_error: _,
+            } => {
+                self.agent_state = AgentState::Idle;
+                self.current_tool = None;
+
+                self.messages.push(ConversationMessage {
+                    role: MessageRole::System,
+                    content: display,
+                    thinking: None,
+                });
+                self.scroll_to_bottom();
+                self.input.focus();
+
+                if !self.pending_inputs.is_empty() {
+                    return Some(Cmd::new(|| Message::new(PiMsg::RunPending)));
+                }
             }
         }
         None
@@ -5524,14 +5574,69 @@ impl PiApp {
         }
     }
 
-    fn dispatch_extension_command(&mut self, command: &str, _args: Vec<String>) -> Option<Cmd> {
-        if self.extensions.is_some() {
+    fn dispatch_extension_command(&mut self, command: &str, args: Vec<String>) -> Option<Cmd> {
+        let Some(manager) = &self.extensions else {
+            self.status_message = Some("Extensions are disabled".to_string());
+            return None;
+        };
+
+        let Some(runtime) = manager.js_runtime() else {
             self.status_message = Some(format!(
                 "Extension command '/{command}' is not available (runtime not enabled)"
             ));
-        } else {
-            self.status_message = Some("Extensions are disabled".to_string());
-        }
+            return None;
+        };
+
+        self.agent_state = AgentState::ToolRunning;
+        self.current_tool = Some(format!("/{command}"));
+
+        let command_name = command.to_string();
+        let args_str = args.join(" ");
+        let cwd = self.cwd.display().to_string();
+        let event_tx = self.event_tx.clone();
+        let runtime_handle = self.runtime_handle.clone();
+
+        let ctx_payload = serde_json::json!({
+            "cwd": cwd,
+            "hasUI": true,
+        });
+
+        let cmd_for_msg = command_name.clone();
+        runtime_handle.spawn(async move {
+            let result = runtime
+                .execute_command(
+                    command_name,
+                    args_str,
+                    ctx_payload,
+                    crate::extensions::EXTENSION_EVENT_TIMEOUT_MS,
+                )
+                .await;
+
+            match result {
+                Ok(value) => {
+                    let display = if value.is_null() || value == serde_json::Value::Null {
+                        format!("/{cmd_for_msg} completed.")
+                    } else if let Some(s) = value.as_str() {
+                        s.to_string()
+                    } else {
+                        format!("/{cmd_for_msg} completed: {value}")
+                    };
+                    let _ = event_tx.try_send(PiMsg::ExtensionCommandDone {
+                        command: cmd_for_msg,
+                        display,
+                        is_error: false,
+                    });
+                }
+                Err(err) => {
+                    let _ = event_tx.try_send(PiMsg::ExtensionCommandDone {
+                        command: cmd_for_msg,
+                        display: format!("Extension command error: {err}"),
+                        is_error: true,
+                    });
+                }
+            }
+        });
+
         None
     }
 
