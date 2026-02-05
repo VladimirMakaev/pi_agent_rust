@@ -47,8 +47,7 @@ use crate::autocomplete::{
 use crate::config::{Config, SettingsScope};
 use crate::extension_events::{InputEventOutcome, apply_input_event_response};
 use crate::extensions::{
-    EXTENSION_EVENT_TIMEOUT_MS, ExtensionDeliverAs, ExtensionEventName, ExtensionHostActions,
-    ExtensionManager, ExtensionSendMessage, ExtensionSendUserMessage, ExtensionSession,
+    EXTENSION_EVENT_TIMEOUT_MS, ExtensionEventName, ExtensionManager, ExtensionSession,
     ExtensionUiRequest, ExtensionUiResponse, extension_event_from_agent,
 };
 use crate::keybindings::{AppAction, KeyBinding, KeyBindings};
@@ -3395,6 +3394,164 @@ impl InteractiveMessageQueue {
     }
 }
 
+#[derive(Debug)]
+struct InjectedMessageQueue {
+    steering: VecDeque<ModelMessage>,
+    follow_up: VecDeque<ModelMessage>,
+    steering_mode: QueueMode,
+    follow_up_mode: QueueMode,
+}
+
+impl InjectedMessageQueue {
+    const fn new(steering_mode: QueueMode, follow_up_mode: QueueMode) -> Self {
+        Self {
+            steering: VecDeque::new(),
+            follow_up: VecDeque::new(),
+            steering_mode,
+            follow_up_mode,
+        }
+    }
+
+    fn push_kind(&mut self, kind: QueuedMessageKind, message: ModelMessage) {
+        match kind {
+            QueuedMessageKind::Steering => self.steering.push_back(message),
+            QueuedMessageKind::FollowUp => self.follow_up.push_back(message),
+        }
+    }
+
+    fn push_steering(&mut self, message: ModelMessage) {
+        self.push_kind(QueuedMessageKind::Steering, message);
+    }
+
+    fn push_follow_up(&mut self, message: ModelMessage) {
+        self.push_kind(QueuedMessageKind::FollowUp, message);
+    }
+
+    fn pop_kind(&mut self, kind: QueuedMessageKind) -> Vec<ModelMessage> {
+        let (queue, mode) = match kind {
+            QueuedMessageKind::Steering => (&mut self.steering, self.steering_mode),
+            QueuedMessageKind::FollowUp => (&mut self.follow_up, self.follow_up_mode),
+        };
+        match mode {
+            QueueMode::All => queue.drain(..).collect(),
+            QueueMode::OneAtATime => queue.pop_front().into_iter().collect(),
+        }
+    }
+
+    fn pop_steering(&mut self) -> Vec<ModelMessage> {
+        self.pop_kind(QueuedMessageKind::Steering)
+    }
+
+    fn pop_follow_up(&mut self) -> Vec<ModelMessage> {
+        self.pop_kind(QueuedMessageKind::FollowUp)
+    }
+}
+
+#[derive(Clone)]
+struct InteractiveExtensionHostActions {
+    session: Arc<Mutex<Session>>,
+    agent: Arc<Mutex<Agent>>,
+    event_tx: mpsc::Sender<PiMsg>,
+    extension_streaming: Arc<AtomicBool>,
+    user_queue: Arc<StdMutex<InteractiveMessageQueue>>,
+    injected_queue: Arc<StdMutex<InjectedMessageQueue>>,
+}
+
+impl InteractiveExtensionHostActions {
+    fn queue_custom_message(
+        &self,
+        deliver_as: Option<ExtensionDeliverAs>,
+        message: ModelMessage,
+    ) -> crate::error::Result<()> {
+        let deliver_as = deliver_as.unwrap_or(ExtensionDeliverAs::Steer);
+        let kind = match deliver_as {
+            ExtensionDeliverAs::FollowUp => QueuedMessageKind::FollowUp,
+            ExtensionDeliverAs::Steer | ExtensionDeliverAs::NextTurn => QueuedMessageKind::Steering,
+        };
+        let Ok(mut queue) = self.injected_queue.lock() else {
+            return Ok(());
+        };
+        match kind {
+            QueuedMessageKind::Steering => queue.push_steering(message),
+            QueuedMessageKind::FollowUp => queue.push_follow_up(message),
+        }
+        Ok(())
+    }
+
+    async fn append_to_session(&self, message: ModelMessage) -> crate::error::Result<()> {
+        let cx = Cx::for_request();
+        let mut session_guard = self
+            .session
+            .lock(&cx)
+            .await
+            .map_err(|e| crate::error::Error::session(e.to_string()))?;
+        session_guard.append_model_message(message);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl ExtensionHostActions for InteractiveExtensionHostActions {
+    async fn send_message(&self, message: ExtensionSendMessage) -> crate::error::Result<()> {
+        let custom_message = ModelMessage::Custom(CustomMessage {
+            content: message.content,
+            custom_type: message.custom_type,
+            display: message.display,
+            details: message.details,
+            timestamp: Utc::now().timestamp_millis(),
+        });
+
+        let is_streaming = self.extension_streaming.load(Ordering::SeqCst);
+        if is_streaming {
+            // Queue into the agent loop; session persistence happens when the message is delivered.
+            self.queue_custom_message(message.deliver_as, custom_message.clone())?;
+            if let ModelMessage::Custom(custom) = &custom_message {
+                if custom.display {
+                    let _ = self.event_tx.try_send(PiMsg::SystemNote(custom.content.clone()));
+                }
+            }
+            return Ok(());
+        }
+
+        // Agent is idle: persist immediately and update in-memory history so it affects the next run.
+        // Triggering a new turn for custom messages is handled separately and may be implemented later.
+        let _ = message.trigger_turn;
+        self.append_to_session(custom_message.clone()).await?;
+
+        if let Ok(mut agent_guard) = self.agent.try_lock() {
+            agent_guard.add_message(custom_message.clone());
+        }
+
+        if let ModelMessage::Custom(custom) = &custom_message {
+            if custom.display {
+                let _ = self.event_tx.try_send(PiMsg::SystemNote(custom.content.clone()));
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn send_user_message(&self, message: ExtensionSendUserMessage) -> crate::error::Result<()> {
+        let is_streaming = self.extension_streaming.load(Ordering::SeqCst);
+        if is_streaming {
+            let deliver_as = message.deliver_as.unwrap_or(ExtensionDeliverAs::Steer);
+            let Ok(mut queue) = self.user_queue.lock() else {
+                return Ok(());
+            };
+            match deliver_as {
+                ExtensionDeliverAs::FollowUp => queue.push_follow_up(message.text),
+                ExtensionDeliverAs::Steer | ExtensionDeliverAs::NextTurn => queue.push_steering(message.text),
+            }
+            return Ok(());
+        }
+
+        let _ = self
+            .event_tx
+            .try_send(PiMsg::EnqueuePendingInput(PendingInput::Text(message.text)));
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone)]
 struct HistoryItem {
     value: String,
@@ -4094,36 +4251,44 @@ impl PiApp {
             steering_mode,
             follow_up_mode,
         )));
+        let injected_queue = Arc::new(StdMutex::new(InjectedMessageQueue::new(
+            steering_mode,
+            follow_up_mode,
+        )));
 
         let mut agent = agent;
         agent.set_queue_modes(steering_mode, follow_up_mode);
         {
             let steering_queue = Arc::clone(&message_queue);
             let follow_up_queue = Arc::clone(&message_queue);
+            let injected_steering_queue = Arc::clone(&injected_queue);
+            let injected_follow_up_queue = Arc::clone(&injected_queue);
             let steering_fetcher = move || -> BoxFuture<'static, Vec<ModelMessage>> {
                 let steering_queue = Arc::clone(&steering_queue);
+                let injected_steering_queue = Arc::clone(&injected_steering_queue);
                 Box::pin(async move {
-                    let Ok(mut queue) = steering_queue.lock() else {
-                        return Vec::new();
-                    };
-                    queue
-                        .pop_steering()
-                        .into_iter()
-                        .map(build_user_message)
-                        .collect()
+                    let mut out = Vec::new();
+                    if let Ok(mut queue) = steering_queue.lock() {
+                        out.extend(queue.pop_steering().into_iter().map(build_user_message));
+                    }
+                    if let Ok(mut queue) = injected_steering_queue.lock() {
+                        out.extend(queue.pop_steering());
+                    }
+                    out
                 })
             };
             let follow_up_fetcher = move || -> BoxFuture<'static, Vec<ModelMessage>> {
                 let follow_up_queue = Arc::clone(&follow_up_queue);
+                let injected_follow_up_queue = Arc::clone(&injected_follow_up_queue);
                 Box::pin(async move {
-                    let Ok(mut queue) = follow_up_queue.lock() else {
-                        return Vec::new();
-                    };
-                    queue
-                        .pop_follow_up()
-                        .into_iter()
-                        .map(build_user_message)
-                        .collect()
+                    let mut out = Vec::new();
+                    if let Ok(mut queue) = follow_up_queue.lock() {
+                        out.extend(queue.pop_follow_up().into_iter().map(build_user_message));
+                    }
+                    if let Ok(mut queue) = injected_follow_up_queue.lock() {
+                        out.extend(queue.pop_follow_up());
+                    }
+                    out
                 })
             };
             agent.set_message_fetchers(
@@ -4217,6 +4382,15 @@ impl PiApp {
                 save_enabled: app.save_enabled,
             });
             manager.set_session(session_handle);
+
+            manager.set_host_actions(Arc::new(InteractiveExtensionHostActions {
+                session: Arc::clone(&app.session),
+                agent: Arc::clone(&app.agent),
+                event_tx: app.event_tx.clone(),
+                extension_streaming: Arc::clone(&app.extension_streaming),
+                user_queue: Arc::clone(&app.message_queue),
+                injected_queue,
+            }));
         }
 
         app.scroll_to_bottom();
