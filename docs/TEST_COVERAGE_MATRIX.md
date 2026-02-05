@@ -26,7 +26,7 @@ This document inventories test coverage for **all `src/` modules** and **all `te
 | `src/extensions.rs` | ✅ | `tests/extensions_manifest.rs`, `tests/ext_conformance_artifacts.rs`, `tests/ext_conformance.rs`, `tests/extensions_registration.rs`, `tests/e2e_extension_registration.rs` | 🔶 | 🔶 | ✅ | Registration E2E with JSONL logging (bd-nh33); message/session control uses RecordingHostActions/RecordingSession stubs (bd-m9rk); full runtime E2E tracked by bd-1gl. |
 | `src/extensions_js.rs` | ✅ | `tests/event_loop_conformance.rs`, `tests/js_runtime_ordering.rs`, `tests/extensions_provider_streaming.rs`, `tests/e2e_message_session_control.rs` | ✅ | 🔶 | ❌ | PiJS deterministic scheduler + Promise hostcall bridge; E2E message/session control uses RecordingHostActions/RecordingSession stubs. |
 | `src/extension_tools.rs` | ❌ | `tests/e2e_extension_registration.rs` | ❌ | ✅ | ✅ | Extension tool wrappers tested via registration E2E. |
-| `src/http/client.rs` | ❌ | `src/http/test_api.rs`, `src/http/test_asupersync.rs` | ❌ | ❌ | ❌ | Minimal API smoke only. |
+| `src/http/client.rs` | ❌ | `src/http/test_api.rs`, `src/http/test_asupersync.rs`, `tests/http_client.rs` | ❌ | ❌ | ✅ | Deterministic local TCP tests now cover request headers/body, malformed + oversized headers, content-length/chunked streaming, timeout paths, and VCR record→playback stream round-trip. |
 | `src/http/mod.rs` | ❌ | — | ❌ | ❌ | ❌ | Re-export layer only. |
 | `src/http/sse.rs` | ✅ | `tests/repro_sse_flush.rs` | ❌ | ❌ | ❌ | Unit tests + SSE flush repro. |
 | `src/interactive.rs` | ✅ | `tests/tui_snapshot.rs`, `tests/tui_state.rs`, `tests/session_picker.rs`, `tests/e2e_tui.rs` | ❌ | ✅ | ✅ | TUI state + snapshot + tmux E2E with JSONL artifacts (bd-3hp; VCR playback coverage in bd-dvgl). |
@@ -67,6 +67,7 @@ This document inventories test coverage for **all `src/` modules** and **all `te
 | `tests/e2e_provider_streaming.rs` | E2E | `src/providers/anthropic.rs` | ✅ | Anthropic VCR scenarios with artifact logging. |
 | `tests/provider_factory.rs` | Integration | `src/providers/mod.rs` | ❌ | Provider creation + ExtensionStreamSimpleProvider. |
 | `tests/provider_error_paths.rs` | Integration | `src/providers/*` | ❌ | Provider error handling: VCR-only (HTTP 500 × 4 providers, malformed SSE × 4 providers). One allowlisted `MockHttpServer` test for invalid UTF-8 injection (VCR cannot represent raw bytes). (bd-2x78 complete.) |
+| `tests/http_client.rs` | Integration | `src/http/client.rs` | ✅ | Real-path local TCP tests for request builder, malformed/oversized headers, content-length/chunked streaming, timeout behavior, and VCR playback parity. |
 | `tests/e2e_cli.rs` | E2E | `src/main.rs`, `src/cli.rs` | ✅ | Offline CLI runs with JSONL logs + artifact index; npm/git stubs for package flows (bd-27t/bd-2fz9/bd-2z22/bd-1ub). |
 | `tests/main_cli_selection.rs` | Integration | `src/main.rs` | ❌ | CLI flag/arg selection. |
 | `tests/e2e_tui.rs` | E2E | `src/interactive.rs`, `src/tui.rs` | ✅ | tmux-driven interactive E2E with JSONL artifacts (bd-3hp; VCR playback coverage in bd-dvgl). |
@@ -142,6 +143,7 @@ Tests with JSONL log + artifact index output:
 | `tests/e2e_tui.rs` | `tui-steps.jsonl`, `tui-log.jsonl`, `tui-artifacts.jsonl`, tmux pane captures |
 | `tests/rpc_mode.rs` | VCR cassette path, event timeline, session stats |
 | `tests/e2e_provider_streaming.rs` | VCR cassette, stream events, scenario parameters |
+| `tests/http_client.rs` | Raw request bytes, VCR cassette file, JSONL logs for header/body parsing and timeout scenarios |
 
 **Planned (workstream `bd-c4q` under `bd-26s`):** finish VCR-backed interactive E2E (bd-dvgl), extension runtime E2E (bd-1gl), RPC JSONL script (bd-kh2), and remaining CLI scenarios (bd-1o4, bd-idw).
 

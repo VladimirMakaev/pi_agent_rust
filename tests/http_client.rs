@@ -8,6 +8,7 @@ mod common;
 
 use common::TestHarness;
 use pi::http::client::Client;
+use pi::vcr::{VcrMode, VcrRecorder};
 use std::io::{Read as _, Write as _};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
@@ -289,6 +290,77 @@ fn request_timeout_is_error() {
         message.contains("Request timed out"),
         "unexpected error: {message}"
     );
+    write_logs_artifact(&harness);
+}
+
+#[test]
+fn vcr_round_trip_playback_reuses_recorded_stream() {
+    let harness = TestHarness::new("http_client_vcr_round_trip_playback_reuses_recorded_stream");
+    let cassette_dir = harness.temp_path("vcr_cassettes");
+    std::fs::create_dir_all(&cassette_dir).expect("create cassette dir");
+
+    let server = OneShotServer::start(|mut stream, _request| {
+        let response = concat!(
+            "HTTP/1.1 200 OK\r\n",
+            "Content-Length: 14\r\n",
+            "X-Source: live\r\n",
+            "\r\n",
+            "hello from vcr"
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("write response");
+    });
+
+    let url = server.url("/vcr-roundtrip");
+    let recorded_body = common::run_async({
+        let cassette_dir = cassette_dir.clone();
+        let url = url.clone();
+        async move {
+            let recorder =
+                VcrRecorder::new_with("http_client_vcr_round_trip", VcrMode::Record, &cassette_dir);
+            let response = Client::new()
+                .with_vcr(recorder)
+                .get(&url)
+                .send()
+                .await
+                .expect("record send");
+            assert_eq!(response.status(), 200);
+            response.text().await.expect("record text")
+        }
+    });
+
+    server.join();
+    assert_eq!(recorded_body, "hello from vcr");
+
+    let playback_body = common::run_async({
+        let url = url.clone();
+        let cassette_dir = cassette_dir.clone();
+        async move {
+            let recorder = VcrRecorder::new_with(
+                "http_client_vcr_round_trip",
+                VcrMode::Playback,
+                &cassette_dir,
+            );
+            let response = Client::new()
+                .with_vcr(recorder)
+                .get(&url)
+                .send()
+                .await
+                .expect("playback send");
+            assert_eq!(response.status(), 200);
+            response.text().await.expect("playback text")
+        }
+    });
+
+    assert_eq!(playback_body, recorded_body);
+
+    let cassette_path = cassette_dir.join("http_client_vcr_round_trip.json");
+    assert!(
+        cassette_path.exists(),
+        "missing cassette at {cassette_path:?}"
+    );
+    harness.record_artifact("cassette", &cassette_path);
     write_logs_artifact(&harness);
 }
 
