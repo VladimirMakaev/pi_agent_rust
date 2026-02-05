@@ -2840,4 +2840,34 @@ mod tests {
             assert!(!paths.contains(&package_root.join("extensions/b.js")));
         });
     }
+
+    #[test]
+    fn test_extension_manifest_directory_detected() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let extension_dir = temp_dir.path().join("ext");
+        fs::create_dir_all(&extension_dir).expect("create extension dir");
+        fs::write(
+            extension_dir.join("extension.json"),
+            serde_json::to_string_pretty(&json!({
+                "schema": "pi.ext.manifest.v1",
+                "extension_id": "test.ext",
+                "name": "Test Extension",
+                "version": "0.1.0",
+                "api_version": "1.0",
+                "runtime": "js",
+                "entrypoint": "index.js",
+                "capabilities": []
+            }))
+            .expect("serialize extension manifest"),
+        )
+        .expect("write extension manifest");
+        fs::write(
+            extension_dir.join("index.js"),
+            "export default function() {}",
+        )
+        .expect("write extension entry");
+
+        let entries = resolve_extension_entries(&extension_dir).expect("entries");
+        assert_eq!(entries, vec![extension_dir]);
+    }
 }

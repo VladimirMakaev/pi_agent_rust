@@ -51,7 +51,7 @@ struct Scenario {
 }
 
 fn anthropic_model() -> String {
-    env::var("ANTHROPIC_TEST_MODEL").unwrap_or_else(|_| "claude-3-5-haiku-20241022".to_string())
+    env::var("ANTHROPIC_TEST_MODEL").unwrap_or_else(|_| "claude-sonnet-4-20250514".to_string())
 }
 
 fn anthropic_api_key(mode: VcrMode) -> String {
@@ -59,7 +59,7 @@ fn anthropic_api_key(mode: VcrMode) -> String {
         VcrMode::Record => {
             env::var("ANTHROPIC_API_KEY").expect("ANTHROPIC_API_KEY required for VCR record mode")
         }
-        _ => env::var("ANTHROPIC_API_KEY").unwrap_or_else(|_| "test-key".to_string()),
+        _ => env::var("ANTHROPIC_API_KEY").unwrap_or_else(|_| "vcr-playback".to_string()),
     }
 }
 
@@ -72,12 +72,69 @@ fn build_context(scenario: &Scenario) -> Context {
 }
 
 fn build_options(scenario: &Scenario, api_key: String) -> StreamOptions {
+    const MIN_THINKING_BUDGET_TOKENS: u32 = 1024;
+
+    // Anthropic requires `temperature` to be 1.0 when extended thinking is enabled.
+    let thinking_enabled = scenario
+        .options
+        .thinking_level
+        .is_some_and(|level| level != ThinkingLevel::Off);
+    let temperature = if thinking_enabled {
+        Some(1.0)
+    } else {
+        scenario.options.temperature
+    };
+    // If a scenario enables thinking but doesn't provide budgets, keep the recording cheap and
+    // avoid invalid combinations like `max_tokens <= thinking.budget_tokens`.
+    let thinking_budgets = scenario.options.thinking_budgets.clone().map_or_else(
+        || {
+            thinking_enabled.then_some(ThinkingBudgets {
+                minimal: MIN_THINKING_BUDGET_TOKENS,
+                low: MIN_THINKING_BUDGET_TOKENS,
+                medium: MIN_THINKING_BUDGET_TOKENS,
+                high: MIN_THINKING_BUDGET_TOKENS,
+                xhigh: MIN_THINKING_BUDGET_TOKENS,
+            })
+        },
+        |budgets| {
+            Some(ThinkingBudgets {
+                minimal: budgets.minimal.max(MIN_THINKING_BUDGET_TOKENS),
+                low: budgets.low.max(MIN_THINKING_BUDGET_TOKENS),
+                medium: budgets.medium.max(MIN_THINKING_BUDGET_TOKENS),
+                high: budgets.high.max(MIN_THINKING_BUDGET_TOKENS),
+                xhigh: budgets.xhigh.max(MIN_THINKING_BUDGET_TOKENS),
+            })
+        },
+    );
+    let max_tokens = if thinking_enabled {
+        let budgets = thinking_budgets
+            .as_ref()
+            .expect("thinking budgets when thinking is enabled");
+        let thinking_level = scenario
+            .options
+            .thinking_level
+            .expect("thinking level when thinking is enabled");
+        let budget_tokens = match thinking_level {
+            ThinkingLevel::Off => 0,
+            ThinkingLevel::Minimal => budgets.minimal,
+            ThinkingLevel::Low => budgets.low,
+            ThinkingLevel::Medium => budgets.medium,
+            ThinkingLevel::High => budgets.high,
+            ThinkingLevel::XHigh => budgets.xhigh,
+        };
+        scenario
+            .options
+            .max_tokens
+            .max(budget_tokens.saturating_add(256))
+    } else {
+        scenario.options.max_tokens
+    };
     StreamOptions {
         api_key: Some(api_key),
-        max_tokens: Some(scenario.options.max_tokens),
-        temperature: scenario.options.temperature,
+        max_tokens: Some(max_tokens),
+        temperature,
         thinking_level: scenario.options.thinking_level,
-        thinking_budgets: scenario.options.thinking_budgets.clone(),
+        thinking_budgets,
         cache_retention: scenario.options.cache_retention,
         ..Default::default()
     }
@@ -93,19 +150,18 @@ async fn run_scenario(scenario: Scenario) {
     if mode == VcrMode::Playback && !cassette_path.exists() {
         let message = format!("Missing cassette {}", cassette_path.display());
         if vcr_strict() {
-            panic!("{message}");
+            assert!(!vcr_strict(), "{message}");
         } else {
             harness.log().warn("vcr", message);
             return;
         }
     }
 
-    let api_key = anthropic_api_key(mode);
     let recorder = VcrRecorder::new_with(scenario.name, mode, &cassette_dir);
     let client = Client::new().with_vcr(recorder);
     let provider = AnthropicProvider::new(scenario.model.clone()).with_client(client);
     let context = build_context(&scenario);
-    let options = build_options(&scenario, api_key);
+    let options = build_options(&scenario, anthropic_api_key(mode));
 
     harness
         .log()
@@ -133,7 +189,7 @@ async fn run_scenario(scenario: Scenario) {
         }
         ScenarioExpectation::Error(expectation) => {
             let Err(err) = provider.stream(&context, &options).await else {
-                panic!("expected error, got success");
+                panic!("expected error, got success for scenario {}", scenario.name);
             };
             let message = err.to_string();
             let needle = format!("HTTP {}", expectation.status);

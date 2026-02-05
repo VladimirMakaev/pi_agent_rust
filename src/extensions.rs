@@ -5686,7 +5686,7 @@ pub struct ExtensionManager {
 
 #[cfg(feature = "wasm-host")]
 #[derive(Clone, Default)]
-struct ExtensionManagerHandle {
+pub(crate) struct ExtensionManagerHandle {
     inner: Weak<Mutex<ExtensionManagerInner>>,
 }
 

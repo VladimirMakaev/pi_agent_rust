@@ -652,6 +652,15 @@ impl BodyStreamState {
                 }
 
                 ChunkedState::Trailers => {
+                    // Trailers are terminated by an empty line. When there are no trailers,
+                    // the terminator is a single CRLF (`0\r\n\r\n` total, with the final
+                    // `\r\n` remaining after consuming the size line).
+                    let bytes = self.buf.available();
+                    if bytes.len() >= 2 && bytes[0] == b'\r' && bytes[1] == b'\n' {
+                        self.buf.consume(2);
+                        self.chunked_state = ChunkedState::Done;
+                        return Ok(None);
+                    }
                     if let Some(end) = find_double_crlf(self.buf.available()) {
                         self.buf.consume(end);
                         self.chunked_state = ChunkedState::Done;

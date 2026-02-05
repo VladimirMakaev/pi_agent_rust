@@ -66,20 +66,15 @@ fn run() -> Result<()> {
     let elapsed = start.elapsed();
 
     let total_calls = args.iterations.saturating_mul(args.tool_calls);
-    let elapsed_ms = elapsed.as_millis();
-    let elapsed_us = elapsed.as_micros();
+    let elapsed_millis = elapsed.as_millis();
+    let elapsed_micros = elapsed.as_micros();
     let total_calls_u128 = total_calls as u128;
 
-    let per_call_us = if total_calls == 0 {
-        0
-    } else {
-        elapsed_us / total_calls_u128
-    };
-    let calls_per_sec = if elapsed_us == 0 {
-        0
-    } else {
-        total_calls_u128.saturating_mul(1_000_000) / elapsed_us
-    };
+    let per_call_us = elapsed_micros.checked_div(total_calls_u128).unwrap_or(0);
+    let calls_per_sec = total_calls_u128
+        .saturating_mul(1_000_000)
+        .checked_div(elapsed_micros)
+        .unwrap_or(0);
 
     println!(
         "{}",
@@ -88,7 +83,7 @@ fn run() -> Result<()> {
             "iterations": args.iterations,
             "tool_calls_per_iteration": args.tool_calls,
             "total_calls": total_calls,
-            "elapsed_ms": elapsed_ms,
+            "elapsed_ms": elapsed_millis,
             "per_call_us": per_call_us,
             "calls_per_sec": calls_per_sec,
         })
