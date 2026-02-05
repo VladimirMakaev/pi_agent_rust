@@ -1,7 +1,7 @@
 {
   "schema": "pi.ext.mock_spec.v1",
   "extension_id": "git-checkpoint",
-  "description": "Example mock spec with HTTP and exec rules for git-checkpoint extension. Demonstrates deterministic git command mocking and event firing.",
+  "description": "Example mock spec with HTTP and exec rules for git-checkpoint extension. Demonstrates deterministic HTTP + git command mocking and a simple event fire sequence.",
   "session": {
     "name": "git-checkpoint-test",
     "file": "/tmp/pi-test/sessions/git-checkpoint.jsonl",
@@ -118,8 +118,7 @@
     "fire_sequence": [
       {
         "event": "turn_end",
-        "payload": {},
-        "expected_response": null
+        "payload": {}
       }
     ]
   },

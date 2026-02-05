@@ -275,9 +275,7 @@ fn schema_covers_all_hostcall_categories() {
     let props = parsed["properties"].as_object().expect("properties");
 
     // All hostcall categories must be present
-    let required_sections = [
-        "session", "http", "exec", "tools", "ui", "events", "model",
-    ];
+    let required_sections = ["session", "http", "exec", "tools", "ui", "events", "model"];
     for section in &required_sections {
         assert!(
             props.contains_key(*section),
@@ -294,10 +292,7 @@ fn schema_defines_all_event_types() {
 
     let event_enum = &parsed["$defs"]["event_fire"]["properties"]["event"]["enum"];
     let events = event_enum.as_array().expect("event enum");
-    let event_names: Vec<&str> = events
-        .iter()
-        .map(|v| v.as_str().expect("string"))
-        .collect();
+    let event_names: Vec<&str> = events.iter().map(|v| v.as_str().expect("string")).collect();
 
     let expected = [
         "tool_call",
@@ -633,7 +628,13 @@ fn session_with_rich_messages_parses() {
     // Array content
     assert!(messages[1].content.as_ref().unwrap().is_array());
     assert_eq!(
-        messages[1].content.as_ref().unwrap().as_array().unwrap().len(),
+        messages[1]
+            .content
+            .as_ref()
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len(),
         2
     );
     // Entries
