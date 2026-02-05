@@ -966,7 +966,7 @@ impl PiApp {
                         return;
                     }
                 };
-                load_conversation_from_session(&session_guard)
+                conversation_from_session(&session_guard)
             };
 
             let _ = event_tx.try_send(PiMsg::ConversationReset {
@@ -2196,6 +2196,9 @@ pub async fn run_interactive(
     runtime_handle.spawn(async move {
         let cx = Cx::for_request();
         while let Ok(msg) = event_rx.recv(&cx).await {
+            if matches!(msg, PiMsg::UiShutdown) {
+                break;
+            }
             let _ = ui_tx.send(Message::new(msg));
         }
     });
@@ -2221,7 +2224,7 @@ pub async fn run_interactive(
             .lock(&cx)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to lock session: {e}"))?;
-        load_conversation_from_session(&guard)
+        conversation_from_session(&guard)
     };
 
     let app = PiApp::new(
@@ -2254,7 +2257,7 @@ pub async fn run_interactive(
     Ok(())
 }
 
-fn load_conversation_from_session(session: &Session) -> (Vec<ConversationMessage>, Usage) {
+pub fn conversation_from_session(session: &Session) -> (Vec<ConversationMessage>, Usage) {
     let mut messages = Vec::new();
     let mut usage = Usage::default();
 
@@ -2647,6 +2650,8 @@ pub enum PiMsg {
     AgentStart,
     /// Trigger processing of the next queued input (CLI startup messages).
     RunPending,
+    /// Internal: shut down the async→UI message bridge (used for clean exit).
+    UiShutdown,
     /// Text delta from assistant.
     TextDelta(String),
     /// Thinking delta from assistant.
@@ -4744,7 +4749,7 @@ impl PiApp {
                 session_guard.reset_leaf();
             }
 
-            let (messages, usage) = load_conversation_from_session(&session_guard);
+            let (messages, usage) = conversation_from_session(&session_guard);
             let agent_messages = session_guard.to_messages_for_current_path();
             let status_leaf = pending
                 .new_leaf_id
@@ -4908,7 +4913,7 @@ impl PiApp {
                         return;
                     }
                 };
-                load_conversation_from_session(&guard)
+                conversation_from_session(&guard)
             };
 
             let status = if summary_skipped {
@@ -5158,6 +5163,10 @@ impl PiApp {
             }
             PiMsg::RunPending => {
                 return self.run_next_pending();
+            }
+            PiMsg::UiShutdown => {
+                // Internal signal for shutting down the async→UI bridge; should not normally reach
+                // the UI event loop, but handle it defensively.
             }
             PiMsg::TextDelta(text) => {
                 self.current_response.push_str(&text);
@@ -6666,6 +6675,7 @@ impl PiApp {
 
         // Drop the async → bubbletea bridge sender so bubbletea can shut down cleanly.
         // Without this, bubbletea's external forwarder thread can block on `recv()` during quit.
+        let _ = self.event_tx.try_send(PiMsg::UiShutdown);
         let (tx, _rx) = mpsc::channel::<PiMsg>(1);
         drop(std::mem::replace(&mut self.event_tx, tx));
         quit()
@@ -7972,7 +7982,7 @@ impl PiApp {
                                 return;
                             }
                         };
-                        load_conversation_from_session(&guard)
+                        conversation_from_session(&guard)
                     };
 
                     let _ = event_tx.try_send(PiMsg::ConversationReset {
@@ -8166,7 +8176,7 @@ impl PiApp {
                                 return;
                             }
                         };
-                        load_conversation_from_session(&guard)
+                        conversation_from_session(&guard)
                     };
 
                     is_compacting.store(false, Ordering::SeqCst);
