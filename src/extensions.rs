@@ -9067,9 +9067,8 @@ mod tests {
 
             let value = match outcome {
                 HostcallOutcome::Success(value) => value,
-                other => {
-                    assert!(false, "expected success, got {other:?}");
-                    return;
+                HostcallOutcome::Error { code, message } => {
+                    unreachable!("expected success, got error {code}: {message}");
                 }
             };
             let tool_names: Vec<String> = value
@@ -9099,9 +9098,8 @@ mod tests {
 
             let value = match outcome {
                 HostcallOutcome::Success(value) => value,
-                other => {
-                    assert!(false, "expected success, got {other:?}");
-                    return;
+                HostcallOutcome::Error { code, message } => {
+                    unreachable!("expected success, got error {code}: {message}");
                 }
             };
             let tool_names: Vec<String> = value
@@ -9128,9 +9126,8 @@ mod tests {
 
             let value = match outcome {
                 HostcallOutcome::Success(value) => value,
-                other => {
-                    assert!(false, "expected success, got {other:?}");
-                    return;
+                HostcallOutcome::Error { code, message } => {
+                    unreachable!("expected success, got error {code}: {message}");
                 }
             };
             let tool_list = value.get("tools").and_then(Value::as_array).unwrap();
@@ -9181,9 +9178,8 @@ mod tests {
 
             let value = match outcome {
                 HostcallOutcome::Success(value) => value,
-                other => {
-                    assert!(false, "expected success, got {other:?}");
-                    return;
+                HostcallOutcome::Error { code, message } => {
+                    unreachable!("expected success, got error {code}: {message}");
                 }
             };
             let tool_list = value.get("tools").and_then(Value::as_array).unwrap();
@@ -9223,9 +9219,8 @@ mod tests {
 
             let value = match outcome {
                 HostcallOutcome::Success(value) => value,
-                other => {
-                    assert!(false, "expected success, got {other:?}");
-                    return;
+                HostcallOutcome::Error { code, message } => {
+                    unreachable!("expected success, got error {code}: {message}");
                 }
             };
             let tool_names: Vec<String> = value
@@ -9834,9 +9829,8 @@ mod tests {
 
             let value = match outcome {
                 HostcallOutcome::Success(value) => value,
-                other => {
-                    assert!(false, "expected success, got {other:?}");
-                    return;
+                HostcallOutcome::Error { code, message } => {
+                    unreachable!("expected success, got error {code}: {message}");
                 }
             };
             assert!(value.get("provider").unwrap().is_null());
@@ -9880,9 +9874,8 @@ mod tests {
 
             let value = match outcome {
                 HostcallOutcome::Success(value) => value,
-                other => {
-                    assert!(false, "expected success, got {other:?}");
-                    return;
+                HostcallOutcome::Error { code, message } => {
+                    unreachable!("expected success, got error {code}: {message}");
                 }
             };
             assert!(value.get("thinkingLevel").unwrap().is_null());
@@ -9916,9 +9909,8 @@ mod tests {
 
             let value = match outcome {
                 HostcallOutcome::Success(value) => value,
-                other => {
-                    assert!(false, "expected success, got {other:?}");
-                    return;
+                HostcallOutcome::Error { code, message } => {
+                    unreachable!("expected success, got error {code}: {message}");
                 }
             };
             assert_eq!(
@@ -10074,9 +10066,8 @@ mod tests {
                 dispatch_hostcall_session("call-2", &manager, "get_name", json!({})).await;
             let value = match outcome {
                 HostcallOutcome::Success(value) => value,
-                other => {
-                    assert!(false, "expected success, got {other:?}");
-                    return;
+                HostcallOutcome::Error { code, message } => {
+                    unreachable!("expected success, got error {code}: {message}");
                 }
             };
             assert_eq!(value.as_str(), Some("My Feature Work"));
@@ -10193,9 +10184,8 @@ mod tests {
                 dispatch_hostcall_events("call-2", &manager, &tools, "getModel", json!({})).await;
             let value = match outcome {
                 HostcallOutcome::Success(value) => value,
-                other => {
-                    assert!(false, "expected success, got {other:?}");
-                    return;
+                HostcallOutcome::Error { code, message } => {
+                    unreachable!("expected success, got error {code}: {message}");
                 }
             };
             assert_eq!(
@@ -10237,9 +10227,8 @@ mod tests {
                     .await;
             let value = match outcome {
                 HostcallOutcome::Success(value) => value,
-                other => {
-                    assert!(false, "expected success, got {other:?}");
-                    return;
+                HostcallOutcome::Error { code, message } => {
+                    unreachable!("expected success, got error {code}: {message}");
                 }
             };
             assert_eq!(
@@ -10637,9 +10626,8 @@ mod tests {
 
             let val = match outcome {
                 HostcallOutcome::Success(val) => val,
-                other => {
-                    assert!(false, "expected success, got {other:?}");
-                    return;
+                HostcallOutcome::Error { code, message } => {
+                    unreachable!("expected success, got error {code}: {message}");
                 }
             };
             assert_eq!(val.get("name").and_then(Value::as_str), Some("output-dir"));
@@ -10677,9 +10665,8 @@ mod tests {
 
             let val = match outcome {
                 HostcallOutcome::Success(val) => val,
-                other => {
-                    assert!(false, "expected success with null, got {other:?}");
-                    return;
+                HostcallOutcome::Error { code, message } => {
+                    unreachable!("expected success with null, got error {code}: {message}");
                 }
             };
             assert!(val.is_null());
@@ -10708,9 +10695,8 @@ mod tests {
 
             let val = match outcome {
                 HostcallOutcome::Success(val) => val,
-                other => {
-                    assert!(false, "expected success, got {other:?}");
-                    return;
+                HostcallOutcome::Error { code, message } => {
+                    unreachable!("expected success, got error {code}: {message}");
                 }
             };
             let arr = val.as_array().expect("expected array");

@@ -85,11 +85,12 @@ impl TmuxInstance {
 
     fn run_checked(&self, args: &[&str], label: &str) -> std::process::Output {
         let output = self.tmux_output(args);
-        if !output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            panic!("tmux {label} failed\nstdout:\n{stdout}\nstderr:\n{stderr}");
-        }
+        assert!(
+            output.status.success(),
+            "tmux {label} failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
         output
     }
 

@@ -690,10 +690,7 @@ export default function init(pi) {
                         assert_eq!(delta, "hi");
                         let text = match &partial.content[0] {
                             ContentBlock::Text(text) => text,
-                            other => {
-                                assert!(false, "expected text content block, got {other:?}");
-                                return;
-                            }
+                            other => unreachable!("expected text content block, got {other:?}"),
                         };
                         assert_eq!(text.text, "hi");
                         saw_text_delta = true;
@@ -702,10 +699,7 @@ export default function init(pi) {
                         assert_eq!(reason, StopReason::Stop);
                         let text = match &message.content[0] {
                             ContentBlock::Text(text) => text,
-                            other => {
-                                assert!(false, "expected text content block, got {other:?}");
-                                return;
-                            }
+                            other => unreachable!("expected text content block, got {other:?}"),
                         };
                         assert_eq!(text.text, "hi");
                         break;
@@ -754,7 +748,7 @@ export default function init(pi) {
             }
 
             assert!(
-                false,
+                out_path.exists(),
                 "expected cancelled.txt to be created after stream drop/cancel"
             );
         });
@@ -890,10 +884,7 @@ export default function init(pi) {
                     StreamEvent::Done { message, .. } => {
                         let text = match &message.content[0] {
                             ContentBlock::Text(text) => text,
-                            other => {
-                                assert!(false, "expected text content block, got {other:?}");
-                                return;
-                            }
+                            other => unreachable!("expected text content block, got {other:?}"),
                         };
                         final_text = text.text.clone();
                         break;

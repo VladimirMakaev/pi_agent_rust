@@ -800,8 +800,7 @@ mod tests {
             "expected a single Text chunk, got {chunks:?}"
         );
         let MarkdownChunk::Text(text) = &chunks[0] else {
-            assert!(false, "expected text fallback, got {chunks:?}");
-            return;
+            unreachable!("expected text fallback, got {chunks:?}");
         };
         assert!(text.contains("```rust"));
         assert!(text.contains("fn main"));

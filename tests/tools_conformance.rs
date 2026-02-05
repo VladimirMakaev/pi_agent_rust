@@ -974,11 +974,10 @@ fn binary_available(name: &str) -> bool {
     std::process::Command::new("which")
         .arg(name)
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|o| o.status.success())
 }
 
-/// Log a tool execution as an artifact: input JSON, output text, details, is_error.
+/// Log a tool execution as an artifact: input JSON, output text, details, `is_error`.
 fn log_tool_execution(
     logger: &common::logging::TestLogger,
     tool_name: &str,
@@ -1081,7 +1080,12 @@ mod e2e_read {
         asupersync::test_utils::run_test(|| async {
             let harness = TestHarness::new("e2e_read_truncation_details_captured");
             let total_lines = pi::tools::DEFAULT_MAX_LINES + 10;
-            let content: String = (1..=total_lines).map(|i| format!("line{i}\n")).collect();
+            let mut content = String::new();
+            for i in 1..=total_lines {
+                content.push_str("line");
+                content.push_str(&i.to_string());
+                content.push('\n');
+            }
             let path = harness.create_file("big.txt", content.as_bytes());
             let tool = pi::tools::ReadTool::new(harness.temp_dir());
             let input = serde_json::json!({
@@ -1354,20 +1358,20 @@ mod e2e_grep {
     }
 
     #[test]
-    fn e2e_grep_include_filter_with_artifacts() {
+    fn e2e_grep_glob_filter_with_artifacts() {
         if !binary_available("rg") {
             eprintln!("SKIP: rg (ripgrep) not available on PATH");
             return;
         }
         asupersync::test_utils::run_test(|| async {
-            let harness = TestHarness::new("e2e_grep_include_filter_with_artifacts");
-            harness.create_file("code.rs", b"fn match_here() {}");
-            harness.create_file("code.py", b"def match_here(): pass");
+            let harness = TestHarness::new("e2e_grep_glob_filter_with_artifacts");
+            harness.create_file("src/code.rs", b"fn match_here() {}");
+            harness.create_file("src/code.py", b"def match_here(): pass");
 
             let tool = pi::tools::GrepTool::new(harness.temp_dir());
             let input = serde_json::json!({
                 "pattern": "match_here",
-                "glob": "*.rs"
+                "glob": "**/*.rs"
             });
 
             let result = tool.execute("grep-003", input.clone(), None).await;
@@ -1375,8 +1379,14 @@ mod e2e_grep {
 
             let output = result.expect("should succeed");
             let text = get_text_content(&output.content);
-            assert!(text.contains("code.rs"));
-            assert!(!text.contains("code.py"));
+            assert!(
+                text.contains("code.rs"),
+                "expected code.rs in output: {text}"
+            );
+            assert!(
+                !text.contains("code.py"),
+                "expected no code.py in output: {text}"
+            );
         });
     }
 }
