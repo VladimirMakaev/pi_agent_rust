@@ -19,6 +19,7 @@ use crate::compaction::{
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::error_hints;
+use crate::extensions::{ExtensionEventName, extension_event_from_agent};
 use crate::model::{
     ContentBlock, ImageContent, Message, StopReason, TextContent, UserContent, UserMessage,
 };
@@ -1305,25 +1306,7 @@ async fn run_prompt_with_retry(
             return;
         }
 
-        let event_tx = out_tx.clone();
-        let event_handler = move |event: AgentEvent| {
-            let serialized = if let AgentEvent::AgentEnd { error, .. } = &event {
-                json!({
-                    "type": "agent_end",
-                    "error": error,
-                })
-                .to_string()
-            } else {
-                serde_json::to_string(&event).unwrap_or_else(|err| {
-                    json!({
-                        "type": "event_serialize_error",
-                        "error": err.to_string(),
-                    })
-                    .to_string()
-                })
-            };
-            let _ = event_tx.send(serialized);
-        };
+        let runtime_for_events = options.runtime_handle.clone();
 
         let result = {
             let mut guard = match session.lock(&cx).await {
@@ -1334,6 +1317,53 @@ async fn run_prompt_with_retry(
                     break;
                 }
             };
+            let extensions = guard.extensions.clone();
+            let event_extensions = extensions.clone();
+            let runtime_for_events_handler = runtime_for_events.clone();
+            let event_tx = out_tx.clone();
+            let event_handler = move |event: AgentEvent| {
+                let serialized = if let AgentEvent::AgentEnd { error, .. } = &event {
+                    json!({
+                        "type": "agent_end",
+                        "error": error,
+                    })
+                    .to_string()
+                } else {
+                    serde_json::to_string(&event).unwrap_or_else(|err| {
+                        json!({
+                            "type": "event_serialize_error",
+                            "error": err.to_string(),
+                        })
+                        .to_string()
+                    })
+                };
+                let _ = event_tx.send(serialized);
+                if let Some(manager) = &event_extensions {
+                    if let Some((event_name, data)) = extension_event_from_agent(&event) {
+                        let manager = manager.clone();
+                        let runtime_handle = runtime_for_events_handler.clone();
+                        runtime_handle.spawn(async move {
+                            let _ = manager.dispatch_event(event_name, data).await;
+                        });
+                    }
+                }
+            };
+
+            if let Some(manager) = extensions.clone() {
+                let message_text = message.clone();
+                let runtime_handle = runtime_for_events.clone();
+                runtime_handle.spawn(async move {
+                    let _ = manager
+                        .dispatch_event(
+                            ExtensionEventName::Input,
+                            Some(json!({ "text": message_text })),
+                        )
+                        .await;
+                    let _ = manager
+                        .dispatch_event(ExtensionEventName::BeforeAgentStart, None)
+                        .await;
+                });
+            }
             if images.is_empty() {
                 guard
                     .run_text_with_abort(message.clone(), Some(abort_signal), event_handler)
