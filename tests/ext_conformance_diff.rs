@@ -11,6 +11,7 @@
 
 mod common;
 
+use chrono::{SecondsFormat, Utc};
 use pi::extensions::{ExtensionManager, JsExtensionLoadSpec, JsExtensionRuntimeHandle};
 use pi::extensions_js::PiJsRuntimeConfig;
 use pi::tools::ToolRegistry;
@@ -19,8 +20,9 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 // ─── Paths ──────────────────────────────────────────────────────────────────
 
@@ -34,6 +36,14 @@ fn artifacts_dir() -> PathBuf {
 
 fn ts_oracle_script() -> PathBuf {
     project_root().join("tests/ext_conformance/ts_oracle/load_extension.ts")
+}
+
+fn ts_harness_script() -> PathBuf {
+    project_root().join("tests/ext_conformance/ts_harness/run_extension.ts")
+}
+
+fn ts_default_mock_spec() -> PathBuf {
+    project_root().join("tests/ext_conformance/mock_specs/mock_spec_default.json")
 }
 
 fn pi_mono_root() -> PathBuf {
@@ -65,6 +75,7 @@ const DEFAULT_DETERMINISTIC_TIME_STEP_MS: &str = "1";
 const DEFAULT_DETERMINISTIC_RANDOM_SEED: &str = "1337";
 const DEFAULT_DETERMINISTIC_CWD: &str = "/tmp/ext-conformance-test";
 const DEFAULT_DETERMINISTIC_HOME: &str = "/tmp/ext-conformance-home";
+const DEFAULT_TS_ORACLE_TIMEOUT_SECS: u64 = 30;
 
 struct DeterministicSettings {
     time_ms: String,
@@ -110,6 +121,43 @@ fn deterministic_settings() -> DeterministicSettings {
         cwd: env_or_default("PI_DETERMINISTIC_CWD", DEFAULT_DETERMINISTIC_CWD),
         home: env_or_default("PI_DETERMINISTIC_HOME", DEFAULT_DETERMINISTIC_HOME),
     }
+}
+
+fn sanitize_path_for_dir(path: &Path) -> String {
+    let relative = path.strip_prefix(project_root()).unwrap_or(path);
+    relative
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
+}
+
+fn deterministic_settings_for(extension_path: &Path) -> DeterministicSettings {
+    let mut settings = deterministic_settings();
+    let key = sanitize_path_for_dir(extension_path);
+
+    if std::env::var("PI_DETERMINISTIC_CWD").is_err() {
+        settings.cwd = Path::new(DEFAULT_DETERMINISTIC_CWD)
+            .join(&key)
+            .display()
+            .to_string();
+    }
+    if std::env::var("PI_DETERMINISTIC_HOME").is_err() {
+        settings.home = Path::new(DEFAULT_DETERMINISTIC_HOME)
+            .join(&key)
+            .display()
+            .to_string();
+    }
+
+    settings
+}
+
+fn ts_oracle_timeout() -> Duration {
+    std::env::var("PI_TS_ORACLE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|val| val.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(DEFAULT_TS_ORACLE_TIMEOUT_SECS))
 }
 
 fn ensure_deterministic_dirs(settings: &DeterministicSettings) {
@@ -253,6 +301,12 @@ fn validated_manifest_has_all_tiers() {
 
 /// Run the TS oracle harness on an extension and parse the JSON output.
 fn run_ts_oracle(extension_path: &Path) -> Value {
+    run_ts_oracle_result(extension_path).unwrap_or_else(|err| {
+        panic!("{err}");
+    })
+}
+
+fn run_ts_oracle_result(extension_path: &Path) -> Result<Value, String> {
     let settings = deterministic_settings();
     ensure_deterministic_dirs(&settings);
     let node_path: Cow<'_, str> = match std::env::var("NODE_PATH") {
@@ -290,15 +344,89 @@ fn run_ts_oracle(extension_path: &Path) -> Value {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    assert!(
-        output.status.success() || !stdout.trim().is_empty(),
-        "TS oracle crashed for {}:\nstderr: {stderr}",
-        extension_path.display()
-    );
+    if !output.status.success() && stdout.trim().is_empty() {
+        return Err(format!(
+            "TS oracle crashed for {}:\nstderr: {stderr}",
+            extension_path.display()
+        ));
+    }
 
-    serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
-        unreachable!(
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return Err(format!(
+            "TS oracle returned empty stdout for {}:\nstderr: {stderr}",
+            extension_path.display()
+        ));
+    }
+
+    serde_json::from_str(trimmed).map_err(|e| {
+        format!(
             "TS oracle returned invalid JSON for {}:\n  error: {e}\n  stdout: {stdout}\n  stderr: {stderr}",
+            extension_path.display()
+        )
+    })
+}
+
+fn run_ts_harness_result(extension_path: &Path) -> Result<Value, String> {
+    let settings = deterministic_settings();
+    ensure_deterministic_dirs(&settings);
+    let node_path: Cow<'_, str> = match std::env::var("NODE_PATH") {
+        Ok(existing) if !existing.trim().is_empty() => Cow::Owned(format!(
+            "{}:{}:{}",
+            ts_oracle_node_path().display(),
+            pi_mono_node_modules().display(),
+            existing
+        )),
+        _ => Cow::Owned(format!(
+            "{}:{}",
+            ts_oracle_node_path().display(),
+            pi_mono_node_modules().display()
+        )),
+    };
+
+    let mut cmd = Command::new(bun_path());
+    cmd.arg("run")
+        .arg(ts_harness_script())
+        .arg(extension_path)
+        .arg(ts_default_mock_spec())
+        .arg(&settings.cwd)
+        .current_dir(pi_mono_root())
+        .env("NODE_PATH", node_path.as_ref())
+        .env("PI_DETERMINISTIC_TIME_MS", &settings.time_ms)
+        .env("PI_DETERMINISTIC_TIME_STEP_MS", &settings.time_step_ms)
+        .env("PI_DETERMINISTIC_CWD", &settings.cwd)
+        .env("PI_DETERMINISTIC_HOME", &settings.home);
+    if let Some(random_value) = settings.random_value.as_deref() {
+        cmd.env("PI_DETERMINISTIC_RANDOM", random_value);
+    } else {
+        cmd.env("PI_DETERMINISTIC_RANDOM_SEED", &settings.random_seed);
+    }
+
+    let output = cmd
+        .output()
+        .map_err(|err| format!("failed to execute TS harness: {err}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if !output.status.success() && stdout.trim().is_empty() {
+        return Err(format!(
+            "TS harness crashed for {}:\nstderr: {stderr}",
+            extension_path.display()
+        ));
+    }
+
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return Err(format!(
+            "TS harness returned empty stdout for {}:\nstderr: {stderr}",
+            extension_path.display()
+        ));
+    }
+
+    serde_json::from_str(trimmed).map_err(|e| {
+        format!(
+            "TS harness returned invalid JSON for {}:\n  error: {e}\n  stdout: {stdout}\n  stderr: {stderr}",
             extension_path.display()
         )
     })
@@ -310,9 +438,16 @@ fn run_ts_oracle(extension_path: &Path) -> Value {
 /// registration snapshot in a format comparable to the TS oracle output.
 /// Returns `Err(message)` if the extension fails to load.
 fn load_rust_snapshot(extension_path: &Path) -> Result<Value, String> {
+    let (snapshot, _load_time_ms) = load_rust_snapshot_timed(extension_path)?;
+    Ok(snapshot)
+}
+
+fn load_rust_snapshot_timed(extension_path: &Path) -> Result<(Value, u64), String> {
     let settings = deterministic_settings();
     ensure_deterministic_dirs(&settings);
     let cwd = PathBuf::from(&settings.cwd);
+
+    let load_start = Instant::now();
 
     let spec = JsExtensionLoadSpec::from_entry_path(extension_path)
         .map_err(|e| format!("load spec: {e}"))?;
@@ -366,6 +501,8 @@ fn load_rust_snapshot(extension_path: &Path) -> Result<Value, String> {
         }
     })?;
 
+    let load_time_ms = u64::try_from(load_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+
     // Build snapshot matching TS oracle format
     let commands = manager.list_commands();
     let shortcuts = manager.list_shortcuts();
@@ -374,14 +511,57 @@ fn load_rust_snapshot(extension_path: &Path) -> Result<Value, String> {
     let tool_defs = manager.extension_tool_defs();
     let event_hooks = manager.list_event_hooks();
 
-    Ok(serde_json::json!({
-        "commands": commands,
-        "shortcuts": shortcuts,
-        "flags": flags,
-        "providers": providers,
-        "tools": tool_defs,
-        "event_hooks": event_hooks,
-    }))
+    Ok((
+        serde_json::json!({
+            "commands": commands,
+            "shortcuts": shortcuts,
+            "flags": flags,
+            "providers": providers,
+            "tools": tool_defs,
+            "event_hooks": event_hooks,
+        }),
+        load_time_ms,
+    ))
+}
+
+fn percentile_index(len: usize, numerator: usize, denominator: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    let rank = (len * numerator).saturating_add(denominator - 1) / denominator;
+    rank.saturating_sub(1).min(len - 1)
+}
+
+fn summarize_times(values: &[u64]) -> Value {
+    if values.is_empty() {
+        return serde_json::json!({ "count": 0 });
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    serde_json::json!({
+        "count": sorted.len(),
+        "min": sorted[0],
+        "max": *sorted.last().unwrap(),
+        "p50": sorted[percentile_index(sorted.len(), 1, 2)],
+        "p95": sorted[percentile_index(sorted.len(), 95, 100)],
+        "p99": sorted[percentile_index(sorted.len(), 99, 100)],
+    })
+}
+
+fn summarize_ratios(values: &[f64]) -> Value {
+    if values.is_empty() {
+        return serde_json::json!({ "count": 0 });
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    serde_json::json!({
+        "count": sorted.len(),
+        "min": sorted[0],
+        "max": *sorted.last().unwrap(),
+        "p50": sorted[percentile_index(sorted.len(), 1, 2)],
+        "p95": sorted[percentile_index(sorted.len(), 95, 100)],
+        "p99": sorted[percentile_index(sorted.len(), 99, 100)],
+    })
 }
 
 // ─── Comparison helpers ──────────────────────────────────────────────────────
@@ -837,6 +1017,154 @@ fn diff_official_manifest() {
 }
 
 #[test]
+#[ignore = "bd-1o6l: generate load-time benchmark report"]
+#[allow(clippy::too_many_lines)]
+fn load_time_benchmark_official() {
+    let filter = std::env::var("PI_LOAD_TIME_FILTER").ok();
+    let max = std::env::var("PI_LOAD_TIME_MAX")
+        .ok()
+        .and_then(|val| val.parse::<usize>().ok());
+
+    let selected: Vec<(String, String)> = official_extensions()
+        .iter()
+        .filter(|(dir, entry)| {
+            let name = format!("{dir}/{entry}");
+            filter.as_ref().is_none_or(|needle| name.contains(needle))
+        })
+        .take(max.unwrap_or(usize::MAX))
+        .cloned()
+        .collect();
+
+    eprintln!(
+        "[load_time_benchmark] Starting (selected={} filter={:?} max={:?})",
+        selected.len(),
+        filter,
+        max
+    );
+
+    let mut results = Vec::new();
+    let mut ts_times = Vec::new();
+    let mut rust_times = Vec::new();
+    let mut ratios = Vec::new();
+    let mut ts_success = 0usize;
+    let mut rust_success = 0usize;
+    let mut paired = 0usize;
+
+    for (idx, (extension_dir, entry_file)) in selected.iter().enumerate() {
+        let name = format!("{extension_dir}/{entry_file}");
+        let ext_path = artifacts_dir().join(extension_dir).join(entry_file);
+        eprintln!(
+            "[load_time_benchmark] {}/{}: {name}",
+            idx + 1,
+            selected.len()
+        );
+
+        let (ts_ok, ts_load, ts_error) = match run_ts_harness_result(&ext_path) {
+            Ok(ts_result) => {
+                let ok = ts_result
+                    .get("success")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let load = ts_result.get("load_time_ms").and_then(Value::as_u64);
+                let error = ts_result
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string);
+                if ok {
+                    ts_success += 1;
+                }
+                if let Some(load_ms) = load {
+                    ts_times.push(load_ms);
+                }
+                (ok, load, error)
+            }
+            Err(err) => (false, None, Some(err)),
+        };
+
+        let (rust_snapshot, rust_load) = match load_rust_snapshot_timed(&ext_path) {
+            Ok((snapshot, load_ms)) => {
+                rust_success += 1;
+                rust_times.push(load_ms);
+                (Some(snapshot), Some(load_ms))
+            }
+            Err(err) => {
+                results.push(serde_json::json!({
+                    "extension": name,
+                    "ts": {
+                        "success": ts_ok,
+                        "load_time_ms": ts_load,
+                        "error": ts_error,
+                    },
+                    "rust": {
+                        "success": false,
+                        "load_time_ms": null,
+                        "error": err,
+                    },
+                    "ratio": null,
+                }));
+                continue;
+            }
+        };
+
+        let ratio = match (ts_load, rust_load) {
+            (Some(ts_ms), Some(rust_ms)) if ts_ms > 0 => {
+                #[allow(clippy::cast_precision_loss)]
+                let ratio = (rust_ms as f64) / (ts_ms as f64);
+                ratios.push(ratio);
+                paired += 1;
+                Some(ratio)
+            }
+            _ => None,
+        };
+
+        results.push(serde_json::json!({
+            "extension": name,
+            "ts": {
+                "success": ts_ok,
+                "load_time_ms": ts_load,
+                "error": ts_error,
+            },
+            "rust": {
+                "success": rust_snapshot.is_some(),
+                "load_time_ms": rust_load,
+                "error": null,
+            },
+            "ratio": ratio,
+        }));
+    }
+
+    let report = serde_json::json!({
+        "schema": "pi.ext.load_time_benchmark.v1",
+        "generated_at": Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+        "tier": "official-pi-mono",
+        "filter": filter,
+        "max": max,
+        "counts": {
+            "total": selected.len(),
+            "ts_success": ts_success,
+            "rust_success": rust_success,
+            "paired": paired,
+        },
+        "ts": summarize_times(&ts_times),
+        "rust": summarize_times(&rust_times),
+        "ratio": summarize_ratios(&ratios),
+        "results": results,
+    });
+
+    let report_path = project_root().join("tests/ext_conformance/reports/load_time_benchmark.json");
+    if let Some(parent) = report_path.parent() {
+        fs::create_dir_all(parent).expect("create report directory");
+    }
+    fs::write(&report_path, serde_json::to_string_pretty(&report).unwrap())
+        .expect("write load time benchmark report");
+
+    eprintln!(
+        "[load_time_benchmark] Wrote report to {}",
+        report_path.display()
+    );
+}
+
+#[test]
 fn diff_hello() {
     run_differential_test("hello", "hello.ts");
 }
@@ -1038,8 +1366,8 @@ fn diff_community_manifest() {
 }
 
 /// Run differential conformance tests on npm registry extensions (63 packages).
-/// Use PI_NPM_FILTER env var to filter by name substring.
-/// Use PI_NPM_MAX env var to limit the number of extensions to test.
+/// Use `PI_NPM_FILTER` env var to filter by name substring.
+/// Use `PI_NPM_MAX` env var to limit the number of extensions to test.
 #[test]
 #[ignore = "bd-3dd7: npm registry extensions not yet expected to pass; run manually with --ignored"]
 fn diff_npm_manifest() {
@@ -1115,8 +1443,8 @@ fn diff_npm_manifest() {
 }
 
 /// Run differential conformance tests on third-party GitHub extensions (23 extensions).
-/// Use PI_THIRDPARTY_FILTER env var to filter by name substring.
-/// Use PI_THIRDPARTY_MAX env var to limit the number of extensions to test.
+/// Use `PI_THIRDPARTY_FILTER` env var to filter by name substring.
+/// Use `PI_THIRDPARTY_MAX` env var to limit the number of extensions to test.
 #[test]
 #[ignore = "bd-22r2: third-party extensions not yet expected to pass; run manually with --ignored"]
 fn diff_thirdparty_manifest() {
