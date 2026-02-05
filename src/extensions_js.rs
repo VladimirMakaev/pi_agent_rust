@@ -2458,9 +2458,71 @@ export default { spawn, spawnSync, execSync, exec };
     modules.insert(
         "node:module".to_string(),
         r#"
+import * as fs from "node:fs";
+import * as fsPromises from "node:fs/promises";
+import * as path from "node:path";
+import * as os from "node:os";
+import * as crypto from "node:crypto";
+import * as url from "node:url";
+import * as processMod from "node:process";
+import * as buffer from "node:buffer";
+import * as childProcess from "node:child_process";
+
+function __normalizeBuiltin(id) {
+  const spec = String(id ?? "");
+  switch (spec) {
+    case "fs":
+    case "node:fs":
+      return "node:fs";
+    case "fs/promises":
+    case "node:fs/promises":
+      return "node:fs/promises";
+    case "path":
+    case "node:path":
+      return "node:path";
+    case "os":
+    case "node:os":
+      return "node:os";
+    case "crypto":
+    case "node:crypto":
+      return "node:crypto";
+    case "url":
+    case "node:url":
+      return "node:url";
+    case "process":
+    case "node:process":
+      return "node:process";
+    case "buffer":
+    case "node:buffer":
+      return "node:buffer";
+    case "child_process":
+    case "node:child_process":
+      return "node:child_process";
+    default:
+      return spec;
+  }
+}
+
+const __builtinModules = {
+  "node:fs": fs,
+  "node:fs/promises": fsPromises,
+  "node:path": path,
+  "node:os": os,
+  "node:crypto": crypto,
+  "node:url": url,
+  "node:process": processMod,
+  "node:buffer": buffer,
+  "node:child_process": childProcess,
+};
+
 export function createRequire(_path) {
-  return function require(_id) {
-    throw new Error("require() is not available in PiJS");
+  return function require(id) {
+    const normalized = __normalizeBuiltin(id);
+    const builtIn = __builtinModules[normalized];
+    if (builtIn) {
+      return builtIn;
+    }
+    throw new Error(`Cannot find module '${String(id ?? "")}' in PiJS require()`);
   };
 }
 
@@ -2474,11 +2536,226 @@ export default { createRequire };
         "node:fs".to_string(),
         r#"
 export const constants = { R_OK: 4, W_OK: 2, X_OK: 1, F_OK: 0 };
-export function existsSync(_path) { return false; }
-export function readFileSync(_path, _encoding) { return ""; }
-export function appendFileSync(_path, _data, _opts) { return; }
-export function writeFileSync(_path, _data, _opts) { return; }
-export function readdirSync(_path, _opts) { return []; }
+const __pi_vfs = (() => {
+  if (globalThis.__pi_vfs_state) {
+    return globalThis.__pi_vfs_state;
+  }
+
+  const state = {
+    files: new Map(),
+    dirs: new Set(["/"]),
+  };
+
+  function normalizePath(input) {
+    const raw = String(input ?? "").replace(/\\/g, "/");
+    const base = raw.startsWith("/")
+      ? raw
+      : `${(globalThis.process && typeof globalThis.process.cwd === "function" ? globalThis.process.cwd() : "/").replace(/\\/g, "/")}/${raw}`;
+    const parts = [];
+    for (const part of base.split("/")) {
+      if (!part || part === ".") continue;
+      if (part === "..") {
+        if (parts.length > 0) parts.pop();
+        continue;
+      }
+      parts.push(part);
+    }
+    return `/${parts.join("/")}`;
+  }
+
+  function dirname(path) {
+    const normalized = normalizePath(path);
+    if (normalized === "/") return "/";
+    const idx = normalized.lastIndexOf("/");
+    return idx <= 0 ? "/" : normalized.slice(0, idx);
+  }
+
+  function ensureDir(path) {
+    const normalized = normalizePath(path);
+    if (normalized === "/") return "/";
+    const parts = normalized.slice(1).split("/");
+    let current = "";
+    for (const part of parts) {
+      current = `${current}/${part}`;
+      state.dirs.add(current);
+    }
+    return normalized;
+  }
+
+  function toBytes(data, opts) {
+    const encoding =
+      typeof opts === "string"
+        ? opts
+        : opts && typeof opts === "object" && typeof opts.encoding === "string"
+          ? opts.encoding
+          : undefined;
+    const normalizedEncoding = encoding ? String(encoding).toLowerCase() : "utf8";
+
+    if (typeof data === "string") {
+      if (normalizedEncoding === "base64") {
+        return Buffer.from(data, "base64");
+      }
+      return new TextEncoder().encode(data);
+    }
+    if (data instanceof Uint8Array) {
+      return new Uint8Array(data);
+    }
+    if (data instanceof ArrayBuffer) {
+      return new Uint8Array(data);
+    }
+    if (ArrayBuffer.isView(data)) {
+      return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    }
+    if (Array.isArray(data)) {
+      return new Uint8Array(data);
+    }
+    return new TextEncoder().encode(String(data ?? ""));
+  }
+
+  function decodeBytes(bytes, opts) {
+    const encoding =
+      typeof opts === "string"
+        ? opts
+        : opts && typeof opts === "object" && typeof opts.encoding === "string"
+          ? opts.encoding
+          : undefined;
+    if (!encoding || String(encoding).toLowerCase() === "buffer") {
+      return Buffer.from(bytes);
+    }
+    const normalized = String(encoding).toLowerCase();
+    if (normalized === "base64") {
+      let bin = "";
+      for (let i = 0; i < bytes.length; i++) {
+        bin += String.fromCharCode(bytes[i] & 0xff);
+      }
+      return btoa(bin);
+    }
+    return new TextDecoder().decode(bytes);
+  }
+
+  function makeDirent(name, isDir) {
+    return {
+      name,
+      isDirectory() { return isDir; },
+      isFile() { return !isDir; },
+      isSymbolicLink() { return false; },
+    };
+  }
+
+  function listChildren(path, withFileTypes) {
+    const normalized = normalizePath(path);
+    const prefix = normalized === "/" ? "/" : `${normalized}/`;
+    const children = new Map();
+
+    for (const dir of state.dirs) {
+      if (!dir.startsWith(prefix) || dir === normalized) continue;
+      const rest = dir.slice(prefix.length);
+      if (!rest || rest.includes("/")) continue;
+      children.set(rest, true);
+    }
+    for (const file of state.files.keys()) {
+      if (!file.startsWith(prefix)) continue;
+      const rest = file.slice(prefix.length);
+      if (!rest || rest.includes("/")) continue;
+      if (!children.has(rest)) children.set(rest, false);
+    }
+
+    const names = Array.from(children.keys()).sort();
+    if (withFileTypes) {
+      return names.map((name) => makeDirent(name, children.get(name)));
+    }
+    return names;
+  }
+
+  function makeStat(path) {
+    const normalized = normalizePath(path);
+    const isDir = state.dirs.has(normalized);
+    const bytes = state.files.get(normalized);
+    const isFile = bytes !== undefined;
+    if (!isDir && !isFile) {
+      throw new Error(`ENOENT: no such file or directory, stat '${String(path ?? "")}'`);
+    }
+    const size = isFile ? bytes.byteLength : 0;
+    return {
+      isFile() { return isFile; },
+      isDirectory() { return isDir; },
+      isSymbolicLink() { return false; },
+      isBlockDevice() { return false; },
+      isCharacterDevice() { return false; },
+      isFIFO() { return false; },
+      isSocket() { return false; },
+      size,
+      mode: isDir ? 0o755 : 0o644,
+      uid: 0,
+      gid: 0,
+      atimeMs: 0,
+      mtimeMs: 0,
+      ctimeMs: 0,
+      birthtimeMs: 0,
+      atime: new Date(0),
+      mtime: new Date(0),
+      ctime: new Date(0),
+      birthtime: new Date(0),
+      dev: 0,
+      ino: 0,
+      nlink: 1,
+      rdev: 0,
+      blksize: 4096,
+      blocks: 0,
+    };
+  }
+
+  state.normalizePath = normalizePath;
+  state.dirname = dirname;
+  state.ensureDir = ensureDir;
+  state.toBytes = toBytes;
+  state.decodeBytes = decodeBytes;
+  state.listChildren = listChildren;
+  state.makeStat = makeStat;
+  globalThis.__pi_vfs_state = state;
+  return state;
+})();
+
+export function existsSync(path) {
+  const normalized = __pi_vfs.normalizePath(path);
+  return __pi_vfs.dirs.has(normalized) || __pi_vfs.files.has(normalized);
+}
+
+export function readFileSync(path, encoding) {
+  const normalized = __pi_vfs.normalizePath(path);
+  const bytes = __pi_vfs.files.get(normalized);
+  if (!bytes) {
+    throw new Error(`ENOENT: no such file or directory, open '${String(path ?? "")}'`);
+  }
+  return __pi_vfs.decodeBytes(bytes, encoding);
+}
+
+export function appendFileSync(path, data, opts) {
+  const normalized = __pi_vfs.normalizePath(path);
+  const current = __pi_vfs.files.get(normalized) || new Uint8Array();
+  const next = __pi_vfs.toBytes(data, opts);
+  const merged = new Uint8Array(current.byteLength + next.byteLength);
+  merged.set(current, 0);
+  merged.set(next, current.byteLength);
+  __pi_vfs.ensureDir(__pi_vfs.dirname(normalized));
+  __pi_vfs.files.set(normalized, merged);
+}
+
+export function writeFileSync(path, data, opts) {
+  const normalized = __pi_vfs.normalizePath(path);
+  __pi_vfs.ensureDir(__pi_vfs.dirname(normalized));
+  __pi_vfs.files.set(normalized, __pi_vfs.toBytes(data, opts));
+}
+
+export function readdirSync(path, opts) {
+  const normalized = __pi_vfs.normalizePath(path);
+  if (!__pi_vfs.dirs.has(normalized)) {
+    throw new Error(`ENOENT: no such file or directory, scandir '${String(path ?? "")}'`);
+  }
+  const withFileTypes = !!(opts && typeof opts === "object" && opts.withFileTypes);
+  return __pi_vfs.listChildren(normalized, withFileTypes);
+}
+
 const __fakeStat = {
   isFile() { return false; },
   isDirectory() { return false; },
@@ -2492,22 +2769,94 @@ const __fakeStat = {
   atime: new Date(0), mtime: new Date(0), ctime: new Date(0), birthtime: new Date(0),
   dev: 0, ino: 0, nlink: 1, rdev: 0, blksize: 4096, blocks: 0,
 };
-export function statSync(_path) { return __fakeStat; }
-export function lstatSync(_path) { return __fakeStat; }
+export function statSync(path) { return __pi_vfs.makeStat(path); }
+export function lstatSync(path) { return __pi_vfs.makeStat(path); }
 export function mkdtempSync(prefix, _opts) {
   const p = String(prefix ?? "/tmp/tmp-");
-  return `${p}${Date.now().toString(36)}`;
+  const out = `${p}${Date.now().toString(36)}`;
+  __pi_vfs.ensureDir(out);
+  return out;
 }
 export function realpathSync(path, _opts) {
-  return String(path ?? '');
+  return __pi_vfs.normalizePath(path);
 }
-export function unlinkSync(_path) { return; }
-export function rmdirSync(_path, _opts) { return; }
-export function rmSync(_path, _opts) { return; }
-export function copyFileSync(_src, _dest, _mode) { return; }
-export function renameSync(_oldPath, _newPath) { return; }
-export function mkdirSync(_path, _opts) { return; }
-export function accessSync(_path, _mode) { throw new Error("ENOENT: no such file or directory"); }
+export function unlinkSync(path) {
+  const normalized = __pi_vfs.normalizePath(path);
+  if (!__pi_vfs.files.delete(normalized)) {
+    throw new Error(`ENOENT: no such file or directory, unlink '${String(path ?? "")}'`);
+  }
+}
+export function rmdirSync(path, _opts) {
+  const normalized = __pi_vfs.normalizePath(path);
+  if (normalized === "/") {
+    throw new Error("EBUSY: resource busy or locked, rmdir '/'");
+  }
+  for (const filePath of __pi_vfs.files.keys()) {
+    if (filePath.startsWith(`${normalized}/`)) {
+      throw new Error(`ENOTEMPTY: directory not empty, rmdir '${String(path ?? "")}'`);
+    }
+  }
+  for (const dirPath of __pi_vfs.dirs) {
+    if (dirPath.startsWith(`${normalized}/`)) {
+      throw new Error(`ENOTEMPTY: directory not empty, rmdir '${String(path ?? "")}'`);
+    }
+  }
+  if (!__pi_vfs.dirs.delete(normalized)) {
+    throw new Error(`ENOENT: no such file or directory, rmdir '${String(path ?? "")}'`);
+  }
+}
+export function rmSync(path, opts) {
+  const normalized = __pi_vfs.normalizePath(path);
+  if (__pi_vfs.files.has(normalized)) {
+    __pi_vfs.files.delete(normalized);
+    return;
+  }
+  if (__pi_vfs.dirs.has(normalized)) {
+    const recursive = !!(opts && typeof opts === "object" && opts.recursive);
+    if (!recursive) {
+      rmdirSync(normalized);
+      return;
+    }
+    for (const filePath of Array.from(__pi_vfs.files.keys())) {
+      if (filePath === normalized || filePath.startsWith(`${normalized}/`)) {
+        __pi_vfs.files.delete(filePath);
+      }
+    }
+    for (const dirPath of Array.from(__pi_vfs.dirs)) {
+      if (dirPath === normalized || dirPath.startsWith(`${normalized}/`)) {
+        __pi_vfs.dirs.delete(dirPath);
+      }
+    }
+    if (!__pi_vfs.dirs.has("/")) {
+      __pi_vfs.dirs.add("/");
+    }
+    return;
+  }
+  throw new Error(`ENOENT: no such file or directory, rm '${String(path ?? "")}'`);
+}
+export function copyFileSync(src, dest, _mode) {
+  writeFileSync(dest, readFileSync(src));
+}
+export function renameSync(oldPath, newPath) {
+  const src = __pi_vfs.normalizePath(oldPath);
+  const dst = __pi_vfs.normalizePath(newPath);
+  const bytes = __pi_vfs.files.get(src);
+  if (!bytes) {
+    throw new Error(`ENOENT: no such file or directory, rename '${String(oldPath ?? "")}'`);
+  }
+  __pi_vfs.ensureDir(__pi_vfs.dirname(dst));
+  __pi_vfs.files.set(dst, bytes);
+  __pi_vfs.files.delete(src);
+}
+export function mkdirSync(path, _opts) {
+  __pi_vfs.ensureDir(path);
+  return __pi_vfs.normalizePath(path);
+}
+export function accessSync(path, _mode) {
+  if (!existsSync(path)) {
+    throw new Error("ENOENT: no such file or directory");
+  }
+}
 export function chmodSync(_path, _mode) { return; }
 export function chownSync(_path, _uid, _gid) { return; }
 export function openSync(_path, _flags, _mode) { return 99; }
@@ -2540,26 +2889,32 @@ export function writeFile(_path, _data, optOrCb, cb) {
 }
 export function access(_path, modeOrCb, cb) {
   const callback = typeof modeOrCb === 'function' ? modeOrCb : cb;
-  if (typeof callback === 'function') callback(new Error("ENOENT: no such file or directory"));
+  if (typeof callback === 'function') {
+    try {
+      accessSync(_path);
+      callback(null);
+    } catch (err) {
+      callback(err);
+    }
+  }
 }
 export const promises = {
-  access: async (_path, _mode) => {},
-  mkdir: async (_path, _opts) => {},
+  access: async (path, _mode) => accessSync(path),
+  mkdir: async (path, opts) => mkdirSync(path, opts),
   mkdtemp: async (prefix, _opts) => {
-    const p = String(prefix ?? '/tmp/tmp-');
-    return `${p}${Date.now().toString(36)}`;
+    return mkdtempSync(prefix, _opts);
   },
-  readFile: async (_path, _opts) => '',
-  writeFile: async (_path, _data, _opts) => {},
-  unlink: async (_path) => {},
-  rmdir: async (_path, _opts) => {},
-  stat: async (_path) => __fakeStat,
-  lstat: async (_path) => __fakeStat,
-  realpath: async (path, _opts) => String(path ?? ''),
-  readdir: async (_path, _opts) => [],
-  rm: async (_path, _opts) => {},
-  rename: async (_oldPath, _newPath) => {},
-  copyFile: async (_src, _dest, _mode) => {},
+  readFile: async (path, opts) => readFileSync(path, opts),
+  writeFile: async (path, data, opts) => writeFileSync(path, data, opts),
+  unlink: async (path) => unlinkSync(path),
+  rmdir: async (path, opts) => rmdirSync(path, opts),
+  stat: async (path) => statSync(path),
+  lstat: async (path) => lstatSync(path),
+  realpath: async (path, _opts) => realpathSync(path, _opts),
+  readdir: async (path, opts) => readdirSync(path, opts),
+  rm: async (path, opts) => rmSync(path, opts),
+  rename: async (oldPath, newPath) => renameSync(oldPath, newPath),
+  copyFile: async (src, dest, mode) => copyFileSync(src, dest, mode),
   chmod: async (_path, _mode) => {},
 };
 export default { constants, existsSync, readFileSync, appendFileSync, writeFileSync, readdirSync, statSync, lstatSync, mkdtempSync, realpathSync, unlinkSync, rmdirSync, rmSync, copyFileSync, renameSync, mkdirSync, accessSync, chmodSync, chownSync, openSync, closeSync, readSync, writeSync, fstatSync, ftruncateSync, futimesSync, watch, watchFile, unwatchFile, createReadStream, createWriteStream, readFile, writeFile, access, promises };
@@ -2571,20 +2926,19 @@ export default { constants, existsSync, readFileSync, appendFileSync, writeFileS
     modules.insert(
         "node:fs/promises".to_string(),
         r"
-export async function access(_path, _mode) { return; }
-export async function mkdir(_path, _opts) { return; }
-export async function mkdtemp(prefix, _opts) {
-  const p = String(prefix ?? '/tmp/tmp-');
-  return `${p}${Date.now().toString(36)}`;
-}
-export async function readFile(_path, _opts) { return ''; }
-export async function writeFile(_path, _data, _opts) { return; }
-export async function unlink(_path) { return; }
-export async function rmdir(_path, _opts) { return; }
-export async function stat(_path) { throw new Error('stat unavailable'); }
-export async function realpath(path, _opts) { return String(path ?? ''); }
-export async function readdir(_path, _opts) { return []; }
-export async function rm(_path, _opts) { return; }
+import fs from 'node:fs';
+
+export async function access(path, mode) { return fs.promises.access(path, mode); }
+export async function mkdir(path, opts) { return fs.promises.mkdir(path, opts); }
+export async function mkdtemp(prefix, opts) { return fs.promises.mkdtemp(prefix, opts); }
+export async function readFile(path, opts) { return fs.promises.readFile(path, opts); }
+export async function writeFile(path, data, opts) { return fs.promises.writeFile(path, data, opts); }
+export async function unlink(path) { return fs.promises.unlink(path); }
+export async function rmdir(path, opts) { return fs.promises.rmdir(path, opts); }
+export async function stat(path) { return fs.promises.stat(path); }
+export async function realpath(path, opts) { return fs.promises.realpath(path, opts); }
+export async function readdir(path, opts) { return fs.promises.readdir(path, opts); }
+export async function rm(path, opts) { return fs.promises.rm(path, opts); }
 export default { access, mkdir, mkdtemp, readFile, writeFile, unlink, rmdir, stat, realpath, readdir, rm };
 "
         .trim()
@@ -7943,6 +8297,138 @@ mod tests {
             assert_eq!(r["accessSyncThrew"], serde_json::json!(true));
             assert_eq!(r["accessCallbackErr"], serde_json::json!(true));
             assert_eq!(r["hasLstatSync"], serde_json::json!(true));
+        });
+    }
+
+    #[test]
+    fn pijs_fs_sync_roundtrip_and_dirents() {
+        futures::executor::block_on(async {
+            let clock = Arc::new(DeterministicClock::new(0));
+            let runtime = PiJsRuntime::with_clock(Arc::clone(&clock))
+                .await
+                .expect("create runtime");
+
+            runtime
+                .eval(
+                    r"
+                    globalThis.fsRoundTrip = {};
+                    import('node:fs').then((fs) => {
+                        fs.mkdirSync('/tmp/demo', { recursive: true });
+                        fs.writeFileSync('/tmp/demo/hello.txt', 'hello world');
+                        fs.writeFileSync('/tmp/demo/raw.bin', Buffer.from([1, 2, 3, 4]));
+
+                        globalThis.fsRoundTrip.exists = fs.existsSync('/tmp/demo/hello.txt');
+                        globalThis.fsRoundTrip.readText = fs.readFileSync('/tmp/demo/hello.txt', 'utf8');
+                        const raw = fs.readFileSync('/tmp/demo/raw.bin');
+                        globalThis.fsRoundTrip.rawLen = raw.length;
+
+                        const names = fs.readdirSync('/tmp/demo');
+                        globalThis.fsRoundTrip.names = names;
+
+                        const dirents = fs.readdirSync('/tmp/demo', { withFileTypes: true });
+                        globalThis.fsRoundTrip.direntHasMethods =
+                          typeof dirents[0].isFile === 'function' &&
+                          typeof dirents[0].isDirectory === 'function';
+
+                        const dirStat = fs.statSync('/tmp/demo');
+                        const fileStat = fs.statSync('/tmp/demo/hello.txt');
+                        globalThis.fsRoundTrip.isDir = dirStat.isDirectory();
+                        globalThis.fsRoundTrip.isFile = fileStat.isFile();
+                        globalThis.fsRoundTrip.done = true;
+                    });
+                    ",
+                )
+                .await
+                .expect("eval fs sync roundtrip");
+
+            let r = get_global_json(&runtime, "fsRoundTrip").await;
+            assert_eq!(r["done"], serde_json::json!(true));
+            assert_eq!(r["exists"], serde_json::json!(true));
+            assert_eq!(r["readText"], serde_json::json!("hello world"));
+            assert_eq!(r["rawLen"], serde_json::json!(4));
+            assert_eq!(r["isDir"], serde_json::json!(true));
+            assert_eq!(r["isFile"], serde_json::json!(true));
+            assert_eq!(r["direntHasMethods"], serde_json::json!(true));
+            assert_eq!(r["names"], serde_json::json!(["hello.txt", "raw.bin"]));
+        });
+    }
+
+    #[test]
+    fn pijs_create_require_supports_node_builtins() {
+        futures::executor::block_on(async {
+            let clock = Arc::new(DeterministicClock::new(0));
+            let runtime = PiJsRuntime::with_clock(Arc::clone(&clock))
+                .await
+                .expect("create runtime");
+
+            runtime
+                .eval(
+                    r"
+                    globalThis.requireResults = {};
+                    import('node:module').then(({ createRequire }) => {
+                        const require = createRequire('/tmp/example.js');
+                        const path = require('path');
+                        const fs = require('node:fs');
+                        const crypto = require('crypto');
+
+                        globalThis.requireResults.pathJoinWorks = path.join('a', 'b') === 'a/b';
+                        globalThis.requireResults.fsReadFileSync = typeof fs.readFileSync === 'function';
+                        globalThis.requireResults.cryptoHasRandomUUID = typeof crypto.randomUUID === 'function';
+
+                        try {
+                            require('left-pad');
+                            globalThis.requireResults.missingModuleThrows = false;
+                        } catch (err) {
+                            globalThis.requireResults.missingModuleThrows =
+                              String(err && err.message || '').includes('Cannot find module');
+                        }
+                        globalThis.requireResults.done = true;
+                    });
+                    ",
+                )
+                .await
+                .expect("eval createRequire test");
+
+            let r = get_global_json(&runtime, "requireResults").await;
+            assert_eq!(r["done"], serde_json::json!(true));
+            assert_eq!(r["pathJoinWorks"], serde_json::json!(true));
+            assert_eq!(r["fsReadFileSync"], serde_json::json!(true));
+            assert_eq!(r["cryptoHasRandomUUID"], serde_json::json!(true));
+            assert_eq!(r["missingModuleThrows"], serde_json::json!(true));
+        });
+    }
+
+    #[test]
+    fn pijs_fs_promises_delegates_to_node_fs_promises_api() {
+        futures::executor::block_on(async {
+            let clock = Arc::new(DeterministicClock::new(0));
+            let runtime = PiJsRuntime::with_clock(Arc::clone(&clock))
+                .await
+                .expect("create runtime");
+
+            runtime
+                .eval(
+                    r"
+                    globalThis.fsPromisesResults = {};
+                    import('node:fs/promises').then(async (fsp) => {
+                        await fsp.mkdir('/tmp/promise-demo', { recursive: true });
+                        await fsp.writeFile('/tmp/promise-demo/value.txt', 'value');
+                        const text = await fsp.readFile('/tmp/promise-demo/value.txt', 'utf8');
+                        const names = await fsp.readdir('/tmp/promise-demo');
+
+                        globalThis.fsPromisesResults.readText = text;
+                        globalThis.fsPromisesResults.names = names;
+                        globalThis.fsPromisesResults.done = true;
+                    });
+                    ",
+                )
+                .await
+                .expect("eval fs promises test");
+
+            let r = get_global_json(&runtime, "fsPromisesResults").await;
+            assert_eq!(r["done"], serde_json::json!(true));
+            assert_eq!(r["readText"], serde_json::json!("value"));
+            assert_eq!(r["names"], serde_json::json!(["value.txt"]));
         });
     }
 }
