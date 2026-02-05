@@ -139,6 +139,49 @@ impl ExtensionSession for SessionHandle {
         session.append_custom_entry(custom_type, data);
         Ok(())
     }
+
+    async fn set_model(&self, provider: String, model_id: String) -> Result<()> {
+        let cx = Cx::for_request();
+        let mut session = self
+            .0
+            .lock(&cx)
+            .await
+            .map_err(|e| Error::session(format!("Failed to lock session: {e}")))?;
+        session.append_model_change(provider.clone(), model_id.clone());
+        session.set_model_header(Some(provider), Some(model_id), None);
+        Ok(())
+    }
+
+    async fn get_model(&self) -> (Option<String>, Option<String>) {
+        let cx = Cx::for_request();
+        let Ok(session) = self.0.lock(&cx).await else {
+            return (None, None);
+        };
+        (
+            session.header.provider.clone(),
+            session.header.model_id.clone(),
+        )
+    }
+
+    async fn set_thinking_level(&self, level: String) -> Result<()> {
+        let cx = Cx::for_request();
+        let mut session = self
+            .0
+            .lock(&cx)
+            .await
+            .map_err(|e| Error::session(format!("Failed to lock session: {e}")))?;
+        session.append_thinking_level_change(level.clone());
+        session.set_model_header(None, None, Some(level));
+        Ok(())
+    }
+
+    async fn get_thinking_level(&self) -> Option<String> {
+        let cx = Cx::for_request();
+        let Ok(session) = self.0.lock(&cx).await else {
+            return None;
+        };
+        session.header.thinking_level.clone()
+    }
 }
 
 /// Default base URL for the Pi session share viewer.

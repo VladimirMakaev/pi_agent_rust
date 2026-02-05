@@ -382,6 +382,57 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
                     Err(err) => Err(format!("Parse message: {err}")),
                 }
             }
+            "set_model" | "setmodel" => {
+                let provider = payload
+                    .get("provider")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let model_id = payload
+                    .get("modelId")
+                    .and_then(Value::as_str)
+                    .or_else(|| payload.get("model_id").and_then(Value::as_str))
+                    .unwrap_or_default()
+                    .to_string();
+                if provider.is_empty() || model_id.is_empty() {
+                    Err("set_model requires 'provider' and 'modelId' fields".to_string())
+                } else {
+                    self.session
+                        .set_model(provider, model_id)
+                        .await
+                        .map(|()| Value::Bool(true))
+                        .map_err(|err| err.to_string())
+                }
+            }
+            "get_model" | "getmodel" => {
+                let (provider, model_id) = self.session.get_model().await;
+                Ok(serde_json::json!({
+                    "provider": provider,
+                    "modelId": model_id,
+                }))
+            }
+            "set_thinking_level" | "setthinkinglevel" => {
+                let level = payload
+                    .get("level")
+                    .and_then(Value::as_str)
+                    .or_else(|| payload.get("thinkingLevel").and_then(Value::as_str))
+                    .or_else(|| payload.get("thinking_level").and_then(Value::as_str))
+                    .unwrap_or_default()
+                    .to_string();
+                if level.is_empty() {
+                    Err("set_thinking_level requires 'level' field".to_string())
+                } else {
+                    self.session
+                        .set_thinking_level(level)
+                        .await
+                        .map(|()| Value::Null)
+                        .map_err(|err| err.to_string())
+                }
+            }
+            "get_thinking_level" | "getthinkinglevel" => {
+                let level = self.session.get_thinking_level().await;
+                Ok(level.map(Value::String).unwrap_or(Value::Null))
+            }
             _ => Err(format!("Unknown session op: {op}")),
         };
 
@@ -771,6 +822,22 @@ mod tests {
         ) -> Result<()> {
             Ok(())
         }
+
+        async fn set_model(&self, _provider: String, _model_id: String) -> Result<()> {
+            Ok(())
+        }
+
+        async fn get_model(&self) -> (Option<String>, Option<String>) {
+            (None, None)
+        }
+
+        async fn set_thinking_level(&self, _level: String) -> Result<()> {
+            Ok(())
+        }
+
+        async fn get_thinking_level(&self) -> Option<String> {
+            None
+        }
     }
 
     struct NullUiHandler;
@@ -863,6 +930,35 @@ mod tests {
                 .unwrap()
                 .push((custom_type, data));
             Ok(())
+        }
+
+        async fn set_model(&self, provider: String, model_id: String) -> Result<()> {
+            let mut state = self.state.lock().unwrap();
+            if let Value::Object(ref mut map) = *state {
+                map.insert("provider".to_string(), Value::String(provider));
+                map.insert("modelId".to_string(), Value::String(model_id));
+            }
+            Ok(())
+        }
+
+        async fn get_model(&self) -> (Option<String>, Option<String>) {
+            let state = self.state.lock().unwrap();
+            let provider = state.get("provider").and_then(Value::as_str).map(String::from);
+            let model_id = state.get("modelId").and_then(Value::as_str).map(String::from);
+            (provider, model_id)
+        }
+
+        async fn set_thinking_level(&self, level: String) -> Result<()> {
+            let mut state = self.state.lock().unwrap();
+            if let Value::Object(ref mut map) = *state {
+                map.insert("thinkingLevel".to_string(), Value::String(level));
+            }
+            Ok(())
+        }
+
+        async fn get_thinking_level(&self) -> Option<String> {
+            let state = self.state.lock().unwrap();
+            state.get("thinkingLevel").and_then(Value::as_str).map(String::from)
         }
     }
 

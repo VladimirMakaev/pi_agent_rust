@@ -556,7 +556,7 @@ async fn run_e2e_scenario(
     let stream = provider
         .stream(&context, &options)
         .await
-        .unwrap_or_else(|e| panic!("{}: stream failed: {e}", scenario.cassette_name));
+        .unwrap_or_else(|e| unreachable!("{}: stream failed: {e}", scenario.cassette_name));
 
     let mut events = Vec::new();
     let mut stream_error = None;
@@ -653,7 +653,7 @@ async fn run_e2e_scenario(
     }
     if !scenario.expect_stop_reasons.is_empty() {
         let Some(reason) = stop_reason else {
-            panic!("{}: missing stop reason", scenario.cassette_name);
+            unreachable!("{}: missing stop reason", scenario.cassette_name);
         };
         assert!(
             scenario.expect_stop_reasons.contains(&reason),
@@ -853,16 +853,16 @@ fn e2e_anthropic_error_scenarios_comprehensive() {
     let model = std::env::var("ANTHROPIC_TEST_MODEL")
         .unwrap_or_else(|_| "claude-sonnet-4-20250514".to_string());
 
-    let error_scenarios: Vec<(&str, u16)> = vec![
-        ("anthropic_auth_failure_401", 401),
-        ("anthropic_forbidden_403", 403),
-        ("anthropic_bad_request_400", 400),
-        ("anthropic_server_error_500", 500),
-        ("anthropic_rate_limit_429", 429),
-        ("anthropic_overloaded_529", 529),
+    let error_scenarios: Vec<(&str, u16, &str)> = vec![
+        ("anthropic_auth_failure_401", 401, "Trigger an auth failure."),
+        ("anthropic_forbidden_403", 403, "Trigger a forbidden error."),
+        ("anthropic_bad_request_400", 400, "Trigger a bad request error."),
+        ("anthropic_server_error_500", 500, "Trigger a server error."),
+        ("anthropic_rate_limit_429", 429, "Trigger a rate limit error."),
+        ("anthropic_overloaded_529", 529, "Trigger an overloaded error."),
     ];
 
-    for (cassette, expected_status) in &error_scenarios {
+    for (cassette, expected_status, msg) in &error_scenarios {
         harness.section(&format!("Error: HTTP {expected_status}"));
 
         let cassette_path = cassette_root().join(format!("{cassette}.json"));
@@ -877,6 +877,7 @@ fn e2e_anthropic_error_scenarios_comprehensive() {
             let model = model.clone();
             let cassette_name = *cassette;
             let expected = *expected_status;
+            let message_text = *msg;
             async move {
                 let cassette_dir = cassette_root();
                 let recorder =
@@ -885,8 +886,11 @@ fn e2e_anthropic_error_scenarios_comprehensive() {
                 let provider = AnthropicProvider::new(&model).with_client(client);
 
                 let context = Context {
-                    system_prompt: Some("Test.".to_string()),
-                    messages: vec![user_text("Trigger error.")],
+                    system_prompt: Some(
+                        "You are a test harness model. Follow instructions precisely and deterministically."
+                            .to_string(),
+                    ),
+                    messages: vec![user_text(message_text)],
                     tools: Vec::new(),
                 };
                 let options = StreamOptions {
