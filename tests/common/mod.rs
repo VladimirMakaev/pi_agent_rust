@@ -13,7 +13,7 @@ pub mod logging;
 #[allow(unused_imports)]
 pub use harness::TestHarness;
 #[allow(unused_imports)]
-pub use harness::{MockHttpServer, TestEnv};
+pub use harness::{MockHttpResponse, MockHttpServer, TestEnv};
 
 /// Runs an async future to completion on an asupersync runtime.
 ///

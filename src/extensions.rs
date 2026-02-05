@@ -5706,7 +5706,12 @@ async fn dispatch_hostcall_events(
             HostcallOutcome::Success(Value::Null)
         }
         "getmodel" | "get_model" => {
-            let (provider, model_id) = manager.current_model();
+            // Prefer session-authoritative state; fall back to in-memory cache.
+            let (provider, model_id) = if let Some(session) = manager.session_handle() {
+                session.get_model().await
+            } else {
+                manager.current_model()
+            };
             HostcallOutcome::Success(json!({
                 "provider": provider,
                 "modelId": model_id,
@@ -5722,11 +5727,32 @@ async fn dispatch_hostcall_events(
                 .and_then(Value::as_str)
                 .or_else(|| payload.get("model_id").and_then(Value::as_str))
                 .map(ToString::to_string);
-            manager.set_current_model(provider, model_id);
+
+            // Update in-memory cache on manager.
+            manager.set_current_model(provider.clone(), model_id.clone());
+
+            // Persist via session (creates ModelChangeEntry + updates header).
+            if let Some(session) = manager.session_handle() {
+                let p = provider.unwrap_or_default();
+                let m = model_id.unwrap_or_default();
+                if !p.is_empty() && !m.is_empty() {
+                    if let Err(err) = session.set_model(p, m).await {
+                        return HostcallOutcome::Error {
+                            code: "io".to_string(),
+                            message: format!("setModel: session update failed: {err}"),
+                        };
+                    }
+                }
+            }
             HostcallOutcome::Success(Value::Null)
         }
         "getthinkinglevel" | "get_thinking_level" => {
-            let level = manager.current_thinking_level();
+            // Prefer session-authoritative state; fall back to in-memory cache.
+            let level = if let Some(session) = manager.session_handle() {
+                session.get_thinking_level().await
+            } else {
+                manager.current_thinking_level()
+            };
             HostcallOutcome::Success(json!({ "thinkingLevel": level }))
         }
         "setthinkinglevel" | "set_thinking_level" => {
@@ -5736,7 +5762,23 @@ async fn dispatch_hostcall_events(
                 .or_else(|| payload.get("thinking_level").and_then(Value::as_str))
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty());
-            manager.set_current_thinking_level(level);
+
+            // Update in-memory cache on manager.
+            manager.set_current_thinking_level(level.clone());
+
+            // Persist via session (creates ThinkingLevelChangeEntry + updates header).
+            if let Some(session) = manager.session_handle() {
+                if let Some(ref lvl) = level {
+                    if let Err(err) = session.set_thinking_level(lvl.clone()).await {
+                        return HostcallOutcome::Error {
+                            code: "io".to_string(),
+                            message: format!(
+                                "setThinkingLevel: session update failed: {err}"
+                            ),
+                        };
+                    }
+                }
+            }
             HostcallOutcome::Success(Value::Null)
         }
         _ => HostcallOutcome::Success(Value::Null),

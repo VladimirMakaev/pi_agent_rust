@@ -6,7 +6,7 @@
 
 mod common;
 
-use common::TestHarness;
+use common::{MockHttpResponse, TestHarness};
 use serde::Deserialize;
 use serde_json::json;
 use std::cell::Cell;
@@ -1421,4 +1421,332 @@ fn e2e_cli_theme_path_discovery() {
         "--version",
     ]);
     assert_exit_code(&harness.harness, &result, 0);
+}
+
+// ============================================================================
+// Print mode + stdin piping tests (bd-1ub)
+// ============================================================================
+
+/// Build a mock Anthropic SSE event stream for a simple text response.
+///
+/// Returns a complete SSE body that mimics the Anthropic streaming API format.
+fn build_mock_anthropic_sse(text: &str) -> String {
+    let message_start = json!({
+        "type": "message_start",
+        "message": {
+            "model": "claude-sonnet-4-20250514",
+            "id": "msg_mock_e2e_001",
+            "type": "message",
+            "role": "assistant",
+            "content": [],
+            "stop_reason": null,
+            "stop_sequence": null,
+            "usage": {
+                "input_tokens": 10,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "cache_creation": {
+                    "ephemeral_5m_input_tokens": 0,
+                    "ephemeral_1h_input_tokens": 0
+                },
+                "output_tokens": 1,
+                "service_tier": "standard"
+            }
+        }
+    });
+    let content_start = json!({
+        "type": "content_block_start",
+        "index": 0,
+        "content_block": {"type": "text", "text": ""}
+    });
+    let content_delta = json!({
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {"type": "text_delta", "text": text}
+    });
+    let content_stop = json!({
+        "type": "content_block_stop",
+        "index": 0
+    });
+    let message_delta = json!({
+        "type": "message_delta",
+        "delta": {"stop_reason": "end_turn", "stop_sequence": null},
+        "usage": {
+            "input_tokens": 10,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 5
+        }
+    });
+
+    format!(
+        "event: message_start\ndata: {message_start}\n\n\
+         event: content_block_start\ndata: {content_start}\n\n\
+         event: ping\ndata: {{\"type\": \"ping\"}}\n\n\
+         event: content_block_delta\ndata: {content_delta}\n\n\
+         event: content_block_stop\ndata: {content_stop}\n\n\
+         event: message_delta\ndata: {message_delta}\n\n\
+         event: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n"
+    )
+}
+
+/// Set up a mock Anthropic API server with models.json override and SSE response.
+///
+/// Writes `models.json` to the agent dir pointing all Anthropic models at the mock
+/// server, registers a POST /v1/messages route returning the given text as SSE, and
+/// sets `ANTHROPIC_API_KEY` in the harness env.
+///
+/// The returned server must be kept alive for the duration of the test.
+fn setup_mock_anthropic(
+    harness: &mut CliTestHarness,
+    response_text: &str,
+) -> common::MockHttpServer {
+    let server = harness.harness.start_mock_http_server();
+
+    let agent_dir = PathBuf::from(
+        harness
+            .env
+            .get("PI_CODING_AGENT_DIR")
+            .expect("PI_CODING_AGENT_DIR"),
+    );
+    fs::create_dir_all(&agent_dir).expect("create agent dir for models.json");
+
+    let models_config = json!({
+        "providers": {
+            "anthropic": {
+                "base_url": format!("{}/v1/messages", server.base_url()),
+                "api_key": "test-mock-key"
+            }
+        }
+    });
+    fs::write(
+        agent_dir.join("models.json"),
+        serde_json::to_string_pretty(&models_config).expect("serialize models config"),
+    )
+    .expect("write models.json");
+
+    harness
+        .harness
+        .log()
+        .info_ctx("setup", "Mock Anthropic server configured", |ctx| {
+            ctx.push(("base_url".into(), server.base_url()));
+            ctx.push((
+                "models_json".into(),
+                agent_dir.join("models.json").display().to_string(),
+            ));
+        });
+
+    // Set API key env var as fallback.
+    harness
+        .env
+        .insert("ANTHROPIC_API_KEY".to_string(), "test-mock-key".to_string());
+
+    let sse_body = build_mock_anthropic_sse(response_text);
+    server.add_route(
+        "POST",
+        "/v1/messages",
+        MockHttpResponse {
+            status: 200,
+            headers: vec![(
+                "Content-Type".to_string(),
+                "text/event-stream; charset=utf-8".to_string(),
+            )],
+            body: sse_body.into_bytes(),
+        },
+    );
+
+    server
+}
+
+/// Common CLI flags that disable discovery side-effects for deterministic print mode tests.
+const PRINT_MODE_ISOLATION_FLAGS: &[&str] = &[
+    "--no-tools",
+    "--no-extensions",
+    "--no-skills",
+    "--no-prompt-templates",
+    "--no-themes",
+];
+
+#[test]
+fn e2e_cli_print_mode_mock_sse_roundtrip() {
+    let mut harness = CliTestHarness::new("e2e_cli_print_mode_mock_sse_roundtrip");
+    let server = setup_mock_anthropic(&mut harness, "pong");
+
+    let mut args: Vec<&str> = vec![
+        "-p",
+        "--provider",
+        "anthropic",
+        "--model",
+        "claude-sonnet-4-20250514",
+    ];
+    args.extend_from_slice(PRINT_MODE_ISOLATION_FLAGS);
+    args.extend_from_slice(&[
+        "--system-prompt",
+        "You are a test harness model.",
+        "Reply with the single word: pong.",
+    ]);
+
+    let result = harness.run(&args);
+
+    harness
+        .harness
+        .log()
+        .info_ctx("verify", "Checking mock SSE roundtrip", |ctx| {
+            ctx.push(("exit_code".into(), result.exit_code.to_string()));
+            ctx.push(("stdout_len".into(), result.stdout.len().to_string()));
+            ctx.push(("stderr_len".into(), result.stderr.len().to_string()));
+        });
+
+    assert_exit_code(&harness.harness, &result, 0);
+    assert_contains(&harness.harness, &result.stdout, "pong");
+
+    // Verify mock server received exactly one request.
+    let requests = server.requests();
+    harness
+        .harness
+        .assert_log("assert mock server received 1 request");
+    assert_eq!(requests.len(), 1, "expected 1 request to mock server");
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].path, "/v1/messages");
+
+    // Verify request body contains the user message.
+    let body_str = String::from_utf8_lossy(&requests[0].body);
+    assert_contains(
+        &harness.harness,
+        &body_str,
+        "Reply with the single word: pong.",
+    );
+
+    // Verify no session files created in print mode (even on success).
+    let sessions_dir = PathBuf::from(
+        harness
+            .env
+            .get("PI_SESSIONS_DIR")
+            .expect("PI_SESSIONS_DIR"),
+    );
+    let jsonl_count = count_jsonl_files(&sessions_dir);
+    harness
+        .harness
+        .assert_log("assert no session files on print mode success");
+    assert_eq!(jsonl_count, 0, "print mode should not create session files");
+}
+
+#[test]
+fn e2e_cli_print_mode_stdin_sends_to_provider() {
+    let mut harness = CliTestHarness::new("e2e_cli_print_mode_stdin_sends_to_provider");
+    let server = setup_mock_anthropic(&mut harness, "Received your stdin.");
+
+    let stdin_text = "Hello from stdin pipe content.\n";
+
+    let mut args: Vec<&str> = vec![
+        "--provider",
+        "anthropic",
+        "--model",
+        "claude-sonnet-4-20250514",
+    ];
+    args.extend_from_slice(PRINT_MODE_ISOLATION_FLAGS);
+    args.extend_from_slice(&["--system-prompt", "Echo test."]);
+
+    let result = harness.run_with_stdin(&args, Some(stdin_text.as_bytes()));
+
+    harness
+        .harness
+        .log()
+        .info_ctx("verify", "Checking stdin piping to provider", |ctx| {
+            ctx.push(("exit_code".into(), result.exit_code.to_string()));
+            ctx.push(("stdout_len".into(), result.stdout.len().to_string()));
+            ctx.push(("stdin_len".into(), stdin_text.len().to_string()));
+        });
+
+    assert_exit_code(&harness.harness, &result, 0);
+    assert_contains(&harness.harness, &result.stdout, "Received your stdin.");
+
+    // Verify the provider received the stdin content in the request body.
+    let requests = server.requests();
+    harness
+        .harness
+        .assert_log("assert mock server received 1 request from stdin pipe");
+    assert_eq!(requests.len(), 1, "expected 1 request to mock server");
+
+    let body_str = String::from_utf8_lossy(&requests[0].body);
+    assert_contains(
+        &harness.harness,
+        &body_str,
+        "Hello from stdin pipe content.",
+    );
+
+    // Verify no session files created.
+    let sessions_dir = PathBuf::from(
+        harness
+            .env
+            .get("PI_SESSIONS_DIR")
+            .expect("PI_SESSIONS_DIR"),
+    );
+    let jsonl_count = count_jsonl_files(&sessions_dir);
+    harness
+        .harness
+        .assert_log("assert no session files from stdin pipe");
+    assert_eq!(jsonl_count, 0, "stdin pipe print mode should not create session files");
+}
+
+#[test]
+fn e2e_cli_print_mode_file_ref_reads_file() {
+    let mut harness = CliTestHarness::new("e2e_cli_print_mode_file_ref_reads_file");
+    let server = setup_mock_anthropic(&mut harness, "File processed.");
+
+    // Create a test file in the working directory (harness temp dir).
+    let file_content = "This is test file content for @file expansion.";
+    let file_path = harness.harness.temp_path("context-file.txt");
+    fs::write(&file_path, file_content).expect("write context file");
+
+    harness
+        .harness
+        .log()
+        .info_ctx("setup", "Created context file", |ctx| {
+            ctx.push(("path".into(), file_path.display().to_string()));
+            ctx.push(("size".into(), file_content.len().to_string()));
+        });
+
+    let mut args: Vec<&str> = vec![
+        "-p",
+        "--provider",
+        "anthropic",
+        "--model",
+        "claude-sonnet-4-20250514",
+    ];
+    args.extend_from_slice(PRINT_MODE_ISOLATION_FLAGS);
+    args.extend_from_slice(&[
+        "--system-prompt",
+        "File test.",
+        "@context-file.txt",
+        "Summarize this file.",
+    ]);
+
+    let result = harness.run(&args);
+
+    harness
+        .harness
+        .log()
+        .info_ctx("verify", "Checking @file expansion", |ctx| {
+            ctx.push(("exit_code".into(), result.exit_code.to_string()));
+            ctx.push(("stdout_len".into(), result.stdout.len().to_string()));
+        });
+
+    assert_exit_code(&harness.harness, &result, 0);
+    assert_contains(&harness.harness, &result.stdout, "File processed.");
+
+    // Verify the provider received the file content in the request body.
+    let requests = server.requests();
+    harness
+        .harness
+        .assert_log("assert mock server received 1 request with file content");
+    assert_eq!(requests.len(), 1, "expected 1 request to mock server");
+
+    let body_str = String::from_utf8_lossy(&requests[0].body);
+    assert_contains(
+        &harness.harness,
+        &body_str,
+        "This is test file content for @file expansion.",
+    );
+    assert_contains(&harness.harness, &body_str, "Summarize this file.");
 }

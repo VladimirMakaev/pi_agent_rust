@@ -313,7 +313,7 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
         }
     }
 
-    #[allow(clippy::future_not_send)]
+    #[allow(clippy::future_not_send, clippy::too_many_lines)]
     async fn dispatch_session(&self, _call_id: &str, op: &str, payload: Value) -> HostcallOutcome {
         let op_norm = op.trim().to_ascii_lowercase();
         let result: std::result::Result<Value, String> = match op_norm.as_str() {
@@ -431,7 +431,7 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
             }
             "get_thinking_level" | "getthinkinglevel" => {
                 let level = self.session.get_thinking_level().await;
-                Ok(level.map(Value::String).unwrap_or(Value::Null))
+                Ok(level.map_or(Value::Null, Value::String))
             }
             _ => Err(format!("Unknown session op: {op}")),
         };
@@ -938,6 +938,7 @@ mod tests {
                 map.insert("provider".to_string(), Value::String(provider));
                 map.insert("modelId".to_string(), Value::String(model_id));
             }
+            drop(state);
             Ok(())
         }
 
@@ -945,6 +946,7 @@ mod tests {
             let state = self.state.lock().unwrap();
             let provider = state.get("provider").and_then(Value::as_str).map(String::from);
             let model_id = state.get("modelId").and_then(Value::as_str).map(String::from);
+            drop(state);
             (provider, model_id)
         }
 
@@ -953,12 +955,15 @@ mod tests {
             if let Value::Object(ref mut map) = *state {
                 map.insert("thinkingLevel".to_string(), Value::String(level));
             }
+            drop(state);
             Ok(())
         }
 
         async fn get_thinking_level(&self) -> Option<String> {
             let state = self.state.lock().unwrap();
-            state.get("thinkingLevel").and_then(Value::as_str).map(String::from)
+            let level = state.get("thinkingLevel").and_then(Value::as_str).map(String::from);
+            drop(state);
+            level
         }
     }
 
