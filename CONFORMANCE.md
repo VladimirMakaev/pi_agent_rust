@@ -109,6 +109,8 @@ Location: `tests/ext_conformance_diff.rs` + `tests/ext_conformance/`
 |--------|--------|-------|------|-------|
 | Official | 60 | 60 | 100% | All pass, test runs in CI |
 | Community | 53 | 58 | 91.4% | 53/53 testable pass; 5 TS oracle env failures |
+| npm | 47 | 63 | 74.6% | 16 failures: 13 missing npm deps, 3 env issues |
+| Third-party | 18 | 23 | 78.3% | 5 failures: 2 missing files, 2 missing npm deps, 1 config error |
 
 **Community TS oracle failures (environment issues, not Rust bugs):**
 - `nicobailon-interactive-shell`: requires native `pty.node` module
