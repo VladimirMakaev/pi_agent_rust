@@ -362,6 +362,8 @@ impl VcrRecorder {
             }
 
             if env_truthy("VCR_DEBUG_BODY") {
+                use std::fmt::Write as _;
+
                 let mut incoming_body = request.body.clone();
                 if let Some(body) = &mut incoming_body {
                     redact_json(body);
@@ -384,14 +386,14 @@ impl VcrRecorder {
                 for (idx, interaction) in cassette.interactions.iter().enumerate() {
                     if let Some(body) = &interaction.request.body {
                         if let Ok(pretty) = serde_json::to_string_pretty(body) {
-                            message.push_str(&format!("\nRecorded JSON body [{idx}]:\n"));
+                            let _ = write!(message, "\nRecorded JSON body [{idx}]:\n");
                             message.push_str(&pretty);
                             message.push('\n');
                         }
                     }
 
                     if let Some(body_text) = &interaction.request.body_text {
-                        message.push_str(&format!("\nRecorded text body [{idx}]:\n"));
+                        let _ = write!(message, "\nRecorded text body [{idx}]:\n");
                         message.push_str(body_text);
                         message.push('\n');
                     }
