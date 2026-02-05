@@ -1813,7 +1813,6 @@ fn diff_deterministic_globals() {
 /// Use `PI_COMMUNITY_FILTER` env var to filter by name substring.
 /// Use `PI_COMMUNITY_MAX` env var to limit the number of extensions to test.
 #[test]
-#[ignore = "bd-2ru2: community extensions not yet expected to pass; run manually with --ignored"]
 fn diff_community_manifest() {
     let filter = std::env::var("PI_COMMUNITY_FILTER").ok();
     let max = std::env::var("PI_COMMUNITY_MAX")
@@ -1866,30 +1865,44 @@ fn diff_community_manifest() {
         selected.len()
     );
 
-    // For community extensions, we track failures but don't assert yet
-    // as many may fail due to missing features or extension bugs
-    if !failures.is_empty() {
+    // Separate TS oracle failures (environment issues we can't fix) from Rust failures
+    let (ts_oracle_failures, rust_failures): (Vec<String>, Vec<String>) =
+        failures.into_iter().partition(|f| f.contains("ts_oracle_failed"));
+
+    let total_failures = ts_oracle_failures.len() + rust_failures.len();
+    if total_failures > 0 {
+        let all: Vec<&str> = ts_oracle_failures
+            .iter()
+            .chain(rust_failures.iter())
+            .map(String::as_str)
+            .collect();
         eprintln!(
-            "Community conformance failures ({}):\n{}",
-            failures.len(),
-            failures.join("\n")
+            "Community conformance failures ({total_failures}, {ts} TS oracle, {rust} Rust):\n{all}",
+            ts = ts_oracle_failures.len(),
+            rust = rust_failures.len(),
+            all = all.join("\n")
         );
     }
 
-    // Target: 90%+ pass rate for community extensions
-    let total = u32::try_from(selected.len()).unwrap_or(u32::MAX);
-    let pass_rate = if total == 0 {
-        0.0
+    // Pass rate (excluding TS oracle failures that we can't fix)
+    let testable =
+        u32::try_from(selected.len() - ts_oracle_failures.len()).unwrap_or(u32::MAX);
+    let pass_rate = if testable == 0 {
+        100.0
     } else {
-        f64::from(passes) / f64::from(total) * 100.0
+        f64::from(passes) / f64::from(testable) * 100.0
     };
-    eprintln!("[diff_community_manifest] Pass rate: {pass_rate:.1}%");
+    eprintln!(
+        "[diff_community_manifest] Pass rate: {pass_rate:.1}% ({passes}/{testable} testable, {} TS oracle skipped)",
+        ts_oracle_failures.len()
+    );
 
+    // Assert: zero Rust-side failures (TS oracle failures are environment issues)
     assert!(
-        failures.is_empty(),
-        "Community conformance failures ({}):\n{}",
-        failures.len(),
-        failures.join("\n")
+        rust_failures.is_empty(),
+        "Rust-side community conformance failures ({}):\n{}",
+        rust_failures.len(),
+        rust_failures.join("\n")
     );
 }
 
