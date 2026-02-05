@@ -282,3 +282,26 @@ impl std::fmt::Display for KnownProvider {
         }
     }
 }
+
+impl std::str::FromStr for KnownProvider {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "anthropic" => Ok(Self::Anthropic),
+            "openai" => Ok(Self::OpenAI),
+            "google" => Ok(Self::Google),
+            "google-vertex" => Ok(Self::GoogleVertex),
+            "amazon-bedrock" => Ok(Self::AmazonBedrock),
+            "azure-openai" => Ok(Self::AzureOpenAI),
+            "github-copilot" => Ok(Self::GithubCopilot),
+            "xai" => Ok(Self::XAI),
+            "groq" => Ok(Self::Groq),
+            "cerebras" => Ok(Self::Cerebras),
+            "openrouter" => Ok(Self::OpenRouter),
+            "mistral" => Ok(Self::Mistral),
+            other if !other.is_empty() => Ok(Self::Custom(other.to_string())),
+            _ => Err("Provider identifier cannot be empty".to_string()),
+        }
+    }
+}
