@@ -737,6 +737,12 @@ pub fn load_default_auth(path: &Path) -> Result<AuthStorage> {
 mod tests {
     use super::*;
 
+    fn next_token() -> String {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .to_string()
+    }
+
     #[test]
     fn test_generate_pkce_is_base64url_no_pad() {
         let (verifier, challenge) = generate_pkce();
@@ -910,11 +916,13 @@ mod tests {
                 entries: HashMap::new(),
             };
             // Insert an expired anthropic OAuth credential.
+            let initial_access_token = next_token();
+            let initial_refresh_token = next_token();
             auth.entries.insert(
                 "anthropic".to_string(),
                 AuthCredential::OAuth {
-                    access_token: "old".to_string(),
-                    refresh_token: "refresh-tok".to_string(),
+                    access_token: initial_access_token.clone(),
+                    refresh_token: initial_refresh_token,
                     expires: 0, // expired
                 },
             );
@@ -933,7 +941,8 @@ mod tests {
             assert!(
                 matches!(
                     auth.entries.get("anthropic"),
-                    Some(AuthCredential::OAuth { access_token, .. }) if access_token == "old"
+                    Some(AuthCredential::OAuth { access_token, .. })
+                        if access_token == &initial_access_token
                 ),
                 "expected OAuth credential"
             );
@@ -951,12 +960,14 @@ mod tests {
                 entries: HashMap::new(),
             };
             // Insert a NOT expired credential.
+            let initial_access_token = next_token();
+            let initial_refresh_token = next_token();
             let far_future = chrono::Utc::now().timestamp_millis() + 3_600_000;
             auth.entries.insert(
                 "my-ext".to_string(),
                 AuthCredential::OAuth {
-                    access_token: "valid".to_string(),
-                    refresh_token: "refresh-tok".to_string(),
+                    access_token: initial_access_token.clone(),
+                    refresh_token: initial_refresh_token,
                     expires: far_future,
                 },
             );
@@ -974,7 +985,8 @@ mod tests {
             assert!(
                 matches!(
                     auth.entries.get("my-ext"),
-                    Some(AuthCredential::OAuth { access_token, .. }) if access_token == "valid"
+                    Some(AuthCredential::OAuth { access_token, .. })
+                        if access_token == &initial_access_token
                 ),
                 "expected OAuth credential"
             );
@@ -992,11 +1004,13 @@ mod tests {
                 entries: HashMap::new(),
             };
             // Expired credential for a provider not in extension_configs.
+            let initial_access_token = next_token();
+            let initial_refresh_token = next_token();
             auth.entries.insert(
                 "unknown-ext".to_string(),
                 AuthCredential::OAuth {
-                    access_token: "old".to_string(),
-                    refresh_token: "refresh-tok".to_string(),
+                    access_token: initial_access_token.clone(),
+                    refresh_token: initial_refresh_token,
                     expires: 0,
                 },
             );
@@ -1013,7 +1027,8 @@ mod tests {
             assert!(
                 matches!(
                     auth.entries.get("unknown-ext"),
-                    Some(AuthCredential::OAuth { access_token, .. }) if access_token == "old"
+                    Some(AuthCredential::OAuth { access_token, .. })
+                        if access_token == &initial_access_token
                 ),
                 "expected OAuth credential"
             );
@@ -1024,6 +1039,8 @@ mod tests {
     fn test_oauth_token_storage_round_trip() {
         let dir = tempfile::tempdir().expect("tmpdir");
         let auth_path = dir.path().join("auth.json");
+        let expected_access_token = next_token();
+        let expected_refresh_token = next_token();
 
         // Save OAuth credential.
         {
@@ -1034,8 +1051,8 @@ mod tests {
             auth.set(
                 "ext-provider",
                 AuthCredential::OAuth {
-                    access_token: "access-tok-123".to_string(),
-                    refresh_token: "refresh-tok-456".to_string(),
+                    access_token: expected_access_token.clone(),
+                    refresh_token: expected_refresh_token.clone(),
                     expires: 9_999_999_999_000,
                 },
             );
@@ -1051,8 +1068,8 @@ mod tests {
                 refresh_token,
                 expires,
             } => {
-                assert_eq!(access_token, "access-tok-123");
-                assert_eq!(refresh_token, "refresh-tok-456");
+                assert_eq!(access_token, &expected_access_token);
+                assert_eq!(refresh_token, &expected_refresh_token);
                 assert_eq!(*expires, 9_999_999_999_000);
             }
             other => panic!("expected OAuth credential, got: {other:?}"),
@@ -1063,6 +1080,8 @@ mod tests {
     fn test_oauth_api_key_returns_access_token_when_unexpired() {
         let dir = tempfile::tempdir().expect("tmpdir");
         let auth_path = dir.path().join("auth.json");
+        let expected_access_token = next_token();
+        let expected_refresh_token = next_token();
         let far_future = chrono::Utc::now().timestamp_millis() + 3_600_000;
         let mut auth = AuthStorage {
             path: auth_path,
@@ -1071,15 +1090,15 @@ mod tests {
         auth.set(
             "ext-provider",
             AuthCredential::OAuth {
-                access_token: "live-token".to_string(),
-                refresh_token: "refresh".to_string(),
+                access_token: expected_access_token.clone(),
+                refresh_token: expected_refresh_token,
                 expires: far_future,
             },
         );
 
         assert_eq!(
             auth.api_key("ext-provider").as_deref(),
-            Some("live-token")
+            Some(expected_access_token.as_str())
         );
     }
 
@@ -1087,6 +1106,8 @@ mod tests {
     fn test_oauth_api_key_returns_none_when_expired() {
         let dir = tempfile::tempdir().expect("tmpdir");
         let auth_path = dir.path().join("auth.json");
+        let expected_access_token = next_token();
+        let expected_refresh_token = next_token();
         let mut auth = AuthStorage {
             path: auth_path,
             entries: HashMap::new(),
@@ -1094,8 +1115,8 @@ mod tests {
         auth.set(
             "ext-provider",
             AuthCredential::OAuth {
-                access_token: "stale-token".to_string(),
-                refresh_token: "refresh".to_string(),
+                access_token: expected_access_token,
+                refresh_token: expected_refresh_token,
                 expires: 0, // expired
             },
         );
