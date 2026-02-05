@@ -5,6 +5,7 @@
 //! step tracking, pane capture, and JSONL artifact emission.
 
 #![cfg(unix)]
+#![allow(dead_code)]
 
 use super::harness::TestHarness;
 use serde_json::json;
@@ -13,6 +14,23 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+
+fn resolve_pi_binary_path() -> PathBuf {
+    if let Some(path) = std::env::var_os("CARGO_BIN_EXE_pi") {
+        return PathBuf::from(path);
+    }
+
+    if let Ok(test_exe) = std::env::current_exe() {
+        if let Some(target_dir) = test_exe.parent().and_then(|parent| parent.parent()) {
+            let candidate = target_dir.join("pi");
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/debug/pi")
+}
 
 // ─── TmuxInstance ────────────────────────────────────────────────────────────
 
@@ -247,7 +265,7 @@ impl TuiSession {
         let harness = TestHarness::new(name);
         let tmux = TmuxInstance::new(&harness);
 
-        let binary_path = PathBuf::from(env!("CARGO_BIN_EXE_pi"));
+        let binary_path = resolve_pi_binary_path();
 
         let mut env = BTreeMap::new();
         let env_root = harness.temp_dir().join("env");
@@ -319,11 +337,13 @@ impl TuiSession {
         }
         self.harness.record_artifact("tui-run.sh", &script_path);
 
-        self.harness.log().info_ctx("tmux", "Starting session", |ctx| {
-            ctx.push(("socket".into(), self.tmux.socket_name.clone()));
-            ctx.push(("session".into(), self.tmux.session_name.clone()));
-            ctx.push(("args".into(), args.join(" ")));
-        });
+        self.harness
+            .log()
+            .info_ctx("tmux", "Starting session", |ctx| {
+                ctx.push(("socket".into(), self.tmux.socket_name.clone()));
+                ctx.push(("session".into(), self.tmux.session_name.clone()));
+                ctx.push(("args".into(), args.join(" ")));
+            });
 
         self.tmux
             .start_session(self.harness.temp_dir(), &script_path);
@@ -360,7 +380,7 @@ impl TuiSession {
             label: label.to_string(),
             action: format!("send_text: {text}"),
             pane_snapshot: pane.clone(),
-            elapsed_ms: elapsed.as_millis() as u64,
+            elapsed_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
         });
 
         pane
@@ -395,7 +415,7 @@ impl TuiSession {
             label: label.to_string(),
             action: format!("send_key: {key}"),
             pane_snapshot: pane.clone(),
-            elapsed_ms: elapsed.as_millis() as u64,
+            elapsed_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
         });
 
         pane
@@ -422,15 +442,17 @@ impl TuiSession {
             label: label.to_string(),
             action: "wait".to_string(),
             pane_snapshot: pane.clone(),
-            elapsed_ms: elapsed.as_millis() as u64,
+            elapsed_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
         });
 
         pane
     }
 
     /// Gracefully exit the session (/exit, then Ctrl+D, then Ctrl+C fallbacks).
-    pub fn exit_gracefully(&mut self) {
-        self.harness.log().info("tmux", "Exiting session gracefully");
+    pub fn exit_gracefully(&self) {
+        self.harness
+            .log()
+            .info("tmux", "Exiting session gracefully");
 
         self.tmux.send_literal("/exit");
         self.tmux.send_key("Enter");
@@ -478,8 +500,7 @@ impl TuiSession {
             );
         }
         std::fs::write(&steps_path, &steps_content).expect("write steps jsonl");
-        self.harness
-            .record_artifact("tui-steps.jsonl", &steps_path);
+        self.harness.record_artifact("tui-steps.jsonl", &steps_path);
 
         // Test logs JSONL
         let log_path = self.harness.temp_path("tui-log.jsonl");
@@ -496,14 +517,19 @@ impl TuiSession {
         self.harness
             .record_artifact("tui-artifacts.jsonl", &index_path);
 
-        self.harness.log().info_ctx("summary", "TUI session complete", |ctx| {
-            ctx.push(("steps".into(), self.steps.len().to_string()));
-            ctx.push(("elapsed_ms".into(), self.start.elapsed().as_millis().to_string()));
-            ctx.push((
-                "session_alive".into(),
-                self.tmux.session_exists().to_string(),
-            ));
-        });
+        self.harness
+            .log()
+            .info_ctx("summary", "TUI session complete", |ctx| {
+                ctx.push(("steps".into(), self.steps.len().to_string()));
+                ctx.push((
+                    "elapsed_ms".into(),
+                    self.start.elapsed().as_millis().to_string(),
+                ));
+                ctx.push((
+                    "session_alive".into(),
+                    self.tmux.session_exists().to_string(),
+                ));
+            });
     }
 
     /// Get the recorded steps.

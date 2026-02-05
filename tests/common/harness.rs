@@ -530,6 +530,9 @@ struct RouteKey {
 pub struct MockHttpServer {
     addr: SocketAddr,
     routes: Arc<Mutex<std::collections::HashMap<RouteKey, MockHttpResponse>>>,
+    route_queues: Arc<
+        Mutex<std::collections::HashMap<RouteKey, std::collections::VecDeque<MockHttpResponse>>>,
+    >,
     requests: Arc<Mutex<Vec<MockHttpRequest>>>,
     shutdown: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
@@ -546,10 +549,12 @@ impl MockHttpServer {
             .expect("set mock http listener nonblocking");
 
         let routes = Arc::new(Mutex::new(std::collections::HashMap::new()));
+        let route_queues = Arc::new(Mutex::new(std::collections::HashMap::new()));
         let requests = Arc::new(Mutex::new(Vec::new()));
         let shutdown = Arc::new(AtomicBool::new(false));
 
         let thread_routes = Arc::clone(&routes);
+        let thread_queues = Arc::clone(&route_queues);
         let thread_requests = Arc::clone(&requests);
         let thread_shutdown = Arc::clone(&shutdown);
         let thread_logger = Arc::clone(&logger);
@@ -567,6 +572,7 @@ impl MockHttpServer {
                             &mut stream,
                             peer,
                             &thread_routes,
+                            &thread_queues,
                             &thread_requests,
                             &thread_logger,
                             &mut scratch,
@@ -603,6 +609,7 @@ impl MockHttpServer {
         Self {
             addr,
             routes,
+            route_queues,
             requests,
             shutdown,
             join: Some(join),
@@ -626,6 +633,19 @@ impl MockHttpServer {
             path: path.to_string(),
         };
         self.routes.lock().unwrap().insert(key, response);
+    }
+
+    /// Add a queue of responses for a route. Each request pops the front.
+    /// When the queue is exhausted, falls back to the static route (if any).
+    pub fn add_route_queue(&self, method: &str, path: &str, responses: Vec<MockHttpResponse>) {
+        let key = RouteKey {
+            method: method.trim().to_ascii_uppercase(),
+            path: path.to_string(),
+        };
+        self.route_queues
+            .lock()
+            .unwrap()
+            .insert(key, std::collections::VecDeque::from(responses));
     }
 
     #[must_use]
@@ -660,6 +680,9 @@ fn handle_connection(
     stream: &mut TcpStream,
     peer: SocketAddr,
     routes: &Arc<Mutex<std::collections::HashMap<RouteKey, MockHttpResponse>>>,
+    route_queues: &Arc<
+        Mutex<std::collections::HashMap<RouteKey, std::collections::VecDeque<MockHttpResponse>>>,
+    >,
     requests: &Arc<Mutex<Vec<MockHttpRequest>>>,
     logger: &TestLogger,
     scratch: &mut [u8],
@@ -751,11 +774,13 @@ fn handle_connection(
         }
     });
 
-    let response = routes
+    let route_key = RouteKey { method, path };
+    let response = route_queues
         .lock()
         .unwrap()
-        .get(&RouteKey { method, path })
-        .cloned()
+        .get_mut(&route_key)
+        .and_then(std::collections::VecDeque::pop_front)
+        .or_else(|| routes.lock().unwrap().get(&route_key).cloned())
         .unwrap_or_else(|| MockHttpResponse::text(404, "not found"));
 
     write_response(stream, &response)?;

@@ -130,6 +130,28 @@ proptest! {
     }
 
     #[test]
+    fn session_op_kind_always_yields_session_capability(op in op_name_strategy()) {
+        let req = request(HostcallKind::Session { op }, Value::Null);
+        prop_assert_eq!(req.required_capability(), "session");
+    }
+
+    #[test]
+    fn params_hash_differs_for_different_session_ops(
+        op_a in op_name_strategy(),
+        op_b in op_name_strategy().prop_filter("different op", |b| !b.is_empty()),
+        payload in json_value(),
+    ) {
+        // Skip if ops are the same after normalization
+        if op_a.to_ascii_lowercase().replace('_', "") == op_b.to_ascii_lowercase().replace('_', "") {
+            return Ok(());
+        }
+        let req_a = request(HostcallKind::Session { op: op_a }, payload.clone());
+        let req_b = request(HostcallKind::Session { op: op_b }, payload);
+        // Different ops with same payload should produce different hashes
+        prop_assert_ne!(req_a.params_hash(), req_b.params_hash());
+    }
+
+    #[test]
     fn exec_params_for_hash_preserves_kind_cmd(
         cmd in ".{0,32}",
         payload_cmd in ".{0,32}",
