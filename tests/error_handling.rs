@@ -1,8 +1,8 @@
 //! Comprehensive error handling path tests.
 //!
 //! Covers provider HTTP error codes (401/403/429/529), malformed SSE scenarios,
-//! tool execution edge cases not in tools_conformance, and the error hints taxonomy.
-//! All tests are deterministic and offline (MockHttpServer or temp dirs).
+//! tool execution edge cases not in `tools_conformance`, and the error hints taxonomy.
+//! All tests are deterministic and offline (`MockHttpServer` or temp dirs).
 
 mod common;
 
@@ -422,8 +422,8 @@ mod malformed_responses {
                     let mut event_count = 0;
                     while let Some(item) = stream.next().await {
                         event_count += 1;
-                        if item.is_err() {
-                            harness.log().info("verify", item.unwrap_err().to_string());
+                        if let Err(err) = item {
+                            harness.log().info("verify", err.to_string());
                             break;
                         }
                     }
@@ -506,9 +506,9 @@ mod malformed_responses {
                     let mut found_error = false;
                     while let Some(item) = stream.next().await {
                         event_count += 1;
-                        if item.is_err() {
+                        if let Err(err) = item {
                             found_error = true;
-                            harness.log().info("verify", item.unwrap_err().to_string());
+                            harness.log().info("verify", err.to_string());
                             break;
                         }
                     }
