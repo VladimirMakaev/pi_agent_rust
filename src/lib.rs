@@ -54,6 +54,7 @@ pub mod model;
 pub mod model_selector;
 pub mod models;
 pub mod package_manager;
+pub mod permissions;
 pub mod provider;
 pub mod providers;
 pub mod resources;

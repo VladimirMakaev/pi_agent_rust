@@ -8,6 +8,7 @@ use crate::connectors::Connector;
 use crate::connectors::http::HttpConnector;
 use crate::error::{Error, Result};
 use crate::extension_events::{ToolCallEventResult, ToolResultEventResult};
+use crate::permissions::PermissionStore;
 use crate::extensions_js::{
     ExtensionToolDef, HostcallKind, HostcallRequest, PiJsRuntime, PiJsRuntimeConfig, js_to_json,
     json_to_js,
@@ -6835,6 +6836,8 @@ struct ExtensionManagerInner {
     current_thinking_level: Option<String>,
     host_actions: Option<Arc<dyn ExtensionHostActions>>,
     policy_prompt_cache: HashMap<String, HashMap<String, bool>>,
+    /// Persistent store for "Allow Always" / "Deny Always" decisions.
+    permission_store: Option<PermissionStore>,
     /// Budget for extension operations (structured concurrency).
     extension_budget: Budget,
 }
@@ -6948,20 +6951,41 @@ impl ExtensionManager {
     pub const DEFAULT_CLEANUP_BUDGET: Duration = Duration::from_secs(5);
 
     /// Create a new extension manager.
+    ///
+    /// Loads persisted permission decisions from disk (if any) and seeds the
+    /// in-memory policy prompt cache so that "Allow Always" / "Deny Always"
+    /// choices survive across sessions.
     pub fn new() -> Self {
+        let mut inner = ExtensionManagerInner::default();
+        Self::load_persisted_permissions(&mut inner);
         Self {
-            inner: Arc::new(Mutex::new(ExtensionManagerInner::default())),
+            inner: Arc::new(Mutex::new(inner)),
         }
     }
 
     /// Create a new extension manager with a specific operation budget.
     pub fn with_budget(budget: Budget) -> Self {
-        let inner = ExtensionManagerInner {
+        let mut inner = ExtensionManagerInner {
             extension_budget: budget,
             ..Default::default()
         };
+        Self::load_persisted_permissions(&mut inner);
         Self {
             inner: Arc::new(Mutex::new(inner)),
+        }
+    }
+
+    /// Load persisted permission decisions into the inner state.
+    fn load_persisted_permissions(inner: &mut ExtensionManagerInner) {
+        match PermissionStore::open_default() {
+            Ok(store) => {
+                // Seed the in-memory cache from persisted decisions.
+                inner.policy_prompt_cache = store.to_cache_map();
+                inner.permission_store = Some(store);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load extension permissions: {e}");
+            }
         }
     }
 
@@ -7088,6 +7112,41 @@ impl ExtensionManager {
             .entry(extension_id.to_string())
             .or_default()
             .insert(capability.to_string(), allow);
+
+        // Persist to disk so the decision survives across sessions.
+        if let Some(ref mut store) = guard.permission_store {
+            if let Err(e) = store.record(extension_id, capability, allow) {
+                tracing::warn!("Failed to persist permission decision: {e}");
+            }
+        }
+    }
+
+    /// Revoke all persisted permission decisions for an extension.
+    pub fn revoke_extension_permissions(&self, extension_id: &str) {
+        let mut guard = self.inner.lock().unwrap();
+        guard.policy_prompt_cache.remove(extension_id);
+        if let Some(ref mut store) = guard.permission_store {
+            if let Err(e) = store.revoke_extension(extension_id) {
+                tracing::warn!("Failed to revoke extension permissions: {e}");
+            }
+        }
+    }
+
+    /// Reset all persisted permission decisions.
+    pub fn reset_all_permissions(&self) {
+        let mut guard = self.inner.lock().unwrap();
+        guard.policy_prompt_cache.clear();
+        if let Some(ref mut store) = guard.permission_store {
+            if let Err(e) = store.reset() {
+                tracing::warn!("Failed to reset all permissions: {e}");
+            }
+        }
+    }
+
+    /// List all persisted permission decisions.
+    pub fn list_permissions(&self) -> HashMap<String, HashMap<String, bool>> {
+        let guard = self.inner.lock().unwrap();
+        guard.policy_prompt_cache.clone()
     }
 
     pub fn active_tools(&self) -> Option<Vec<String>> {

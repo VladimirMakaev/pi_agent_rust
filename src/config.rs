@@ -199,6 +199,11 @@ impl Config {
         Self::global_dir().join("auth.json")
     }
 
+    /// Get the extension permissions file path.
+    pub fn permissions_path() -> PathBuf {
+        Self::global_dir().join("extension-permissions.json")
+    }
+
     /// Load global settings.
     fn load_global() -> Result<Self> {
         let path = Self::global_dir().join("settings.json");
