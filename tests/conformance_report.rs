@@ -277,6 +277,12 @@ fn report_log_rel_path(suite: &str, ext_id: &str) -> Option<String> {
     if abs.exists() { Some(rel) } else { None }
 }
 
+fn fixture_rel_path(ext_id: &str) -> Option<String> {
+    let rel = format!("tests/ext_conformance/fixtures/{ext_id}.json");
+    let abs = project_root().join(&rel);
+    if abs.exists() { Some(rel) } else { None }
+}
+
 fn overall_status(status: &ExtensionStatus) -> &'static str {
     if status.scenario_fail > 0 || status.smoke_fail > 0 || status.parity_mismatch > 0 {
         return "FAIL";
@@ -400,6 +406,9 @@ fn generate_markdown(
             let ext_display = format!("[`{}`]({artifact_rel})", ext.id);
 
             let mut evidence = Vec::new();
+            if let Some(fixture) = fixture_rel_path(&ext.id) {
+                evidence.push(format!("[fixture]({fixture})"));
+            }
             if let Some(smoke) = report_log_rel_path("smoke", &ext.id) {
                 evidence.push(format!("[smoke]({smoke})"));
             }
@@ -466,6 +475,82 @@ fn generate_markdown(
         md.push('\n');
     }
 
+    // Evidence index
+    let fixture_count = extensions
+        .iter()
+        .filter(|e| fixture_rel_path(&e.id).is_some())
+        .count();
+    let smoke_count = extensions
+        .iter()
+        .filter(|e| report_log_rel_path("smoke", &e.id).is_some())
+        .count();
+    let parity_count = extensions
+        .iter()
+        .filter(|e| report_log_rel_path("parity", &e.id).is_some())
+        .count();
+    let load_count = extensions
+        .iter()
+        .filter(|e| statuses.get(&e.id).and_then(|s| s.rust_load_ms).is_some())
+        .count();
+
+    md.push_str("## Evidence Index\n\n");
+    md.push_str("| Evidence Type | Count | Location |\n");
+    md.push_str("|---|---|---|\n");
+    let _ = writeln!(
+        md,
+        "| Golden fixtures | {fixture_count} | `tests/ext_conformance/fixtures/*.json` |"
+    );
+    let _ = writeln!(
+        md,
+        "| Smoke test logs | {smoke_count} | `tests/ext_conformance/reports/smoke/extensions/` |"
+    );
+    let _ = writeln!(
+        md,
+        "| Parity diff logs | {parity_count} | `tests/ext_conformance/reports/parity/extensions/` |"
+    );
+    let _ = writeln!(
+        md,
+        "| Load time benchmarks | {load_count} | `tests/ext_conformance/reports/load_time_benchmark.json` |"
+    );
+    let _ = writeln!(
+        md,
+        "| Negative policy tests | {negative_pass} | `tests/ext_conformance/reports/negative/` |"
+    );
+    md.push('\n');
+
+    // Coverage gaps — group untested extensions by conformance tier
+    let untested: Vec<&ManifestExtension> = extensions
+        .iter()
+        .filter(|e| statuses.get(&e.id).map_or("N/A", overall_status) == "N/A")
+        .collect();
+    if !untested.is_empty() {
+        md.push_str("## Coverage Gaps\n\n");
+        let _ = writeln!(
+            md,
+            "{} extensions have not been tested yet.\n",
+            untested.len()
+        );
+
+        let mut by_reason: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for ext in &untested {
+            let reason = match ext.conformance_tier {
+                4 => "Requires npm dependencies (T4)",
+                5 => "Requires exec/network access (T5)",
+                3 => "Multi-file extension (T3)",
+                _ => "Not yet scheduled",
+            };
+            by_reason.entry(reason).or_default().push(&ext.id);
+        }
+
+        for (reason, ids) in &by_reason {
+            let _ = writeln!(md, "**{reason}** ({} extensions):", ids.len());
+            for id in ids {
+                let _ = writeln!(md, "- `{id}`");
+            }
+            md.push('\n');
+        }
+    }
+
     // Regeneration instructions
     md.push_str("---\n\n");
     md.push_str("## How to Regenerate\n\n");
@@ -483,6 +568,15 @@ fn generate_markdown(
     md.push_str("- `tests/ext_conformance/reports/CONFORMANCE_REPORT.md` (this file)\n");
     md.push_str("- `tests/ext_conformance/reports/conformance_summary.json` (machine-readable)\n");
     md.push_str("- `tests/ext_conformance/reports/conformance_events.jsonl` (per-extension log)\n");
+    md.push_str(
+        "\nEvidence tracing: each extension row links to its source artifact, golden fixture\n",
+    );
+    md.push_str(
+        "(if available), smoke test logs, and parity diff logs. Machine-readable per-extension\n",
+    );
+    md.push_str(
+        "data including capabilities and registrations is in `conformance_events.jsonl`.\n",
+    );
 
     md
 }
@@ -546,18 +640,22 @@ fn generate_conformance_report() {
         let artifact_rel = artifact_rel_path(&ext.entry_path);
         let smoke_log = report_log_rel_path("smoke", &ext.id);
         let parity_log = report_log_rel_path("parity", &ext.id);
+        let fixture = fixture_rel_path(&ext.id);
         let entry = json!({
-            "schema": "pi.ext.conformance_report.v1",
+            "schema": "pi.ext.conformance_report.v2",
             "ts": Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
             "extension_id": ext.id,
             "version": provenance_versions.get(&ext.id),
             "source_tier": ext.source_tier,
             "conformance_tier": ext.conformance_tier,
             "artifact_path": artifact_rel,
-            "logs": {
-                "smoke": smoke_log,
-                "parity": parity_log,
+            "evidence": {
+                "fixture": fixture,
+                "smoke_log": smoke_log,
+                "parity_log": parity_log,
             },
+            "capabilities": ext.capabilities,
+            "registrations": ext.registrations,
             "overall_status": overall,
             "rust_load_ms": status.and_then(|s| s.rust_load_ms),
             "ts_load_ms": status.and_then(|s| s.ts_load_ms),
@@ -616,8 +714,26 @@ fn generate_conformance_report() {
         100.0
     };
 
+    // Count evidence artifacts
+    let fixture_count = extensions
+        .iter()
+        .filter(|e| fixture_rel_path(&e.id).is_some())
+        .count();
+    let smoke_log_count = extensions
+        .iter()
+        .filter(|e| report_log_rel_path("smoke", &e.id).is_some())
+        .count();
+    let parity_log_count = extensions
+        .iter()
+        .filter(|e| report_log_rel_path("parity", &e.id).is_some())
+        .count();
+    let with_load_time = extensions
+        .iter()
+        .filter(|e| statuses.get(&e.id).and_then(|s| s.rust_load_ms).is_some())
+        .count();
+
     let summary = json!({
-        "schema": "pi.ext.conformance_summary.v1",
+        "schema": "pi.ext.conformance_summary.v2",
         "generated_at": Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
         "counts": {
             "total": total,
@@ -631,6 +747,12 @@ fn generate_conformance_report() {
             "fail": negative_fail,
         },
         "per_tier": per_tier,
+        "evidence": {
+            "golden_fixtures": fixture_count,
+            "smoke_logs": smoke_log_count,
+            "parity_logs": parity_log_count,
+            "load_time_benchmarks": with_load_time,
+        },
     });
     let summary_path = reports.join("conformance_summary.json");
     std::fs::write(
@@ -727,4 +849,156 @@ fn report_reads_negative_triage() {
     // The negative conformance tests should have run and produced results
     eprintln!("Negative triage: {pass} pass, {fail} fail");
     // Don't assert specific counts since report might not exist yet
+}
+
+#[test]
+fn evidence_links_valid() {
+    // Verify that all evidence file links in JSONL point to files that actually exist
+    let events_path = reports_dir().join("conformance_events.jsonl");
+    if !events_path.exists() {
+        eprintln!("No conformance_events.jsonl yet — skipping evidence validation");
+        return;
+    }
+
+    let events = read_jsonl_file(&events_path);
+    assert!(!events.is_empty(), "events file should have entries");
+
+    let mut checked = 0u32;
+    let mut valid = 0u32;
+    for event in &events {
+        // Check artifact_path
+        if let Some(path) = event.get("artifact_path").and_then(Value::as_str) {
+            checked += 1;
+            let abs = project_root().join(path);
+            if abs.exists() {
+                valid += 1;
+            }
+        }
+        // Check evidence links (fixture, smoke_log, parity_log)
+        if let Some(evidence) = event.get("evidence").and_then(Value::as_object) {
+            for key in &["fixture", "smoke_log", "parity_log"] {
+                if let Some(path) = evidence.get(*key).and_then(Value::as_str) {
+                    checked += 1;
+                    let abs = project_root().join(path);
+                    assert!(
+                        abs.exists(),
+                        "evidence link {key}={path} should point to existing file"
+                    );
+                    valid += 1;
+                }
+            }
+        }
+    }
+    eprintln!("Evidence links: {valid}/{checked} valid");
+    assert!(
+        checked > 0,
+        "should have checked at least one evidence link"
+    );
+}
+
+#[test]
+fn summary_json_has_evidence_counts() {
+    let summary_path = reports_dir().join("conformance_summary.json");
+    if !summary_path.exists() {
+        eprintln!("No conformance_summary.json yet — skipping");
+        return;
+    }
+
+    let summary = read_json_file(&summary_path).expect("parse summary json");
+    let evidence = summary
+        .get("evidence")
+        .expect("summary should have evidence section");
+
+    assert!(
+        evidence.get("golden_fixtures").is_some(),
+        "evidence should have golden_fixtures count"
+    );
+    assert!(
+        evidence.get("smoke_logs").is_some(),
+        "evidence should have smoke_logs count"
+    );
+    assert!(
+        evidence.get("parity_logs").is_some(),
+        "evidence should have parity_logs count"
+    );
+    assert!(
+        evidence.get("load_time_benchmarks").is_some(),
+        "evidence should have load_time_benchmarks count"
+    );
+
+    eprintln!(
+        "Evidence counts: fixtures={}, smoke={}, parity={}, load={}",
+        evidence["golden_fixtures"],
+        evidence["smoke_logs"],
+        evidence["parity_logs"],
+        evidence["load_time_benchmarks"]
+    );
+}
+
+#[test]
+fn events_jsonl_has_capabilities() {
+    let events_path = reports_dir().join("conformance_events.jsonl");
+    if !events_path.exists() {
+        eprintln!("No conformance_events.jsonl yet — skipping");
+        return;
+    }
+
+    let events = read_jsonl_file(&events_path);
+    assert!(!events.is_empty(), "events file should have entries");
+
+    // Every event should have capabilities and registrations fields
+    let mut with_caps = 0u32;
+    for event in &events {
+        if event.get("capabilities").is_some() && event.get("registrations").is_some() {
+            with_caps += 1;
+        }
+    }
+    eprintln!("Events with capability data: {with_caps}/{}", events.len());
+    assert!(
+        with_caps == u32::try_from(events.len()).unwrap_or(u32::MAX),
+        "all events should have capabilities and registrations"
+    );
+}
+
+#[test]
+fn report_markdown_has_evidence_index() {
+    let md_path = reports_dir().join("CONFORMANCE_REPORT.md");
+    if !md_path.exists() {
+        eprintln!("No CONFORMANCE_REPORT.md yet — skipping");
+        return;
+    }
+
+    let md = std::fs::read_to_string(&md_path).expect("read report markdown");
+    assert!(
+        md.contains("## Evidence Index"),
+        "report should have Evidence Index section"
+    );
+    assert!(
+        md.contains("Golden fixtures"),
+        "evidence index should list golden fixtures"
+    );
+    assert!(
+        md.contains("Smoke test logs"),
+        "evidence index should list smoke logs"
+    );
+    assert!(
+        md.contains("Parity diff logs"),
+        "evidence index should list parity logs"
+    );
+}
+
+#[test]
+fn report_markdown_has_coverage_gaps() {
+    let md_path = reports_dir().join("CONFORMANCE_REPORT.md");
+    if !md_path.exists() {
+        eprintln!("No CONFORMANCE_REPORT.md yet — skipping");
+        return;
+    }
+
+    let md = std::fs::read_to_string(&md_path).expect("read report markdown");
+    // Since we have 150 N/A extensions, there should be a coverage gaps section
+    assert!(
+        md.contains("## Coverage Gaps"),
+        "report should have Coverage Gaps section when untested extensions exist"
+    );
 }
