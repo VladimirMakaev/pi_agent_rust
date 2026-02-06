@@ -8,16 +8,7 @@ version = "0.24.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dfbe277e56a376000877090da837660b4427aad530e3028d44e0bffe4f89a1c1"
 dependencies = [
- "gimli 0.31.1",
-]
-
-[[package]]
-name = "addr2line"
-version = "0.25.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b5d307320b3181d6d7954e663bd7c774a838b8220fe0593c86d9fb09f498b4b"
-dependencies = [
- "gimli 0.32.3",
+ "gimli",
 ]
 
 [[package]]
@@ -273,6 +264,8 @@ dependencies = [
 [[package]]
 name = "asupersync"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "45551c816d1bb377e94e2633e48e6ab3cedfba821fa1d0eee52f1f2164b17db8"
 dependencies = [
  "base64 0.22.1",
  "bincode",
@@ -301,34 +294,6 @@ dependencies = [
  "tracing-subscriber",
  "visibility",
  "x509-parser",
-]
-
-[[package]]
-name = "asupersync"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "45551c816d1bb377e94e2633e48e6ab3cedfba821fa1d0eee52f1f2164b17db8"
-dependencies = [
- "base64 0.22.1",
- "bincode",
- "crossbeam-queue",
- "getrandom 0.3.4",
- "libc",
- "nix 0.29.0",
- "parking_lot",
- "pin-project",
- "polling",
- "rmp-serde",
- "serde",
- "serde_json",
- "sha1",
- "slab",
- "socket2",
- "tempfile",
- "thiserror 2.0.18",
- "tracing",
- "tracing-subscriber",
- "visibility",
 ]
 
 [[package]]
@@ -400,21 +365,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47c8fbc0f831f4519fe8b810b6a7a91410ec83031b8233f730a0480029f6a23f"
 dependencies = [
  "arrayvec",
-]
-
-[[package]]
-name = "backtrace"
-version = "0.3.76"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb531853791a215d7c62a30daf0dde835f381ab5de4589cfe7c649d2cbe92bd6"
-dependencies = [
- "addr2line 0.25.1",
- "cfg-if",
- "libc",
- "miniz_oxide",
- "object 0.37.3",
- "rustc-demangle",
- "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -659,6 +609,8 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 [[package]]
 name = "charmed-bubbles"
 version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a8f131b9c57160d5ae0666f6632a8c7a9c48ecd5a7115ade4233703e73e04179"
 dependencies = [
  "charmed-bubbletea",
  "charmed-harmonica",
@@ -671,6 +623,8 @@ dependencies = [
 [[package]]
 name = "charmed-bubbletea"
 version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e2eb6bd66986608e4ffc423beda998d81bfab8c5f4f63843a90107c6c47b819"
 dependencies = [
  "charmed-bubbletea-macros",
  "crossterm",
@@ -682,6 +636,8 @@ dependencies = [
 [[package]]
 name = "charmed-bubbletea-macros"
 version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5fe3df5782011f3b1991081392a21f4da7a38d7237f5028074309ea48c7f9d4"
 dependencies = [
  "darling",
  "proc-macro-error2",
@@ -693,6 +649,8 @@ dependencies = [
 [[package]]
 name = "charmed-glamour"
 version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "51175e6411887215f03919bbe00ddaac2bf5a6b02793254aa5e9acdfe740afba"
 dependencies = [
  "charmed-lipgloss",
  "lru 0.12.5",
@@ -704,10 +662,14 @@ dependencies = [
 [[package]]
 name = "charmed-harmonica"
 version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e05ecd9ed8a6fffce7892eb14fd3aae8670e8f31f904f62c83e2406a29e748fd"
 
 [[package]]
 name = "charmed-lipgloss"
 version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "45e10db01f5eaea11d98ca5c5cffd8cc4add7ac56d0128d91ba1f2a3757b6c5a"
 dependencies = [
  "bitflags 2.10.0",
  "colored",
@@ -997,7 +959,7 @@ dependencies = [
  "cranelift-control",
  "cranelift-entity",
  "cranelift-isle",
- "gimli 0.31.1",
+ "gimli",
  "hashbrown 0.14.5",
  "log",
  "regalloc2",
@@ -1919,12 +1881,6 @@ dependencies = [
  "indexmap",
  "stable_deref_trait",
 ]
-
-[[package]]
-name = "gimli"
-version = "0.32.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
 
 [[package]]
 name = "gix"
@@ -3998,7 +3954,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arboard",
- "asupersync 0.1.0",
+ "asupersync",
  "async-trait",
  "base64 0.22.1",
  "charmed-bubbles",
@@ -4655,8 +4611,9 @@ checksum = "0c6a884d2998352bb4daf0183589aec883f16a6da1f4dde84d8e2e9a5409a1ce"
 [[package]]
 name = "rich_rust"
 version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a7c2ecb6193f75fc8143648beb454f8b1d3a4fbd2fe13813a504760867d91b1"
 dependencies = [
- "backtrace",
  "bitflags 2.10.0",
  "crossterm",
  "log",
@@ -4666,7 +4623,6 @@ dependencies = [
  "pulldown-cmark",
  "regex",
  "serde_json",
- "smallvec",
  "syntect",
  "time",
  "unicode-width 0.2.2",
@@ -5173,8 +5129,10 @@ checksum = "3b9b39299b249ad65f3b7e96443bad61c02ca5cd3589f46cb6d610a0fd6c0d6a"
 [[package]]
 name = "sqlmodel-core"
 version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f0c141a6165fee6292cff249828753d3f99ab17fa772496d85dafdd5536a2f9"
 dependencies = [
- "asupersync 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "asupersync",
  "regex",
  "serde",
  "serde_json",
@@ -5184,8 +5142,10 @@ dependencies = [
 [[package]]
 name = "sqlmodel-sqlite"
 version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fde3965a24e2fed8ecfe1eb3257d2887c478a6872581aca89fa4a06d63611ef9"
 dependencies = [
- "asupersync 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "asupersync",
  "serde",
  "serde_json",
  "sqlmodel-core",
@@ -6240,7 +6200,7 @@ version = "29.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11976a250672556d1c4c04c6d5d7656ac9192ac9edc42a4587d6c21460010e69"
 dependencies = [
- "addr2line 0.24.2",
+ "addr2line",
  "anyhow",
  "async-trait",
  "bitflags 2.10.0",
@@ -6249,7 +6209,7 @@ dependencies = [
  "cfg-if",
  "encoding_rs",
  "fxprof-processed-profile",
- "gimli 0.31.1",
+ "gimli",
  "hashbrown 0.14.5",
  "indexmap",
  "ittapi",
@@ -6355,7 +6315,7 @@ dependencies = [
  "cranelift-entity",
  "cranelift-frontend",
  "cranelift-native",
- "gimli 0.31.1",
+ "gimli",
  "itertools 0.12.1",
  "log",
  "object 0.36.7",
@@ -6377,7 +6337,7 @@ dependencies = [
  "cpp_demangle",
  "cranelift-bitset",
  "cranelift-entity",
- "gimli 0.31.1",
+ "gimli",
  "indexmap",
  "log",
  "object 0.36.7",
@@ -6466,7 +6426,7 @@ checksum = "fdbabfb8f20502d5e1d81092b9ead3682ae59988487aafcd7567387b7a43cf8f"
 dependencies = [
  "anyhow",
  "cranelift-codegen",
- "gimli 0.31.1",
+ "gimli",
  "object 0.36.7",
  "target-lexicon",
  "wasmparser 0.221.3",
@@ -6564,7 +6524,7 @@ checksum = "2f849ef2c5f46cb0a20af4b4487aaa239846e52e2c03f13fa3c784684552859c"
 dependencies = [
  "anyhow",
  "cranelift-codegen",
- "gimli 0.31.1",
+ "gimli",
  "regalloc2",
  "smallvec",
  "target-lexicon",

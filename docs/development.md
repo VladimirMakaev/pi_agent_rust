@@ -12,6 +12,28 @@ cargo build
 cargo build --release
 ```
 
+## Sibling Crates (Published vs Local Dev)
+
+By default, `pi_agent_rust` depends on **published crates.io versions** of the sibling libraries:
+- `asupersync`
+- `rich_rust`
+- `charmed-*` (bubbletea/lipgloss/bubbles/glamour)
+- `sqlmodel-*` (core/sqlite)
+
+If you want to hack on those repos locally (in lockstep), use a local-only Cargo patch. Assuming the sibling repos are checked out next to `pi_agent_rust` (e.g. `../asupersync`, `../rich_rust`, etc), add this to **your local checkout** (do not commit):
+
+```toml
+[patch.crates-io]
+asupersync = { path = "../asupersync" }
+rich_rust = { path = "../rich_rust" }
+charmed-bubbletea = { path = "../charmed_rust/crates/bubbletea" }
+charmed-lipgloss = { path = "../charmed_rust/crates/lipgloss" }
+charmed-bubbles = { path = "../charmed_rust/crates/bubbles" }
+charmed-glamour = { path = "../charmed_rust/crates/glamour" }
+sqlmodel-core = { path = "../sqlmodel_rust/crates/sqlmodel-core" }
+sqlmodel-sqlite = { path = "../sqlmodel_rust/crates/sqlmodel-sqlite" }
+```
+
 ## Testing
 
 We enforce a strict "no mocks" policy for core logic. Tests use real filesystem operations (in temp dirs) and VCR-style recording for HTTP interactions.

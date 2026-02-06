@@ -110,10 +110,7 @@ const SCHEMAS: &[(&str, &str)] = &[
         "pi.perf.workload.v1",
         "PiJS workload harness output (tool call throughput)",
     ),
-    (
-        "pi.perf.budget.v1",
-        "Performance budget check result",
-    ),
+    ("pi.perf.budget.v1", "Performance budget check result"),
     (
         "pi.perf.budget_summary.v1",
         "Aggregate budget summary with pass/fail counts",
@@ -145,7 +142,10 @@ const WORKLOAD_REQUIRED: &[&str] = &[
 const ENV_FINGERPRINT_FIELDS: &[(&str, &str)] = &[
     ("os", "Operating system name and version"),
     ("arch", "CPU architecture (x86_64, aarch64)"),
-    ("cpu_model", "CPU model string from /proc/cpuinfo or sysinfo"),
+    (
+        "cpu_model",
+        "CPU model string from /proc/cpuinfo or sysinfo",
+    ),
     ("cpu_cores", "Logical CPU core count"),
     ("mem_total_mb", "Total system memory in megabytes"),
     ("build_profile", "Cargo build profile: debug or release"),
@@ -232,10 +232,7 @@ fn validate_rust_bench_schema() {
             "workload event missing required fields: {missing:?}"
         );
     }
-    eprintln!(
-        "[schema] Validated {} pijs_workload events",
-        events.len()
-    );
+    eprintln!("[schema] Validated {} pijs_workload events", events.len());
 }
 
 #[test]
@@ -259,10 +256,7 @@ fn validate_legacy_bench_schema() {
             "legacy bench should use pi.ext.legacy_bench.v1 schema"
         );
     }
-    eprintln!(
-        "[schema] Validated {} legacy bench events",
-        events.len()
-    );
+    eprintln!("[schema] Validated {} legacy bench events", events.len());
 }
 
 #[test]
@@ -296,9 +290,8 @@ fn validate_budget_events_schema() {
 #[test]
 fn validate_conformance_events_schema() {
     let root = project_root();
-    let events = read_jsonl_file(
-        &root.join("tests/ext_conformance/reports/conformance_events.jsonl"),
-    );
+    let events =
+        read_jsonl_file(&root.join("tests/ext_conformance/reports/conformance_events.jsonl"));
     if events.is_empty() {
         eprintln!("[schema] No conformance events — skipping");
         return;
@@ -319,10 +312,7 @@ fn validate_conformance_events_schema() {
             "conformance event missing required fields: {missing:?}"
         );
     }
-    eprintln!(
-        "[schema] Validated {} conformance events",
-        events.len()
-    );
+    eprintln!("[schema] Validated {} conformance events", events.len());
 }
 
 #[test]
@@ -350,7 +340,10 @@ fn jsonl_records_have_stable_key_ordering() {
                 }
             }
         }
-        eprintln!("[schema] Key ordering stable across {} legacy events", events.len());
+        eprintln!(
+            "[schema] Key ordering stable across {} legacy events",
+            events.len()
+        );
     }
 
     // Check workload records
@@ -365,7 +358,10 @@ fn jsonl_records_have_stable_key_ordering() {
             .map(|obj| obj.keys().cloned().collect())
             .unwrap_or_default();
         assert_eq!(keys_0, keys_1, "workload records should have same key set");
-        eprintln!("[schema] Key ordering stable across {} workload events", events.len());
+        eprintln!(
+            "[schema] Key ordering stable across {} workload events",
+            events.len()
+        );
     }
 }
 
@@ -412,7 +408,9 @@ fn generate_schema_doc() {
     md.push_str("|---|---|---|\n");
     md.push_str("| `schema` | string | Always `\"pi.ext.rust_bench.v1\"` |\n");
     md.push_str("| `runtime` | string | Always `\"pi_agent_rust\"` |\n");
-    md.push_str("| `scenario` | string | Benchmark scenario (e.g., `ext_load_init/load_init_cold`) |\n");
+    md.push_str(
+        "| `scenario` | string | Benchmark scenario (e.g., `ext_load_init/load_init_cold`) |\n",
+    );
     md.push_str("| `extension` | string | Extension ID being benchmarked |\n");
     md.push_str("| `runs` | integer | Number of runs (load scenarios) |\n");
     md.push_str("| `iterations` | integer | Number of iterations (throughput scenarios) |\n");
@@ -446,7 +444,9 @@ fn generate_schema_doc() {
 
     // Determinism notes
     md.push_str("## Determinism Requirements\n\n");
-    md.push_str("1. **Stable key ordering**: JSON keys are sorted alphabetically within each record\n");
+    md.push_str(
+        "1. **Stable key ordering**: JSON keys are sorted alphabetically within each record\n",
+    );
     md.push_str("2. **No floating point in keys**: Use string or integer identifiers\n");
     md.push_str("3. **Timestamps**: ISO 8601 with seconds precision (`2026-02-06T01:00:00Z`)\n");
     md.push_str("4. **Config hash**: SHA-256 of concatenated env fields for dedup\n");

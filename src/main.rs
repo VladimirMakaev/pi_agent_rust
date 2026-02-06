@@ -58,6 +58,27 @@ fn main_impl() -> Result<()> {
         return Ok(());
     }
 
+    // Ultra-fast paths that don't need tracing or the async runtime.
+    if matches!(cli.command, Some(cli::Commands::Config)) {
+        handle_config(&cwd)?;
+        return Ok(());
+    }
+
+    // List-models is an offline query; avoid loading resources or booting the runtime.
+    // Note: we intentionally skip OAuth refresh here to keep this path fast and offline.
+    if cli.command.is_none() {
+        if let Some(pattern) = &cli.list_models {
+            let auth = AuthStorage::load(Config::auth_path())?;
+            let models_path = default_models_path(&Config::global_dir());
+            let registry = ModelRegistry::load(&auth, Some(models_path));
+            if let Some(error) = registry.error() {
+                eprintln!("Warning: models.json error: {error}");
+            }
+            list_models(&registry, pattern.as_deref());
+            return Ok(());
+        }
+    }
+
     // Initialize logging (skip for ultra-fast paths like --version)
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
