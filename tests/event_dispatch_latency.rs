@@ -27,6 +27,7 @@ use serde_json::{Value, json};
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -44,6 +45,14 @@ const P99_BUDGET_US: u64 = if cfg!(debug_assertions) {
 const WARMUP: u64 = 10;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
+
+/// These are latency/perf tests; running them concurrently amplifies scheduler noise and
+/// causes flaky P99 budget failures. Serialize the perf-sensitive tests within this binary.
+static PERF_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn perf_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    PERF_TEST_LOCK.lock().expect("lock perf test guard")
+}
 
 fn project_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -252,6 +261,7 @@ fn result_to_jsonl(result: &LatencyResult) -> Value {
 /// Measure per-event-type latency with a single no-op extension.
 #[test]
 fn event_type_latency_single_extension() {
+    let _guard = perf_test_guard();
     let events_to_test = [
         "before_agent_start",
         "agent_start",
@@ -331,6 +341,7 @@ fn event_type_latency_single_extension() {
 /// Measure scaling: how latency changes with 1, 5, 10, 20 extensions.
 #[test]
 fn event_dispatch_scaling() {
+    let _guard = perf_test_guard();
     let scale_levels = [1, 5, 10, 20];
     let event = ExtensionEventName::AgentStart;
     let hook_events = ["agent_start"];
@@ -410,6 +421,7 @@ fn event_dispatch_scaling() {
 /// Measure hostcall round-trip latency (event handler that calls back into Rust).
 #[test]
 fn hostcall_roundtrip_latency() {
+    let _guard = perf_test_guard();
     let source = synth_hostcall_extension(0);
     let loaded = load_synthetic_extensions(&[("synth-hostcall-0".to_string(), source)]);
     assert_eq!(loaded.count, 1);
@@ -462,6 +474,7 @@ fn hostcall_roundtrip_latency() {
 /// Measure overhead of dispatching events with no matching handlers.
 #[test]
 fn no_handler_dispatch_overhead() {
+    let _guard = perf_test_guard();
     // Extension hooks agent_start, but we dispatch turn_start → should be fast (no-op)
     let source = synth_noop_extension(0, &["agent_start"]);
     let loaded = load_synthetic_extensions(&[("synth-no-match-0".to_string(), source)]);
@@ -505,6 +518,7 @@ fn no_handler_dispatch_overhead() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn real_extension_dispatch_latency() {
+    let _guard = perf_test_guard();
     let manifest_path = project_root().join("tests/ext_conformance/VALIDATED_MANIFEST.json");
     let Ok(data) = std::fs::read_to_string(&manifest_path) else {
         eprintln!("  Skipping: VALIDATED_MANIFEST.json not found");

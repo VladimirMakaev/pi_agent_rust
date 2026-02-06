@@ -25,7 +25,10 @@ use std::sync::{Arc, OnceLock};
 fn test_runtime_handle() -> asupersync::runtime::RuntimeHandle {
     static RT: OnceLock<asupersync::runtime::Runtime> = OnceLock::new();
     RT.get_or_init(|| {
-        asupersync::runtime::RuntimeBuilder::current_thread()
+        // These tests run in parallel by default. Use a multi-thread runtime so
+        // async tasks aren't starved under suite load.
+        asupersync::runtime::RuntimeBuilder::multi_thread()
+            .blocking_threads(1, 8)
             .build()
             .expect("build asupersync runtime")
     })

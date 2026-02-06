@@ -184,7 +184,7 @@ Accessor defaults:
 - `thinking_budgets.low`: default `2048`
 - `thinking_budgets.medium`: default `8192`
 - `thinking_budgets.high`: default `16384`
-- `thinking_budgets.xhigh`: default `u32::MAX` (effectively “no cap”)
+- `thinking_budgets.xhigh`: default `32768`
 
 ### Packages and resources
 
