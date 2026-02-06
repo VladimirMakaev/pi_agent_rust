@@ -1126,11 +1126,16 @@ impl Tool for ReadTool {
             },
         );
 
+        // Clamp end_line to avoid huge allocations if the range is much larger than what we'll display.
+        // We add 1 to the limit so that if there are more lines, truncate_head detects it.
+        let display_limit = DEFAULT_MAX_LINES.saturating_add(1);
+        let clamped_end_line = end_line.min(start_line.saturating_add(display_limit));
+
         // Format lines with line numbers (cat -n style)
         // Format: "     N→content" where N is right-aligned
         let max_line_num = end_line;
         let line_num_width = max_line_num.to_string().len().max(5);
-        let selected_content: String = all_lines[start_line..end_line]
+        let selected_content: String = all_lines[start_line..clamped_end_line]
             .iter()
             .enumerate()
             .map(|(i, line)| {
@@ -1955,11 +1960,17 @@ impl Tool for EditTool {
             ));
         }
 
-        // Read bytes and decode lossily as UTF-8 (Node Buffer.toString("utf-8") behavior).
+        // Read bytes and decode strictly as UTF-8 to avoid corrupting binary files.
         let raw = asupersync::fs::read(&absolute_path)
             .await
             .map_err(|e| Error::tool("edit", format!("Failed to read file: {e}")))?;
-        let raw_content = String::from_utf8_lossy(&raw).to_string();
+        let raw_content = String::from_utf8(raw).map_err(|_| {
+            Error::tool(
+                "edit",
+                "File contains invalid UTF-8 characters and cannot be safely edited as text."
+                    .to_string(),
+            )
+        })?;
 
         // Strip BOM before matching (LLM won't include invisible BOM in oldText).
         let (content_no_bom, had_bom) = strip_bom(&raw_content);
@@ -2349,6 +2360,8 @@ impl Tool for GrepTool {
             "--line-number".to_string(),
             "--color=never".to_string(),
             "--hidden".to_string(),
+            // Prevent massive JSON lines from minified files causing OOM
+            "--max-columns=10000".to_string(),
         ];
 
         if input.ignore_case.unwrap_or(false) {
