@@ -1631,6 +1631,40 @@ mod message_queue_tests {
         let second = queue.push_follow_up(user_message("b"));
         assert!(second > first);
     }
+
+    #[test]
+    fn message_queue_seq_saturates_at_u64_max() {
+        let mut queue = MessageQueue::new(QueueMode::OneAtATime, QueueMode::OneAtATime);
+        queue.next_seq = u64::MAX;
+
+        let first = queue.push_steering(user_message("a"));
+        let second = queue.push_follow_up(user_message("b"));
+
+        assert_eq!(first, u64::MAX);
+        assert_eq!(second, u64::MAX);
+        assert_eq!(queue.pending_count(), 2);
+    }
+
+    #[test]
+    fn message_queue_follow_up_all_mode_drains_entire_queue_in_order() {
+        let mut queue = MessageQueue::new(QueueMode::OneAtATime, QueueMode::All);
+        queue.push_follow_up(user_message("f1"));
+        queue.push_follow_up(user_message("f2"));
+
+        let follow_up = queue.pop_follow_up();
+        assert_eq!(follow_up.len(), 2);
+        assert!(matches!(
+            follow_up.first(),
+            Some(Message::User(UserMessage { content, .. }))
+                if matches!(content, UserContent::Text(text) if text == "f1")
+        ));
+        assert!(matches!(
+            follow_up.get(1),
+            Some(Message::User(UserMessage { content, .. }))
+                if matches!(content, UserContent::Text(text) if text == "f2")
+        ));
+        assert!(queue.pop_follow_up().is_empty());
+    }
 }
 
 #[cfg(test)]
@@ -2807,6 +2841,38 @@ mod abort_tests {
         }
     }
 
+    #[derive(Debug)]
+    struct CountingProvider {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait]
+    #[allow(clippy::unnecessary_literal_bound)]
+    impl Provider for CountingProvider {
+        fn name(&self) -> &str {
+            "test-provider"
+        }
+
+        fn api(&self) -> &str {
+            "test-api"
+        }
+
+        fn model_id(&self) -> &str {
+            "test-model"
+        }
+
+        async fn stream(
+            &self,
+            _context: &Context,
+            _options: &StreamOptions,
+        ) -> crate::error::Result<
+            Pin<Box<dyn Stream<Item = crate::error::Result<StreamEvent>> + Send>>,
+        > {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::pin(futures::stream::empty()))
+        }
+    }
+
     #[test]
     fn abort_interrupts_in_flight_stream() {
         let runtime = RuntimeBuilder::current_thread()
@@ -2851,18 +2917,49 @@ mod abort_tests {
             assert_eq!(message.error_message.as_deref(), Some("Aborted"));
         });
     }
+
+    #[test]
+    fn abort_before_run_skips_provider_stream_call() {
+        let runtime = RuntimeBuilder::current_thread()
+            .build()
+            .expect("runtime build");
+
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let provider = Arc::new(CountingProvider {
+            calls: Arc::clone(&calls),
+        });
+        let tools = ToolRegistry::new(&[], Path::new("."), None);
+        let agent = Agent::new(provider, tools, AgentConfig::default());
+        let session = Arc::new(Mutex::new(Session::in_memory()));
+        let mut agent_session =
+            AgentSession::new(agent, session, false, ResolvedCompactionSettings::default());
+
+        let (abort_handle, abort_signal) = AbortHandle::new();
+        abort_handle.abort();
+
+        runtime.block_on(async move {
+            let message = agent_session
+                .run_text_with_abort("hello".to_string(), Some(abort_signal), |_| {})
+                .await
+                .expect("run_text_with_abort");
+            assert_eq!(message.stop_reason, StopReason::Aborted);
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+        });
+    }
 }
 
 #[cfg(test)]
 mod turn_event_tests {
     use super::*;
     use crate::session::Session;
-    use crate::tools::ToolRegistry;
+    use crate::tools::{Tool, ToolOutput, ToolRegistry, ToolUpdate};
     use asupersync::runtime::RuntimeBuilder;
     use async_trait::async_trait;
     use futures::Stream;
+    use serde_json::json;
     use std::path::Path;
     use std::pin::Pin;
+    use std::sync::atomic::AtomicUsize;
     // Note: Mutex from super::* is asupersync::sync::Mutex (for Session)
     // Use std::sync::Mutex directly for synchronous event capture
 
@@ -2913,6 +3010,123 @@ mod turn_event_tests {
                 }),
             ];
             Ok(Box::pin(futures::stream::iter(events)))
+        }
+    }
+
+    #[derive(Debug)]
+    struct EchoTool;
+
+    #[async_trait]
+    #[allow(clippy::unnecessary_literal_bound)]
+    impl Tool for EchoTool {
+        fn name(&self) -> &str {
+            "echo_tool"
+        }
+
+        fn label(&self) -> &str {
+            "echo_tool"
+        }
+
+        fn description(&self) -> &str {
+            "echo test tool"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            json!({ "type": "object" })
+        }
+
+        async fn execute(
+            &self,
+            _tool_call_id: &str,
+            _input: serde_json::Value,
+            _on_update: Option<Box<dyn Fn(ToolUpdate) + Send + Sync>>,
+        ) -> Result<ToolOutput> {
+            Ok(ToolOutput {
+                content: vec![ContentBlock::Text(TextContent::new("tool-ok"))],
+                details: None,
+                is_error: false,
+            })
+        }
+    }
+
+    #[derive(Debug)]
+    struct ToolTurnProvider {
+        calls: AtomicUsize,
+    }
+
+    impl ToolTurnProvider {
+        const fn new() -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn assistant_message_with(
+            &self,
+            stop_reason: StopReason,
+            content: Vec<ContentBlock>,
+        ) -> AssistantMessage {
+            AssistantMessage {
+                content,
+                api: self.api().to_string(),
+                provider: self.name().to_string(),
+                model: self.model_id().to_string(),
+                usage: Usage::default(),
+                stop_reason,
+                error_message: None,
+                timestamp: 0,
+            }
+        }
+    }
+
+    #[async_trait]
+    #[allow(clippy::unnecessary_literal_bound)]
+    impl Provider for ToolTurnProvider {
+        fn name(&self) -> &str {
+            "test-provider"
+        }
+
+        fn api(&self) -> &str {
+            "test-api"
+        }
+
+        fn model_id(&self) -> &str {
+            "test-model"
+        }
+
+        async fn stream(
+            &self,
+            _context: &Context,
+            _options: &StreamOptions,
+        ) -> crate::error::Result<
+            Pin<Box<dyn Stream<Item = crate::error::Result<StreamEvent>> + Send>>,
+        > {
+            let call_index = self.calls.fetch_add(1, Ordering::SeqCst);
+            let partial = self.assistant_message_with(StopReason::Stop, Vec::new());
+            let done = if call_index == 0 {
+                self.assistant_message_with(
+                    StopReason::ToolUse,
+                    vec![ContentBlock::ToolCall(ToolCall {
+                        id: "tool-1".to_string(),
+                        name: "echo_tool".to_string(),
+                        arguments: json!({}),
+                        thought_signature: None,
+                    })],
+                )
+            } else {
+                self.assistant_message_with(
+                    StopReason::Stop,
+                    vec![ContentBlock::Text(TextContent::new("final"))],
+                )
+            };
+
+            Ok(Box::pin(futures::stream::iter(vec![
+                Ok(StreamEvent::Start { partial }),
+                Ok(StreamEvent::Done {
+                    reason: done.stop_reason,
+                    message: done,
+                }),
+            ])))
         }
     }
 
@@ -3001,6 +3215,96 @@ mod turn_event_tests {
             drop(events);
             assert!(message_is_assistant);
             assert!(tool_results_empty);
+        });
+    }
+
+    #[test]
+    fn turn_events_include_tool_execution_and_tool_result_messages() {
+        let runtime = RuntimeBuilder::current_thread()
+            .build()
+            .expect("runtime build");
+        let handle = runtime.handle();
+
+        let provider = Arc::new(ToolTurnProvider::new());
+        let tools = ToolRegistry::from_tools(vec![Box::new(EchoTool)]);
+        let agent = Agent::new(provider, tools, AgentConfig::default());
+        let session = Arc::new(Mutex::new(Session::in_memory()));
+        let mut agent_session =
+            AgentSession::new(agent, session, false, ResolvedCompactionSettings::default());
+
+        let events: Arc<std::sync::Mutex<Vec<AgentEvent>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events_capture = Arc::clone(&events);
+
+        let join = handle.spawn(async move {
+            agent_session
+                .run_text("hello".to_string(), move |event| {
+                    events_capture.lock().expect("events lock").push(event);
+                })
+                .await
+                .expect("run_text")
+        });
+
+        runtime.block_on(async move {
+            let message = join.await;
+            assert_eq!(message.stop_reason, StopReason::Stop);
+
+            let events = events.lock().expect("events lock");
+            let turn_start_count = events
+                .iter()
+                .filter(|event| matches!(event, AgentEvent::TurnStart { .. }))
+                .count();
+            let turn_end_count = events
+                .iter()
+                .filter(|event| matches!(event, AgentEvent::TurnEnd { .. }))
+                .count();
+            assert_eq!(
+                turn_start_count, 2,
+                "expected one tool turn and one final turn"
+            );
+            assert_eq!(
+                turn_end_count, 2,
+                "expected one tool turn and one final turn"
+            );
+
+            let tool_start_idx = events
+                .iter()
+                .position(|event| matches!(event, AgentEvent::ToolExecutionStart { .. }))
+                .expect("tool execution start event");
+            let tool_end_idx = events
+                .iter()
+                .position(|event| matches!(event, AgentEvent::ToolExecutionEnd { .. }))
+                .expect("tool execution end event");
+            assert!(tool_start_idx < tool_end_idx);
+
+            let first_turn_end_idx = events
+                .iter()
+                .position(|event| matches!(event, AgentEvent::TurnEnd { turn_index: 0, .. }))
+                .expect("first turn end");
+            assert!(
+                tool_end_idx < first_turn_end_idx,
+                "tool execution should complete before first turn end"
+            );
+
+            let first_turn_tool_results = events.iter().find_map(|event| match event {
+                AgentEvent::TurnEnd {
+                    turn_index,
+                    tool_results,
+                    ..
+                } if *turn_index == 0 => Some(tool_results),
+                _ => None,
+            });
+
+            let Some(first_turn_tool_results) = first_turn_tool_results else {
+                panic!("missing first turn tool results");
+            };
+            assert_eq!(first_turn_tool_results.len(), 1);
+            assert!(matches!(
+                first_turn_tool_results.first(),
+                Some(Message::ToolResult(ToolResultMessage { tool_name, is_error, .. }))
+                    if tool_name == "echo_tool" && !*is_error
+            ));
+            drop(events);
         });
     }
 }

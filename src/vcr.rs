@@ -741,8 +741,14 @@ fn is_sensitive_key(key: &str) -> bool {
 mod tests {
     use super::*;
     use std::future::Future;
+    use std::sync::{Mutex, OnceLock};
 
     type ByteStream = BoxStream<'static, std::result::Result<Vec<u8>, std::io::Error>>;
+
+    fn env_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn cassette_round_trip() {
@@ -911,6 +917,190 @@ mod tests {
 
         assert_eq!(playback.body_chunks.len(), 1);
         assert!(playback.body_chunks[0].contains("event: message"));
+    }
+
+    #[test]
+    fn vcr_mode_from_env_values_and_invalid() {
+        let _lock = env_test_lock().lock().expect("env test lock");
+        let previous = set_test_env_var(VCR_ENV_MODE, None);
+        assert_eq!(VcrMode::from_env().expect("unset mode"), None);
+        restore_test_env_var(VCR_ENV_MODE, previous);
+
+        for (raw, expected) in [
+            ("record", VcrMode::Record),
+            ("PLAYBACK", VcrMode::Playback),
+            ("Auto", VcrMode::Auto),
+        ] {
+            let previous = set_test_env_var(VCR_ENV_MODE, Some(raw));
+            assert_eq!(VcrMode::from_env().expect("valid mode"), Some(expected));
+            restore_test_env_var(VCR_ENV_MODE, previous);
+        }
+
+        let previous = set_test_env_var(VCR_ENV_MODE, Some("invalid-mode"));
+        let err = VcrMode::from_env().expect_err("invalid mode should fail");
+        assert!(
+            err.to_string()
+                .contains("Invalid VCR_MODE value: invalid-mode"),
+            "unexpected error: {err}"
+        );
+        restore_test_env_var(VCR_ENV_MODE, previous);
+    }
+
+    #[test]
+    fn auto_mode_records_missing_cassette_then_replays_existing() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let cassette_dir = temp_dir.path().to_path_buf();
+        let cassette_path = cassette_dir.join("auto_mode_cycle.json");
+
+        let request = RecordedRequest {
+            method: "POST".to_string(),
+            url: "https://example.com/auto".to_string(),
+            headers: vec![("content-type".to_string(), "application/json".to_string())],
+            body: Some(serde_json::json!({"prompt": "first"})),
+            body_text: None,
+        };
+
+        let first = run_async({
+            let request = request.clone();
+            let cassette_dir = cassette_dir.clone();
+            async move {
+                let recorder =
+                    VcrRecorder::new_with("auto_mode_cycle", VcrMode::Auto, cassette_dir);
+                recorder
+                    .request_streaming_with(request, || async {
+                        let recorded = RecordedResponse {
+                            status: 201,
+                            headers: vec![("x-source".to_string(), "record".to_string())],
+                            body_chunks: vec!["chunk-one".to_string()],
+                            body_chunks_base64: None,
+                        };
+                        Ok((
+                            recorded.status,
+                            recorded.headers.clone(),
+                            recorded.into_byte_stream(),
+                        ))
+                    })
+                    .await
+                    .expect("auto record")
+            }
+        });
+
+        assert_eq!(first.status, 201);
+        assert!(
+            cassette_path.exists(),
+            "cassette should be written in auto mode"
+        );
+
+        let replay = run_async({
+            let request = request.clone();
+            let cassette_dir = cassette_dir.clone();
+            async move {
+                let recorder =
+                    VcrRecorder::new_with("auto_mode_cycle", VcrMode::Auto, cassette_dir);
+                recorder
+                    .request_streaming_with::<_, _, ByteStream>(request, || async {
+                        Err(Error::config(
+                            "send callback should not run during auto playback",
+                        ))
+                    })
+                    .await
+                    .expect("auto playback")
+            }
+        });
+
+        assert_eq!(replay.status, 201);
+        assert_eq!(replay.body_chunks, vec!["chunk-one".to_string()]);
+    }
+
+    #[test]
+    fn playback_mismatch_returns_strict_error_with_debug_hashes() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let cassette_dir = temp_dir.path().to_path_buf();
+
+        let recorded_request = RecordedRequest {
+            method: "POST".to_string(),
+            url: "https://example.com/strict".to_string(),
+            headers: vec![("content-type".to_string(), "application/json".to_string())],
+            body: Some(serde_json::json!({"prompt": "expected"})),
+            body_text: Some("expected-body".to_string()),
+        };
+
+        run_async({
+            let recorded_request = recorded_request.clone();
+            let cassette_dir = cassette_dir.clone();
+            async move {
+                let recorder =
+                    VcrRecorder::new_with("strict_mismatch", VcrMode::Record, cassette_dir);
+                recorder
+                    .request_streaming_with(recorded_request, || async {
+                        let recorded = RecordedResponse {
+                            status: 200,
+                            headers: vec![("content-type".to_string(), "text/plain".to_string())],
+                            body_chunks: vec!["ok".to_string()],
+                            body_chunks_base64: None,
+                        };
+                        Ok((
+                            recorded.status,
+                            recorded.headers.clone(),
+                            recorded.into_byte_stream(),
+                        ))
+                    })
+                    .await
+                    .expect("record strict cassette")
+            }
+        });
+
+        let mismatched_request = RecordedRequest {
+            method: "POST".to_string(),
+            url: "https://example.com/strict".to_string(),
+            headers: vec![],
+            body: Some(serde_json::json!({"prompt": "different"})),
+            body_text: Some("different-body".to_string()),
+        };
+
+        let err = run_async({
+            let cassette_dir = cassette_dir.clone();
+            async move {
+                let recorder =
+                    VcrRecorder::new_with("strict_mismatch", VcrMode::Playback, cassette_dir);
+                recorder
+                    .request_streaming_with::<_, _, ByteStream>(mismatched_request, || async {
+                        Err(Error::config(
+                            "send callback should not execute during playback mismatch",
+                        ))
+                    })
+                    .await
+                    .expect_err("mismatch should fail in playback mode")
+            }
+        });
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("No matching interaction found in cassette"),
+            "unexpected error message: {msg}"
+        );
+        assert!(msg.contains("Incoming: POST https://example.com/strict"));
+        assert!(msg.contains("body_sha256="));
+        assert!(msg.contains("body_text_sha256="));
+        assert!(msg.contains("Match criteria: method + url + body + body_text"));
+    }
+
+    #[test]
+    fn test_env_override_helpers_set_and_restore_values() {
+        let _lock = env_test_lock().lock().expect("env test lock");
+        const TEST_VAR: &str = "PI_AGENT_VCR_TEST_ENV_OVERRIDE";
+
+        let original = set_test_env_var(TEST_VAR, None);
+        assert_eq!(env_var(TEST_VAR), None);
+
+        let previous = set_test_env_var(TEST_VAR, Some("override-value"));
+        assert_eq!(previous, None);
+        assert_eq!(env_var(TEST_VAR).as_deref(), Some("override-value"));
+
+        restore_test_env_var(TEST_VAR, previous);
+        assert_eq!(env_var(TEST_VAR), None);
+
+        restore_test_env_var(TEST_VAR, original);
     }
 
     fn run_async<T>(future: impl Future<Output = T> + Send + 'static) -> T
