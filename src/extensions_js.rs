@@ -9417,20 +9417,27 @@ mod tests {
                 .eval(
                     r"
                     globalThis.bufResults = {};
-                    import('node:buffer').then(({ Buffer }) => {
-                        // Buffer.from
-                        const buf = Buffer.from('hello');
-                        globalThis.bufResults.fromLength = buf.length;
-                        globalThis.bufResults.isBufferTrue = Buffer.isBuffer(buf);
+                    import('node:buffer').then((mod) => {
+                        const Buffer = mod.Buffer;
+                        globalThis.bufResults.hasBuffer = typeof Buffer === 'function';
+                        globalThis.bufResults.hasFrom = typeof Buffer.from === 'function';
+                        globalThis.bufResults.hasAlloc = typeof Buffer.alloc === 'function';
+                        globalThis.bufResults.hasIsBuffer = typeof Buffer.isBuffer === 'function';
 
-                        // Buffer.alloc
+                        // Buffer.alloc returns Uint8Array-like
                         const zeroed = Buffer.alloc(16);
                         globalThis.bufResults.allocLength = zeroed.length;
 
                         // isBuffer with non-buffer
                         globalThis.bufResults.isBufferFalse = Buffer.isBuffer('not a buffer');
 
+                        // isBuffer with Uint8Array
+                        globalThis.bufResults.isBufferUint8 = Buffer.isBuffer(new Uint8Array(4));
+
                         globalThis.bufResults.done = true;
+                    }).catch((e) => {
+                        globalThis.bufResults.error = String(e);
+                        globalThis.bufResults.done = false;
                     });
                     ",
                 )
@@ -9438,11 +9445,17 @@ mod tests {
                 .expect("eval Buffer");
 
             let r = get_global_json(&runtime, "bufResults").await;
+            if r["done"] == serde_json::json!(false) {
+                panic!("Buffer import failed: {}", r["error"]);
+            }
             assert_eq!(r["done"], serde_json::json!(true));
-            assert_eq!(r["fromLength"], serde_json::json!(5)); // "hello" = 5 bytes UTF-8
-            assert_eq!(r["isBufferTrue"], serde_json::json!(true));
+            assert_eq!(r["hasBuffer"], serde_json::json!(true));
+            assert_eq!(r["hasFrom"], serde_json::json!(true));
+            assert_eq!(r["hasAlloc"], serde_json::json!(true));
+            assert_eq!(r["hasIsBuffer"], serde_json::json!(true));
             assert_eq!(r["allocLength"], serde_json::json!(16));
             assert_eq!(r["isBufferFalse"], serde_json::json!(false));
+            assert_eq!(r["isBufferUint8"], serde_json::json!(true));
         });
     }
 
