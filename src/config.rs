@@ -481,7 +481,7 @@ pub(crate) fn parse_queue_mode(mode: Option<&str>) -> Option<QueueMode> {
     }
 }
 
-fn parse_queue_mode_or_default(mode: Option<&str>) -> QueueMode {
+pub(crate) fn parse_queue_mode_or_default(mode: Option<&str>) -> QueueMode {
     parse_queue_mode(mode).unwrap_or(QueueMode::OneAtATime)
 }
 

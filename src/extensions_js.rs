@@ -2685,7 +2685,45 @@ export function type() {
 export function release() {
   return "6.0.0";
 }
-export default { homedir, tmpdir, hostname, platform, arch, type, release };
+export function cpus() {
+  return [{ model: "PiJS Virtual CPU", speed: 2400, times: { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 } }];
+}
+export function totalmem() {
+  return 8 * 1024 * 1024 * 1024;
+}
+export function freemem() {
+  return 4 * 1024 * 1024 * 1024;
+}
+export function uptime() {
+  return Math.floor(Date.now() / 1000);
+}
+export function loadavg() {
+  return [0.0, 0.0, 0.0];
+}
+export function networkInterfaces() {
+  return {};
+}
+export function userInfo(_options) {
+  const home = homedir();
+  return {
+    uid: 1000,
+    gid: 1000,
+    username: "pi",
+    homedir: home,
+    shell: "/bin/sh",
+  };
+}
+export function endianness() {
+  return "LE";
+}
+export const EOL = "\n";
+export const devNull = "/dev/null";
+export const constants = {
+  signals: {},
+  errno: {},
+  priority: { PRIORITY_LOW: 19, PRIORITY_BELOW_NORMAL: 10, PRIORITY_NORMAL: 0, PRIORITY_ABOVE_NORMAL: -7, PRIORITY_HIGH: -14, PRIORITY_HIGHEST: -20 },
+};
+export default { homedir, tmpdir, hostname, platform, arch, type, release, cpus, totalmem, freemem, uptime, loadavg, networkInterfaces, userInfo, endianness, EOL, devNull, constants };
 "#
         .trim()
         .to_string(),
@@ -11136,7 +11174,7 @@ mod tests {
             let r = get_global_json(&runtime, "spawnSyncResult").await;
             assert_eq!(r["done"], serde_json::json!(true));
             assert_eq!(r["stdout"], serde_json::json!("spawn-test"));
-            assert_eq!(r["status"], serde_json::json!(0));
+            assert_eq!(r["status"].as_f64(), Some(0.0));
             assert_eq!(r["hasOutput"], serde_json::json!(true));
             assert_eq!(r["noError"], serde_json::json!(true));
         });
@@ -11167,7 +11205,7 @@ mod tests {
 
             let r = get_global_json(&runtime, "spawnSyncFail").await;
             assert_eq!(r["done"], serde_json::json!(true));
-            assert_eq!(r["status"], serde_json::json!(7));
+            assert_eq!(r["status"].as_f64(), Some(7.0));
             assert_eq!(r["signal"], serde_json::json!(null));
         });
     }
@@ -11366,6 +11404,91 @@ mod tests {
                 stdout == "/tmp" || stdout.ends_with("/tmp"),
                 "expected /tmp, got: {stdout}"
             );
+        });
+    }
+
+    // ── node:os expanded API tests ─────────────────────────────────────
+
+    #[test]
+    fn pijs_os_expanded_apis() {
+        futures::executor::block_on(async {
+            let clock = Arc::new(DeterministicClock::new(0));
+            let runtime = PiJsRuntime::with_clock(Arc::clone(&clock))
+                .await
+                .expect("create runtime");
+
+            runtime
+                .eval(
+                    r"
+                    globalThis.osEx = {};
+                    import('node:os').then((os) => {
+                        const cpuArr = os.cpus();
+                        globalThis.osEx.cpusIsArray = Array.isArray(cpuArr);
+                        globalThis.osEx.cpusLen = cpuArr.length;
+                        globalThis.osEx.cpuHasModel = typeof cpuArr[0].model === 'string';
+                        globalThis.osEx.cpuHasSpeed = typeof cpuArr[0].speed === 'number';
+                        globalThis.osEx.cpuHasTimes = typeof cpuArr[0].times === 'object';
+
+                        globalThis.osEx.totalmem = os.totalmem();
+                        globalThis.osEx.totalMemPositive = os.totalmem() > 0;
+                        globalThis.osEx.freeMemPositive = os.freemem() > 0;
+                        globalThis.osEx.freeMemLessTotal = os.freemem() <= os.totalmem();
+
+                        globalThis.osEx.uptimePositive = os.uptime() > 0;
+
+                        const la = os.loadavg();
+                        globalThis.osEx.loadavgIsArray = Array.isArray(la);
+                        globalThis.osEx.loadavgLen = la.length;
+
+                        globalThis.osEx.networkInterfacesIsObj = typeof os.networkInterfaces() === 'object';
+
+                        const ui = os.userInfo();
+                        globalThis.osEx.userInfoHasUid = typeof ui.uid === 'number';
+                        globalThis.osEx.userInfoHasUsername = typeof ui.username === 'string';
+                        globalThis.osEx.userInfoHasHomedir = typeof ui.homedir === 'string';
+                        globalThis.osEx.userInfoHasShell = typeof ui.shell === 'string';
+
+                        globalThis.osEx.endianness = os.endianness();
+                        globalThis.osEx.eol = os.EOL;
+                        globalThis.osEx.devNull = os.devNull;
+                        globalThis.osEx.hasConstants = typeof os.constants === 'object';
+
+                        globalThis.osEx.done = true;
+                    });
+                    ",
+                )
+                .await
+                .expect("eval node:os expanded");
+
+            let r = get_global_json(&runtime, "osEx").await;
+            assert_eq!(r["done"], serde_json::json!(true));
+            // cpus()
+            assert_eq!(r["cpusIsArray"], serde_json::json!(true));
+            assert!(r["cpusLen"].as_f64().unwrap_or(0.0) >= 1.0);
+            assert_eq!(r["cpuHasModel"], serde_json::json!(true));
+            assert_eq!(r["cpuHasSpeed"], serde_json::json!(true));
+            assert_eq!(r["cpuHasTimes"], serde_json::json!(true));
+            // totalmem/freemem
+            assert_eq!(r["totalMemPositive"], serde_json::json!(true));
+            assert_eq!(r["freeMemPositive"], serde_json::json!(true));
+            assert_eq!(r["freeMemLessTotal"], serde_json::json!(true));
+            // uptime
+            assert_eq!(r["uptimePositive"], serde_json::json!(true));
+            // loadavg
+            assert_eq!(r["loadavgIsArray"], serde_json::json!(true));
+            assert_eq!(r["loadavgLen"].as_f64(), Some(3.0));
+            // networkInterfaces
+            assert_eq!(r["networkInterfacesIsObj"], serde_json::json!(true));
+            // userInfo
+            assert_eq!(r["userInfoHasUid"], serde_json::json!(true));
+            assert_eq!(r["userInfoHasUsername"], serde_json::json!(true));
+            assert_eq!(r["userInfoHasHomedir"], serde_json::json!(true));
+            assert_eq!(r["userInfoHasShell"], serde_json::json!(true));
+            // endianness / EOL / devNull / constants
+            assert_eq!(r["endianness"], serde_json::json!("LE"));
+            assert_eq!(r["eol"], serde_json::json!("\n"));
+            assert_eq!(r["devNull"], serde_json::json!("/dev/null"));
+            assert_eq!(r["hasConstants"], serde_json::json!(true));
         });
     }
 }

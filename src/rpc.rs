@@ -2827,18 +2827,7 @@ fn resolve_model_key(auth: &AuthStorage, entry: &ModelEntry) -> Option<String> {
 }
 
 fn parse_thinking_level(level: &str) -> Result<crate::model::ThinkingLevel> {
-    let normalized = level.trim().to_lowercase();
-    match normalized.as_str() {
-        "off" | "none" | "0" => Ok(crate::model::ThinkingLevel::Off),
-        "minimal" | "min" => Ok(crate::model::ThinkingLevel::Minimal),
-        "low" | "1" => Ok(crate::model::ThinkingLevel::Low),
-        "medium" | "med" | "2" => Ok(crate::model::ThinkingLevel::Medium),
-        "high" | "3" => Ok(crate::model::ThinkingLevel::High),
-        "xhigh" | "4" => Ok(crate::model::ThinkingLevel::XHigh),
-        _ => Err(Error::validation(format!(
-            "Invalid thinking level: {level}"
-        ))),
-    }
+    level.parse().map_err(|err: String| Error::validation(err))
 }
 
 fn current_model_entry<'a>(

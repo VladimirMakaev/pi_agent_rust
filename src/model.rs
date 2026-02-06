@@ -370,13 +370,13 @@ impl std::str::FromStr for ThinkingLevel {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "off" => Ok(Self::Off),
-            "minimal" => Ok(Self::Minimal),
-            "low" => Ok(Self::Low),
-            "medium" => Ok(Self::Medium),
-            "high" => Ok(Self::High),
-            "xhigh" => Ok(Self::XHigh),
+        match s.trim().to_lowercase().as_str() {
+            "off" | "none" | "0" => Ok(Self::Off),
+            "minimal" | "min" => Ok(Self::Minimal),
+            "low" | "1" => Ok(Self::Low),
+            "medium" | "med" | "2" => Ok(Self::Medium),
+            "high" | "3" => Ok(Self::High),
+            "xhigh" | "4" => Ok(Self::XHigh),
             _ => Err(format!("Invalid thinking level: {s}")),
         }
     }

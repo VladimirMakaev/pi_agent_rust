@@ -1836,12 +1836,7 @@ fn format_command_output(output: &std::process::Output) -> String {
     }
 }
 
-fn parse_queue_mode(mode: Option<&str>) -> QueueMode {
-    match mode.map(str::trim) {
-        Some("all") => QueueMode::All,
-        _ => QueueMode::OneAtATime,
-    }
-}
+use crate::config::parse_queue_mode_or_default;
 
 fn parse_extension_command(input: &str) -> Option<(String, Vec<String>)> {
     let input = input.trim();
@@ -5253,8 +5248,8 @@ impl PiApp {
         let model_entry_shared = Arc::new(StdMutex::new(model_entry.clone()));
         let extension_streaming = Arc::new(AtomicBool::new(false));
         let extension_compacting = Arc::new(AtomicBool::new(false));
-        let steering_mode = parse_queue_mode(config.steering_mode.as_deref());
-        let follow_up_mode = parse_queue_mode(config.follow_up_mode.as_deref());
+        let steering_mode = parse_queue_mode_or_default(config.steering_mode.as_deref());
+        let follow_up_mode = parse_queue_mode_or_default(config.follow_up_mode.as_deref());
         let message_queue = Arc::new(StdMutex::new(InteractiveMessageQueue::new(
             steering_mode,
             follow_up_mode,
@@ -11038,14 +11033,20 @@ mod tests {
 
     #[test]
     fn parse_queue_mode_all() {
-        assert!(matches!(parse_queue_mode(Some("all")), QueueMode::All));
+        assert!(matches!(
+            parse_queue_mode_or_default(Some("all")),
+            QueueMode::All
+        ));
     }
 
     #[test]
     fn parse_queue_mode_default() {
-        assert!(matches!(parse_queue_mode(None), QueueMode::OneAtATime));
         assert!(matches!(
-            parse_queue_mode(Some("anything")),
+            parse_queue_mode_or_default(None),
+            QueueMode::OneAtATime
+        ));
+        assert!(matches!(
+            parse_queue_mode_or_default(Some("anything")),
             QueueMode::OneAtATime
         ));
     }
