@@ -2483,6 +2483,36 @@
       }
     },
     {
+      "id": "diff",
+      "entry_path": "diff/diff.ts",
+      "source_tier": "official-pi-mono",
+      "capabilities": {
+        "registers_tools": false,
+        "registers_commands": true,
+        "registers_flags": false,
+        "registers_providers": false,
+        "subscribes_events": [],
+        "uses_exec": true,
+        "uses_http": false,
+        "uses_ui": false,
+        "uses_session": false,
+        "is_multi_file": false,
+        "has_npm_deps": false
+      },
+      "conformance_tier": 2,
+      "mock_requirements": [
+        "exec"
+      ],
+      "registrations": {
+        "tools": [],
+        "commands": [
+          "diff"
+        ],
+        "flags": [],
+        "event_handlers": []
+      }
+    },
+    {
       "id": "dirty-repo-guard",
       "entry_path": "dirty-repo-guard/dirty-repo-guard.ts",
       "source_tier": "official-pi-mono",
@@ -2638,6 +2668,36 @@
         "event_handlers": [
           "session_start"
         ]
+      }
+    },
+    {
+      "id": "files",
+      "entry_path": "files/files.ts",
+      "source_tier": "official-pi-mono",
+      "capabilities": {
+        "registers_tools": false,
+        "registers_commands": true,
+        "registers_flags": false,
+        "registers_providers": false,
+        "subscribes_events": [],
+        "uses_exec": true,
+        "uses_http": false,
+        "uses_ui": false,
+        "uses_session": false,
+        "is_multi_file": false,
+        "has_npm_deps": false
+      },
+      "conformance_tier": 2,
+      "mock_requirements": [
+        "exec"
+      ],
+      "registrations": {
+        "tools": [],
+        "commands": [
+          "files"
+        ],
+        "flags": [],
+        "event_handlers": []
       }
     },
     {
@@ -2947,6 +3007,41 @@
         "flags": [],
         "event_handlers": [
           "model_select"
+        ]
+      }
+    },
+    {
+      "id": "negative-denied-caps",
+      "entry_path": "negative-denied-caps/negative-denied-caps.ts",
+      "source_tier": "official-pi-mono",
+      "capabilities": {
+        "registers_tools": true,
+        "registers_commands": false,
+        "registers_flags": false,
+        "registers_providers": false,
+        "subscribes_events": [
+          "session:start"
+        ],
+        "uses_exec": true,
+        "uses_http": false,
+        "uses_ui": false,
+        "uses_session": false,
+        "is_multi_file": false,
+        "has_npm_deps": false
+      },
+      "conformance_tier": 2,
+      "mock_requirements": [
+        "exec"
+      ],
+      "registrations": {
+        "tools": [
+          "try-exec",
+          "try-session"
+        ],
+        "commands": [],
+        "flags": [],
+        "event_handlers": [
+          "session:start"
         ]
       }
     },
@@ -5573,6 +5668,42 @@
       }
     },
     {
+      "id": "prompt-url-widget",
+      "entry_path": "prompt-url-widget/prompt-url-widget.ts",
+      "source_tier": "official-pi-mono",
+      "capabilities": {
+        "registers_tools": false,
+        "registers_commands": false,
+        "registers_flags": false,
+        "registers_providers": false,
+        "subscribes_events": [
+          "before_agent_start",
+          "session_start",
+          "session_switch"
+        ],
+        "uses_exec": true,
+        "uses_http": false,
+        "uses_ui": false,
+        "uses_session": false,
+        "is_multi_file": false,
+        "has_npm_deps": false
+      },
+      "conformance_tier": 2,
+      "mock_requirements": [
+        "exec"
+      ],
+      "registrations": {
+        "tools": [],
+        "commands": [],
+        "flags": [],
+        "event_handlers": [
+          "before_agent_start",
+          "session_start",
+          "session_switch"
+        ]
+      }
+    },
+    {
       "id": "protected-paths",
       "entry_path": "protected-paths/protected-paths.ts",
       "source_tier": "official-pi-mono",
@@ -5714,6 +5845,34 @@
         "event_handlers": [
           "session_start"
         ]
+      }
+    },
+    {
+      "id": "redraws",
+      "entry_path": "redraws/redraws.ts",
+      "source_tier": "official-pi-mono",
+      "capabilities": {
+        "registers_tools": false,
+        "registers_commands": true,
+        "registers_flags": false,
+        "registers_providers": false,
+        "subscribes_events": [],
+        "uses_exec": false,
+        "uses_http": false,
+        "uses_ui": false,
+        "uses_session": false,
+        "is_multi_file": false,
+        "has_npm_deps": false
+      },
+      "conformance_tier": 1,
+      "mock_requirements": [],
+      "registrations": {
+        "tools": [],
+        "commands": [
+          "tui"
+        ],
+        "flags": [],
+        "event_handlers": []
       }
     },
     {
@@ -7472,98 +7631,6 @@
           "parse_duration"
         ],
         "commands": [],
-        "flags": [],
-        "event_handlers": []
-      }
-    },
-    {
-      "id": "diff",
-      "entry_path": "diff/diff.ts",
-      "source_tier": "built-in-pi-mono",
-      "capabilities": {
-        "registers_tools": false,
-        "registers_commands": true,
-        "registers_flags": false,
-        "registers_providers": false,
-        "subscribes_events": [],
-        "uses_exec": true,
-        "uses_http": false,
-        "uses_ui": true,
-        "uses_session": false,
-        "file_count": 1
-      },
-      "registrations": {
-        "tools": [],
-        "commands": ["diff"],
-        "flags": [],
-        "event_handlers": []
-      }
-    },
-    {
-      "id": "files",
-      "entry_path": "files/files.ts",
-      "source_tier": "built-in-pi-mono",
-      "capabilities": {
-        "registers_tools": false,
-        "registers_commands": true,
-        "registers_flags": false,
-        "registers_providers": false,
-        "subscribes_events": [],
-        "uses_exec": false,
-        "uses_http": false,
-        "uses_ui": true,
-        "uses_session": true,
-        "file_count": 1
-      },
-      "registrations": {
-        "tools": [],
-        "commands": ["files"],
-        "flags": [],
-        "event_handlers": []
-      }
-    },
-    {
-      "id": "prompt-url-widget",
-      "entry_path": "prompt-url-widget/prompt-url-widget.ts",
-      "source_tier": "built-in-pi-mono",
-      "capabilities": {
-        "registers_tools": false,
-        "registers_commands": false,
-        "registers_flags": false,
-        "registers_providers": false,
-        "subscribes_events": ["before_agent_start", "session_switch", "session_start"],
-        "uses_exec": true,
-        "uses_http": false,
-        "uses_ui": true,
-        "uses_session": true,
-        "file_count": 1
-      },
-      "registrations": {
-        "tools": [],
-        "commands": [],
-        "flags": [],
-        "event_handlers": ["before_agent_start", "session_switch", "session_start"]
-      }
-    },
-    {
-      "id": "redraws",
-      "entry_path": "redraws/redraws.ts",
-      "source_tier": "built-in-pi-mono",
-      "capabilities": {
-        "registers_tools": false,
-        "registers_commands": true,
-        "registers_flags": false,
-        "registers_providers": false,
-        "subscribes_events": [],
-        "uses_exec": false,
-        "uses_http": false,
-        "uses_ui": true,
-        "uses_session": false,
-        "file_count": 1
-      },
-      "registrations": {
-        "tools": [],
-        "commands": ["tui"],
         "flags": [],
         "event_handlers": []
       }

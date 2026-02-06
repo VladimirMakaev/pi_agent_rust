@@ -3,13 +3,13 @@
   "generated": "2026-02-05",
   "description": "Static scan of extension corpus entry points (bd-2u2s)",
   "summary": {
-    "total_files": 1193,
-    "entry_points": 305,
+    "total_files": 1198,
+    "entry_points": 310,
     "sub_modules": 765,
     "non_extensions": 117,
     "unknown": 6,
     "by_confidence": {
-      "high": 1092,
+      "high": 1097,
       "low": 14,
       "medium": 87
     },
@@ -35,8 +35,8 @@
         "sub_modules": 264
       },
       "official-pi-mono": {
-        "total_files": 67,
-        "entry_points": 60,
+        "total_files": 72,
+        "entry_points": 65,
         "sub_modules": 6
       },
       "third-party-github": {
@@ -1793,6 +1793,19 @@
       ]
     },
     {
+      "path": "diff/diff.ts",
+      "classification": "entry_point",
+      "confidence": "high",
+      "patterns_found": [
+        "export_default_function",
+        "ExtensionAPI_import",
+        "ExtensionAPI_type",
+        "registerCommand",
+        "exec_api",
+        "ui_api"
+      ]
+    },
+    {
       "path": "dirty-repo-guard/dirty-repo-guard.ts",
       "classification": "entry_point",
       "confidence": "high",
@@ -1883,6 +1896,19 @@
         "ExtensionAPI_import",
         "ExtensionAPI_type",
         "event_hook",
+        "ui_api"
+      ]
+    },
+    {
+      "path": "files/files.ts",
+      "classification": "entry_point",
+      "confidence": "high",
+      "patterns_found": [
+        "export_default_function",
+        "ExtensionAPI_import",
+        "ExtensionAPI_type",
+        "registerCommand",
+        "exec_api",
         "ui_api"
       ]
     },
@@ -2004,6 +2030,18 @@
         "ExtensionAPI_type",
         "event_hook",
         "ui_api"
+      ]
+    },
+    {
+      "path": "negative-denied-caps/negative-denied-caps.ts",
+      "classification": "entry_point",
+      "confidence": "high",
+      "patterns_found": [
+        "export_default_function",
+        "ExtensionAPI_type",
+        "registerTool",
+        "event_hook",
+        "exec_api"
       ]
     },
     {
@@ -5949,6 +5987,19 @@
       ]
     },
     {
+      "path": "prompt-url-widget/prompt-url-widget.ts",
+      "classification": "entry_point",
+      "confidence": "high",
+      "patterns_found": [
+        "export_default_function",
+        "ExtensionAPI_import",
+        "ExtensionAPI_type",
+        "event_hook",
+        "exec_api",
+        "ui_api"
+      ]
+    },
+    {
       "path": "protected-paths/protected-paths.ts",
       "classification": "entry_point",
       "confidence": "high",
@@ -6005,6 +6056,18 @@
         "ExtensionAPI_import",
         "ExtensionAPI_type",
         "event_hook",
+        "ui_api"
+      ]
+    },
+    {
+      "path": "redraws/redraws.ts",
+      "classification": "entry_point",
+      "confidence": "high",
+      "patterns_found": [
+        "export_default_function",
+        "ExtensionAPI_import",
+        "ExtensionAPI_type",
+        "registerCommand",
         "ui_api"
       ]
     },
