@@ -77,8 +77,7 @@ async fn send_recv(
 
 /// Create a minimal Agent (provider won't be called for session ops).
 fn dummy_agent() -> Agent {
-    let provider: Arc<dyn Provider> =
-        Arc::new(OpenAIProvider::new("gpt-4o-mini".to_string()));
+    let provider: Arc<dyn Provider> = Arc::new(OpenAIProvider::new("gpt-4o-mini".to_string()));
     let tools = ToolRegistry::new(&[], &std::env::current_dir().unwrap(), None);
     Agent::new(provider, tools, AgentConfig::default())
 }
@@ -116,7 +115,8 @@ fn setup_rpc(
     let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
     let out_rx = Arc::new(Mutex::new(out_rx));
 
-    let server = runtime_handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
+    let server =
+        runtime_handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
 
     (in_tx, out_rx, server)
 }
@@ -168,7 +168,13 @@ fn rpc_get_state_fresh_session() {
     runtime.block_on(async move {
         let (in_tx, out_rx, server) = setup_rpc(Session::in_memory(), &handle);
 
-        let resp = send_recv(&in_tx, &out_rx, r#"{"id":"1","type":"get_state"}"#, "get_state").await;
+        let resp = send_recv(
+            &in_tx,
+            &out_rx,
+            r#"{"id":"1","type":"get_state"}"#,
+            "get_state",
+        )
+        .await;
 
         assert_eq!(resp["type"], "response");
         assert_eq!(resp["command"], "get_state");
@@ -191,7 +197,10 @@ fn rpc_get_state_fresh_session() {
         }
 
         logger.info_ctx("rpc", "get_state verified", |ctx| {
-            ctx.push(("keys".into(), format!("{:?}", data.keys().collect::<Vec<_>>())));
+            ctx.push((
+                "keys".into(),
+                format!("{:?}", data.keys().collect::<Vec<_>>()),
+            ));
         });
 
         // In-memory session has null sessionFile.
@@ -215,7 +224,13 @@ fn rpc_get_state_with_prepopulated_session() {
     runtime.block_on(async move {
         let (in_tx, out_rx, server) = setup_rpc(prepopulated_session(), &handle);
 
-        let resp = send_recv(&in_tx, &out_rx, r#"{"id":"1","type":"get_state"}"#, "get_state").await;
+        let resp = send_recv(
+            &in_tx,
+            &out_rx,
+            r#"{"id":"1","type":"get_state"}"#,
+            "get_state",
+        )
+        .await;
 
         assert_eq!(resp["success"], true);
         // Prepopulated session has 2 messages.
@@ -289,7 +304,10 @@ fn rpc_set_session_name_missing_name_returns_error() {
         )
         .await;
         assert_eq!(resp["success"], false);
-        assert!(resp["error"].as_str().is_some(), "should have error message");
+        assert!(
+            resp["error"].as_str().is_some(),
+            "should have error message"
+        );
 
         drop(in_tx);
         let _ = server.await;
@@ -606,7 +624,9 @@ fn rpc_get_session_stats_with_tool_calls() {
         });
         session.append_message(SessionMessage::Assistant {
             message: AssistantMessage {
-                content: vec![ContentBlock::Text(TextContent::new("Here are the contents."))],
+                content: vec![ContentBlock::Text(TextContent::new(
+                    "Here are the contents.",
+                ))],
                 api: "test".to_string(),
                 provider: "openai".to_string(),
                 model: "gpt-4o-mini".to_string(),
@@ -941,13 +961,7 @@ fn rpc_response_echoes_request_id() {
         // Various IDs.
         for (idx, test_id) in ["abc-123", "42", "request-uuid-test"].iter().enumerate() {
             let cmd = format!(r#"{{"id":"{test_id}","type":"get_state"}}"#);
-            let resp = send_recv(
-                &in_tx,
-                &out_rx,
-                &cmd,
-                &format!("id echo {idx}"),
-            )
-            .await;
+            let resp = send_recv(&in_tx, &out_rx, &cmd, &format!("id echo {idx}")).await;
             assert_eq!(
                 resp["id"].as_str().unwrap_or_default(),
                 *test_id,
