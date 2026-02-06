@@ -901,7 +901,7 @@ mod tests {
             .expect("runtime build");
 
         runtime.block_on(async move {
-            let events = vec![
+            let events = [
                 serde_json::json!({
                     "type": "response.output_text.delta",
                     "item_id": "msg_1",
