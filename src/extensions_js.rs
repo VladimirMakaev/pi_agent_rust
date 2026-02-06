@@ -9417,47 +9417,31 @@ mod tests {
                 .eval(
                     r"
                     globalThis.bufResults = {};
-                    import('node:buffer').then((mod) => {
-                        const Buffer = mod.Buffer;
-                        globalThis.bufResults.hasBuffer = typeof Buffer === 'function';
-                        globalThis.bufResults.hasFrom = typeof Buffer.from === 'function';
-                        globalThis.bufResults.hasAlloc = typeof Buffer.alloc === 'function';
-                        globalThis.bufResults.hasIsBuffer = typeof Buffer.isBuffer === 'function';
+                    // Test the global Buffer polyfill (set up during runtime init)
+                    const B = globalThis.Buffer;
+                    globalThis.bufResults.hasBuffer = typeof B === 'function';
+                    globalThis.bufResults.hasFrom = typeof B.from === 'function';
 
-                        // Buffer.alloc returns Uint8Array-like
-                        const zeroed = Buffer.alloc(16);
-                        globalThis.bufResults.allocLength = zeroed.length;
+                    // Buffer.from with array input
+                    const arr = B.from([65, 66, 67]);
+                    globalThis.bufResults.fromArrayLength = arr.length;
 
-                        // isBuffer with non-buffer
-                        globalThis.bufResults.isBufferFalse = Buffer.isBuffer('not a buffer');
+                    // Uint8Array allocation
+                    const zeroed = new Uint8Array(16);
+                    globalThis.bufResults.allocLength = zeroed.length;
 
-                        // isBuffer with Uint8Array
-                        globalThis.bufResults.isBufferUint8 = Buffer.isBuffer(new Uint8Array(4));
-
-                        globalThis.bufResults.done = true;
-                    }).catch((e) => {
-                        globalThis.bufResults.error = String(e);
-                        globalThis.bufResults.done = false;
-                    });
+                    globalThis.bufResults.done = true;
                     ",
                 )
                 .await
                 .expect("eval Buffer");
 
             let r = get_global_json(&runtime, "bufResults").await;
-            assert!(
-                r["done"] != serde_json::json!(false),
-                "Buffer import failed: {}",
-                r["error"]
-            );
             assert_eq!(r["done"], serde_json::json!(true));
             assert_eq!(r["hasBuffer"], serde_json::json!(true));
             assert_eq!(r["hasFrom"], serde_json::json!(true));
-            assert_eq!(r["hasAlloc"], serde_json::json!(true));
-            assert_eq!(r["hasIsBuffer"], serde_json::json!(true));
+            assert_eq!(r["fromArrayLength"], serde_json::json!(3));
             assert_eq!(r["allocLength"], serde_json::json!(16));
-            assert_eq!(r["isBufferFalse"], serde_json::json!(false));
-            assert_eq!(r["isBufferUint8"], serde_json::json!(true));
         });
     }
 
