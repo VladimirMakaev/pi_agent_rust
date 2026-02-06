@@ -8686,6 +8686,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn hostcall_request_params_for_hash_uses_canonical_shapes() {
         let cases = vec![
             (
@@ -10743,9 +10744,8 @@ mod tests {
             let r = get_global_json(&runtime, "nativeOsResults").await;
             assert_eq!(r["done"], serde_json::json!(true));
             // cpus() returns array with count matching available parallelism
-            let expected_cpus = std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(1);
+            let expected_cpus =
+                std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
             assert_eq!(r["cpuCount"], serde_json::json!(expected_cpus));
             // totalmem/freemem are positive numbers
             assert!(r["totalmem"].as_f64().unwrap() > 0.0);
