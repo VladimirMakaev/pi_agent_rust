@@ -189,7 +189,7 @@ CLI (clap) → Agent Loop → Provider (Anthropic/OpenAI/Gemini) → Streaming R
 | `src/model.rs` | Message/content types |
 | `src/session.rs` | JSONL session persistence |
 | `src/sse.rs` | SSE parser for streaming |
-| `src/tui.rs` | Terminal UI (WIP) |
+| `src/tui.rs` | Terminal UI rendering helpers |
 | `src/config.rs` | Configuration loading |
 | `src/error.rs` | Error types |
 

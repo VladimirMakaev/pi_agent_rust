@@ -1849,11 +1849,13 @@
       "id": "npm/@verioussmith/pi-openrouter",
       "name": "@verioussmith/pi-openrouter",
       "source_tier": "npm-registry",
-      "status": "unvendored",
+      "status": "vendored",
       "license": "MIT",
-      "retrieved": null,
-      "artifact_path": null,
-      "checksum": null,
+      "retrieved": "2026-02-06",
+      "artifact_path": "tests/ext_conformance/artifacts/npm/verioussmith-pi-openrouter",
+      "checksum": {
+        "sha256": "dbd494309924671aac76618d2f396d3dcc600cf945ade558c87329fd3f16d5d0"
+      },
       "source": {
         "type": "npm",
         "package": "@verioussmith/pi-openrouter",
@@ -1869,17 +1871,19 @@
         "npm_downloads_monthly": 462
       },
       "aliases": [],
-      "notes": "Discovered via bd-kcj6 npm sweep; not yet vendored into artifacts."
+      "notes": null
     },
     {
       "id": "npm/agentsbox",
       "name": "agentsbox",
       "source_tier": "npm-registry",
-      "status": "unvendored",
+      "status": "vendored",
       "license": "MIT",
-      "retrieved": null,
-      "artifact_path": null,
-      "checksum": null,
+      "retrieved": "2026-02-06",
+      "artifact_path": "tests/ext_conformance/artifacts/npm/agentsbox",
+      "checksum": {
+        "sha256": "0fd5918316d002826548eb56b431348913b1e81b584b2b7aa0567a3894bdc6a3"
+      },
       "source": {
         "type": "npm",
         "package": "agentsbox",
@@ -1895,7 +1899,7 @@
         "npm_downloads_monthly": 805
       },
       "aliases": [],
-      "notes": "Discovered via bd-kcj6 npm sweep; not yet vendored into artifacts."
+      "notes": null
     },
     {
       "id": "npm/aliou-pi-extension-dev",
@@ -2377,11 +2381,13 @@
       "id": "npm/mitsupi",
       "name": "mitsupi",
       "source_tier": "npm-registry",
-      "status": "unvendored",
+      "status": "vendored",
       "license": "UNKNOWN",
-      "retrieved": null,
-      "artifact_path": null,
-      "checksum": null,
+      "retrieved": "2026-02-06",
+      "artifact_path": "tests/ext_conformance/artifacts/npm/mitsupi",
+      "checksum": {
+        "sha256": "0e0b9d225c5c793b16701061e4f249634efa7b6b921fd0b36b4abd3cc28cf39a"
+      },
       "source": {
         "type": "npm",
         "package": "mitsupi",
@@ -2397,7 +2403,7 @@
         "npm_downloads_monthly": 825
       },
       "aliases": [],
-      "notes": "Discovered via bd-kcj6 npm sweep; not yet vendored into artifacts."
+      "notes": null
     },
     {
       "id": "npm/ogulcancelik-pi-sketch",
@@ -2479,7 +2485,7 @@
         "npm_downloads_monthly": 228
       },
       "aliases": [],
-      "notes": "Discovered via bd-kcj6 npm sweep; not yet vendored into artifacts."
+      "notes": "Inspected 2026-02-06: package is an ACP adapter CLI with no ExtensionAPI default-export entrypoint in published dist; kept unvendored."
     },
     {
       "id": "npm/pi-agentic-compaction",
@@ -2681,11 +2687,13 @@
       "id": "npm/pi-extensions",
       "name": "pi-extensions",
       "source_tier": "npm-registry",
-      "status": "unvendored",
+      "status": "vendored",
       "license": "MIT",
-      "retrieved": null,
-      "artifact_path": null,
-      "checksum": null,
+      "retrieved": "2026-02-06",
+      "artifact_path": "tests/ext_conformance/artifacts/npm/pi-extensions",
+      "checksum": {
+        "sha256": "86342d57362ab5958ed7ac65cc46870248ef2521a6da8fa953fe0a1be69463d0"
+      },
       "source": {
         "type": "npm",
         "package": "pi-extensions",
@@ -2701,7 +2709,7 @@
         "npm_downloads_monthly": 1213
       },
       "aliases": [],
-      "notes": "Discovered via bd-kcj6 npm sweep; not yet vendored into artifacts."
+      "notes": null
     },
     {
       "id": "npm/pi-ghostty-theme-sync",
@@ -2735,11 +2743,13 @@
       "id": "npm/pi-interactive-shell",
       "name": "pi-interactive-shell",
       "source_tier": "npm-registry",
-      "status": "unvendored",
+      "status": "vendored",
       "license": "MIT",
-      "retrieved": null,
-      "artifact_path": null,
-      "checksum": null,
+      "retrieved": "2026-02-06",
+      "artifact_path": "tests/ext_conformance/artifacts/npm/pi-interactive-shell",
+      "checksum": {
+        "sha256": "7351b6bfd5ddde3d538a863dc8a1ea585a180fa1a33ad73dfd3024a865d5167b"
+      },
       "source": {
         "type": "npm",
         "package": "pi-interactive-shell",
@@ -2757,17 +2767,19 @@
       "aliases": [
         "community/nicobailon-interactive-shell"
       ],
-      "notes": "Discovered via bd-kcj6 npm sweep; not yet vendored into artifacts."
+      "notes": null
     },
     {
       "id": "npm/pi-mcp-adapter",
       "name": "pi-mcp-adapter",
       "source_tier": "npm-registry",
-      "status": "unvendored",
+      "status": "vendored",
       "license": "MIT",
-      "retrieved": null,
-      "artifact_path": null,
-      "checksum": null,
+      "retrieved": "2026-02-06",
+      "artifact_path": "tests/ext_conformance/artifacts/npm/pi-mcp-adapter",
+      "checksum": {
+        "sha256": "4eede11bd4ba2f5c43f66e66ca22bc403f7574c9d3d9adaa5bc3742226de213e"
+      },
       "source": {
         "type": "npm",
         "package": "pi-mcp-adapter",
@@ -2785,7 +2797,7 @@
       "aliases": [
         "community/nicobailon-mcp-adapter"
       ],
-      "notes": "Discovered via bd-kcj6 npm sweep; not yet vendored into artifacts."
+      "notes": null
     },
     {
       "id": "npm/pi-md-export",
@@ -2987,11 +2999,13 @@
       "id": "npm/pi-package-test",
       "name": "pi-package-test",
       "source_tier": "npm-registry",
-      "status": "unvendored",
+      "status": "vendored",
       "license": "MIT",
-      "retrieved": null,
-      "artifact_path": null,
-      "checksum": null,
+      "retrieved": "2026-02-06",
+      "artifact_path": "tests/ext_conformance/artifacts/npm/pi-package-test",
+      "checksum": {
+        "sha256": "be3fd08aa91a2842377a8cd1496d13a385b9497f7f82db955e3bbffe1c18ceca"
+      },
       "source": {
         "type": "npm",
         "package": "pi-package-test",
@@ -3007,7 +3021,7 @@
         "npm_downloads_monthly": 682
       },
       "aliases": [],
-      "notes": "Discovered via bd-kcj6 npm sweep; not yet vendored into artifacts."
+      "notes": null
     },
     {
       "id": "npm/pi-poly-notify",
@@ -3041,11 +3055,13 @@
       "id": "npm/pi-powerline-footer",
       "name": "pi-powerline-footer",
       "source_tier": "npm-registry",
-      "status": "unvendored",
+      "status": "vendored",
       "license": "MIT",
-      "retrieved": null,
-      "artifact_path": null,
-      "checksum": null,
+      "retrieved": "2026-02-06",
+      "artifact_path": "tests/ext_conformance/artifacts/npm/pi-powerline-footer",
+      "checksum": {
+        "sha256": "4b34bd4fa58fec01fbc6232124b2589a71e3d0f7ef215ceb061350e827c5704a"
+      },
       "source": {
         "type": "npm",
         "package": "pi-powerline-footer",
@@ -3063,7 +3079,7 @@
       "aliases": [
         "community/nicobailon-powerline-footer"
       ],
-      "notes": "Discovered via bd-kcj6 npm sweep; not yet vendored into artifacts."
+      "notes": null
     },
     {
       "id": "npm/pi-prompt-template-model",
@@ -3601,11 +3617,13 @@
       "id": "npm/shitty-extensions",
       "name": "shitty-extensions",
       "source_tier": "npm-registry",
-      "status": "unvendored",
+      "status": "vendored",
       "license": "MIT",
-      "retrieved": null,
-      "artifact_path": null,
-      "checksum": null,
+      "retrieved": "2026-02-06",
+      "artifact_path": "tests/ext_conformance/artifacts/npm/shitty-extensions",
+      "checksum": {
+        "sha256": "1e075b778ea9923b2869b7af51d1b575dcb10e20eba193438a16f5e7404b37f9"
+      },
       "source": {
         "type": "npm",
         "package": "shitty-extensions",
@@ -3621,7 +3639,7 @@
         "npm_downloads_monthly": 1094
       },
       "aliases": [],
-      "notes": "Discovered via bd-kcj6 npm sweep; not yet vendored into artifacts."
+      "notes": null
     },
     {
       "id": "npm/token-rate-pi",
