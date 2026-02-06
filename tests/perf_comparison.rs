@@ -650,7 +650,9 @@ fn generate_markdown_report(report: &ComparisonReport) -> String {
     md.push_str("- **Environment**: Linux x86_64, same machine for both runtimes\n\n");
 
     md.push_str("## How to Regenerate\n\n");
-    md.push_str("```bash\ncargo test --test perf_comparison -- generate_perf_comparison\n```\n");
+    md.push_str(
+        "```bash\ncargo test --test perf_comparison generate_perf_comparison -- --ignored\n```\n",
+    );
 
     md
 }
@@ -766,7 +768,12 @@ fn test_comparison_rows_from_empty_data() {
     assert!(rows.is_empty(), "No rows from empty data");
 }
 
+/// Generator-style test that writes tracked artifacts under `tests/perf/reports/`.
+///
+/// This is intentionally `#[ignore]` so `cargo test` is deterministic and does not
+/// rewrite repository files unless explicitly requested.
 #[test]
+#[ignore = "writes tracked perf artifacts under tests/perf/reports; run manually"]
 fn generate_perf_comparison() {
     let root = root_dir();
 
