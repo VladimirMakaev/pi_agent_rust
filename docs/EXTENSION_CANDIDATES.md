@@ -562,11 +562,22 @@ Notes / next pass:
 - 4 entries are already vendored artifacts or official examples (pi_agent_rust artifacts x3 + pi‑mono message‑renderer) and were included for completeness.
 - Current validated count: **51 / 50** target. Next pass should validate remaining candidates from the queued list and add code‑search queries for `registerFlag(`, `registerShortcut(`, `registerMessageRenderer(`, plus `pi.registerTool(` with TS/JS language filters.
 
-### D) npm discovery (distribution layer)
+### D) npm discovery (distribution layer) — Researched 2026‑02‑06 (bd‑kcj6)
 
 Goal: find npm packages that ship Pi extensions or integrate with Pi Agent.
 
-Suggested queries (via npm UI or CLI):
+**Status: RESEARCHED.** High-signal npm packages identified with basic popularity + recency signals.
+
+#### Queries run
+
+The npm registry search endpoint was queried with:
+- `pi agent extension`
+- `pi-agent`
+- `pi-coding-agent`
+- `@oh-my-pi`
+- plus a follow-up pass for specific package names discovered above
+
+Equivalent CLI queries (if `npm` is installed locally):
 
 ```bash
 npm search "pi agent extension" --json | jq '.[0:50] | map({name,version,description})'
@@ -574,7 +585,50 @@ npm search buildwithpi --json | jq '.[0:50] | map({name,version,description})'
 npm search pi-mono --json | jq '.[0:50] | map({name,version,description})'
 ```
 
-For each promising package, record popularity evidence (downloads, dependents) and extract any linked repo/gist.
+Download stats were pulled from `api.npmjs.org` as **last-week** and **last-month** point counts.
+
+#### Curated high-signal set
+
+| Package | Version | Published | License | DL (wk) | DL (mo) | Repo |
+|---|---:|---:|---|---:|---:|---|
+| @mariozechner/pi-coding-agent | 0.52.6 | 2026-02-05 | MIT | 1,366,239 | 2,142,135 | git+https://github.com/badlogic/pi-mono.git |
+| @mariozechner/pi | 0.52.6 | 2026-02-05 | MIT | 2,254 | 7,777 | git+https://github.com/badlogic/pi-mono.git |
+| @mariozechner/pi-agent-core | 0.52.6 | 2026-02-05 | MIT | 1,366,745 | 2,147,688 | git+https://github.com/badlogic/pi-mono.git |
+| @vaclav-synacek/pi-coding-agent-termux | 0.51.1-2 | 2026-02-03 | MIT | 718 | 2,663 | git+https://github.com/VaclavSynacek/pi-coding-agent-termux.git |
+| @oh-my-pi/pi-coding-agent | 11.5.0 | 2026-02-06 | MIT | 4,656 | 17,932 | git+https://github.com/can1357/oh-my-pi.git |
+| @oh-my-pi/pi-agent-core | 11.5.0 | 2026-02-06 | MIT | 4,736 | 16,855 | git+https://github.com/can1357/oh-my-pi.git |
+| pi-interactive-shell | 0.7.1 | 2026-02-03 | MIT | 650 | 2,638 | git+https://github.com/nicobailon/pi-interactive-shell.git |
+| pi-web-access | 0.7.3 | 2026-02-06 | MIT | 761 | 908 | git+https://github.com/nicobailon/pi-web-access.git |
+| pi-mcp-adapter | 2.1.2 | 2026-02-03 | MIT | 754 | 1,638 | git+https://github.com/nicobailon/pi-mcp-adapter.git |
+| pi-powerline-footer | 0.2.22 | 2026-02-01 | MIT | 609 | 2,130 | git+https://github.com/nicobailon/pi-powerline-footer.git |
+| pi-review-loop | 0.4.2 | 2026-02-02 | MIT | 402 | 887 | git+https://github.com/nicobailon/pi-review-loop.git |
+| pi-messenger | 0.10.0 | 2026-02-06 | MIT | 425 | 502 | git+https://github.com/nicobailon/pi-messenger.git |
+| pi-notify | 1.0.3 | 2026-02-03 | MIT | 525 | 629 | git+https://github.com/ferologics/pi-notify.git |
+| @verioussmith/pi-openrouter | 1.1.0 | 2026-01-30 | MIT | 462 | 462 | git+https://github.com/verioussmith/pi-openrouter-extension.git |
+| agentsbox | 0.1.3 | 2026-01-25 | MIT | 34 | 805 | git+https://github.com/assagman/agentsbox.git |
+
+#### Other notable hits (need deeper review)
+
+| Package | Version | Published | License | DL (wk) | DL (mo) | Repo |
+|---|---:|---:|---|---:|---:|---|
+| pi-package-test | 0.1.6 | 2026-01-25 | MIT | 44 | 682 | git+https://github.com/badlogic/pi-package-test.git |
+| shitty-extensions | 1.0.9 | 2026-02-02 | MIT | 318 | 1,094 | git+https://github.com/hjanuschka/shitty-extensions.git |
+| pi-acp | 0.0.14 | 2026-01-14 | MIT | 56 | 228 | git+https://github.com/svkozak/pi-acp.git |
+| pi-subdir-context | 1.0.1 | 2026-01-29 | MIT | 31 | 181 | git+https://github.com/default-anton/pi-subdir-context.git |
+| pi-screenshots-picker | 1.1.9 | 2026-02-04 | MIT | 2,455 | 2,455 | git+https://github.com/Graffioh/pi-screenshots-picker.git |
+| @qualisero/pi-agent-scip | 0.3.0 | 2026-01-10 | Apache-2.0 | 17 | 196 | git+https://github.com/qualisero/pi-agent-scip.git |
+| @imsus/pi-extension-minimax-coding-plan-mcp | 1.0.1 | 2026-01-29 | MIT | 38 | 165 | git+https://github.com/imsus/pi-extension-minimax-coding-plan-mcp.git |
+| mitsupi | 1.1.1 | 2026-01-30 |  | 305 | 825 | git+https://github.com/mitsuhiko/agent-stuff.git |
+| pi-extensions | 0.1.21 | 2026-02-05 | MIT | 426 | 1,213 |  |
+
+#### Shortlist (initial pass)
+
+- **Include (distribution / reference):** `@mariozechner/*` packages (official pi-mono distribution).
+- **Include (community distribution):** `@oh-my-pi/*` (alternate distro; useful for real-world compatibility testing).
+- **High-signal “extension package” candidates:** `pi-web-access`, `pi-mcp-adapter`, `pi-interactive-shell`, `pi-review-loop`, `pi-powerline-footer`, `pi-messenger`, `pi-notify`.
+- **Provider-style extension candidate:** `@verioussmith/pi-openrouter`.
+- **Integration candidate:** `agentsbox` (installs/bridges a Pi extension; referenced earlier in this doc).
+- **Investigate / likely exclude unless repo link is found:** `pi-extensions` (no linked repository/homepage in registry metadata).
 
 ### E) Marketplace ecosystems (OpenClaw / ClawHub) — Researched 2026‑02‑06 (bd‑2m6d)
 
