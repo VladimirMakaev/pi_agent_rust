@@ -22,7 +22,7 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs;
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -30,6 +30,8 @@ use std::process::{Command, Stdio};
 #[cfg(unix)]
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+const DEFAULT_CLI_TIMEOUT_SECS: u64 = 120;
 
 struct CliResult {
     exit_code: i32,
@@ -138,6 +140,17 @@ impl CliTestHarness {
         self.run_with_stdin(args, None)
     }
 
+    fn cli_timeout() -> Duration {
+        std::env::var("PI_E2E_CLI_TIMEOUT_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .map_or_else(
+                || Duration::from_secs(DEFAULT_CLI_TIMEOUT_SECS),
+                Duration::from_secs,
+            )
+    }
+
     fn run_with_stdin(&self, args: &[&str], stdin: Option<&[u8]>) -> CliResult {
         self.harness
             .log()
@@ -167,17 +180,61 @@ impl CliTestHarness {
             command.stdin(Stdio::null());
         }
         let mut child = command.spawn().expect("run pi");
+        let child_pid = child.id();
+
+        let mut child_stdout = child.stdout.take().expect("child stdout piped");
+        let mut child_stderr = child.stderr.take().expect("child stderr piped");
+        let stdout_handle = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = child_stdout.read_to_end(&mut buf);
+            buf
+        });
+        let stderr_handle = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = child_stderr.read_to_end(&mut buf);
+            buf
+        });
+
         if let Some(input) = stdin {
             if let Some(mut child_stdin) = child.stdin.take() {
                 child_stdin.write_all(input).expect("write stdin");
             }
         }
-        let output = child.wait_with_output().expect("run pi");
+        let timeout = Self::cli_timeout();
+        let mut timed_out = false;
+
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => {}
+                Err(err) => panic!("try_wait failed: {err}"),
+            }
+
+            if start.elapsed() > timeout {
+                timed_out = true;
+                break child
+                    .kill()
+                    .ok()
+                    .and_then(|()| child.wait().ok())
+                    .unwrap_or_else(|| panic!("timed out after {timeout:?}; failed to kill/wait"));
+            }
+
+            std::thread::sleep(Duration::from_millis(25));
+        };
+
+        let stdout_bytes = stdout_handle.join().unwrap_or_default();
+        let stderr_bytes = stderr_handle.join().unwrap_or_default();
         let duration = start.elapsed();
 
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        let exit_code = output.status.code().unwrap_or(-1);
+        let stdout = String::from_utf8_lossy(&stdout_bytes).to_string();
+        let mut stderr = String::from_utf8_lossy(&stderr_bytes).to_string();
+        let exit_code = if timed_out {
+            stderr =
+                format!("ERROR: pi CLI timed out after {timeout:?} (pid={child_pid}).\n{stderr}");
+            -1
+        } else {
+            status.code().unwrap_or(-1)
+        };
 
         self.harness
             .log()
@@ -186,6 +243,7 @@ impl CliTestHarness {
                 ctx.push(("duration_ms".to_string(), duration.as_millis().to_string()));
                 ctx.push(("stdout_len".to_string(), stdout.len().to_string()));
                 ctx.push(("stderr_len".to_string(), stderr.len().to_string()));
+                ctx.push(("timed_out".to_string(), timed_out.to_string()));
             });
 
         let seq = self.run_seq.get();

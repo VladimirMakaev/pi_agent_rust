@@ -1,17 +1,23 @@
 #![cfg(feature = "ext-conformance")]
 //! Extension load-time benchmarks (bd-xs79).
 //!
-//! Measures cold-start load time for every extension in the conformance suite.
-//! Each extension is loaded N times (configurable) into a fresh QuickJS runtime,
-//! and P50/P95/P99 statistics are computed per extension and per tier.
+//! Measures extension load time for every extension in the conformance suite.
+//! Each extension is measured in two modes:
+//! - cold start: fresh QuickJS runtime + context (includes context creation)
+//! - warm start: same runtime/context after one warmup load (cached module/loader)
+//!
+//! P50/P95/P99 statistics are computed per extension and aggregated by tier and
+//! by "group" (official-simple / official-complex / community).
 //!
 //! Run:
 //!   cargo test --test ext_load_time_benchmark --features ext-conformance -- --nocapture
 //!
 //! Environment variables:
-//!   PI_LOAD_BENCH_ITERATIONS  - iterations per extension (default: 5)
-//!   PI_LOAD_BENCH_BUDGET_MS   - P99 budget in ms (default: 200 debug, 150 release)
-//!   PI_OFFICIAL_MAX           - limit to first N official extensions
+//!   PI_LOAD_BENCH_ITERATIONS  - iterations per extension (default: 100)
+//!   PI_LOAD_BENCH_WARMUP      - warmup loads before warm-start sampling (default: 1)
+//!   PI_LOAD_BENCH_BUDGET_MS   - P99 budget in ms (default: 100)
+//!   PI_LOAD_BENCH_SCOPE       - "all" (default) or "official"
+//!   PI_LOAD_BENCH_MAX         - limit to first N extensions after filtering
 
 mod common;
 
@@ -33,20 +39,52 @@ fn iterations() -> usize {
     std::env::var("PI_LOAD_BENCH_ITERATIONS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(5)
+        .unwrap_or(100)
+}
+
+fn warmup_iterations() -> usize {
+    std::env::var("PI_LOAD_BENCH_WARMUP")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1)
 }
 
 fn p99_budget_ms() -> u64 {
     std::env::var("PI_LOAD_BENCH_BUDGET_MS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(if cfg!(debug_assertions) { 200 } else { 150 })
+        .unwrap_or(100)
 }
 
-fn max_official() -> Option<usize> {
-    std::env::var("PI_OFFICIAL_MAX")
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BenchScope {
+    All,
+    Official,
+}
+
+fn scope() -> BenchScope {
+    match std::env::var("PI_LOAD_BENCH_SCOPE")
+        .ok()
+        .unwrap_or_else(|| "all".to_string())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "official" => BenchScope::Official,
+        _ => BenchScope::All,
+    }
+}
+
+fn max_extensions() -> Option<usize> {
+    std::env::var("PI_LOAD_BENCH_MAX")
         .ok()
         .and_then(|v| v.parse().ok())
+        // Legacy alias (prior to scope support).
+        .or_else(|| {
+            std::env::var("PI_OFFICIAL_MAX")
+                .ok()
+                .and_then(|v| v.parse().ok())
+        })
 }
 
 // ─── Manifest types (shared with ext_conformance_generated) ─────────────────
@@ -63,6 +101,10 @@ struct Manifest {
 }
 
 impl Manifest {
+    fn all(&self) -> Vec<&ManifestEntry> {
+        self.extensions.iter().collect()
+    }
+
     fn official(&self) -> Vec<&ManifestEntry> {
         self.extensions
             .iter()
@@ -151,30 +193,73 @@ impl LoadStats {
 
 // ─── Per-extension result ───────────────────────────────────────────────────
 
+fn is_official_id(id: &str) -> bool {
+    !id.starts_with("community/")
+        && !id.starts_with("npm/")
+        && !id.starts_with("third-party/")
+        && !id.starts_with("agents-")
+}
+
+fn group_for(entry: &ManifestEntry) -> String {
+    if !is_official_id(&entry.id) {
+        return "community".to_string();
+    }
+
+    if entry.conformance_tier <= 3 {
+        "official-simple".to_string()
+    } else {
+        "official-complex".to_string()
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct LoadPhase {
+    stats: LoadStats,
+    samples_ms: Vec<u64>,
+    failures: usize,
+}
+
+impl LoadPhase {
+    fn from_samples(samples_ms: Vec<u64>, failures: usize) -> Self {
+        let stats = LoadStats::from_samples(&samples_ms);
+        Self {
+            stats,
+            samples_ms,
+            failures,
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 struct ExtLoadResult {
     id: String,
     tier: u32,
+    group: String,
     success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
-    cold_start: LoadStats,
-    samples_ms: Vec<u64>,
+    cold: LoadPhase,
+    warm: LoadPhase,
 }
 
 // ─── Core benchmark runner ──────────────────────────────────────────────────
 
-/// Load an extension `n` times, each in a fresh runtime, measuring cold-start time.
-fn benchmark_extension(entry: &ManifestEntry, n: usize) -> ExtLoadResult {
+/// Benchmark one extension in both cold-start and warm-start modes.
+///
+/// Cold-start samples create a fresh QuickJS runtime+context each iteration.
+/// Warm-start samples reuse a single runtime+context after `warmup` loads.
+fn benchmark_extension(entry: &ManifestEntry, warmup: usize, n: usize) -> ExtLoadResult {
     let entry_file = artifacts_dir().join(&entry.entry_path);
+    let group = group_for(entry);
     if !entry_file.exists() {
         return ExtLoadResult {
             id: entry.id.clone(),
             tier: entry.conformance_tier,
+            group,
             success: false,
             error: Some(format!("Artifact not found: {}", entry_file.display())),
-            cold_start: LoadStats::from_samples(&[]),
-            samples_ms: vec![],
+            cold: LoadPhase::from_samples(vec![], 0),
+            warm: LoadPhase::from_samples(vec![], 0),
         };
     }
 
@@ -184,10 +269,11 @@ fn benchmark_extension(entry: &ManifestEntry, n: usize) -> ExtLoadResult {
             return ExtLoadResult {
                 id: entry.id.clone(),
                 tier: entry.conformance_tier,
+                group,
                 success: false,
                 error: Some(format!("Load spec error: {e}")),
-                cold_start: LoadStats::from_samples(&[]),
-                samples_ms: vec![],
+                cold: LoadPhase::from_samples(vec![], 0),
+                warm: LoadPhase::from_samples(vec![], 0),
             };
         }
     };
@@ -195,28 +281,33 @@ fn benchmark_extension(entry: &ManifestEntry, n: usize) -> ExtLoadResult {
     let cwd = std::env::temp_dir().join(format!("pi-loadbench-{}", entry.id.replace('/', "_")));
     let _ = std::fs::create_dir_all(&cwd);
 
-    let mut samples = Vec::with_capacity(n);
-    let mut last_error = None;
+    let tools = Arc::new(ToolRegistry::new(&[], &cwd, None));
+    let js_config = PiJsRuntimeConfig {
+        cwd: cwd.display().to_string(),
+        ..Default::default()
+    };
+
+    // ── Cold-start ─────────────────────────────────────────────────────────
+
+    let mut cold_samples = Vec::with_capacity(n);
+    let mut cold_failures = 0usize;
+    let mut last_error = None::<String>;
 
     for _ in 0..n {
-        let start = Instant::now();
-
         let manager = ExtensionManager::new();
-        let tools = Arc::new(ToolRegistry::new(&[], &cwd, None));
-        let js_config = PiJsRuntimeConfig {
-            cwd: cwd.display().to_string(),
-            ..Default::default()
-        };
+        let start = Instant::now();
 
         let runtime_result = common::run_async({
             let manager = manager.clone();
             let tools = Arc::clone(&tools);
+            let js_config = js_config.clone();
             async move { JsExtensionRuntimeHandle::start(js_config, tools, manager).await }
         });
         let runtime = match runtime_result {
             Ok(rt) => rt,
             Err(e) => {
                 last_error = Some(format!("Runtime start error: {e}"));
+                cold_failures += 1;
                 continue;
             }
         };
@@ -228,14 +319,16 @@ fn benchmark_extension(entry: &ManifestEntry, n: usize) -> ExtLoadResult {
             async move { manager.load_js_extensions(vec![spec]).await }
         });
 
-        let elapsed_ms = start.elapsed().as_millis() as u64;
-
         match load_result {
-            Ok(()) => samples.push(elapsed_ms),
+            Ok(()) => {
+                let elapsed_ms = start.elapsed().as_millis() as u64;
+                cold_samples.push(elapsed_ms);
+            }
             Err(e) => {
+                cold_failures += 1;
                 last_error = Some(format!("Load error: {e}"));
             }
-        }
+        };
 
         // Shut down to avoid thread leaks.
         common::run_async({
@@ -246,14 +339,82 @@ fn benchmark_extension(entry: &ManifestEntry, n: usize) -> ExtLoadResult {
         });
     }
 
-    let success = !samples.is_empty();
+    // ── Warm-start ─────────────────────────────────────────────────────────
+
+    let mut warm_samples = Vec::with_capacity(n);
+    let mut warm_failures = 0usize;
+
+    // Start one runtime/context, warm it, then sample repeated loads.
+    let warm_manager = ExtensionManager::new();
+    let warm_runtime_result = common::run_async({
+        let manager = warm_manager.clone();
+        let tools = Arc::clone(&tools);
+        let js_config = js_config.clone();
+        async move { JsExtensionRuntimeHandle::start(js_config, tools, manager).await }
+    });
+    match warm_runtime_result {
+        Ok(rt) => warm_manager.set_js_runtime(rt),
+        Err(e) => {
+            last_error = Some(format!("Warm runtime start error: {e}"));
+            warm_failures += n.max(1);
+        }
+    }
+
+    if warm_manager.js_runtime().is_some() {
+        for _ in 0..warmup {
+            let load_result = common::run_async({
+                let manager = warm_manager.clone();
+                let spec = spec.clone();
+                async move { manager.load_js_extensions(vec![spec]).await }
+            });
+            if let Err(e) = load_result {
+                last_error = Some(format!("Warmup load error: {e}"));
+                warm_failures += n.max(1);
+                break;
+            }
+        }
+
+        if warm_failures == 0 {
+            for _ in 0..n {
+                let start = Instant::now();
+                let load_result = common::run_async({
+                    let manager = warm_manager.clone();
+                    let spec = spec.clone();
+                    async move { manager.load_js_extensions(vec![spec]).await }
+                });
+                match load_result {
+                    Ok(()) => {
+                        let elapsed_ms = start.elapsed().as_millis() as u64;
+                        warm_samples.push(elapsed_ms);
+                    }
+                    Err(e) => {
+                        warm_failures += 1;
+                        last_error = Some(format!("Warm load error: {e}"));
+                    }
+                }
+            }
+        }
+
+        common::run_async({
+            let manager = warm_manager.clone();
+            async move {
+                let _ = manager.shutdown(Duration::from_millis(250)).await;
+            }
+        });
+    }
+
+    let success = cold_failures == 0
+        && warm_failures == 0
+        && cold_samples.len() == n
+        && warm_samples.len() == n;
     ExtLoadResult {
         id: entry.id.clone(),
         tier: entry.conformance_tier,
+        group,
         success,
         error: if success { None } else { last_error },
-        cold_start: LoadStats::from_samples(&samples),
-        samples_ms: samples,
+        cold: LoadPhase::from_samples(cold_samples, cold_failures),
+        warm: LoadPhase::from_samples(warm_samples, warm_failures),
     }
 }
 
@@ -263,8 +424,10 @@ fn benchmark_extension(entry: &ManifestEntry, n: usize) -> ExtLoadResult {
 struct TierStats {
     tier: u32,
     count: usize,
-    aggregate: LoadStats,
-    over_budget: Vec<String>,
+    cold: LoadStats,
+    warm: LoadStats,
+    over_budget_cold: Vec<String>,
+    over_budget_warm: Vec<String>,
 }
 
 fn aggregate_by_tier(results: &[ExtLoadResult], budget_ms: u64) -> Vec<TierStats> {
@@ -276,21 +439,89 @@ fn aggregate_by_tier(results: &[ExtLoadResult], budget_ms: u64) -> Vec<TierStats
     by_tier
         .into_iter()
         .map(|(tier, exts)| {
-            let all_samples: Vec<u64> = exts
+            let all_cold_samples: Vec<u64> = exts
                 .iter()
                 .filter(|e| e.success)
-                .flat_map(|e| e.samples_ms.iter().copied())
+                .flat_map(|e| e.cold.samples_ms.iter().copied())
                 .collect();
-            let over_budget: Vec<String> = exts
+            let all_warm_samples: Vec<u64> = exts
                 .iter()
-                .filter(|e| e.success && e.cold_start.p99_ms > budget_ms)
-                .map(|e| format!("{} (P99={}ms)", e.id, e.cold_start.p99_ms))
+                .filter(|e| e.success)
+                .flat_map(|e| e.warm.samples_ms.iter().copied())
+                .collect();
+
+            let over_budget_cold: Vec<String> = exts
+                .iter()
+                .filter(|e| e.success && e.cold.stats.p99_ms > budget_ms)
+                .map(|e| format!("{} (P99={}ms)", e.id, e.cold.stats.p99_ms))
+                .collect();
+            let over_budget_warm: Vec<String> = exts
+                .iter()
+                .filter(|e| e.success && e.warm.stats.p99_ms > budget_ms)
+                .map(|e| format!("{} (P99={}ms)", e.id, e.warm.stats.p99_ms))
                 .collect();
             TierStats {
                 tier,
                 count: exts.len(),
-                aggregate: LoadStats::from_samples(&all_samples),
-                over_budget,
+                cold: LoadStats::from_samples(&all_cold_samples),
+                warm: LoadStats::from_samples(&all_warm_samples),
+                over_budget_cold,
+                over_budget_warm,
+            }
+        })
+        .collect()
+}
+
+// ─── Group aggregation (official-simple / official-complex / community) ─────
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct GroupStats {
+    group: String,
+    count: usize,
+    cold: LoadStats,
+    warm: LoadStats,
+    over_budget_cold: Vec<String>,
+    over_budget_warm: Vec<String>,
+}
+
+fn aggregate_by_group(results: &[ExtLoadResult], budget_ms: u64) -> Vec<GroupStats> {
+    let mut by_group: BTreeMap<String, Vec<&ExtLoadResult>> = BTreeMap::new();
+    for r in results {
+        by_group.entry(r.group.clone()).or_default().push(r);
+    }
+
+    by_group
+        .into_iter()
+        .map(|(group, exts)| {
+            let cold_samples: Vec<u64> = exts
+                .iter()
+                .filter(|e| e.success)
+                .flat_map(|e| e.cold.samples_ms.iter().copied())
+                .collect();
+            let warm_samples: Vec<u64> = exts
+                .iter()
+                .filter(|e| e.success)
+                .flat_map(|e| e.warm.samples_ms.iter().copied())
+                .collect();
+
+            let over_budget_cold: Vec<String> = exts
+                .iter()
+                .filter(|e| e.success && e.cold.stats.p99_ms > budget_ms)
+                .map(|e| format!("{} (P99={}ms)", e.id, e.cold.stats.p99_ms))
+                .collect();
+            let over_budget_warm: Vec<String> = exts
+                .iter()
+                .filter(|e| e.success && e.warm.stats.p99_ms > budget_ms)
+                .map(|e| format!("{} (P99={}ms)", e.id, e.warm.stats.p99_ms))
+                .collect();
+
+            GroupStats {
+                group,
+                count: exts.len(),
+                cold: LoadStats::from_samples(&cold_samples),
+                warm: LoadStats::from_samples(&warm_samples),
+                over_budget_cold,
+                over_budget_warm,
             }
         })
         .collect()
@@ -304,12 +535,17 @@ struct BenchmarkReport {
     config: BenchmarkConfig,
     summary: BenchmarkSummary,
     tiers: Vec<TierStats>,
+    groups: Vec<GroupStats>,
     results: Vec<ExtLoadResult>,
 }
 
 #[derive(Debug, serde::Serialize)]
 struct BenchmarkConfig {
+    scope: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_extensions: Option<usize>,
     iterations: usize,
+    warmup_iterations: usize,
     budget_ms: u64,
     debug_build: bool,
 }
@@ -319,10 +555,15 @@ struct BenchmarkSummary {
     total: usize,
     success: usize,
     failed: usize,
-    over_budget: usize,
-    global_p50_ms: u64,
-    global_p95_ms: u64,
-    global_p99_ms: u64,
+    over_budget_any: usize,
+    over_budget_cold: usize,
+    over_budget_warm: usize,
+    global_cold_p50_ms: u64,
+    global_cold_p95_ms: u64,
+    global_cold_p99_ms: u64,
+    global_warm_p50_ms: u64,
+    global_warm_p95_ms: u64,
+    global_warm_p99_ms: u64,
 }
 
 fn generate_markdown(report: &BenchmarkReport) -> String {
@@ -331,9 +572,15 @@ fn generate_markdown(report: &BenchmarkReport) -> String {
     writeln!(md).unwrap();
     writeln!(
         md,
-        "Generated: {} | Iterations: {} | Budget: {}ms | Build: {}",
+        "Generated: {} | Scope: {}{} | Iterations: {} | Warmup: {} | Budget (P99): {}ms | Build: {}",
         report.generated_at,
+        report.config.scope,
+        report
+            .config
+            .max_extensions
+            .map_or_else(String::new, |max| format!(" (max {max})")),
         report.config.iterations,
+        report.config.warmup_iterations,
         report.config.budget_ms,
         if report.config.debug_build {
             "debug"
@@ -354,70 +601,171 @@ fn generate_markdown(report: &BenchmarkReport) -> String {
     writeln!(md, "| Failed to load | {} |", report.summary.failed).unwrap();
     writeln!(
         md,
-        "| Over budget (P99 > {}ms) | {} |",
-        report.config.budget_ms, report.summary.over_budget
+        "| Over budget (any P99 > {}ms) | {} |",
+        report.config.budget_ms, report.summary.over_budget_any
     )
     .unwrap();
-    writeln!(md, "| Global P50 | {}ms |", report.summary.global_p50_ms).unwrap();
-    writeln!(md, "| Global P95 | {}ms |", report.summary.global_p95_ms).unwrap();
-    writeln!(md, "| Global P99 | {}ms |", report.summary.global_p99_ms).unwrap();
+    writeln!(
+        md,
+        "| Over budget (cold) | {} |",
+        report.summary.over_budget_cold
+    )
+    .unwrap();
+    writeln!(
+        md,
+        "| Over budget (warm) | {} |",
+        report.summary.over_budget_warm
+    )
+    .unwrap();
+    writeln!(
+        md,
+        "| Global cold P50 | {}ms |",
+        report.summary.global_cold_p50_ms
+    )
+    .unwrap();
+    writeln!(
+        md,
+        "| Global cold P95 | {}ms |",
+        report.summary.global_cold_p95_ms
+    )
+    .unwrap();
+    writeln!(
+        md,
+        "| Global cold P99 | {}ms |",
+        report.summary.global_cold_p99_ms
+    )
+    .unwrap();
+    writeln!(
+        md,
+        "| Global warm P50 | {}ms |",
+        report.summary.global_warm_p50_ms
+    )
+    .unwrap();
+    writeln!(
+        md,
+        "| Global warm P95 | {}ms |",
+        report.summary.global_warm_p95_ms
+    )
+    .unwrap();
+    writeln!(
+        md,
+        "| Global warm P99 | {}ms |",
+        report.summary.global_warm_p99_ms
+    )
+    .unwrap();
     writeln!(md).unwrap();
 
     // Per-tier
     writeln!(md, "## Per-Tier Breakdown").unwrap();
     writeln!(md).unwrap();
-    writeln!(md, "| Tier | Count | P50 | P95 | P99 | Over Budget |").unwrap();
-    writeln!(md, "|------|-------|-----|-----|-----|-------------|").unwrap();
+    writeln!(
+        md,
+        "| Tier | Count | Cold P50 | Cold P95 | Cold P99 | Warm P50 | Warm P95 | Warm P99 | Over Cold | Over Warm |"
+    )
+    .unwrap();
+    writeln!(
+        md,
+        "|------|-------|----------|----------|----------|----------|----------|----------|----------|----------|"
+    )
+    .unwrap();
     for t in &report.tiers {
         writeln!(
             md,
-            "| {} | {} | {}ms | {}ms | {}ms | {} |",
+            "| {} | {} | {}ms | {}ms | {}ms | {}ms | {}ms | {}ms | {} | {} |",
             t.tier,
             t.count,
-            t.aggregate.p50_ms,
-            t.aggregate.p95_ms,
-            t.aggregate.p99_ms,
-            t.over_budget.len()
+            t.cold.p50_ms,
+            t.cold.p95_ms,
+            t.cold.p99_ms,
+            t.warm.p50_ms,
+            t.warm.p95_ms,
+            t.warm.p99_ms,
+            t.over_budget_cold.len(),
+            t.over_budget_warm.len()
         )
         .unwrap();
     }
     writeln!(md).unwrap();
 
-    // Per-extension table (sorted by P99 descending for easy triage)
-    writeln!(md, "## Per-Extension Results (sorted by P99 desc)").unwrap();
+    // Per-group
+    writeln!(md, "## Per-Group Breakdown").unwrap();
     writeln!(md).unwrap();
     writeln!(
         md,
-        "| Extension | Tier | P50 | P95 | P99 | Min | Max | Status |"
+        "| Group | Count | Cold P50 | Cold P95 | Cold P99 | Warm P50 | Warm P95 | Warm P99 | Over Cold | Over Warm |"
     )
     .unwrap();
     writeln!(
         md,
-        "|-----------|------|-----|-----|-----|-----|-----|--------|"
+        "|-------|-------|----------|----------|----------|----------|----------|----------|----------|----------|"
+    )
+    .unwrap();
+    for g in &report.groups {
+        writeln!(
+            md,
+            "| {} | {} | {}ms | {}ms | {}ms | {}ms | {}ms | {}ms | {} | {} |",
+            g.group,
+            g.count,
+            g.cold.p50_ms,
+            g.cold.p95_ms,
+            g.cold.p99_ms,
+            g.warm.p50_ms,
+            g.warm.p95_ms,
+            g.warm.p99_ms,
+            g.over_budget_cold.len(),
+            g.over_budget_warm.len()
+        )
+        .unwrap();
+    }
+    writeln!(md).unwrap();
+
+    // Per-extension table (sorted by max(cold P99, warm P99) desc for triage)
+    writeln!(
+        md,
+        "## Per-Extension Results (sorted by max(P99 cold, P99 warm) desc)"
+    )
+    .unwrap();
+    writeln!(md).unwrap();
+    writeln!(
+        md,
+        "| Extension | Group | Tier | Cold P50 | Cold P95 | Cold P99 | Warm P50 | Warm P95 | Warm P99 | Status |"
+    )
+    .unwrap();
+    writeln!(
+        md,
+        "|-----------|-------|------|----------|----------|----------|----------|----------|----------|--------|"
     )
     .unwrap();
 
     let mut sorted_results: Vec<&ExtLoadResult> = report.results.iter().collect();
-    sorted_results.sort_by(|a, b| b.cold_start.p99_ms.cmp(&a.cold_start.p99_ms));
+    sorted_results.sort_by(|a, b| {
+        let a_p99 = a.cold.stats.p99_ms.max(a.warm.stats.p99_ms);
+        let b_p99 = b.cold.stats.p99_ms.max(b.warm.stats.p99_ms);
+        b_p99.cmp(&a_p99)
+    });
 
     for r in sorted_results {
         let status = if !r.success {
             "FAIL"
-        } else if r.cold_start.p99_ms > report.config.budget_ms {
+        } else if r.cold.stats.p99_ms > report.config.budget_ms
+            || r.warm.stats.p99_ms > report.config.budget_ms
+        {
             "OVER"
         } else {
             "OK"
         };
         writeln!(
             md,
-            "| {} | {} | {}ms | {}ms | {}ms | {}ms | {}ms | {} |",
+            "| {} | {} | {} | {}ms | {}ms | {}ms | {}ms | {}ms | {}ms | {} |",
             r.id,
+            r.group,
             r.tier,
-            r.cold_start.p50_ms,
-            r.cold_start.p95_ms,
-            r.cold_start.p99_ms,
-            r.cold_start.min_ms,
-            r.cold_start.max_ms,
+            r.cold.stats.p50_ms,
+            r.cold.stats.p95_ms,
+            r.cold.stats.p99_ms,
+            r.warm.stats.p50_ms,
+            r.warm.stats.p95_ms,
+            r.warm.stats.p99_ms,
             status
         )
         .unwrap();
@@ -432,19 +780,24 @@ fn generate_markdown(report: &BenchmarkReport) -> String {
 fn load_time_benchmark() {
     let manifest = load_manifest();
     let n = iterations();
+    let warmup = warmup_iterations();
     let budget_ms = p99_budget_ms();
-    let max = max_official();
+    let max = max_extensions();
+    let scope = scope();
 
-    // Select official extensions (tiers 1-5).
-    let mut entries: Vec<&ManifestEntry> = manifest.official();
+    let mut entries: Vec<&ManifestEntry> = match scope {
+        BenchScope::Official => manifest.official(),
+        BenchScope::All => manifest.all(),
+    };
     if let Some(limit) = max {
         entries.truncate(limit);
-    }
+    };
 
     eprintln!(
-        "[load-bench] extensions={} iterations={} budget={}ms debug={}",
+        "[load-bench] scope={scope:?} extensions={} iterations={} warmup={} budget={}ms debug={}",
         entries.len(),
         n,
+        warmup,
         budget_ms,
         cfg!(debug_assertions)
     );
@@ -452,11 +805,14 @@ fn load_time_benchmark() {
     let mut results = Vec::with_capacity(entries.len());
     for (i, entry) in entries.iter().enumerate() {
         eprint!("  [{}/{}] {} ... ", i + 1, entries.len(), entry.id);
-        let result = benchmark_extension(entry, n);
+        let result = benchmark_extension(entry, warmup, n);
         if result.success {
             eprintln!(
-                "P50={}ms P99={}ms",
-                result.cold_start.p50_ms, result.cold_start.p99_ms
+                "cold P50={}ms P99={}ms | warm P50={}ms P99={}ms",
+                result.cold.stats.p50_ms,
+                result.cold.stats.p99_ms,
+                result.warm.stats.p50_ms,
+                result.warm.stats.p99_ms
             );
         } else {
             eprintln!("FAILED: {}", result.error.as_deref().unwrap_or("unknown"));
@@ -465,25 +821,50 @@ fn load_time_benchmark() {
     }
 
     // Compute statistics.
-    let all_samples: Vec<u64> = results
+    let all_cold_samples: Vec<u64> = results
         .iter()
         .filter(|r| r.success)
-        .flat_map(|r| r.samples_ms.iter().copied())
+        .flat_map(|r| r.cold.samples_ms.iter().copied())
         .collect();
-    let global_stats = LoadStats::from_samples(&all_samples);
+    let all_warm_samples: Vec<u64> = results
+        .iter()
+        .filter(|r| r.success)
+        .flat_map(|r| r.warm.samples_ms.iter().copied())
+        .collect();
+
+    let global_cold_stats = LoadStats::from_samples(&all_cold_samples);
+    let global_warm_stats = LoadStats::from_samples(&all_warm_samples);
+
     let tiers = aggregate_by_tier(&results, budget_ms);
+    let groups = aggregate_by_group(&results, budget_ms);
 
     let success_count = results.iter().filter(|r| r.success).count();
     let failed_count = results.iter().filter(|r| !r.success).count();
-    let over_budget_count = results
+    let over_budget_cold_count = results
         .iter()
-        .filter(|r| r.success && r.cold_start.p99_ms > budget_ms)
+        .filter(|r| r.success && r.cold.stats.p99_ms > budget_ms)
+        .count();
+    let over_budget_warm_count = results
+        .iter()
+        .filter(|r| r.success && r.warm.stats.p99_ms > budget_ms)
+        .count();
+    let over_budget_any_count = results
+        .iter()
+        .filter(|r| {
+            r.success && (r.cold.stats.p99_ms > budget_ms || r.warm.stats.p99_ms > budget_ms)
+        })
         .count();
 
     let report = BenchmarkReport {
         generated_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         config: BenchmarkConfig {
+            scope: match scope {
+                BenchScope::Official => "official".to_string(),
+                BenchScope::All => "all".to_string(),
+            },
+            max_extensions: max,
             iterations: n,
+            warmup_iterations: warmup,
             budget_ms,
             debug_build: cfg!(debug_assertions),
         },
@@ -491,12 +872,18 @@ fn load_time_benchmark() {
             total: results.len(),
             success: success_count,
             failed: failed_count,
-            over_budget: over_budget_count,
-            global_p50_ms: global_stats.p50_ms,
-            global_p95_ms: global_stats.p95_ms,
-            global_p99_ms: global_stats.p99_ms,
+            over_budget_any: over_budget_any_count,
+            over_budget_cold: over_budget_cold_count,
+            over_budget_warm: over_budget_warm_count,
+            global_cold_p50_ms: global_cold_stats.p50_ms,
+            global_cold_p95_ms: global_cold_stats.p95_ms,
+            global_cold_p99_ms: global_cold_stats.p99_ms,
+            global_warm_p50_ms: global_warm_stats.p50_ms,
+            global_warm_p95_ms: global_warm_stats.p95_ms,
+            global_warm_p99_ms: global_warm_stats.p99_ms,
         },
         tiers,
+        groups,
         results,
     };
 
@@ -518,29 +905,42 @@ fn load_time_benchmark() {
     eprintln!("\n[load-bench] SUMMARY:");
     eprintln!(
         "  Total: {} | Pass: {} | Fail: {} | Over budget: {}",
-        report.summary.total, report.summary.success, report.summary.failed, over_budget_count
+        report.summary.total,
+        report.summary.success,
+        report.summary.failed,
+        report.summary.over_budget_any
     );
     eprintln!(
-        "  Global P50={}ms P95={}ms P99={}ms",
-        global_stats.p50_ms, global_stats.p95_ms, global_stats.p99_ms
+        "  Global cold P50={}ms P95={}ms P99={}ms",
+        global_cold_stats.p50_ms, global_cold_stats.p95_ms, global_cold_stats.p99_ms
+    );
+    eprintln!(
+        "  Global warm P50={}ms P95={}ms P99={}ms",
+        global_warm_stats.p50_ms, global_warm_stats.p95_ms, global_warm_stats.p99_ms
     );
 
-    // Warn about over-budget extensions (don't hard-fail since debug builds are slower).
-    if over_budget_count > 0 {
+    if over_budget_any_count > 0 {
         eprintln!(
-            "\n  WARNING: {} extension(s) exceeded P99 budget of {}ms:",
-            over_budget_count, budget_ms
+            "\n  OVER-BUDGET: {} extension(s) exceeded P99 budget of {}ms:",
+            over_budget_any_count, budget_ms
         );
         for r in &report.results {
-            if r.success && r.cold_start.p99_ms > budget_ms {
-                eprintln!("    - {} (P99={}ms)", r.id, r.cold_start.p99_ms);
+            if r.success && (r.cold.stats.p99_ms > budget_ms || r.warm.stats.p99_ms > budget_ms) {
+                eprintln!(
+                    "    - {} (cold P99={}ms, warm P99={}ms)",
+                    r.id, r.cold.stats.p99_ms, r.warm.stats.p99_ms
+                );
             }
         }
     }
 
-    // Hard assertion: all extensions must load successfully.
+    // Hard assertions: all extensions must load successfully, and must meet the budget.
     assert_eq!(
         failed_count, 0,
         "{failed_count} extension(s) failed to load"
+    );
+    assert_eq!(
+        over_budget_any_count, 0,
+        "{over_budget_any_count} extension(s) exceeded the P99 budget of {budget_ms}ms"
     );
 }
