@@ -1,0 +1,128 @@
+{
+  "budgets": [
+    {
+      "category": "startup",
+      "ci_enforced": true,
+      "methodology": "hyperfine: `pi --version` (10 runs, 3 warmup)",
+      "metric": "p95 latency",
+      "name": "startup_version_p95",
+      "threshold": 100.0,
+      "unit": "ms"
+    },
+    {
+      "category": "startup",
+      "ci_enforced": false,
+      "methodology": "hyperfine: `pi --print '.'` with full init (10 runs, 3 warmup)",
+      "metric": "p95 latency",
+      "name": "startup_full_agent_p95",
+      "threshold": 200.0,
+      "unit": "ms"
+    },
+    {
+      "category": "extension",
+      "ci_enforced": true,
+      "methodology": "criterion: load_init_cold for simple single-file extensions (10 samples)",
+      "metric": "p95 cold load time",
+      "name": "ext_cold_load_simple_p95",
+      "threshold": 5.0,
+      "unit": "ms"
+    },
+    {
+      "category": "extension",
+      "ci_enforced": false,
+      "methodology": "criterion: load_init_cold for multi-registration extensions (10 samples)",
+      "metric": "p95 cold load time",
+      "name": "ext_cold_load_complex_p95",
+      "threshold": 50.0,
+      "unit": "ms"
+    },
+    {
+      "category": "extension",
+      "ci_enforced": false,
+      "methodology": "conformance runner: sequential load of all 60 official extensions",
+      "metric": "total load time (60 official extensions)",
+      "name": "ext_load_60_total",
+      "threshold": 10000.0,
+      "unit": "ms"
+    },
+    {
+      "category": "tool_call",
+      "ci_enforced": true,
+      "methodology": "pijs_workload: 2000 iterations x 1 tool call, release build",
+      "metric": "p99 per-call latency",
+      "name": "tool_call_latency_p99",
+      "threshold": 200.0,
+      "unit": "us"
+    },
+    {
+      "category": "tool_call",
+      "ci_enforced": true,
+      "methodology": "pijs_workload: 2000 iterations x 10 tool calls, release build",
+      "metric": "minimum calls/sec",
+      "name": "tool_call_throughput_min",
+      "threshold": 5000.0,
+      "unit": "calls/sec"
+    },
+    {
+      "category": "event_dispatch",
+      "ci_enforced": false,
+      "methodology": "criterion: event_hook dispatch for before_agent_start (100 samples)",
+      "metric": "p99 dispatch latency",
+      "name": "event_dispatch_p99",
+      "threshold": 5000.0,
+      "unit": "us"
+    },
+    {
+      "category": "policy",
+      "ci_enforced": true,
+      "methodology": "criterion: ext_policy/evaluate with various modes and capabilities",
+      "metric": "p99 evaluation time",
+      "name": "policy_eval_p99",
+      "threshold": 500.0,
+      "unit": "ns"
+    },
+    {
+      "category": "memory",
+      "ci_enforced": true,
+      "methodology": "sysinfo: measure RSS after startup, before any user input",
+      "metric": "RSS at idle",
+      "name": "idle_memory_rss",
+      "threshold": 50.0,
+      "unit": "MB"
+    },
+    {
+      "category": "memory",
+      "ci_enforced": false,
+      "methodology": "stress test: 15 extensions, 50 events/sec for 30 seconds",
+      "metric": "RSS growth under 30s sustained load",
+      "name": "sustained_load_rss_growth",
+      "threshold": 5.0,
+      "unit": "percent"
+    },
+    {
+      "category": "binary",
+      "ci_enforced": true,
+      "methodology": "ls -la target/release/pi (stripped)",
+      "metric": "release binary size",
+      "name": "binary_size_release",
+      "threshold": 20.0,
+      "unit": "MB"
+    },
+    {
+      "category": "protocol",
+      "ci_enforced": true,
+      "methodology": "criterion: ext_protocol/parse_and_validate for host_call and log messages",
+      "metric": "p99 parse+validate time",
+      "name": "protocol_parse_p99",
+      "threshold": 50.0,
+      "unit": "us"
+    }
+  ],
+  "ci_enforced": 8,
+  "fail": 0,
+  "generated_at": "2026-02-06T01:24:50.103266346+00:00",
+  "no_data": 8,
+  "pass": 5,
+  "schema": "pi.perf.budget_summary.v1",
+  "total_budgets": 13
+}
