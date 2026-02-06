@@ -202,17 +202,15 @@ fn byte_length_base64() {
 
 #[test]
 fn concat_two_buffers() {
-    let result = eval_buffer(
-        r#"Buffer.concat([Buffer.from("hel"), Buffer.from("lo")]).toString()"#,
-    );
+    let result =
+        eval_buffer(r#"Buffer.concat([Buffer.from("hel"), Buffer.from("lo")]).toString()"#);
     assert_eq!(result, "hello");
 }
 
 #[test]
 fn concat_with_total_length() {
-    let result = eval_buffer(
-        r#"Buffer.concat([Buffer.from("hello"), Buffer.from("world")], 5).toString()"#,
-    );
+    let result =
+        eval_buffer(r#"Buffer.concat([Buffer.from("hello"), Buffer.from("world")], 5).toString()"#);
     assert_eq!(result, "hello");
 }
 
@@ -265,33 +263,25 @@ fn copy_between_buffers() {
 
 #[test]
 fn compare_equal() {
-    let result = eval_buffer(
-        r#"Buffer.from("abc").compare(Buffer.from("abc"))"#,
-    );
+    let result = eval_buffer(r#"Buffer.from("abc").compare(Buffer.from("abc"))"#);
     assert_eq!(result, "0");
 }
 
 #[test]
 fn compare_less() {
-    let result = eval_buffer(
-        r#"Buffer.from("abc").compare(Buffer.from("abd"))"#,
-    );
+    let result = eval_buffer(r#"Buffer.from("abc").compare(Buffer.from("abd"))"#);
     assert_eq!(result, "-1");
 }
 
 #[test]
 fn equals_true() {
-    let result = eval_buffer(
-        r#"Buffer.from("hello").equals(Buffer.from("hello"))"#,
-    );
+    let result = eval_buffer(r#"Buffer.from("hello").equals(Buffer.from("hello"))"#);
     assert_eq!(result, "true");
 }
 
 #[test]
 fn equals_false() {
-    let result = eval_buffer(
-        r#"Buffer.from("hello").equals(Buffer.from("world"))"#,
-    );
+    let result = eval_buffer(r#"Buffer.from("hello").equals(Buffer.from("world"))"#);
     assert_eq!(result, "false");
 }
 
@@ -310,25 +300,19 @@ fn index_of_byte() {
 
 #[test]
 fn index_of_string() {
-    let result = eval_buffer(
-        r#"Buffer.from("hello world").indexOf("world")"#,
-    );
+    let result = eval_buffer(r#"Buffer.from("hello world").indexOf("world")"#);
     assert_eq!(result, "6");
 }
 
 #[test]
 fn includes_true() {
-    let result = eval_buffer(
-        r#"Buffer.from("hello world").includes("world")"#,
-    );
+    let result = eval_buffer(r#"Buffer.from("hello world").includes("world")"#);
     assert_eq!(result, "true");
 }
 
 #[test]
 fn includes_false() {
-    let result = eval_buffer(
-        r#"Buffer.from("hello").includes("xyz")"#,
-    );
+    let result = eval_buffer(r#"Buffer.from("hello").includes("xyz")"#);
     assert_eq!(result, "false");
 }
 
@@ -511,8 +495,6 @@ fn allocunsafe_returns_buffer() {
 
 #[test]
 fn static_compare() {
-    let result = eval_buffer(
-        r#"Buffer.compare(Buffer.from("a"), Buffer.from("b"))"#,
-    );
+    let result = eval_buffer(r#"Buffer.compare(Buffer.from("a"), Buffer.from("b"))"#);
     assert_eq!(result, "-1");
 }

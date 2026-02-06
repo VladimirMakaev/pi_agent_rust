@@ -7076,9 +7076,7 @@ async fn dispatch_hostcall_log(
         .entry("schema".to_string())
         .or_insert_with(|| Value::String(LOG_SCHEMA_VERSION.to_string()));
     entry.entry("ts".to_string()).or_insert_with(|| {
-        Value::String(
-            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-        )
+        Value::String(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
     });
 
     let mut correlation = match entry.remove("correlation") {
@@ -15828,11 +15826,7 @@ mod tests {
     }
 
     /// Assert structural parity between two `HostResultPayload` values.
-    fn assert_result_parity(
-        label: &str,
-        shared: &HostResultPayload,
-        protocol: &HostResultPayload,
-    ) {
+    fn assert_result_parity(label: &str, shared: &HostResultPayload, protocol: &HostResultPayload) {
         assert_eq!(
             shared.is_error, protocol.is_error,
             "[{label}] is_error mismatch: shared={}, protocol={}",
@@ -15967,9 +15961,7 @@ mod tests {
                 },
                 js_request: Some(HostcallRequest {
                     call_id: "parity-exec-empty".to_string(),
-                    kind: HostcallKind::Exec {
-                        cmd: String::new(),
-                    },
+                    kind: HostcallKind::Exec { cmd: String::new() },
                     payload: json!({}),
                     trace_id: 0,
                     extension_id: Some("ext.parity".to_string()),
@@ -16131,8 +16123,7 @@ mod tests {
 
         for case in &cases {
             run_async(async {
-                let shared_result =
-                    dispatch_host_call_shared(&ctx, case.call.clone()).await;
+                let shared_result = dispatch_host_call_shared(&ctx, case.call.clone()).await;
 
                 let msg = make_host_call_msg(
                     &case.call.call_id,
@@ -16146,14 +16137,8 @@ mod tests {
                 assert_result_parity(case.name, &shared_result, protocol_result);
 
                 if !case.call.call_id.is_empty() {
-                    assert_schema_valid(
-                        &format!("{}/shared", case.name),
-                        &shared_result,
-                    );
-                    assert_schema_valid(
-                        &format!("{}/protocol", case.name),
-                        protocol_result,
-                    );
+                    assert_schema_valid(&format!("{}/shared", case.name), &shared_result);
+                    assert_schema_valid(&format!("{}/protocol", case.name), protocol_result);
                 }
             });
         }
@@ -16173,8 +16158,7 @@ mod tests {
             };
             let converted = hostcall_request_to_payload(js_req);
             let js_hash = js_req.params_hash();
-            let canonical_hash =
-                hostcall_params_hash(&converted.method, &converted.params);
+            let canonical_hash = hostcall_params_hash(&converted.method, &converted.params);
 
             assert_eq!(
                 js_hash, canonical_hash,
@@ -16237,8 +16221,7 @@ mod tests {
                 let responses = handle_extension_message(&ctx, msg).await;
                 let protocol_result = extract_protocol_result(&responses);
 
-                let js_result =
-                    outcome_to_host_result(&case.call.call_id, &js_outcome);
+                let js_result = outcome_to_host_result(&case.call.call_id, &js_outcome);
 
                 assert_result_parity(
                     &format!("{}/js_vs_protocol", case.name),
@@ -16247,10 +16230,7 @@ mod tests {
                 );
 
                 if !case.call.call_id.is_empty() {
-                    assert_schema_valid(
-                        &format!("{}/js_result", case.name),
-                        &js_result,
-                    );
+                    assert_schema_valid(&format!("{}/js_result", case.name), &js_result);
                 }
             });
         }
@@ -16270,8 +16250,7 @@ mod tests {
 
         for case in &cases {
             run_async(async {
-                let result =
-                    dispatch_host_call_shared(&ctx, case.call.clone()).await;
+                let result = dispatch_host_call_shared(&ctx, case.call.clone()).await;
                 if let Some(ref err) = result.error {
                     assert!(
                         TAXONOMY_CODES.contains(&err.code),
@@ -16296,9 +16275,19 @@ mod tests {
 
         let denied_cases = vec![
             // name=read → required capability "read", not "tool"
-            ("tool_denied", "tool", "read", json!({ "name": "read", "input": {} })),
+            (
+                "tool_denied",
+                "tool",
+                "read",
+                json!({ "name": "read", "input": {} }),
+            ),
             ("exec_denied", "exec", "exec", json!({ "cmd": "ls" })),
-            ("http_denied", "http", "http", json!({ "url": "https://example.com" })),
+            (
+                "http_denied",
+                "http",
+                "http",
+                json!({ "url": "https://example.com" }),
+            ),
             (
                 "session_denied",
                 "session",
@@ -16331,8 +16320,7 @@ mod tests {
             };
 
             run_async(async {
-                let shared_result =
-                    dispatch_host_call_shared(&ctx, call.clone()).await;
+                let shared_result = dispatch_host_call_shared(&ctx, call.clone()).await;
                 let msg = make_host_call_msg(
                     &call.call_id,
                     &call.method,
@@ -16351,16 +16339,8 @@ mod tests {
                     "[{name}] protocol: expected error for denied call"
                 );
 
-                let shared_code = shared_result
-                    .error
-                    .as_ref()
-                    .expect("shared error")
-                    .code;
-                let protocol_code = protocol_result
-                    .error
-                    .as_ref()
-                    .expect("protocol error")
-                    .code;
+                let shared_code = shared_result.error.as_ref().expect("shared error").code;
+                let protocol_code = protocol_result.error.as_ref().expect("protocol error").code;
                 assert_eq!(
                     shared_code,
                     HostCallErrorCode::Denied,
@@ -16374,10 +16354,7 @@ mod tests {
 
                 assert_result_parity(name, &shared_result, protocol_result);
                 assert_schema_valid(&format!("{name}/shared"), &shared_result);
-                assert_schema_valid(
-                    &format!("{name}/protocol"),
-                    protocol_result,
-                );
+                assert_schema_valid(&format!("{name}/protocol"), protocol_result);
             });
         }
     }
@@ -16386,8 +16363,7 @@ mod tests {
     fn parity_tool_read_success_shared_vs_protocol() {
         let dir = tempdir().expect("tempdir");
         let cwd = dir.path();
-        std::fs::write(cwd.join("hello_parity.txt"), "parity_content_42")
-            .expect("write test file");
+        std::fs::write(cwd.join("hello_parity.txt"), "parity_content_42").expect("write test file");
 
         let tools = ToolRegistry::new(&["read"], cwd, None);
         let http = HttpConnector::with_defaults();
@@ -16417,8 +16393,7 @@ mod tests {
         };
 
         run_async(async {
-            let shared_result =
-                dispatch_host_call_shared(&ctx, call.clone()).await;
+            let shared_result = dispatch_host_call_shared(&ctx, call.clone()).await;
             let msg = make_host_call_msg(
                 &call.call_id,
                 &call.method,
@@ -16444,8 +16419,7 @@ mod tests {
             assert_schema_valid("read_success/protocol", protocol_result);
 
             let shared_str = serde_json::to_string(&shared_result.output).unwrap();
-            let protocol_str =
-                serde_json::to_string(&protocol_result.output).unwrap();
+            let protocol_str = serde_json::to_string(&protocol_result.output).unwrap();
             assert!(
                 shared_str.contains("parity_content_42"),
                 "shared output missing file content: {shared_str}"
@@ -16467,10 +16441,7 @@ mod tests {
             };
 
             let result = outcome_to_host_result("rt-test", &outcome);
-            assert_schema_valid(
-                &format!("roundtrip/{code_str}"),
-                &result,
-            );
+            assert_schema_valid(&format!("roundtrip/{code_str}"), &result);
 
             let back = host_result_to_outcome(result);
             match back {
@@ -16564,7 +16535,8 @@ mod tests {
             let shared_err = shared.error.as_ref().expect("shared error");
             assert_eq!(shared_err.code, HostCallErrorCode::InvalidRequest);
 
-            let msg = make_host_call_msg("", "tool", "tool", json!({ "name": "read", "input": {} }));
+            let msg =
+                make_host_call_msg("", "tool", "tool", json!({ "name": "read", "input": {} }));
             let responses = handle_extension_message(&ctx, msg).await;
             let protocol = extract_protocol_result(&responses);
             assert!(protocol.is_error, "protocol must reject empty call_id");
