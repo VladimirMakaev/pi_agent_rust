@@ -6,7 +6,11 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use clap::Parser;
-use pi::extension_scoring::{CandidateInput, score_candidates};
+use pi::extension_popularity::{CandidateItem as PopularityCandidateItem, CandidatePool};
+use pi::extension_scoring::{
+    CandidateInput, CompatStatus, Compatibility, Gates, LicenseInfo, MarketplaceSignals, Recency,
+    Redistribution, RiskInfo, Signals, Tags, score_candidates,
+};
 use serde::Deserialize;
 
 #[derive(Debug, Parser)]
@@ -34,6 +38,7 @@ struct Args {
 enum InputFile {
     List(Vec<CandidateInput>),
     Document(InputDocument),
+    CandidatePool(CandidatePool),
 }
 
 #[derive(Debug, Deserialize)]
@@ -52,6 +57,13 @@ fn main() -> Result<()> {
     let (candidates, embedded_generated_at) = match input {
         InputFile::List(list) => (list, None),
         InputFile::Document(doc) => (doc.candidates, doc.generated_at),
+        InputFile::CandidatePool(pool) => (
+            pool.items
+                .iter()
+                .map(candidate_from_popularity_item)
+                .collect(),
+            Some(pool.generated_at),
+        ),
     };
 
     let as_of = parse_timestamp(args.as_of, "as_of")?.unwrap_or_else(Utc::now);
@@ -88,6 +100,90 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn candidate_from_popularity_item(item: &PopularityCandidateItem) -> CandidateInput {
+    let signals = Signals {
+        official_listing: Some(item.source_tier == "official-pi-mono"),
+        pi_mono_example: Some(item.source_tier == "official-pi-mono"),
+        badlogic_gist: item
+            .repository_url
+            .as_deref()
+            .map(|url| url.contains("gist.github.com") && url.contains("badlogic"))
+            .or(Some(false)),
+        github_stars: item.popularity.github_stars,
+        github_forks: item.popularity.github_forks,
+        npm_downloads_month: item.popularity.npm_downloads_monthly,
+        references: item.popularity.mentions_sources.clone().unwrap_or_default(),
+        marketplace: Some(MarketplaceSignals {
+            rank: item.popularity.marketplace_rank,
+            installs_month: item.popularity.marketplace_installs_monthly,
+            featured: item.popularity.marketplace_featured,
+        }),
+    };
+
+    let runtime = if item.source_tier == "npm-registry" {
+        Some("pkg-with-deps".to_string())
+    } else {
+        Some("legacy-js".to_string())
+    };
+    let tags = Tags {
+        runtime,
+        ..Tags::default()
+    };
+
+    let recency = Recency {
+        updated_at: item
+            .popularity
+            .github_last_commit
+            .clone()
+            .or_else(|| item.popularity.npm_last_publish.clone())
+            .or_else(|| item.retrieved.clone()),
+    };
+
+    let compat = Compatibility {
+        status: match item.status.as_str() {
+            "unvendored" | "excluded" => Some(CompatStatus::Blocked),
+            _ => Some(CompatStatus::RequiresShims),
+        },
+        ..Compatibility::default()
+    };
+
+    let license = LicenseInfo {
+        spdx: Some(item.license.clone()),
+        redistribution: Some(infer_redistribution(&item.license)),
+        notes: None,
+    };
+
+    let gates = Gates {
+        provenance_pinned: Some(item.checksum.is_some()),
+        deterministic: Some(item.status != "unvendored"),
+    };
+
+    CandidateInput {
+        id: item.id.clone(),
+        name: Some(item.name.clone()),
+        source_tier: Some(item.source_tier.clone()),
+        signals,
+        tags,
+        recency,
+        compat,
+        license,
+        gates,
+        risk: RiskInfo::default(),
+        manual_override: None,
+    }
+}
+
+fn infer_redistribution(license: &str) -> Redistribution {
+    let normalized = license.trim().to_ascii_uppercase();
+    if normalized.is_empty() || matches!(normalized.as_str(), "UNKNOWN" | "UNLICENSED") {
+        return Redistribution::Unknown;
+    }
+    if normalized.contains("GPL") || normalized.contains("AGPL") {
+        return Redistribution::Restricted;
+    }
+    Redistribution::Ok
 }
 
 fn parse_timestamp(value: Option<String>, label: &str) -> Result<Option<DateTime<Utc>>> {

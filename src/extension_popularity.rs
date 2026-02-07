@@ -9,6 +9,9 @@ use crate::error::{Error, Result};
 use crate::http::client::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
+
+const POPULARITY_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CandidatePool {
@@ -40,11 +43,11 @@ pub struct CandidateItem {
     pub source_tier: String,
     pub status: String,
     pub license: String,
-    pub retrieved: String,
-    pub artifact_path: String,
-    pub checksum: Sha256Checksum,
+    pub retrieved: Option<String>,
+    pub artifact_path: Option<String>,
+    pub checksum: Option<Sha256Checksum>,
     pub source: CandidateSource,
-    pub repository_url: String,
+    pub repository_url: Option<String>,
     #[serde(default)]
     pub popularity: PopularityEvidence,
     pub aliases: Vec<String>,
@@ -271,6 +274,7 @@ pub async fn fetch_github_repo_metrics_optional(
     let url = format!("https://api.github.com/repos/{}/{}", repo.owner, repo.repo);
     let response = client
         .get(&url)
+        .timeout(POPULARITY_REQUEST_TIMEOUT)
         .header("Accept", "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28")
         .header("Authorization", format!("Bearer {token}"))
@@ -310,7 +314,11 @@ pub async fn fetch_npm_downloads(client: &Client, package: &str) -> Result<NpmDo
     async fn fetch_range(client: &Client, package: &str, range: &str) -> Result<Option<u64>> {
         let encoded = url::form_urlencoded::byte_serialize(package.as_bytes()).collect::<String>();
         let url = format!("https://api.npmjs.org/downloads/point/{range}/{encoded}");
-        let response = client.get(&url).send().await?;
+        let response = client
+            .get(&url)
+            .timeout(POPULARITY_REQUEST_TIMEOUT)
+            .send()
+            .await?;
         let text = response.text().await?;
         parse_npm_downloads_response(&text)
     }
@@ -359,7 +367,11 @@ pub async fn fetch_npm_registry_meta(
 ) -> Result<Option<NpmRegistryMeta>> {
     let encoded = url::form_urlencoded::byte_serialize(package.as_bytes()).collect::<String>();
     let url = format!("https://registry.npmjs.org/{encoded}");
-    let response = client.get(&url).send().await?;
+    let response = client
+        .get(&url)
+        .timeout(POPULARITY_REQUEST_TIMEOUT)
+        .send()
+        .await?;
     let status = response.status();
     let text = response.text().await?;
 

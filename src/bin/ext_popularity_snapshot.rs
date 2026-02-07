@@ -4,18 +4,17 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
-use asupersync::runtime::RuntimeBuilder;
-use asupersync::runtime::reactor::create_reactor;
 use chrono::{DateTime, SecondsFormat, Utc};
 use clap::Parser;
 use pi::extension_popularity::{
     CandidateItem, CandidatePool, CandidateSource, GitHubRepoCandidate, GitHubRepoMetrics,
-    GitHubRepoRef, NpmDownloads, NpmRegistryMeta, fetch_github_repo_metrics_optional,
-    fetch_npm_downloads, fetch_npm_registry_meta, github_repo_candidate_from_url,
-    github_repo_guesses_from_slug,
+    GitHubRepoRef, NpmDownloads, NpmRegistryMeta, github_repo_candidate_from_url,
+    github_repo_guesses_from_slug, parse_github_repo_response, parse_npm_downloads_response,
+    parse_npm_registry_response,
 };
 use pi::http::client::Client;
 use serde::Serialize;
@@ -114,18 +113,10 @@ fn main() {
 
 fn main_impl() -> Result<()> {
     let args = Args::parse();
-    let reactor = create_reactor()?;
-    let runtime = RuntimeBuilder::multi_thread()
-        .blocking_threads(1, 8)
-        .with_reactor(reactor)
-        .build()
-        .map_err(|e| anyhow!(e.to_string()))?;
-    let handle = runtime.handle();
-    let join = handle.spawn(Box::pin(run(args)));
-    runtime.block_on(join)
+    run(args)
 }
 
-async fn run(args: Args) -> Result<()> {
+fn run(args: Args) -> Result<()> {
     let input_text = fs::read_to_string(&args.input)
         .with_context(|| format!("read {}", args.input.display()))?;
     let mut pool: CandidatePool =
@@ -156,11 +147,9 @@ async fn run(args: Args) -> Result<()> {
         args.max_candidates,
         &mut stats,
     );
-    let npm_map = snapshot_npm_packages(&client, &npm_packages, &mut logger, &mut stats).await;
+    let npm_map = snapshot_npm_packages(&client, &npm_packages, &mut logger, &mut stats);
 
-    let github_token = std::env::var(&args.github_token_env)
-        .ok()
-        .filter(|value| !value.trim().is_empty());
+    let github_token = resolve_github_token(&args.github_token_env);
 
     let github_refs = collect_github_refs(
         &pool.items,
@@ -176,8 +165,7 @@ async fn run(args: Args) -> Result<()> {
         &github_refs,
         &mut logger,
         &mut stats,
-    )
-    .await;
+    );
 
     let mut processed = 0usize;
     for item in &mut pool.items {
@@ -241,6 +229,26 @@ fn parse_snapshot_at(raw: Option<String>) -> Result<DateTime<Utc>> {
     let parsed = DateTime::parse_from_rfc3339(raw.trim())
         .with_context(|| format!("parse --snapshot-at value '{raw}'"))?;
     Ok(parsed.with_timezone(&Utc))
+}
+
+fn resolve_github_token(env_name: &str) -> Option<String> {
+    if let Ok(token) = std::env::var(env_name) {
+        let trimmed = token.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    let output = Command::new("gh").args(["auth", "token"]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_string())
 }
 
 fn build_selected_id_set(ids: &[String]) -> HashSet<String> {
@@ -363,15 +371,17 @@ fn github_refs_for_item(
         }
     }
 
-    if let Some(candidate) = github_repo_candidate_from_url(&item.repository_url) {
+    if let Some(repo_url) = &item.repository_url
+        && let Some(candidate) = github_repo_candidate_from_url(repo_url)
+    {
         push_candidate(candidate);
     }
 
     out
 }
 
-async fn snapshot_npm_packages(
-    client: &Client,
+fn snapshot_npm_packages(
+    _client: &Client,
     packages: &[String],
     logger: &mut Option<JsonlLogger>,
     stats: &mut SnapshotStats,
@@ -385,7 +395,7 @@ async fn snapshot_npm_packages(
         };
 
         let downloads_start = Instant::now();
-        match fetch_npm_downloads(client, package).await {
+        match fetch_npm_downloads_via_curl(package) {
             Ok(downloads) => {
                 snapshot.downloads = Some(downloads.clone());
                 let _ = log_event(
@@ -414,7 +424,7 @@ async fn snapshot_npm_packages(
         }
 
         let registry_start = Instant::now();
-        match fetch_npm_registry_meta(client, package).await {
+        match fetch_npm_registry_meta_via_curl(package) {
             Ok(meta) => {
                 let found = meta.is_some();
                 snapshot.registry = meta;
@@ -448,8 +458,65 @@ async fn snapshot_npm_packages(
     out
 }
 
-async fn snapshot_github_repos(
-    client: &Client,
+fn fetch_npm_downloads_via_curl(package: &str) -> Result<NpmDownloads> {
+    fn fetch_range(package: &str, range: &str) -> Result<Option<u64>> {
+        let encoded = url::form_urlencoded::byte_serialize(package.as_bytes()).collect::<String>();
+        let url = format!("https://api.npmjs.org/downloads/point/{range}/{encoded}");
+        let (_status, body) = fetch_url_via_curl(&url)?;
+        parse_npm_downloads_response(&body).map_err(|err| anyhow!(err.to_string()))
+    }
+
+    let weekly = fetch_range(package, "last-week")?;
+    let monthly = fetch_range(package, "last-month")?;
+    Ok(NpmDownloads { weekly, monthly })
+}
+
+fn fetch_npm_registry_meta_via_curl(package: &str) -> Result<Option<NpmRegistryMeta>> {
+    let encoded = url::form_urlencoded::byte_serialize(package.as_bytes()).collect::<String>();
+    let url = format!("https://registry.npmjs.org/{encoded}");
+    let (status, body) = fetch_url_via_curl(&url)?;
+
+    match status {
+        200 => parse_npm_registry_response(&body)
+            .map(Some)
+            .map_err(|err| anyhow!(err.to_string())),
+        404 => Ok(None),
+        other => Err(anyhow!("npm registry error {other}: {body}")),
+    }
+}
+
+fn fetch_url_via_curl(url: &str) -> Result<(u16, String)> {
+    let output = Command::new("curl")
+        .arg("--silent")
+        .arg("--show-error")
+        .arg("--location")
+        .arg("--max-time")
+        .arg("20")
+        .arg("--write-out")
+        .arg("\n%{http_code}")
+        .arg(url)
+        .output()
+        .with_context(|| format!("run curl for {url}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!("curl failed for {url}: {}", stderr.trim()));
+    }
+
+    let stdout = String::from_utf8(output.stdout)
+        .with_context(|| format!("decode curl output for {url}"))?;
+    let Some((body, status_raw)) = stdout.rsplit_once('\n') else {
+        return Err(anyhow!("curl output missing status line for {url}"));
+    };
+    let status = status_raw
+        .trim()
+        .parse::<u16>()
+        .with_context(|| format!("parse HTTP status '{status_raw}' for {url}"))?;
+    Ok((status, body.to_string()))
+}
+
+fn snapshot_github_repos(
+    _client: &Client,
     github_token: Option<&str>,
     repos: &[GitHubRepoRef],
     logger: &mut Option<JsonlLogger>,
@@ -465,7 +532,7 @@ async fn snapshot_github_repos(
         stats.github_lookups_attempted = stats.github_lookups_attempted.saturating_add(1);
         let start = Instant::now();
         let key = repo.full_name();
-        match fetch_github_repo_metrics_optional(client, token, repo).await {
+        match fetch_github_repo_metrics_via_gh(token, repo) {
             Ok(metrics) => {
                 let found = metrics.is_some();
                 out.insert(key.clone(), GitHubLookup { metrics });
@@ -493,6 +560,43 @@ async fn snapshot_github_repos(
     }
 
     out
+}
+
+fn fetch_github_repo_metrics_via_gh(
+    token: &str,
+    repo: &GitHubRepoRef,
+) -> Result<Option<GitHubRepoMetrics>> {
+    let endpoint = format!("repos/{}/{}", repo.owner, repo.repo);
+    let output = Command::new("gh")
+        .arg("api")
+        .arg("--method")
+        .arg("GET")
+        .arg("-H")
+        .arg("Accept: application/vnd.github+json")
+        .arg("-H")
+        .arg("X-GitHub-Api-Version: 2022-11-28")
+        .arg("-H")
+        .arg(format!("Authorization: Bearer {token}"))
+        .arg(&endpoint)
+        .output()
+        .with_context(|| format!("run `gh api` for {endpoint}"))?;
+
+    if output.status.success() {
+        let body = String::from_utf8(output.stdout)
+            .with_context(|| format!("decode `gh api` output for {endpoint}"))?;
+        return Ok(Some(
+            parse_github_repo_response(&body).map_err(|err| anyhow!(err.to_string()))?,
+        ));
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{stderr}\n{stdout}");
+    if combined.contains("HTTP 404") || combined.contains("\"message\": \"Not Found\"") {
+        return Ok(None);
+    }
+
+    Err(anyhow!("`gh api {endpoint}` failed: {}", combined.trim()))
 }
 
 fn apply_npm_signals(
@@ -659,7 +763,7 @@ mod tests {
     fn mk_item(
         id: &str,
         source: CandidateSource,
-        repository_url: &str,
+        repository_url: Option<&str>,
         popularity: PopularityEvidence,
     ) -> CandidateItem {
         CandidateItem {
@@ -668,13 +772,13 @@ mod tests {
             source_tier: "test".to_string(),
             status: "active".to_string(),
             license: "MIT".to_string(),
-            retrieved: "2026-02-06T00:00:00Z".to_string(),
-            artifact_path: "artifacts/test".to_string(),
-            checksum: Sha256Checksum {
+            retrieved: Some("2026-02-06T00:00:00Z".to_string()),
+            artifact_path: Some("artifacts/test".to_string()),
+            checksum: Some(Sha256Checksum {
                 sha256: "abc".to_string(),
-            },
+            }),
             source,
-            repository_url: repository_url.to_string(),
+            repository_url: repository_url.map(ToString::to_string),
             popularity,
             aliases: Vec::new(),
             notes: None,
@@ -689,7 +793,7 @@ mod tests {
                 repo: "https://github.com/owner/repo.git".to_string(),
                 path: None,
             },
-            "https://github.com/owner/backup",
+            Some("https://github.com/owner/backup"),
             PopularityEvidence::default(),
         );
         let refs = github_refs_for_item(&item, &HashMap::new());
@@ -708,7 +812,7 @@ mod tests {
             CandidateSource::Url {
                 url: "https://example.com/pkg.tgz".to_string(),
             },
-            "https://github.com/owner-pi-foo",
+            Some("https://github.com/owner-pi-foo"),
             PopularityEvidence::default(),
         );
         let refs = github_refs_for_item(&item, &HashMap::new());
@@ -738,7 +842,7 @@ mod tests {
                 version: "1.0.0".to_string(),
                 url: "https://registry.npmjs.org/@scope/pkg/-/pkg-1.0.0.tgz".to_string(),
             },
-            "",
+            None,
             PopularityEvidence::default(),
         );
         let mut evidence = PopularityEvidence::default();
@@ -775,7 +879,7 @@ mod tests {
                 repo: "https://github.com/owner/repo".to_string(),
                 path: None,
             },
-            "",
+            None,
             PopularityEvidence::default(),
         );
         let mut evidence = PopularityEvidence::default();
