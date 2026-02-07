@@ -296,15 +296,16 @@ cargo run --bin ext_popularity_snapshot -- \
 ```
 
 Notes:
-- GitHub metrics require `GITHUB_TOKEN` in the environment.
-- If `GITHUB_TOKEN` is missing, GitHub lookups are skipped and npm signals are still refreshed.
+- GitHub metrics use `GITHUB_TOKEN` when present, and otherwise fall back to `gh auth token` if
+  GitHub CLI authentication is available.
+- If neither token source is available, GitHub lookups are skipped and npm signals are still refreshed.
 - Use `--dry-run` to preview summary stats without writing files.
 
 Example run:
 
 ```bash
 cargo run --bin ext_score_candidates -- \
-  --input docs/extension-scoring-input.json \
+  --input docs/extension-candidate-pool.json \
   --out docs/extension-priority.json \
   --summary-out docs/extension-priority-summary.json \
   --as-of 2026-02-06T00:00:00Z \

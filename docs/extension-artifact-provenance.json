@@ -1770,6 +1770,23 @@
       }
     },
     {
+      "id": "npm/pi-interview",
+      "directory": "npm/pi-interview",
+      "retrieved": "2026-02-05",
+      "checksum": {
+        "sha256": "3b5d7a8aefbd1d9f316438df6546db48561b205222a8d08b14a6df3aac850e68"
+      },
+      "name": "pi-interview",
+      "version": "0.4.5",
+      "license": "MIT",
+      "source": {
+        "type": "npm",
+        "package": "pi-interview",
+        "version": "0.4.5",
+        "url": "https://www.npmjs.com/package/pi-interview"
+      }
+    },
+    {
       "id": "npm/pi-md-export",
       "directory": "npm/pi-md-export",
       "retrieved": "2026-02-05",
@@ -2195,6 +2212,23 @@
       }
     },
     {
+      "id": "npm/qualisero-pi-agent-scip",
+      "directory": "npm/qualisero-pi-agent-scip",
+      "retrieved": "2026-02-05",
+      "checksum": {
+        "sha256": "943fe8256ac7348f140ff147686c88a11553a79a1eb5af3eadd9ef6a7126b359"
+      },
+      "name": "@qualisero/pi-agent-scip",
+      "version": "0.3.0",
+      "license": "Apache-2.0",
+      "source": {
+        "type": "npm",
+        "package": "qualisero-pi-agent-scip",
+        "version": "0.3.0",
+        "url": "https://www.npmjs.com/package/qualisero-pi-agent-scip"
+      }
+    },
+    {
       "id": "npm/ralph-loop-pi",
       "directory": "npm/ralph-loop-pi",
       "retrieved": "2026-02-05",
@@ -2226,6 +2260,23 @@
         "package": "repeat-pi",
         "version": "0.50.0",
         "url": "https://www.npmjs.com/package/repeat-pi"
+      }
+    },
+    {
+      "id": "npm/tmustier-pi-arcade",
+      "directory": "npm/tmustier-pi-arcade",
+      "retrieved": "2026-02-05",
+      "checksum": {
+        "sha256": "a198925c198669dcfcc5287ed9f5974d1a58ad43e3619b7a01903328b61602e7"
+      },
+      "name": "@tmustier/pi-arcade",
+      "version": "0.1.5",
+      "license": "MIT",
+      "source": {
+        "type": "npm",
+        "package": "tmustier-pi-arcade",
+        "version": "0.1.5",
+        "url": "https://www.npmjs.com/package/tmustier-pi-arcade"
       }
     },
     {

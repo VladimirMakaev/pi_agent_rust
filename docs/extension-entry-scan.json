@@ -3,15 +3,15 @@
   "generated": "2026-02-05",
   "description": "Static scan of extension corpus entry points (bd-2u2s)",
   "summary": {
-    "total_files": 1295,
-    "entry_points": 363,
-    "sub_modules": 808,
-    "non_extensions": 118,
+    "total_files": 1382,
+    "entry_points": 385,
+    "sub_modules": 872,
+    "non_extensions": 119,
     "unknown": 6,
     "by_confidence": {
-      "high": 1192,
+      "high": 1278,
       "low": 14,
-      "medium": 89
+      "medium": 90
     },
     "by_tier": {
       "agents-mikeastock": {
@@ -30,9 +30,9 @@
         "sub_modules": 57
       },
       "npm-registry": {
-        "total_files": 461,
-        "entry_points": 121,
-        "sub_modules": 307
+        "total_files": 548,
+        "entry_points": 143,
+        "sub_modules": 371
       },
       "official-pi-mono": {
         "total_files": 72,
@@ -3981,6 +3981,453 @@
       ]
     },
     {
+      "path": "npm/oh-my-pi-anthropic-websearch/tools/index.ts",
+      "classification": "entry_point",
+      "confidence": "high",
+      "patterns_found": [
+        "export_default_function",
+        "ExtensionAPI_import"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-basics/git-status.ts",
+      "classification": "entry_point",
+      "confidence": "high",
+      "patterns_found": [
+        "export_default_function",
+        "ExtensionAPI_import",
+        "event_hook",
+        "exec_api"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-basics/glob.ts",
+      "classification": "entry_point",
+      "confidence": "high",
+      "patterns_found": [
+        "export_default_function",
+        "ExtensionAPI_import",
+        "event_hook"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-basics/grep.ts",
+      "classification": "entry_point",
+      "confidence": "high",
+      "patterns_found": [
+        "export_default_function",
+        "ExtensionAPI_import",
+        "event_hook"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-basics/notebook.ts",
+      "classification": "entry_point",
+      "confidence": "high",
+      "patterns_found": [
+        "export_default_function",
+        "ExtensionAPI_import"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-basics/sd.ts",
+      "classification": "entry_point",
+      "confidence": "high",
+      "patterns_found": [
+        "export_default_function",
+        "ExtensionAPI_import",
+        "event_hook"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-basics/sg.ts",
+      "classification": "entry_point",
+      "confidence": "high",
+      "patterns_found": [
+        "export_default_function",
+        "ExtensionAPI_import",
+        "event_hook"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-basics/tools.ts",
+      "classification": "entry_point",
+      "confidence": "high",
+      "patterns_found": [
+        "export_default_function",
+        "ExtensionAPI_import"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-exa/tools/company.ts",
+      "classification": "entry_point",
+      "confidence": "high",
+      "patterns_found": [
+        "export_default_function",
+        "ExtensionAPI_import"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-exa/tools/index.ts",
+      "classification": "entry_point",
+      "confidence": "high",
+      "patterns_found": [
+        "export_default_function",
+        "ExtensionAPI_import"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-exa/tools/linkedin.ts",
+      "classification": "entry_point",
+      "confidence": "high",
+      "patterns_found": [
+        "export_default_function",
+        "ExtensionAPI_import"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-exa/tools/researcher.ts",
+      "classification": "entry_point",
+      "confidence": "high",
+      "patterns_found": [
+        "export_default_function",
+        "ExtensionAPI_import"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-exa/tools/search.ts",
+      "classification": "entry_point",
+      "confidence": "high",
+      "patterns_found": [
+        "export_default_function",
+        "ExtensionAPI_import"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-exa/tools/shared.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "ExtensionAPI_import",
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-exa/tools/websets.ts",
+      "classification": "entry_point",
+      "confidence": "high",
+      "patterns_found": [
+        "export_default_function",
+        "ExtensionAPI_import"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-lsp/tools/config.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-lsp/tools/index.ts",
+      "classification": "entry_point",
+      "confidence": "high",
+      "patterns_found": [
+        "export_default_function",
+        "ExtensionAPI_import",
+        "event_hook"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/cache/git-cache.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/errors.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/git-tool.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/index.ts",
+      "classification": "non_extension",
+      "confidence": "high",
+      "patterns_found": []
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/operations/add.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/operations/blame.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/operations/branch.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/operations/checkout.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/operations/cherry-pick.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/operations/commit.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/operations/diff.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/operations/fetch.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/operations/github/ci.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/operations/github/issue.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/operations/github/pr.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/operations/github/release.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/operations/log.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/operations/merge.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/operations/pull.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/operations/push.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/operations/rebase.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/operations/restore.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/operations/show.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/operations/stash.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/operations/status.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/operations/tag.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/parsers/blame-parser.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/parsers/diff-parser.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/parsers/log-parser.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/parsers/status-parser.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/render.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/safety/guards.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/safety/policies.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/types.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-pi-git-tool/src/utils.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/oh-my-pi-subagents/tools/index.ts",
+      "classification": "entry_point",
+      "confidence": "high",
+      "patterns_found": [
+        "export_default_function",
+        "ExtensionAPI_import",
+        "event_hook"
+      ]
+    },
+    {
       "path": "npm/permission-pi/permission-core.ts",
       "classification": "sub_module",
       "confidence": "high",
@@ -4517,6 +4964,44 @@
     },
     {
       "path": "npm/pi-interactive-shell/types.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/pi-interview/index.ts",
+      "classification": "entry_point",
+      "confidence": "high",
+      "patterns_found": [
+        "export_default_function",
+        "ExtensionAPI_import",
+        "ExtensionAPI_type",
+        "registerTool",
+        "exec_api",
+        "ui_api"
+      ]
+    },
+    {
+      "path": "npm/pi-interview/schema.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/pi-interview/server.ts",
+      "classification": "sub_module",
+      "confidence": "medium",
+      "patterns_found": [
+        "event_hook",
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/pi-interview/settings.ts",
       "classification": "sub_module",
       "confidence": "high",
       "patterns_found": [
@@ -5842,6 +6327,195 @@
       ]
     },
     {
+      "path": "npm/qualisero-pi-agent-scip/dist/cli/status.d.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": []
+    },
+    {
+      "path": "npm/qualisero-pi-agent-scip/dist/core/indexer.d.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/qualisero-pi-agent-scip/dist/core/logger.d.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/qualisero-pi-agent-scip/dist/core/query.d.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/qualisero-pi-agent-scip/dist/core/symbols.d.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/qualisero-pi-agent-scip/dist/core/truncate.d.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/qualisero-pi-agent-scip/dist/extension.d.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "export_default_function",
+        "ExtensionAPI_import",
+        "ExtensionAPI_type"
+      ]
+    },
+    {
+      "path": "npm/qualisero-pi-agent-scip/dist/hook.d.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "export_default_function",
+        "ExtensionAPI_import"
+      ]
+    },
+    {
+      "path": "npm/qualisero-pi-agent-scip/dist/index.d.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": []
+    },
+    {
+      "path": "npm/qualisero-pi-agent-scip/dist/languages/base.d.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/qualisero-pi-agent-scip/dist/languages/python.d.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": []
+    },
+    {
+      "path": "npm/qualisero-pi-agent-scip/dist/languages/registry.d.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": []
+    },
+    {
+      "path": "npm/qualisero-pi-agent-scip/dist/languages/typescript.d.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": []
+    },
+    {
+      "path": "npm/qualisero-pi-agent-scip/dist/src/cli/status.d.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": []
+    },
+    {
+      "path": "npm/qualisero-pi-agent-scip/dist/src/core/indexer.d.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/qualisero-pi-agent-scip/dist/src/core/logger.d.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/qualisero-pi-agent-scip/dist/src/core/query.d.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/qualisero-pi-agent-scip/dist/src/core/symbols.d.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/qualisero-pi-agent-scip/dist/src/hook.d.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "export_default_function",
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/qualisero-pi-agent-scip/dist/src/index.d.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "export_default_function",
+        "ExtensionAPI_import"
+      ]
+    },
+    {
+      "path": "npm/qualisero-pi-agent-scip/dist/src/languages/base.d.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "named_exports"
+      ]
+    },
+    {
+      "path": "npm/qualisero-pi-agent-scip/dist/src/languages/python.d.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": []
+    },
+    {
+      "path": "npm/qualisero-pi-agent-scip/dist/src/languages/registry.d.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": []
+    },
+    {
+      "path": "npm/qualisero-pi-agent-scip/dist/src/tools.d.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "ExtensionAPI_import"
+      ]
+    },
+    {
+      "path": "npm/qualisero-pi-agent-scip/dist/tools.d.ts",
+      "classification": "sub_module",
+      "confidence": "high",
+      "patterns_found": [
+        "ExtensionAPI_import"
+      ]
+    },
+    {
       "path": "npm/ralph-loop-pi/agents.ts",
       "classification": "sub_module",
       "confidence": "high",
@@ -6066,6 +6740,66 @@
     },
     {
       "path": "npm/shitty-extensions/extensions/usage-bar.ts",
+      "classification": "entry_point",
+      "confidence": "high",
+      "patterns_found": [
+        "export_default_function",
+        "ExtensionAPI_import",
+        "ExtensionAPI_type",
+        "registerCommand",
+        "ui_api"
+      ]
+    },
+    {
+      "path": "npm/tmustier-pi-arcade/mario-not/mario-not.ts",
+      "classification": "entry_point",
+      "confidence": "high",
+      "patterns_found": [
+        "export_default_function",
+        "ExtensionAPI_import",
+        "ExtensionAPI_type",
+        "registerCommand",
+        "ui_api"
+      ]
+    },
+    {
+      "path": "npm/tmustier-pi-arcade/picman.ts",
+      "classification": "entry_point",
+      "confidence": "high",
+      "patterns_found": [
+        "export_default_function",
+        "ExtensionAPI_import",
+        "ExtensionAPI_type",
+        "registerCommand",
+        "ui_api"
+      ]
+    },
+    {
+      "path": "npm/tmustier-pi-arcade/ping.ts",
+      "classification": "entry_point",
+      "confidence": "high",
+      "patterns_found": [
+        "export_default_function",
+        "ExtensionAPI_import",
+        "ExtensionAPI_type",
+        "registerCommand",
+        "ui_api"
+      ]
+    },
+    {
+      "path": "npm/tmustier-pi-arcade/spice-invaders.ts",
+      "classification": "entry_point",
+      "confidence": "high",
+      "patterns_found": [
+        "export_default_function",
+        "ExtensionAPI_import",
+        "ExtensionAPI_type",
+        "registerCommand",
+        "ui_api"
+      ]
+    },
+    {
+      "path": "npm/tmustier-pi-arcade/tetris.ts",
       "classification": "entry_point",
       "confidence": "high",
       "patterns_found": [

@@ -3,25 +3,25 @@
   "generated": "2026-02-05",
   "description": "Comprehensive catalog of ALL pi extension artifacts for conformance testing",
   "stats": {
-    "total_extensions": 205,
-    "total_ts_files": 1052,
+    "total_extensions": 208,
+    "total_ts_files": 1065,
     "by_tier": {
       "agents-mikeastock": 1,
       "community": 58,
-      "npm-registry": 63,
+      "npm-registry": 66,
       "official-pi-mono": 60,
       "third-party-github": 23
     },
     "by_capability": {
-      "ExtensionAPI_import": 203,
-      "export_default": 199,
-      "event_hook": 100,
-      "ui_header": 75,
-      "registerTool": 70,
-      "exec_api": 28,
+      "ExtensionAPI_import": 206,
+      "export_default": 202,
+      "event_hook": 101,
+      "ui_header": 76,
+      "registerTool": 72,
+      "exec_api": 29,
       "session_api": 20,
       "registerShortcut": 19,
-      "ui_overlay": 18,
+      "ui_overlay": 19,
       "registerFlag": 12,
       "events_api": 11,
       "registerProvider": 8,
@@ -3393,6 +3393,26 @@
       "checksum": "b86806b563696a42309c866176201b2d4512b73ae27f10865784b90564aff93c"
     },
     {
+      "id": "npm/pi-interview",
+      "directory": "npm/pi-interview",
+      "source_tier": "npm-registry",
+      "extension_files": [
+        "index.ts",
+        "schema.ts",
+        "server.ts",
+        "settings.ts"
+      ],
+      "capabilities": [
+        "ExtensionAPI_import",
+        "exec_api",
+        "export_default",
+        "registerTool",
+        "ui_header"
+      ],
+      "file_count": 4,
+      "checksum": "3b5d7a8aefbd1d9f316438df6546db48561b205222a8d08b14a6df3aac850e68"
+    },
+    {
       "id": "npm/pi-md-export",
       "directory": "npm/pi-md-export",
       "source_tier": "npm-registry",
@@ -3873,6 +3893,25 @@
       "checksum": "62427a5f9452041963b260175572780d760599534dc0749ae66ed5154a71011b"
     },
     {
+      "id": "npm/qualisero-pi-agent-scip",
+      "directory": "npm/qualisero-pi-agent-scip",
+      "source_tier": "npm-registry",
+      "extension_files": [
+        "dist/extension.d.ts",
+        "dist/extension.js",
+        "dist/hook.d.ts",
+        "dist/hook.js"
+      ],
+      "capabilities": [
+        "ExtensionAPI_import",
+        "event_hook",
+        "export_default",
+        "registerTool"
+      ],
+      "file_count": 4,
+      "checksum": "943fe8256ac7348f140ff147686c88a11553a79a1eb5af3eadd9ef6a7126b359"
+    },
+    {
       "id": "npm/ralph-loop-pi",
       "directory": "npm/ralph-loop-pi",
       "source_tier": "npm-registry",
@@ -3905,6 +3944,25 @@
       ],
       "file_count": 2,
       "checksum": "6e5aaba4109d587d60add0cce8f2c42b434efac9018887ebd5dfa04c18febed7"
+    },
+    {
+      "id": "npm/tmustier-pi-arcade",
+      "directory": "npm/tmustier-pi-arcade",
+      "source_tier": "npm-registry",
+      "extension_files": [
+        "mario-not/mario-not.ts",
+        "picman.ts",
+        "ping.ts",
+        "spice-invaders.ts",
+        "tetris.ts"
+      ],
+      "capabilities": [
+        "ExtensionAPI_import",
+        "export_default",
+        "ui_overlay"
+      ],
+      "file_count": 5,
+      "checksum": "a198925c198669dcfcc5287ed9f5974d1a58ad43e3619b7a01903328b61602e7"
     },
     {
       "id": "npm/token-rate-pi",
