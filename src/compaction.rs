@@ -399,16 +399,19 @@ fn find_cut_point(
 
         if accumulated_tokens >= u64::from(keep_recent_tokens) {
             let mut found = false;
-            for &cut_point in &cut_points {
-                if cut_point >= i {
+            // Find the largest cut point <= i (start earlier or at i to keep enough tokens)
+            for &cut_point in cut_points.iter().rev() {
+                if cut_point <= i {
                     cut_index = cut_point;
                     found = true;
                     break;
                 }
             }
             if !found {
-                if let Some(&last) = cut_points.last() {
-                    cut_index = last;
+                // If no cut point <= i (e.g. i is before the first valid cut),
+                // fall back to the earliest valid cut point.
+                if let Some(&first) = cut_points.first() {
+                    cut_index = first;
                 }
             }
             break;
@@ -1848,5 +1851,84 @@ mod tests {
         assert_eq!(files.len(), 2);
         assert!(files.contains(&"/a.rs"));
         assert!(files.contains(&"/b.rs"));
+    }
+
+    #[test]
+    fn find_cut_point_includes_tool_result_when_needed() {
+        // Setup:
+        // 0. User (10)
+        // 1. Assistant Call (10)
+        // 2. Tool Result (100)
+        // 3. User (10)
+        // 4. Assistant (10)
+        //
+        // Keep recent = 100.
+        // Accumulation from end:
+        // 4: 10
+        // 3: 20
+        // 2: 120 (Threshold crossed at index 2)
+        //
+        // Index 2 is ToolResult (invalid cut point).
+        // Valid cut points: 0, 1, 3, 4.
+        //
+        // Logic should pick closest valid cut point <= 2, which is 1.
+        // If it picked >= 2, it would pick 3, discarding the ToolResult and Call (keeping only 20 tokens).
+        // By picking 1, we keep 1..4 (130 tokens).
+
+        let entries = vec![
+            user_entry("0", "user"),
+            tool_call_entry("1", "tool", "arg"),
+            compact_entry("2", "fake_tr", 100), // Hack: compact_entry has specific tokens, but we need ToolResult for invalid cut check
+                                                // Actually, let's use real ToolResult but mock estimate_tokens?
+                                                // estimate_tokens uses content length.
+        ];
+
+        // Re-create entries with controlled lengths.
+        // We need 100 tokens for TR. 100 * 4 = 400 chars.
+        let tr_text = "x".repeat(400);
+        let entries = vec![
+            user_entry("0", "user"),              // Valid
+            assistant_entry("1", "call", 10, 10), // Valid (Assistant)
+            tool_result_entry("2", &tr_text),     // Invalid
+            user_entry("3", "user"),              // Valid
+            assistant_entry("4", "resp", 10, 10), // Valid
+        ];
+
+        // Verify token estimates (approx)
+        // 0: 4/4 = 1
+        // 1: 4/4 = 1
+        // 2: 400/4 = 100
+        // 3: 4/4 = 1
+        // 4: 4/4 = 1
+        // Total recent needed: 100.
+        // Accumulate: 4(1)+3(1)+2(100) = 102. Crossed at 2.
+
+        let settings = ResolvedCompactionSettings {
+            enabled: true,
+            reserve_tokens: 0,
+            keep_recent_tokens: 100,
+        };
+
+        let prep = prepare_compaction(&entries, settings).expect("should compact");
+
+        // We expect it to keep from index 1 (Assistant/Call).
+        // If it cut at 3, kept messages would be 3,4.
+        // If it cut at 1, kept messages are 1,2,3,4.
+
+        // messages_to_summarize is 0..cut_index.
+        // So if cut_index is 1, summarize should contain ONLY 0.
+        assert_eq!(prep.messages_to_summarize.len(), 1);
+        match &prep.messages_to_summarize[0] {
+            SessionMessage::User { content, .. } => {
+                if let UserContent::Text(t) = content {
+                    assert_eq!(t, "user");
+                } else {
+                    panic!("wrong content");
+                }
+            }
+            _ => panic!("expected user message"),
+        }
+
+        assert_eq!(prep.first_kept_entry_id, "1");
     }
 }

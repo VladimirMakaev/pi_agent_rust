@@ -13,6 +13,7 @@ use common::TestHarness;
 use pi::agent::{Agent, AgentConfig, AgentSession};
 use pi::auth::AuthStorage;
 use pi::config::Config;
+use pi::extensions::{ExtensionManager, ExtensionRegion, ExtensionUiRequest};
 use pi::http::client::Client;
 use pi::model::{AssistantMessage, ContentBlock, StopReason, TextContent, Usage, UserContent};
 use pi::models::ModelEntry;
@@ -23,7 +24,7 @@ use pi::rpc::{RpcOptions, RpcScopedModel, run};
 use pi::session::{Session, SessionMessage};
 use pi::tools::ToolRegistry;
 use pi::vcr::{VcrMode, VcrRecorder};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -1515,5 +1516,856 @@ fn rpc_abort_when_idle() {
         drop(in_tx);
         let result = server.await;
         assert!(result.is_ok(), "rpc server error: {result:?}");
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Helpers: Extension UI roundtrip
+// ---------------------------------------------------------------------------
+
+/// Build an `AgentSession` with an `ExtensionManager` attached so the RPC
+/// server sets up the extension UI channel.  Returns both the session (to
+/// hand to `run()`) and a cloned `ExtensionManager` the test can use to
+/// call `request_ui()` / `respond_ui()`.
+fn build_agent_session_with_extensions(
+    session: Session,
+    cassette_dir: &Path,
+) -> (AgentSession, ExtensionManager) {
+    let manager = ExtensionManager::default();
+    let region = ExtensionRegion::new(manager.clone());
+    let mut agent_session = build_agent_session(session, cassette_dir);
+    agent_session.extensions = Some(region);
+    (agent_session, manager)
+}
+
+/// Wait for an `extension_ui_request` event on the RPC output channel.
+/// Skips any non-event / non-ui-request lines.
+async fn recv_ui_request(out_rx: &Arc<Mutex<Receiver<String>>>, label: &str) -> Value {
+    let start = Instant::now();
+    loop {
+        let recv_result = {
+            let rx = out_rx.lock().expect("lock rpc output receiver");
+            rx.try_recv()
+        };
+
+        match recv_result {
+            Ok(line) => {
+                if let Ok(val) = serde_json::from_str::<Value>(&line) {
+                    if val.get("type").and_then(Value::as_str) == Some("extension_ui_request") {
+                        return val;
+                    }
+                }
+                // Not our event — keep waiting.
+            }
+            Err(TryRecvError::Disconnected) => {
+                panic!(
+                    "{label}: output channel disconnected while waiting for extension_ui_request"
+                );
+            }
+            Err(TryRecvError::Empty) => {}
+        }
+
+        assert!(
+            start.elapsed() <= Duration::from_secs(10),
+            "{label}: timed out waiting for extension_ui_request"
+        );
+        asupersync::time::sleep(asupersync::time::wall_now(), Duration::from_millis(5)).await;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests: Extension UI roundtrip — confirm
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rpc_extension_ui_confirm_roundtrip() {
+    let _harness = TestHarness::new("rpc_extension_ui_confirm_roundtrip");
+    let cassette_dir = cassette_root();
+    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+        .build()
+        .expect("build test runtime");
+    let handle = runtime.handle();
+
+    runtime.block_on(async move {
+        let (agent_session, manager) =
+            build_agent_session_with_extensions(Session::in_memory(), &cassette_dir);
+        let options = build_options(
+            &handle,
+            PathBuf::from("/tmp/auth_ui_confirm.json"),
+            vec![],
+            vec![],
+        );
+        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
+        let out_rx = Arc::new(Mutex::new(out_rx));
+
+        let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
+
+        // Give the server a moment to set up the UI channel.
+        asupersync::time::sleep(asupersync::time::wall_now(), Duration::from_millis(50)).await;
+
+        // Spawn a request_ui call from the extension side.
+        let mgr = manager.clone();
+        let ui_task = handle.spawn(async move {
+            let request = ExtensionUiRequest {
+                id: "req-confirm-1".to_string(),
+                method: "confirm".to_string(),
+                payload: json!({
+                    "title": "Delete file?",
+                    "message": "This cannot be undone.",
+                    "timeout": 5000
+                }),
+                timeout_ms: Some(5000),
+                extension_id: Some("test-ext".to_string()),
+            };
+            mgr.request_ui(request).await
+        });
+
+        // Capture the emitted extension_ui_request event.
+        let ui_event = recv_ui_request(&out_rx, "confirm").await;
+        assert_eq!(ui_event["type"], "extension_ui_request");
+        assert_eq!(ui_event["id"], "req-confirm-1");
+        assert_eq!(ui_event["method"], "confirm");
+        assert_eq!(ui_event["title"], "Delete file?");
+
+        // Respond with confirmed = true.
+        let resp = send_recv(
+            &in_tx,
+            &out_rx,
+            r#"{"id":"cmd-1","type":"extension_ui_response","requestId":"req-confirm-1","confirmed":true}"#,
+            "confirm_response",
+        )
+        .await;
+        assert_ok(&resp, "extension_ui_response");
+        assert_eq!(resp["data"]["resolved"], true);
+
+        // Verify the request_ui future resolved with the correct value.
+        let ui_result = ui_task.await;
+        let response = ui_result.expect("request_ui should succeed");
+        let response = response.expect("should have a response");
+        assert!(!response.cancelled);
+        assert_eq!(response.value, Some(json!(true)));
+
+        drop(in_tx);
+        let result = server.await;
+        assert!(result.is_ok(), "rpc server error: {result:?}");
+    });
+}
+
+#[test]
+fn rpc_extension_ui_confirm_denied() {
+    let _harness = TestHarness::new("rpc_extension_ui_confirm_denied");
+    let cassette_dir = cassette_root();
+    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+        .build()
+        .expect("build test runtime");
+    let handle = runtime.handle();
+
+    runtime.block_on(async move {
+        let (agent_session, manager) =
+            build_agent_session_with_extensions(Session::in_memory(), &cassette_dir);
+        let options = build_options(
+            &handle,
+            PathBuf::from("/tmp/auth_ui_deny.json"),
+            vec![],
+            vec![],
+        );
+        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
+        let out_rx = Arc::new(Mutex::new(out_rx));
+
+        let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
+        asupersync::time::sleep(asupersync::time::wall_now(), Duration::from_millis(50)).await;
+
+        let mgr = manager.clone();
+        let ui_task = handle.spawn(async move {
+            let request = ExtensionUiRequest {
+                id: "req-deny-1".to_string(),
+                method: "confirm".to_string(),
+                payload: json!({ "title": "Do risky thing?", "timeout": 5000 }),
+                timeout_ms: Some(5000),
+                extension_id: None,
+            };
+            mgr.request_ui(request).await
+        });
+
+        let ui_event = recv_ui_request(&out_rx, "confirm_denied").await;
+        assert_eq!(ui_event["id"], "req-deny-1");
+
+        // Respond with confirmed = false.
+        let resp = send_recv(
+            &in_tx,
+            &out_rx,
+            r#"{"id":"cmd-2","type":"extension_ui_response","requestId":"req-deny-1","value":false}"#,
+            "confirm_denied_response",
+        )
+        .await;
+        assert_ok(&resp, "extension_ui_response");
+
+        let ui_result = ui_task.await;
+        let response = ui_result.expect("request_ui should succeed");
+        let response = response.expect("should have a response");
+        assert!(!response.cancelled);
+        assert_eq!(response.value, Some(json!(false)));
+
+        drop(in_tx);
+        let _ = server.await;
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Tests: Extension UI roundtrip — select
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rpc_extension_ui_select_roundtrip() {
+    let _harness = TestHarness::new("rpc_extension_ui_select_roundtrip");
+    let cassette_dir = cassette_root();
+    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+        .build()
+        .expect("build test runtime");
+    let handle = runtime.handle();
+
+    runtime.block_on(async move {
+        let (agent_session, manager) =
+            build_agent_session_with_extensions(Session::in_memory(), &cassette_dir);
+        let options = build_options(
+            &handle,
+            PathBuf::from("/tmp/auth_ui_select.json"),
+            vec![],
+            vec![],
+        );
+        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
+        let out_rx = Arc::new(Mutex::new(out_rx));
+
+        let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
+        asupersync::time::sleep(asupersync::time::wall_now(), Duration::from_millis(50)).await;
+
+        let mgr = manager.clone();
+        let ui_task = handle.spawn(async move {
+            let request = ExtensionUiRequest {
+                id: "req-select-1".to_string(),
+                method: "select".to_string(),
+                payload: json!({
+                    "title": "Pick a model",
+                    "options": ["claude-sonnet", "gpt-4o", "gemini-pro"],
+                    "timeout": 5000
+                }),
+                timeout_ms: Some(5000),
+                extension_id: Some("model-picker-ext".to_string()),
+            };
+            mgr.request_ui(request).await
+        });
+
+        let ui_event = recv_ui_request(&out_rx, "select").await;
+        assert_eq!(ui_event["id"], "req-select-1");
+        assert_eq!(ui_event["method"], "select");
+        assert_eq!(ui_event["title"], "Pick a model");
+        assert!(ui_event["options"].is_array());
+
+        // Select the second option.
+        let resp = send_recv(
+            &in_tx,
+            &out_rx,
+            r#"{"id":"cmd-3","type":"extension_ui_response","requestId":"req-select-1","value":"gpt-4o"}"#,
+            "select_response",
+        )
+        .await;
+        assert_ok(&resp, "extension_ui_response");
+
+        let ui_result = ui_task.await;
+        let response = ui_result.expect("request_ui should succeed");
+        let response = response.expect("should have a response");
+        assert!(!response.cancelled);
+        assert_eq!(response.value, Some(json!("gpt-4o")));
+
+        drop(in_tx);
+        let _ = server.await;
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Tests: Extension UI roundtrip — input
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rpc_extension_ui_input_roundtrip() {
+    let _harness = TestHarness::new("rpc_extension_ui_input_roundtrip");
+    let cassette_dir = cassette_root();
+    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+        .build()
+        .expect("build test runtime");
+    let handle = runtime.handle();
+
+    runtime.block_on(async move {
+        let (agent_session, manager) =
+            build_agent_session_with_extensions(Session::in_memory(), &cassette_dir);
+        let options = build_options(
+            &handle,
+            PathBuf::from("/tmp/auth_ui_input.json"),
+            vec![],
+            vec![],
+        );
+        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
+        let out_rx = Arc::new(Mutex::new(out_rx));
+
+        let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
+        asupersync::time::sleep(asupersync::time::wall_now(), Duration::from_millis(50)).await;
+
+        let mgr = manager.clone();
+        let ui_task = handle.spawn(async move {
+            let request = ExtensionUiRequest {
+                id: "req-input-1".to_string(),
+                method: "input".to_string(),
+                payload: json!({
+                    "title": "Enter API key",
+                    "message": "Paste your key below",
+                    "timeout": 5000
+                }),
+                timeout_ms: Some(5000),
+                extension_id: Some("api-key-ext".to_string()),
+            };
+            mgr.request_ui(request).await
+        });
+
+        let ui_event = recv_ui_request(&out_rx, "input").await;
+        assert_eq!(ui_event["id"], "req-input-1");
+        assert_eq!(ui_event["method"], "input");
+
+        // Respond with typed text.
+        let resp = send_recv(
+            &in_tx,
+            &out_rx,
+            r#"{"id":"cmd-4","type":"extension_ui_response","requestId":"req-input-1","value":"sk-test-12345"}"#,
+            "input_response",
+        )
+        .await;
+        assert_ok(&resp, "extension_ui_response");
+
+        let ui_result = ui_task.await;
+        let response = ui_result.expect("request_ui should succeed");
+        let response = response.expect("should have a response");
+        assert!(!response.cancelled);
+        assert_eq!(response.value, Some(json!("sk-test-12345")));
+
+        drop(in_tx);
+        let _ = server.await;
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Tests: Extension UI roundtrip — editor
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rpc_extension_ui_editor_roundtrip() {
+    let _harness = TestHarness::new("rpc_extension_ui_editor_roundtrip");
+    let cassette_dir = cassette_root();
+    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+        .build()
+        .expect("build test runtime");
+    let handle = runtime.handle();
+
+    runtime.block_on(async move {
+        let (agent_session, manager) =
+            build_agent_session_with_extensions(Session::in_memory(), &cassette_dir);
+        let options = build_options(
+            &handle,
+            PathBuf::from("/tmp/auth_ui_editor.json"),
+            vec![],
+            vec![],
+        );
+        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
+        let out_rx = Arc::new(Mutex::new(out_rx));
+
+        let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
+        asupersync::time::sleep(asupersync::time::wall_now(), Duration::from_millis(50)).await;
+
+        let mgr = manager.clone();
+        let ui_task = handle.spawn(async move {
+            let request = ExtensionUiRequest {
+                id: "req-editor-1".to_string(),
+                method: "editor".to_string(),
+                payload: json!({
+                    "title": "Edit config",
+                    "message": "Modify the YAML below",
+                    "timeout": 5000
+                }),
+                timeout_ms: Some(5000),
+                extension_id: None,
+            };
+            mgr.request_ui(request).await
+        });
+
+        let ui_event = recv_ui_request(&out_rx, "editor").await;
+        assert_eq!(ui_event["id"], "req-editor-1");
+        assert_eq!(ui_event["method"], "editor");
+
+        // Respond with edited text.
+        let resp = send_recv(
+            &in_tx,
+            &out_rx,
+            r#"{"id":"cmd-5","type":"extension_ui_response","requestId":"req-editor-1","value":"key: new_value"}"#,
+            "editor_response",
+        )
+        .await;
+        assert_ok(&resp, "extension_ui_response");
+
+        let ui_result = ui_task.await;
+        let response = ui_result.expect("request_ui should succeed");
+        let response = response.expect("should have a response");
+        assert!(!response.cancelled);
+        assert_eq!(response.value, Some(json!("key: new_value")));
+
+        drop(in_tx);
+        let _ = server.await;
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Tests: Extension UI — cancellation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rpc_extension_ui_cancel_response() {
+    let _harness = TestHarness::new("rpc_extension_ui_cancel_response");
+    let cassette_dir = cassette_root();
+    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+        .build()
+        .expect("build test runtime");
+    let handle = runtime.handle();
+
+    runtime.block_on(async move {
+        let (agent_session, manager) =
+            build_agent_session_with_extensions(Session::in_memory(), &cassette_dir);
+        let options = build_options(
+            &handle,
+            PathBuf::from("/tmp/auth_ui_cancel.json"),
+            vec![],
+            vec![],
+        );
+        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
+        let out_rx = Arc::new(Mutex::new(out_rx));
+
+        let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
+        asupersync::time::sleep(asupersync::time::wall_now(), Duration::from_millis(50)).await;
+
+        let mgr = manager.clone();
+        let ui_task = handle.spawn(async move {
+            let request = ExtensionUiRequest {
+                id: "req-cancel-1".to_string(),
+                method: "confirm".to_string(),
+                payload: json!({ "title": "Proceed?", "timeout": 5000 }),
+                timeout_ms: Some(5000),
+                extension_id: None,
+            };
+            mgr.request_ui(request).await
+        });
+
+        let ui_event = recv_ui_request(&out_rx, "cancel").await;
+        assert_eq!(ui_event["id"], "req-cancel-1");
+
+        // Respond with cancelled: true.
+        let resp = send_recv(
+            &in_tx,
+            &out_rx,
+            r#"{"id":"cmd-6","type":"extension_ui_response","requestId":"req-cancel-1","cancelled":true}"#,
+            "cancel_response",
+        )
+        .await;
+        assert_ok(&resp, "extension_ui_response");
+
+        let ui_result = ui_task.await;
+        let response = ui_result.expect("request_ui should succeed");
+        let response = response.expect("should have a response");
+        assert!(response.cancelled);
+
+        drop(in_tx);
+        let _ = server.await;
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Tests: Extension UI — no extensions configured (noop fallback)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rpc_extension_ui_response_without_extensions() {
+    let _harness = TestHarness::new("rpc_extension_ui_response_without_extensions");
+    let cassette_dir = cassette_root();
+    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+        .build()
+        .expect("build test runtime");
+    let handle = runtime.handle();
+
+    runtime.block_on(async move {
+        // No extensions — build_agent_session leaves extensions = None.
+        let agent_session = build_agent_session(Session::in_memory(), &cassette_dir);
+        let options = build_options(
+            &handle,
+            PathBuf::from("/tmp/auth_ui_noext.json"),
+            vec![],
+            vec![],
+        );
+        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
+        let out_rx = Arc::new(Mutex::new(out_rx));
+
+        let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
+
+        // Sending extension_ui_response when no extensions are configured
+        // should return a success noop (no data).
+        let resp = send_recv(
+            &in_tx,
+            &out_rx,
+            r#"{"id":"cmd-7","type":"extension_ui_response","requestId":"req-x","confirmed":true}"#,
+            "no_extensions",
+        )
+        .await;
+        assert_ok(&resp, "extension_ui_response");
+        assert!(resp.get("data").is_none() || resp["data"].is_null());
+
+        drop(in_tx);
+        let _ = server.await;
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Tests: Extension UI — mismatched request ID
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rpc_extension_ui_mismatched_request_id() {
+    let _harness = TestHarness::new("rpc_extension_ui_mismatched_request_id");
+    let cassette_dir = cassette_root();
+    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+        .build()
+        .expect("build test runtime");
+    let handle = runtime.handle();
+
+    runtime.block_on(async move {
+        let (agent_session, manager) =
+            build_agent_session_with_extensions(Session::in_memory(), &cassette_dir);
+        let options = build_options(
+            &handle,
+            PathBuf::from("/tmp/auth_ui_mismatch.json"),
+            vec![],
+            vec![],
+        );
+        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
+        let out_rx = Arc::new(Mutex::new(out_rx));
+
+        let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
+        asupersync::time::sleep(asupersync::time::wall_now(), Duration::from_millis(50)).await;
+
+        let mgr = manager.clone();
+        let _ui_task = handle.spawn(async move {
+            let request = ExtensionUiRequest {
+                id: "req-real-1".to_string(),
+                method: "confirm".to_string(),
+                payload: json!({ "title": "Do it?", "timeout": 5000 }),
+                timeout_ms: Some(5000),
+                extension_id: None,
+            };
+            mgr.request_ui(request).await
+        });
+
+        let ui_event = recv_ui_request(&out_rx, "mismatch").await;
+        assert_eq!(ui_event["id"], "req-real-1");
+
+        // Send response with WRONG request ID.
+        let resp = send_recv(
+            &in_tx,
+            &out_rx,
+            r#"{"id":"cmd-8","type":"extension_ui_response","requestId":"req-WRONG","confirmed":true}"#,
+            "wrong_id_response",
+        )
+        .await;
+        assert_err(&resp, "extension_ui_response");
+        let error_msg = resp["error"].as_str().unwrap_or("");
+        assert!(
+            error_msg.contains("Unexpected requestId"),
+            "error should mention unexpected requestId: {error_msg}"
+        );
+
+        // Now send the correct one to clean up.
+        let resp = send_recv(
+            &in_tx,
+            &out_rx,
+            r#"{"id":"cmd-9","type":"extension_ui_response","requestId":"req-real-1","confirmed":true}"#,
+            "correct_id_response",
+        )
+        .await;
+        assert_ok(&resp, "extension_ui_response");
+
+        drop(in_tx);
+        let _ = server.await;
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Tests: Extension UI — missing requestId
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rpc_extension_ui_missing_request_id() {
+    let _harness = TestHarness::new("rpc_extension_ui_missing_request_id");
+    let cassette_dir = cassette_root();
+    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+        .build()
+        .expect("build test runtime");
+    let handle = runtime.handle();
+
+    runtime.block_on(async move {
+        let (agent_session, _manager) =
+            build_agent_session_with_extensions(Session::in_memory(), &cassette_dir);
+        let options = build_options(
+            &handle,
+            PathBuf::from("/tmp/auth_ui_noid.json"),
+            vec![],
+            vec![],
+        );
+        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
+        let out_rx = Arc::new(Mutex::new(out_rx));
+
+        let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
+
+        // Send extension_ui_response without requestId OR id — the parser
+        // falls back to "id" as an alias, so we must omit both to trigger
+        // the "Missing requestId" error.
+        let resp = send_recv(
+            &in_tx,
+            &out_rx,
+            r#"{"type":"extension_ui_response","confirmed":true}"#,
+            "missing_id",
+        )
+        .await;
+        assert_err(&resp, "extension_ui_response");
+        let error_msg = resp["error"].as_str().unwrap_or("");
+        assert!(
+            error_msg.contains("Missing requestId"),
+            "error should mention missing requestId: {error_msg}"
+        );
+
+        drop(in_tx);
+        let _ = server.await;
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Tests: Extension UI — sequential ordering (one at a time)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rpc_extension_ui_sequential_ordering() {
+    let _harness = TestHarness::new("rpc_extension_ui_sequential_ordering");
+    let cassette_dir = cassette_root();
+    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+        .build()
+        .expect("build test runtime");
+    let handle = runtime.handle();
+
+    runtime.block_on(async move {
+        let (agent_session, manager) =
+            build_agent_session_with_extensions(Session::in_memory(), &cassette_dir);
+        let options = build_options(
+            &handle,
+            PathBuf::from("/tmp/auth_ui_seq.json"),
+            vec![],
+            vec![],
+        );
+        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
+        let out_rx = Arc::new(Mutex::new(out_rx));
+
+        let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
+        asupersync::time::sleep(asupersync::time::wall_now(), Duration::from_millis(50)).await;
+
+        // Fire two requests concurrently.
+        let mgr1 = manager.clone();
+        let ui_task_1 = handle.spawn(async move {
+            let request = ExtensionUiRequest {
+                id: "req-seq-1".to_string(),
+                method: "confirm".to_string(),
+                payload: json!({ "title": "First?", "timeout": 5000 }),
+                timeout_ms: Some(5000),
+                extension_id: Some("ext-a".to_string()),
+            };
+            mgr1.request_ui(request).await
+        });
+
+        // Wait for the first to be emitted before sending the second.
+        let first_event = recv_ui_request(&out_rx, "seq_first").await;
+        assert_eq!(first_event["id"], "req-seq-1");
+
+        let mgr2 = manager.clone();
+        let ui_task_2 = handle.spawn(async move {
+            let request = ExtensionUiRequest {
+                id: "req-seq-2".to_string(),
+                method: "input".to_string(),
+                payload: json!({ "title": "Second?", "timeout": 5000 }),
+                timeout_ms: Some(5000),
+                extension_id: Some("ext-b".to_string()),
+            };
+            mgr2.request_ui(request).await
+        });
+
+        // Give the second request time to enter the queue.
+        asupersync::time::sleep(asupersync::time::wall_now(), Duration::from_millis(100)).await;
+
+        // Respond to the first — this should dequeue the second.
+        let resp = send_recv(
+            &in_tx,
+            &out_rx,
+            r#"{"id":"cmd-11","type":"extension_ui_response","requestId":"req-seq-1","confirmed":true}"#,
+            "seq_first_response",
+        )
+        .await;
+        assert_ok(&resp, "extension_ui_response");
+
+        let r1 = ui_task_1
+            .await
+            .expect("first request_ui")
+            .expect("has response");
+        assert_eq!(r1.value, Some(json!(true)));
+
+        // Now the second request should be emitted.
+        let second_event = recv_ui_request(&out_rx, "seq_second").await;
+        assert_eq!(second_event["id"], "req-seq-2");
+        assert_eq!(second_event["method"], "input");
+
+        // Respond to the second.
+        let resp = send_recv(
+            &in_tx,
+            &out_rx,
+            r#"{"id":"cmd-12","type":"extension_ui_response","requestId":"req-seq-2","value":"hello"}"#,
+            "seq_second_response",
+        )
+        .await;
+        assert_ok(&resp, "extension_ui_response");
+
+        let r2 = ui_task_2
+            .await
+            .expect("second request_ui")
+            .expect("has response");
+        assert_eq!(r2.value, Some(json!("hello")));
+
+        drop(in_tx);
+        let _ = server.await;
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Tests: Extension UI — no active request error
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rpc_extension_ui_no_active_request() {
+    let _harness = TestHarness::new("rpc_extension_ui_no_active_request");
+    let cassette_dir = cassette_root();
+    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+        .build()
+        .expect("build test runtime");
+    let handle = runtime.handle();
+
+    runtime.block_on(async move {
+        let (agent_session, _manager) =
+            build_agent_session_with_extensions(Session::in_memory(), &cassette_dir);
+        let options = build_options(
+            &handle,
+            PathBuf::from("/tmp/auth_ui_noactive.json"),
+            vec![],
+            vec![],
+        );
+        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
+        let out_rx = Arc::new(Mutex::new(out_rx));
+
+        let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
+
+        // Send a response when no UI request is active.
+        let resp = send_recv(
+            &in_tx,
+            &out_rx,
+            r#"{"id":"cmd-13","type":"extension_ui_response","requestId":"req-ghost","confirmed":true}"#,
+            "no_active",
+        )
+        .await;
+        assert_err(&resp, "extension_ui_response");
+        let error_msg = resp["error"].as_str().unwrap_or("");
+        assert!(
+            error_msg.contains("No active extension UI request"),
+            "error should mention no active request: {error_msg}"
+        );
+
+        drop(in_tx);
+        let _ = server.await;
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Tests: Extension UI — fire-and-forget (notify) emitted but not queued
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rpc_extension_ui_notify_fire_and_forget() {
+    let _harness = TestHarness::new("rpc_extension_ui_notify_fire_and_forget");
+    let cassette_dir = cassette_root();
+    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+        .build()
+        .expect("build test runtime");
+    let handle = runtime.handle();
+
+    runtime.block_on(async move {
+        let (agent_session, manager) =
+            build_agent_session_with_extensions(Session::in_memory(), &cassette_dir);
+        let options = build_options(
+            &handle,
+            PathBuf::from("/tmp/auth_ui_notify.json"),
+            vec![],
+            vec![],
+        );
+        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
+        let out_rx = Arc::new(Mutex::new(out_rx));
+
+        let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
+        asupersync::time::sleep(asupersync::time::wall_now(), Duration::from_millis(50)).await;
+
+        // Send a "notify" request — fire-and-forget, no response expected.
+        let mgr = manager.clone();
+        let ui_task = handle.spawn(async move {
+            let request = ExtensionUiRequest {
+                id: "req-notify-1".to_string(),
+                method: "notify".to_string(),
+                payload: json!({
+                    "title": "Heads up!",
+                    "message": "Something happened"
+                }),
+                timeout_ms: None,
+                extension_id: Some("notifier-ext".to_string()),
+            };
+            mgr.request_ui(request).await
+        });
+
+        // The event should still be emitted to the RPC output.
+        let ui_event = recv_ui_request(&out_rx, "notify").await;
+        assert_eq!(ui_event["type"], "extension_ui_request");
+        assert_eq!(ui_event["id"], "req-notify-1");
+        assert_eq!(ui_event["method"], "notify");
+
+        // request_ui should return Ok(None) for fire-and-forget.
+        let ui_result = ui_task.await;
+        let response = ui_result.expect("request_ui should succeed");
+        assert!(response.is_none(), "notify should not return a response");
+
+        drop(in_tx);
+        let _ = server.await;
     });
 }

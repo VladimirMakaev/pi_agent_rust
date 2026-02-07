@@ -320,7 +320,7 @@ impl<C: Clock> Scheduler<C> {
     pub fn set_timeout(&mut self, delay_ms: u64) -> u64 {
         let timer_id = self.next_timer_id;
         self.next_timer_id += 1;
-        let deadline_ms = self.clock.now_ms() + delay_ms;
+        let deadline_ms = self.clock.now_ms().saturating_add(delay_ms);
         let seq = self.next_seq();
 
         self.timer_heap

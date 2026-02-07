@@ -561,26 +561,32 @@ fn strip_markup(text: &str) -> String {
             // Potential tag
             let mut buffer = String::new();
             let mut is_tag = true;
+            let mut closed = false;
 
             for next_c in chars.by_ref() {
                 if next_c == ']' {
+                    closed = true;
                     break;
                 }
                 buffer.push(next_c);
                 // Heuristic: rich_rust tags usually contain alpha, space, slash, comma.
                 // If we see digits or other symbols, assume it's not a tag (e.g. array[0]).
-                if !next_c.is_ascii_alphabetic() && !matches!(next_c, ' ' | '/' | ',') {
+                if !next_c.is_ascii_alphanumeric()
+                    && !matches!(next_c, ' ' | '/' | ',' | '#' | '=' | '.')
+                {
                     is_tag = false;
                 }
             }
 
-            if is_tag && !buffer.is_empty() {
+            if closed && is_tag && !buffer.is_empty() {
                 // It was a tag, discard buffer (already consumed)
             } else {
-                // Not a tag, append literal
+                // Not a tag, or unclosed tag: restore literal
                 result.push('[');
                 result.push_str(&buffer);
-                result.push(']');
+                if closed {
+                    result.push(']');
+                }
             }
         } else {
             result.push(c);
@@ -677,6 +683,8 @@ mod tests {
         assert_eq!(strip_markup("No markup"), "No markup");
         assert_eq!(strip_markup("[bold red on blue]Text[/]"), "Text");
         assert_eq!(strip_markup("array[0]"), "array[0]");
+        assert_eq!(strip_markup("[#ff0000]Hex[/]"), "Hex");
+        assert_eq!(strip_markup("[link=https://example.com]Link[/]"), "Link");
     }
 
     #[test]

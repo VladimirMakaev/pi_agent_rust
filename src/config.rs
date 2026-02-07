@@ -217,6 +217,10 @@ impl Config {
         }
 
         let content = std::fs::read_to_string(path)?;
+        if content.trim().is_empty() {
+            return Ok(Self::default());
+        }
+
         let config: Self = serde_json::from_str(&content).map_err(|e| {
             Error::config(format!(
                 "Failed to parse settings file {}: {e}",
@@ -1237,6 +1241,17 @@ mod tests {
     }
 
     // ── merge thinking budgets ─────────────────────────────────────────
+
+    #[test]
+    fn load_handles_empty_file_as_default() {
+        let temp = TempDir::new().expect("create tempdir");
+        let path = temp.path().join("empty.json");
+        write_file(&path, "");
+
+        let config = Config::load_from_path(&path).expect("load config");
+        // Should return default config, not error
+        assert!(config.theme.is_none());
+    }
 
     #[test]
     fn merge_thinking_budgets_combines_values() {

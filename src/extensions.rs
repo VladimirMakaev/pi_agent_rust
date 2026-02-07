@@ -422,19 +422,28 @@ impl CompatibilityScanner {
         text: &str,
         forbidden: &mut BTreeMap<(String, String, String), Vec<CompatEvidence>>,
     ) {
-        for (pattern, message, remediation) in forbidden_inline_patterns() {
-            if let Some(column) = find_substring_column(text, pattern) {
-                let evidence =
-                    CompatEvidence::new(file.to_string(), line, column, text.to_string());
-                forbidden
-                    .entry((
-                        "forbidden_api".to_string(),
-                        message.to_string(),
-                        remediation.to_string(),
-                    ))
-                    .or_default()
-                    .push(evidence);
-            }
+        if let Some(column) = find_regex_column(text, binding_regex()) {
+            let evidence = CompatEvidence::new(file.to_string(), line, column, text.to_string());
+            forbidden
+                .entry((
+                    "forbidden_api".to_string(),
+                    "process.binding(...)".to_string(),
+                    "Native module access is forbidden; remove this usage.".to_string(),
+                ))
+                .or_default()
+                .push(evidence);
+        }
+
+        if let Some(column) = find_regex_column(text, dlopen_regex()) {
+            let evidence = CompatEvidence::new(file.to_string(), line, column, text.to_string());
+            forbidden
+                .entry((
+                    "forbidden_api".to_string(),
+                    "process.dlopen(...)".to_string(),
+                    "Native addon loading is forbidden; remove this usage.".to_string(),
+                ))
+                .or_default()
+                .push(evidence);
         }
     }
 }
@@ -572,6 +581,16 @@ fn pi_session_regex() -> &'static Regex {
 fn pi_ui_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"\bpi\.ui\.").expect("pi.ui"))
+}
+
+fn binding_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"process\s*\.\s*binding\s*\(").expect("binding regex"))
+}
+
+fn dlopen_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"process\s*\.\s*dlopen\s*\(").expect("dlopen regex"))
 }
 
 fn extract_import_specifiers(line: &str) -> Vec<(String, usize)> {
@@ -751,21 +770,6 @@ fn looks_like_node_builtin(module_root: &str) -> bool {
             | "worker_threads"
             | "zlib"
     )
-}
-
-fn forbidden_inline_patterns() -> Vec<(&'static str, &'static str, &'static str)> {
-    vec![
-        (
-            "process.binding(",
-            "process.binding(...)",
-            "Native module access is forbidden; remove this usage.",
-        ),
-        (
-            "process.dlopen(",
-            "process.dlopen(...)",
-            "Native addon loading is forbidden; remove this usage.",
-        ),
-    ]
 }
 
 // ============================================================================

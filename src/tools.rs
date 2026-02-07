@@ -1160,9 +1160,9 @@ impl Tool for ReadTool {
             let first_line = first_line.strip_suffix('\r').unwrap_or(first_line);
             let first_line_size = format_size(first_line.len());
             output_text = format!(
-                "[Line {start_line_display} is {first_line_size}, exceeds {} limit. Use bash: sed -n '{start_line_display}p' {} | head -c {DEFAULT_MAX_BYTES}]",
+                "[Line {start_line_display} is {first_line_size}, exceeds {} limit. Use bash: sed -n '{start_line_display}p' \"{}\" | head -c {DEFAULT_MAX_BYTES}]",
                 format_size(DEFAULT_MAX_BYTES),
-                input.path
+                input.path.replace('"', "\\\"")
             );
             details = Some(serde_json::json!({ "truncation": truncation }));
         } else if truncation.truncated {

@@ -94,7 +94,7 @@ impl SseParser {
         let mut buffer = std::mem::take(&mut self.buffer);
 
         // Strip UTF-8 BOM from the beginning of the stream (SSE spec compliance).
-        if !self.bom_checked {
+        if !self.bom_checked && !buffer.is_empty() {
             self.bom_checked = true;
             if let Some(stripped) = buffer.strip_prefix('\u{FEFF}') {
                 buffer = stripped.to_string();
@@ -741,6 +741,21 @@ data: {"type":"message_stop"}
                 .expect_err("expected utf8 error");
             assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         });
+    }
+
+    #[test]
+    fn test_bom_stripping_with_preceding_empty_chunk() {
+        let mut parser = SseParser::new();
+        // Feed empty chunk first - should not mark BOM as checked
+        let events = parser.feed("");
+        assert!(events.is_empty());
+
+        // Feed content with BOM
+        let events = parser.feed("\u{FEFF}data: hello\n\n");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data, "hello");
+        // Ensure the BOM didn't end up in the field name (causing it to be ignored)
+        assert_eq!(events[0].event, "message");
     }
 
     proptest! {

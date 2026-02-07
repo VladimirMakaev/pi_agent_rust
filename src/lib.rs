@@ -53,6 +53,7 @@ pub mod extension_index;
 pub mod extension_popularity;
 pub mod extension_scoring;
 pub mod extension_tools;
+pub mod extension_validation;
 pub mod extensions;
 pub mod extensions_js;
 pub mod http;
