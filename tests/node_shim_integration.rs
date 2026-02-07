@@ -19,8 +19,7 @@ use std::sync::Arc;
 
 fn load_ext(harness: &common::TestHarness, source: &str) -> ExtensionManager {
     let cwd = harness.temp_dir().to_path_buf();
-    let ext_entry_path =
-        harness.create_file("extensions/integration_test.mjs", source.as_bytes());
+    let ext_entry_path = harness.create_file("extensions/integration_test.mjs", source.as_bytes());
     let spec = JsExtensionLoadSpec::from_entry_path(&ext_entry_path).expect("load spec");
 
     let manager = ExtensionManager::new();
@@ -197,10 +196,7 @@ fn path_resolve_uses_process_cwd() {
 
 #[test]
 fn os_eol_is_newline() {
-    let result = eval_multi(
-        r#"import os from "node:os";"#,
-        r#"os.EOL === "\n""#,
-    );
+    let result = eval_multi(r#"import os from "node:os";"#, r#"os.EOL === "\n""#);
     assert_eq!(result, "true");
 }
 

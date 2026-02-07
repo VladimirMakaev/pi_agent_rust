@@ -172,7 +172,10 @@ fn exec_error_rejects_promise() {
         .await
     });
 
-    assert_eq!(result.get("error").and_then(Value::as_str), Some("command not found"));
+    assert_eq!(
+        result.get("error").and_then(Value::as_str),
+        Some("command not found")
+    );
     assert_eq!(result.get("code").and_then(Value::as_str), Some("io"));
 }
 
@@ -715,10 +718,7 @@ fn events_emit_payload() {
             req.payload.get("event").and_then(Value::as_str),
             Some("custom_event")
         );
-        assert_eq!(
-            req.payload.get("data"),
-            Some(&json!({ "key": "value" }))
-        );
+        assert_eq!(req.payload.get("data"), Some(&json!({ "key": "value" })));
     });
 }
 
@@ -753,7 +753,10 @@ fn events_emit_resolves_with_dispatch_result() {
     });
 
     let result = result.get("result").expect("result field");
-    assert_eq!(result.get("dispatched").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        result.get("dispatched").and_then(Value::as_bool),
+        Some(true)
+    );
 }
 
 #[test]
@@ -871,10 +874,7 @@ fn log_payload_includes_fields() {
             req.payload.get("message").and_then(Value::as_str),
             Some("something happened")
         );
-        assert_eq!(
-            req.payload.get("context"),
-            Some(&json!({ "key": 42 }))
-        );
+        assert_eq!(req.payload.get("context"), Some(&json!({ "key": 42 })));
     });
 }
 
@@ -1221,10 +1221,7 @@ fn error_code_internal_maps_correctly() {
         .await
     });
 
-    assert_eq!(
-        result.get("code").and_then(Value::as_str),
-        Some("internal")
-    );
+    assert_eq!(result.get("code").and_then(Value::as_str), Some("internal"));
 }
 
 #[test]
