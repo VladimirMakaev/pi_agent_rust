@@ -167,6 +167,10 @@ fn sse_headers() -> Vec<(String, String)> {
     vec![("Content-Type".to_string(), "text/event-stream".to_string())]
 }
 
+fn json_headers() -> Vec<(String, String)> {
+    vec![("Content-Type".to_string(), "application/json".to_string())]
+}
+
 // ---------------------------------------------------------------------------
 // HTTP 500 Tests
 // ---------------------------------------------------------------------------
@@ -194,6 +198,76 @@ fn openai_http_500_is_reported() {
         let message = err.to_string();
         assert!(message.contains("HTTP 500"), "unexpected error: {message}");
         assert!(message.contains("boom"), "unexpected error: {message}");
+    });
+}
+
+#[test]
+fn openai_http_200_with_wrong_content_type_is_protocol_error() {
+    let (client, _dir) = vcr_client(
+        "openai_http_200_with_wrong_content_type_is_protocol_error",
+        "https://api.openai.com/v1/chat/completions",
+        openai_body("gpt-test", "Trigger protocol mismatch."),
+        200,
+        json_headers(),
+        vec![r#"{"ok":true}"#.to_string()],
+    );
+
+    common::run_async(async move {
+        let provider = pi::providers::openai::OpenAIProvider::new("gpt-test").with_client(client);
+        let err = provider
+            .stream(
+                &context_for("Trigger protocol mismatch."),
+                &options_with_key("test-key"),
+            )
+            .await
+            .err()
+            .expect("expected protocol error");
+        let message = err.to_string().to_ascii_lowercase();
+        assert!(
+            message.contains("protocol error"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            message.contains("content-type"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            message.contains("text/event-stream"),
+            "unexpected error: {message}"
+        );
+    });
+}
+
+#[test]
+fn openai_http_200_missing_content_type_is_protocol_error() {
+    let (client, _dir) = vcr_client(
+        "openai_http_200_missing_content_type_is_protocol_error",
+        "https://api.openai.com/v1/chat/completions",
+        openai_body("gpt-test", "Trigger missing content type."),
+        200,
+        Vec::new(),
+        vec!["data: [DONE]\n\n".to_string()],
+    );
+
+    common::run_async(async move {
+        let provider = pi::providers::openai::OpenAIProvider::new("gpt-test").with_client(client);
+        let err = provider
+            .stream(
+                &context_for("Trigger missing content type."),
+                &options_with_key("test-key"),
+            )
+            .await
+            .err()
+            .expect("expected protocol error");
+        let message = err.to_string().to_ascii_lowercase();
+        assert!(
+            message.contains("missing content-type"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            message.contains("text/event-stream"),
+            "unexpected error: {message}"
+        );
     });
 }
 

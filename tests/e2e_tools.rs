@@ -11,6 +11,10 @@ use pi::error::Error;
 use pi::model::ContentBlock;
 use pi::tools::ToolRegistry;
 use serde_json::json;
+#[cfg(unix)]
+use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 // ---------------------------------------------------------------------------
@@ -477,6 +481,44 @@ fn bash_simple_command() {
     assert!(!result.is_error);
 }
 
+#[cfg(unix)]
+#[test]
+fn write_permission_denied_reports_clear_error() {
+    let h = TestHarness::new("write_permission_denied_reports_clear_error");
+    let readonly_dir = h.temp_path("readonly");
+    fs::create_dir_all(&readonly_dir).expect("create readonly dir");
+    let mut perms = fs::metadata(&readonly_dir).expect("metadata").permissions();
+    perms.set_mode(0o555);
+    fs::set_permissions(&readonly_dir, perms).expect("chmod readonly");
+
+    let target = readonly_dir.join("out.txt");
+    let registry = make_registry(h.temp_dir());
+    let output = common::run_async(async move {
+        let tool = registry.get("write").unwrap();
+        tool.execute(
+            "call-write-perm-denied",
+            json!({"path": target.display().to_string(), "content": "blocked"}),
+            None,
+        )
+        .await
+    });
+
+    // Ensure tempdir cleanup isn't permission-blocked.
+    let mut cleanup_perms = fs::metadata(&readonly_dir)
+        .expect("cleanup metadata")
+        .permissions();
+    cleanup_perms.set_mode(0o755);
+    fs::set_permissions(&readonly_dir, cleanup_perms).expect("restore permissions");
+
+    let err = output.expect_err("write should fail in readonly directory");
+    let msg = err.to_string().to_ascii_lowercase();
+    h.log().info("result", format!("error={msg}"));
+    assert!(
+        msg.contains("permission") || msg.contains("denied"),
+        "expected permission-denied diagnostics, got: {msg}"
+    );
+}
+
 #[test]
 fn bash_nonzero_exit() {
     let h = TestHarness::new("bash_nonzero_exit");
@@ -522,6 +564,34 @@ fn bash_timeout() {
     assert!(
         matches!(err, Error::Tool { .. }),
         "should be Tool error: {err}"
+    );
+}
+
+#[test]
+fn bash_timeout_reports_partial_output_for_repro() {
+    let h = TestHarness::new("bash_timeout_reports_partial_output_for_repro");
+    let registry = make_registry(h.temp_dir());
+
+    let output = common::run_async(async move {
+        let tool = registry.get("bash").unwrap();
+        tool.execute(
+            "call-15b",
+            json!({"command": "printf 'before-timeout\\n'; sleep 300", "timeout": 1}),
+            None,
+        )
+        .await
+    });
+
+    let err = output.expect_err("timeout should return tool error");
+    let msg = err.to_string().to_ascii_lowercase();
+    h.log().info("result", format!("error={msg}"));
+    assert!(
+        msg.contains("before-timeout"),
+        "expected partial command output in timeout diagnostics: {msg}"
+    );
+    assert!(
+        msg.contains("timed out") || msg.contains("timeout"),
+        "expected timeout diagnostics in error message: {msg}"
     );
 }
 
