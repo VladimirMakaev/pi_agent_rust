@@ -134,13 +134,24 @@ The compiled output MUST be:
 ##### Allowed specifiers and resolution
 
 The PiJS module resolver MUST:
-- resolve relative specifiers (`./` and `../`) within the artifact
-- resolve internal Pi-provided modules under a reserved namespace (recommended:
-  `pi:*`)
-- forbid network imports (`http:` / `https:`) and other ambient loaders
+- canonicalize Node builtins to `node:*` (`fs`→`node:fs`, `path`→`node:path`,
+  etc.)
+- resolve virtual builtins first (`node:*` shims + Pi runtime virtual modules)
+- resolve file-backed modules with this deterministic order:
+  1. exact file path
+  2. directory index (`index.ts`, `index.tsx`, `index.js`, `index.mjs`, `index.json`)
+  3. extension fallback (`.ts`, `.tsx`, `.js`, `.mjs`, `.json` as applicable)
+- accept relative (`./`, `../`), absolute (`/...`), and `file://...` specifiers
+- reject bare package specifiers (no `node_modules` traversal in PiJS)
+- reject network imports (`http:` / `https:`) and other ambient loaders
 
-Recommended canonicalization performed by `extc`: rewrite Node builtins to
-`pi:node/*` and inject any required polyfills deterministically.
+Deterministic unsupported-case errors:
+- package imports: `Package module specifiers are not supported in PiJS: <specifier>`
+- network imports: `Network module imports are not supported in PiJS: <specifier>`
+- other unsupported forms: `Unsupported module specifier: <specifier>`
+
+`node:module.createRequire()` currently supports only Node builtins exposed by
+PiJS and intentionally rejects package/local filesystem resolution.
 
 ##### Initialization contract
 
@@ -1438,7 +1449,7 @@ Extensions that rely on the following will not work in the Rust QuickJS runtime:
 | Limitation | Impact | Workaround |
 |------------|--------|------------|
 | **npm packages not stubbed** | 5 failures (`openai`, `adm-zip`, `linkedom`, `@sourcegraph/scip-typescript`) | Add virtual module stubs |
-| **Multi-file imports across directories** | 4 failures (`../../shared`, `./dist/extension.js`, etc.) | Bundle into single file before loading |
+| **Unbundled package-style multi-file imports** | failures for layouts requiring broader package resolution (`../../shared`, `./dist/extension.js`, etc.) | Bundle into single file before loading |
 | **Native Node addons** | Blocked | Use hostcalls or WASM |
 | **Worker threads / cluster** | Blocked | Unsupported concurrency model |
 | **Raw sockets (`net`/`tls`/`dgram`)** | Blocked | Use `pi.http()` connector |
