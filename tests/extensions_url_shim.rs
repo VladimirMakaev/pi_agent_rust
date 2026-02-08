@@ -4,19 +4,15 @@
 //! parsing, base URL resolution, and searchParams support.
 #![allow(clippy::needless_raw_string_hashes)]
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use pi::extensions_js::{PiJsRuntime, PiJsRuntimeConfig, PiJsRuntimeLimits};
+use pi::extensions_js::{PiJsRuntime, PiJsRuntimeConfig};
 use pi::scheduler::DeterministicClock;
 
 fn default_config() -> PiJsRuntimeConfig {
     PiJsRuntimeConfig {
         cwd: "/test".to_string(),
-        args: vec![],
-        env: HashMap::new(),
-        limits: PiJsRuntimeLimits::default(),
-        auto_repair_enabled: true,
+        ..Default::default()
     }
 }
 

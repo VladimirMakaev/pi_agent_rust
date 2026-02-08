@@ -28,6 +28,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::Digest as _;
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -268,7 +269,11 @@ impl CompatibilityScanner {
 
         for (idx, raw_line) in content.lines().enumerate() {
             let line_no = idx + 1;
-            let stripped = strip_js_comments(raw_line, &mut in_block_comment);
+            let stripped = if !in_block_comment && !raw_line.as_bytes().contains(&b'/') {
+                Cow::Borrowed(raw_line)
+            } else {
+                Cow::Owned(strip_js_comments(raw_line, &mut in_block_comment))
+            };
             let trimmed = stripped.trim_end();
             let raw_trimmed = raw_line.trim_end();
 
@@ -288,12 +293,29 @@ impl CompatibilityScanner {
                 continue;
             }
 
-            Self::scan_imports_in_line(
-                &rel, line_no, scan_text, caps, rewrites, forbidden, flagged,
-            );
-            Self::scan_pi_apis_in_line(&rel, line_no, scan_text, caps);
-            Self::scan_flagged_apis_in_line(&rel, line_no, scan_text, flagged);
-            Self::scan_forbidden_patterns_in_line(&rel, line_no, scan_text, forbidden);
+            let has_import_markers = scan_text.contains("import") || scan_text.contains("require");
+            if has_import_markers {
+                Self::scan_imports_in_line(
+                    &rel, line_no, scan_text, caps, rewrites, forbidden, flagged,
+                );
+            }
+
+            let has_capability_markers =
+                scan_text.contains("pi") || scan_text.contains("process.env");
+            if has_capability_markers {
+                Self::scan_pi_apis_in_line(&rel, line_no, scan_text, caps);
+            }
+
+            let has_flagged_markers = scan_text.contains("Function") || scan_text.contains("eval");
+            if has_flagged_markers {
+                Self::scan_flagged_apis_in_line(&rel, line_no, scan_text, flagged);
+            }
+
+            let has_forbidden_markers = scan_text.contains("process")
+                && (scan_text.contains("binding") || scan_text.contains("dlopen"));
+            if has_forbidden_markers {
+                Self::scan_forbidden_patterns_in_line(&rel, line_no, scan_text, forbidden);
+            }
         }
     }
 
@@ -492,7 +514,10 @@ fn collect_js_like_files(path: &Path) -> Result<Vec<PathBuf>> {
 
     let mut out = Vec::new();
     collect_js_like_files_recursive(path, &mut out)?;
-    out.sort_by_key(|entry| relative_posix(path, entry));
+    // Paths are all rooted under `path`, so sorting by the full `PathBuf`
+    // yields the same deterministic order as sorting by relative string keys
+    // without per-entry key allocation.
+    out.sort_unstable();
     Ok(out)
 }
 

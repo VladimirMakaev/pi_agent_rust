@@ -12,7 +12,10 @@
 mod common;
 
 use pi::extensions::{ExtensionManager, JsExtensionLoadSpec, JsExtensionRuntimeHandle};
-use pi::extensions_js::{ExtensionRepairEvent, PiJsRuntimeConfig, PiJsTickStats, RepairPattern};
+use pi::extensions_js::{
+    ExtensionRepairEvent, MonotonicityVerdict, PiJsRuntimeConfig, PiJsTickStats, RepairMode,
+    RepairPattern, RepairRisk,
+};
 use pi::tools::ToolRegistry;
 use std::sync::Arc;
 use std::time::Duration;
@@ -153,21 +156,42 @@ fn repair_event_clone() {
     assert_eq!(ev.success, ev2.success);
 }
 
-// ─── PiJsRuntimeConfig auto_repair_enabled ──────────────────────────────────
+// ─── PiJsRuntimeConfig repair_mode ──────────────────────────────────────────
 
 #[test]
-fn config_auto_repair_enabled_by_default() {
+fn config_repair_mode_defaults_to_auto_safe() {
     let config = PiJsRuntimeConfig::default();
-    assert!(config.auto_repair_enabled);
+    assert_eq!(config.repair_mode, pi::extensions_js::RepairMode::AutoSafe);
+    assert!(config.auto_repair_enabled());
 }
 
 #[test]
-fn config_auto_repair_can_be_disabled() {
+fn config_repair_mode_off_disables_repair() {
     let config = PiJsRuntimeConfig {
-        auto_repair_enabled: false,
+        repair_mode: pi::extensions_js::RepairMode::Off,
         ..Default::default()
     };
-    assert!(!config.auto_repair_enabled);
+    assert!(!config.auto_repair_enabled());
+}
+
+#[test]
+fn config_repair_mode_suggest_does_not_apply() {
+    let config = PiJsRuntimeConfig {
+        repair_mode: pi::extensions_js::RepairMode::Suggest,
+        ..Default::default()
+    };
+    assert!(!config.auto_repair_enabled());
+    assert!(config.repair_mode.is_active());
+}
+
+#[test]
+fn config_repair_mode_auto_strict_enables_aggressive() {
+    let config = PiJsRuntimeConfig {
+        repair_mode: pi::extensions_js::RepairMode::AutoStrict,
+        ..Default::default()
+    };
+    assert!(config.auto_repair_enabled());
+    assert!(config.repair_mode.allows_aggressive());
 }
 
 // ─── PiJsTickStats default ──────────────────────────────────────────────────
@@ -394,4 +418,296 @@ fn dist_to_src_fallback_no_effect_when_dist_exists() {
     assert!(tools.iter().any(|t| t.name == "greet"));
 
     shutdown(&handle);
+}
+
+// ─── Safety boundary: repair_mode gating (bd-k5q5.9.1.2) ────────────────────
+
+/// Start a runtime with a specific `RepairMode`, attempt to load the extension,
+/// and return the result (may be `Err` if the extension fails to load).
+fn try_start_runtime_with_mode(
+    harness: &common::TestHarness,
+    source: &str,
+    mode: RepairMode,
+) -> (
+    ExtensionManager,
+    JsExtensionRuntimeHandle,
+    Result<(), String>,
+) {
+    let cwd = harness.temp_dir().to_path_buf();
+    let ext_path = harness.create_file("extensions/ext.mjs", source.as_bytes());
+    let spec = JsExtensionLoadSpec::from_entry_path(&ext_path).expect("load spec");
+
+    let manager = ExtensionManager::new();
+    let tools = Arc::new(ToolRegistry::new(&[], &cwd, None));
+    let config = PiJsRuntimeConfig {
+        cwd: cwd.display().to_string(),
+        repair_mode: mode,
+        ..Default::default()
+    };
+
+    let handle = common::run_async({
+        let manager = manager.clone();
+        async move {
+            JsExtensionRuntimeHandle::start(config, tools, manager)
+                .await
+                .expect("start js runtime")
+        }
+    });
+    manager.set_js_runtime(handle.clone());
+
+    let load_result = common::run_async({
+        let manager = manager.clone();
+        async move {
+            manager
+                .load_js_extensions(vec![spec])
+                .await
+                .map_err(|e| e.to_string())
+        }
+    });
+
+    (manager, handle, load_result)
+}
+
+/// Source code that imports from `./dist/lib.js` (which won't exist).
+const DIST_IMPORT_SOURCE: &str = r#"
+    import { greeting } from "./dist/lib.js";
+    export default function activate(pi) {
+        pi.registerTool({
+            name: "greet",
+            description: "test",
+            parameters: { type: "object", properties: {} },
+            execute: async () => ({
+                content: [{ type: "text", text: greeting }],
+            }),
+        });
+    }
+"#;
+
+#[test]
+fn repair_off_prevents_dist_to_src_fallback() {
+    let harness = common::TestHarness::new("repair_off_no_fallback");
+
+    // Create src/lib.ts but NOT dist/lib.js.
+    harness.create_file(
+        "extensions/src/lib.ts",
+        br#"export const greeting = "from src";"#,
+    );
+
+    let (_manager, handle, _load_result) =
+        try_start_runtime_with_mode(&harness, DIST_IMPORT_SOURCE, RepairMode::Off);
+
+    // With Off mode the fallback should NOT fire → no "greet" tool registered.
+    let tools = common::run_async({
+        let h = handle.clone();
+        async move { h.get_registered_tools().await.unwrap() }
+    });
+    assert!(
+        !tools.iter().any(|t| t.name == "greet"),
+        "Off mode should not apply dist→src fallback"
+    );
+
+    shutdown(&handle);
+}
+
+#[test]
+fn repair_suggest_does_not_apply_fallback() {
+    let harness = common::TestHarness::new("repair_suggest_no_apply");
+
+    // Create src/lib.ts but NOT dist/lib.js.
+    harness.create_file(
+        "extensions/src/lib.ts",
+        br#"export const greeting = "from src";"#,
+    );
+
+    let (_manager, handle, _load_result) =
+        try_start_runtime_with_mode(&harness, DIST_IMPORT_SOURCE, RepairMode::Suggest);
+
+    // Suggest mode should log but NOT apply → no "greet" tool registered.
+    let tools = common::run_async({
+        let h = handle.clone();
+        async move { h.get_registered_tools().await.unwrap() }
+    });
+    assert!(
+        !tools.iter().any(|t| t.name == "greet"),
+        "Suggest mode should not apply dist→src fallback"
+    );
+
+    shutdown(&handle);
+}
+
+#[test]
+fn repair_auto_safe_applies_dist_to_src_fallback() {
+    let harness = common::TestHarness::new("repair_auto_safe_applies");
+
+    // Create src/lib.ts but NOT dist/lib.js.
+    harness.create_file(
+        "extensions/src/lib.ts",
+        br#"export const greeting = "from src";"#,
+    );
+
+    let (_manager, handle, _load_result) =
+        try_start_runtime_with_mode(&harness, DIST_IMPORT_SOURCE, RepairMode::AutoSafe);
+
+    // AutoSafe should apply the fallback → "greet" tool registered.
+    let tools = common::run_async({
+        let h = handle.clone();
+        async move { h.get_registered_tools().await.unwrap() }
+    });
+    assert!(
+        tools.iter().any(|t| t.name == "greet"),
+        "AutoSafe mode should apply dist→src fallback"
+    );
+
+    shutdown(&handle);
+}
+
+#[test]
+fn repair_auto_strict_applies_dist_to_src_fallback() {
+    let harness = common::TestHarness::new("repair_auto_strict_applies");
+
+    // Create src/lib.ts but NOT dist/lib.js.
+    harness.create_file(
+        "extensions/src/lib.ts",
+        br#"export const greeting = "from src";"#,
+    );
+
+    let (_manager, handle, _load_result) =
+        try_start_runtime_with_mode(&harness, DIST_IMPORT_SOURCE, RepairMode::AutoStrict);
+
+    // AutoStrict should also apply the fallback → "greet" tool registered.
+    let tools = common::run_async({
+        let h = handle.clone();
+        async move { h.get_registered_tools().await.unwrap() }
+    });
+    assert!(
+        tools.iter().any(|t| t.name == "greet"),
+        "AutoStrict mode should apply dist→src fallback"
+    );
+
+    shutdown(&handle);
+}
+
+// ─── Privilege monotonicity checker (bd-k5q5.9.1.3) ─────────────────────────
+
+use pi::extensions_js::verify_repair_monotonicity;
+use std::path::PathBuf;
+
+#[test]
+fn monotonicity_safe_when_resolved_within_root() {
+    let root = PathBuf::from("/extensions/my-ext");
+    let original = PathBuf::from("/extensions/my-ext/dist/lib.js");
+    let resolved = PathBuf::from("/extensions/my-ext/src/lib.ts");
+    assert_eq!(
+        verify_repair_monotonicity(&root, &original, &resolved),
+        MonotonicityVerdict::Safe
+    );
+}
+
+#[test]
+fn monotonicity_escapes_root_when_resolved_above() {
+    let root = PathBuf::from("/extensions/my-ext");
+    let original = PathBuf::from("/extensions/my-ext/dist/lib.js");
+    let resolved = PathBuf::from("/extensions/other-ext/src/lib.ts");
+    let verdict = verify_repair_monotonicity(&root, &original, &resolved);
+    assert!(!verdict.is_safe(), "should detect escape: {verdict:?}");
+    assert!(matches!(verdict, MonotonicityVerdict::EscapesRoot { .. }));
+}
+
+#[test]
+fn monotonicity_escapes_root_when_resolved_to_parent() {
+    let root = PathBuf::from("/extensions/my-ext");
+    let original = PathBuf::from("/extensions/my-ext/dist/lib.js");
+    let resolved = PathBuf::from("/extensions/lib.ts");
+    let verdict = verify_repair_monotonicity(&root, &original, &resolved);
+    assert!(!verdict.is_safe());
+}
+
+#[test]
+fn monotonicity_safe_for_nested_subdirectory() {
+    let root = PathBuf::from("/extensions/my-ext");
+    let original = PathBuf::from("/extensions/my-ext/dist/deep/nested/file.js");
+    let resolved = PathBuf::from("/extensions/my-ext/src/deep/nested/file.ts");
+    assert_eq!(
+        verify_repair_monotonicity(&root, &original, &resolved),
+        MonotonicityVerdict::Safe
+    );
+}
+
+#[test]
+fn monotonicity_safe_at_root_boundary() {
+    // Resolved path IS the root itself (edge case).
+    let root = PathBuf::from("/extensions/my-ext");
+    let original = PathBuf::from("/extensions/my-ext/dist/index.js");
+    let resolved = PathBuf::from("/extensions/my-ext/index.ts");
+    assert_eq!(
+        verify_repair_monotonicity(&root, &original, &resolved),
+        MonotonicityVerdict::Safe
+    );
+}
+
+// ─── Repair risk classification (bd-k5q5.9.1.4) ─────────────────────────────
+
+#[test]
+fn safe_patterns_have_safe_risk() {
+    assert_eq!(RepairPattern::DistToSrc.risk(), RepairRisk::Safe);
+    assert_eq!(RepairPattern::MissingAsset.risk(), RepairRisk::Safe);
+}
+
+#[test]
+fn aggressive_patterns_have_aggressive_risk() {
+    assert_eq!(RepairPattern::MonorepoEscape.risk(), RepairRisk::Aggressive);
+    assert_eq!(RepairPattern::MissingNpmDep.risk(), RepairRisk::Aggressive);
+    assert_eq!(RepairPattern::ExportShape.risk(), RepairRisk::Aggressive);
+}
+
+#[test]
+fn safe_patterns_allowed_by_auto_safe() {
+    assert!(RepairPattern::DistToSrc.is_allowed_by(RepairMode::AutoSafe));
+    assert!(RepairPattern::MissingAsset.is_allowed_by(RepairMode::AutoSafe));
+}
+
+#[test]
+fn aggressive_patterns_blocked_by_auto_safe() {
+    assert!(!RepairPattern::MonorepoEscape.is_allowed_by(RepairMode::AutoSafe));
+    assert!(!RepairPattern::MissingNpmDep.is_allowed_by(RepairMode::AutoSafe));
+    assert!(!RepairPattern::ExportShape.is_allowed_by(RepairMode::AutoSafe));
+}
+
+#[test]
+fn aggressive_patterns_allowed_by_auto_strict() {
+    assert!(RepairPattern::MonorepoEscape.is_allowed_by(RepairMode::AutoStrict));
+    assert!(RepairPattern::MissingNpmDep.is_allowed_by(RepairMode::AutoStrict));
+    assert!(RepairPattern::ExportShape.is_allowed_by(RepairMode::AutoStrict));
+}
+
+#[test]
+fn no_patterns_allowed_by_off() {
+    for &pattern in &[
+        RepairPattern::DistToSrc,
+        RepairPattern::MissingAsset,
+        RepairPattern::MonorepoEscape,
+        RepairPattern::MissingNpmDep,
+        RepairPattern::ExportShape,
+    ] {
+        assert!(
+            !pattern.is_allowed_by(RepairMode::Off),
+            "{pattern} should be blocked in Off mode"
+        );
+    }
+}
+
+#[test]
+fn no_patterns_allowed_by_suggest() {
+    for &pattern in &[
+        RepairPattern::DistToSrc,
+        RepairPattern::MissingAsset,
+        RepairPattern::MonorepoEscape,
+        RepairPattern::MissingNpmDep,
+        RepairPattern::ExportShape,
+    ] {
+        assert!(
+            !pattern.is_allowed_by(RepairMode::Suggest),
+            "{pattern} should be blocked in Suggest mode"
+        );
+    }
 }

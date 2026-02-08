@@ -4,12 +4,9 @@
 //! stdout/stderr routing, exit signaling, event emitter API, hrtime, and more.
 #![allow(clippy::needless_raw_string_hashes)]
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use pi::extensions_js::{
-    HostcallKind, PiJsRuntime, PiJsRuntimeConfig, PiJsRuntimeLimits, is_env_var_allowed,
-};
+use pi::extensions_js::{HostcallKind, PiJsRuntime, PiJsRuntimeConfig, is_env_var_allowed};
 use pi::scheduler::DeterministicClock;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -17,23 +14,18 @@ use pi::scheduler::DeterministicClock;
 fn config_with_env(env: Vec<(&str, &str)>) -> PiJsRuntimeConfig {
     PiJsRuntimeConfig {
         cwd: "/test".to_string(),
-        args: vec![],
         env: env
             .into_iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect(),
-        limits: PiJsRuntimeLimits::default(),
-        auto_repair_enabled: true,
+        ..Default::default()
     }
 }
 
 fn default_config() -> PiJsRuntimeConfig {
     PiJsRuntimeConfig {
         cwd: "/test".to_string(),
-        args: vec![],
-        env: HashMap::new(),
-        limits: PiJsRuntimeLimits::default(),
-        auto_repair_enabled: true,
+        ..Default::default()
     }
 }
 

@@ -982,6 +982,42 @@ pub enum RepairPattern {
     ExportShape,
 }
 
+/// Risk tier for repair patterns (bd-k5q5.9.1.4).
+///
+/// `Safe` patterns only remap file paths within the extension root and cannot
+/// alter runtime behaviour.  `Aggressive` patterns may introduce stub modules,
+/// proxy objects, or change export shapes, potentially altering the extension's
+/// observable behaviour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RepairRisk {
+    /// Path-only remapping; no new code introduced.
+    Safe,
+    /// May inject stub modules or change export wiring.
+    Aggressive,
+}
+
+impl RepairPattern {
+    /// The risk tier of this pattern.
+    pub const fn risk(self) -> RepairRisk {
+        match self {
+            // Patterns 1 & 2 only remap paths / return empty strings.
+            Self::DistToSrc | Self::MissingAsset => RepairRisk::Safe,
+            // Patterns 3-5 inject stubs or rewrite exports.
+            Self::MonorepoEscape | Self::MissingNpmDep | Self::ExportShape => {
+                RepairRisk::Aggressive
+            }
+        }
+    }
+
+    /// Whether this pattern is allowed under the given `RepairMode`.
+    pub const fn is_allowed_by(self, mode: RepairMode) -> bool {
+        match self.risk() {
+            RepairRisk::Safe => mode.should_apply(),
+            RepairRisk::Aggressive => mode.allows_aggressive(),
+        }
+    }
+}
+
 impl std::fmt::Display for RepairPattern {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -1050,15 +1086,143 @@ pub struct PiJsRuntimeLimits {
     pub hostcall_timeout_ms: Option<u64>,
 }
 
+/// Controls how the auto-repair pipeline behaves at extension load time.
+///
+/// Precedence (highest to lowest): CLI flag → environment variable
+/// `PI_REPAIR_MODE` → config file → default (`AutoSafe`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RepairMode {
+    /// No repairs are attempted; extensions that fail to load fail normally.
+    Off,
+    /// Log suggested repairs but do not apply them. Useful for auditing what
+    /// would change before enabling auto-repair in production.
+    Suggest,
+    /// Apply only provably safe repairs: file-path fallbacks (Pattern 1) and
+    /// missing-asset stubs (Pattern 2). These never grant new privileges.
+    #[default]
+    AutoSafe,
+    /// Apply all repairs including aggressive heuristics (monorepo escape
+    /// stubs, proxy-based npm stubs, export shape fixups). May change
+    /// observable extension behavior.
+    AutoStrict,
+}
+
+impl RepairMode {
+    /// Whether repairs should actually be applied (not just logged).
+    pub const fn should_apply(self) -> bool {
+        matches!(self, Self::AutoSafe | Self::AutoStrict)
+    }
+
+    /// Whether any repair activity (logging or applying) is enabled.
+    pub const fn is_active(self) -> bool {
+        !matches!(self, Self::Off)
+    }
+
+    /// Whether aggressive/heuristic patterns (3-5) are allowed.
+    pub const fn allows_aggressive(self) -> bool {
+        matches!(self, Self::AutoStrict)
+    }
+
+    /// Parse from a string (env var, CLI flag, config value).
+    pub fn from_str_lossy(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "off" | "none" | "disabled" | "false" | "0" => Self::Off,
+            "suggest" | "log" | "dry-run" | "dry_run" => Self::Suggest,
+            "auto-strict" | "auto_strict" | "strict" | "all" => Self::AutoStrict,
+            // "auto-safe", "safe", "true", "1", or any unrecognised value → default
+            _ => Self::AutoSafe,
+        }
+    }
+}
+
+impl std::fmt::Display for RepairMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Off => write!(f, "off"),
+            Self::Suggest => write!(f, "suggest"),
+            Self::AutoSafe => write!(f, "auto-safe"),
+            Self::AutoStrict => write!(f, "auto-strict"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Privilege monotonicity checker (bd-k5q5.9.1.3)
+// ---------------------------------------------------------------------------
+
+/// Result of a privilege monotonicity check on a proposed repair.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MonotonicityVerdict {
+    /// The repair is safe: the resolved path does not broaden privileges.
+    Safe,
+    /// The repair would escape the extension root directory.
+    EscapesRoot {
+        extension_root: PathBuf,
+        resolved: PathBuf,
+    },
+    /// The repaired path crosses into a different extension's directory.
+    CrossExtension {
+        original_extension: String,
+        resolved: PathBuf,
+    },
+}
+
+impl MonotonicityVerdict {
+    pub const fn is_safe(&self) -> bool {
+        matches!(self, Self::Safe)
+    }
+}
+
+/// Check that a repair-resolved path stays within the extension root.
+///
+/// Ensures repaired artifacts cannot broaden the extension's effective
+/// capability surface by reaching into unrelated code.
+///
+/// # Guarantees
+/// 1. `resolved_path` must be a descendant of `extension_root`.
+/// 2. `resolved_path` must not traverse above the common ancestor of
+///    `extension_root` and `original_path`.
+pub fn verify_repair_monotonicity(
+    extension_root: &Path,
+    _original_path: &Path,
+    resolved_path: &Path,
+) -> MonotonicityVerdict {
+    // Canonicalise the root to resolve symlinks. Fall back to the raw path
+    // if canonicalization fails (the directory might not exist in tests).
+    let canonical_root = extension_root
+        .canonicalize()
+        .unwrap_or_else(|_| extension_root.to_path_buf());
+
+    let canonical_resolved = resolved_path
+        .canonicalize()
+        .unwrap_or_else(|_| resolved_path.to_path_buf());
+
+    // The resolved path MUST be a descendant of the extension root.
+    if !canonical_resolved.starts_with(&canonical_root) {
+        return MonotonicityVerdict::EscapesRoot {
+            extension_root: canonical_root,
+            resolved: canonical_resolved,
+        };
+    }
+
+    MonotonicityVerdict::Safe
+}
+
 #[derive(Debug, Clone)]
 pub struct PiJsRuntimeConfig {
     pub cwd: String,
     pub args: Vec<String>,
     pub env: HashMap<String, String>,
     pub limits: PiJsRuntimeLimits,
-    /// Master switch for the auto-repair pipeline. When `false`, no repair
-    /// patterns will fire and extensions that fail to load will fail normally.
-    pub auto_repair_enabled: bool,
+    /// Controls the auto-repair pipeline behavior. Default: `AutoSafe`.
+    pub repair_mode: RepairMode,
+}
+
+impl PiJsRuntimeConfig {
+    /// Convenience: check if repairs should be applied.
+    pub const fn auto_repair_enabled(&self) -> bool {
+        self.repair_mode.should_apply()
+    }
 }
 
 impl Default for PiJsRuntimeConfig {
@@ -1068,7 +1232,7 @@ impl Default for PiJsRuntimeConfig {
             args: Vec::new(),
             env: HashMap::new(),
             limits: PiJsRuntimeLimits::default(),
-            auto_repair_enabled: true,
+            repair_mode: RepairMode::default(),
         }
     }
 }
@@ -1178,6 +1342,9 @@ impl HostcallTracker {
 struct PiJsModuleState {
     virtual_modules: HashMap<String, String>,
     compiled_sources: HashMap<String, Vec<u8>>,
+    /// Repair mode propagated from `PiJsRuntimeConfig` so the resolver can
+    /// gate fallback patterns without executing any broken code.
+    repair_mode: RepairMode,
 }
 
 impl PiJsModuleState {
@@ -1185,7 +1352,13 @@ impl PiJsModuleState {
         Self {
             virtual_modules: default_virtual_modules(),
             compiled_sources: HashMap::new(),
+            repair_mode: RepairMode::default(),
         }
+    }
+
+    const fn with_repair_mode(mut self, mode: RepairMode) -> Self {
+        self.repair_mode = mode;
+        self
     }
 }
 
@@ -1260,11 +1433,14 @@ impl JsModuleResolver for PiJsResolver {
         // Alias bare Node.js builtins to their node: prefixed virtual modules.
         let canonical = canonical_node_builtin(spec).unwrap_or(spec);
 
-        if self.state.borrow().virtual_modules.contains_key(canonical) {
+        let state = self.state.borrow();
+        if state.virtual_modules.contains_key(canonical) {
             return Ok(canonical.to_string());
         }
+        let repair_mode = state.repair_mode;
+        drop(state);
 
-        if let Some(path) = resolve_module_path(base, spec) {
+        if let Some(path) = resolve_module_path(base, spec, repair_mode) {
             return Ok(path.to_string_lossy().to_string());
         }
 
@@ -1358,7 +1534,7 @@ fn prefix_import_meta_url(module_name: &str, body: &str) -> Vec<u8> {
     format!("import.meta.url = {url_literal};\n{body}").into_bytes()
 }
 
-fn resolve_module_path(base: &str, specifier: &str) -> Option<PathBuf> {
+fn resolve_module_path(base: &str, specifier: &str, repair_mode: RepairMode) -> Option<PathBuf> {
     let specifier = specifier.trim();
     if specifier.is_empty() {
         return None;
@@ -1383,7 +1559,25 @@ fn resolve_module_path(base: &str, specifier: &str) -> Option<PathBuf> {
     }
 
     // Pattern 1 (bd-k5q5.8.2): dist/ → src/ fallback for missing build artifacts.
-    try_dist_to_src_fallback(&path)
+    // Gated by repair_mode (bd-k5q5.9.1.2): only static-analysis operations
+    // (path existence checks) happen here — broken code is never executed.
+    if repair_mode.should_apply() {
+        try_dist_to_src_fallback(&path)
+    } else {
+        if repair_mode == RepairMode::Suggest {
+            // Log what would have been repaired without applying it.
+            if let Some(resolved) = try_dist_to_src_fallback(&path) {
+                tracing::info!(
+                    event = "pijs.repair.suggest",
+                    pattern = "dist_to_src",
+                    original = %path.display(),
+                    resolved = %resolved.display(),
+                    "repair suggestion: would resolve dist/ → src/ (mode=suggest)"
+                );
+            }
+        }
+        None
+    }
 }
 
 /// Auto-repair Pattern 1: when a module path contains `/dist/` and the file
@@ -1393,6 +1587,9 @@ fn resolve_module_path(base: &str, specifier: &str) -> Option<PathBuf> {
 fn try_dist_to_src_fallback(path: &Path) -> Option<PathBuf> {
     let path_str = path.to_string_lossy();
     let idx = path_str.find("/dist/")?;
+
+    // The extension root is the directory containing /dist/.
+    let extension_root = PathBuf::from(&path_str[..idx]);
 
     let src_path = format!("{}/src/{}", &path_str[..idx], &path_str[idx + 6..]);
 
@@ -1404,6 +1601,20 @@ fn try_dist_to_src_fallback(path: &Path) -> Option<PathBuf> {
 
     for candidate in &candidates {
         if let Some(resolved) = resolve_existing_module_candidate(candidate.clone()) {
+            // Privilege monotonicity check (bd-k5q5.9.1.3): ensure the
+            // resolved path stays within the extension root.
+            let verdict = verify_repair_monotonicity(&extension_root, path, &resolved);
+            if !verdict.is_safe() {
+                tracing::warn!(
+                    event = "pijs.repair.monotonicity_violation",
+                    original = %path_str,
+                    resolved = %resolved.display(),
+                    verdict = ?verdict,
+                    "repair blocked: resolved path escapes extension root"
+                );
+                return None;
+            }
+
             tracing::info!(
                 event = "pijs.repair.dist_to_src",
                 original = %path_str,
@@ -6621,7 +6832,9 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
                 .await;
         }
 
-        let module_state = Rc::new(RefCell::new(PiJsModuleState::new()));
+        let module_state = Rc::new(RefCell::new(
+            PiJsModuleState::new().with_repair_mode(config.repair_mode),
+        ));
         runtime
             .set_loader(
                 PiJsResolver {
@@ -6695,9 +6908,14 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
 
     // ---- Auto-repair event infrastructure (bd-k5q5.8.1) --------------------
 
-    /// Whether the auto-repair pipeline is enabled for this runtime.
+    /// The configured repair mode for this runtime.
+    pub const fn repair_mode(&self) -> RepairMode {
+        self.config.repair_mode
+    }
+
+    /// Whether the auto-repair pipeline should apply repairs.
     pub const fn auto_repair_enabled(&self) -> bool {
-        self.config.auto_repair_enabled
+        self.config.repair_mode.should_apply()
     }
 
     /// Record an auto-repair event.  The event is appended to the internal
@@ -11028,21 +11246,25 @@ mod tests {
         let only_json = root.join("only_json.json");
         std::fs::write(&only_json, "{\"ok\":true}\n").expect("write only_json.json");
 
-        let resolved_pkg =
-            resolve_module_path(base.to_string_lossy().as_ref(), "./pkg").expect("resolve ./pkg");
+        let mode = RepairMode::default();
+
+        let resolved_pkg = resolve_module_path(base.to_string_lossy().as_ref(), "./pkg", mode)
+            .expect("resolve ./pkg");
         assert_eq!(resolved_pkg, pkg_index_ts);
 
-        let resolved_module = resolve_module_path(base.to_string_lossy().as_ref(), "./module")
-            .expect("resolve ./module");
+        let resolved_module =
+            resolve_module_path(base.to_string_lossy().as_ref(), "./module", mode)
+                .expect("resolve ./module");
         assert_eq!(resolved_module, module_ts);
 
-        let resolved_json = resolve_module_path(base.to_string_lossy().as_ref(), "./only_json")
-            .expect("resolve ./only_json");
+        let resolved_json =
+            resolve_module_path(base.to_string_lossy().as_ref(), "./only_json", mode)
+                .expect("resolve ./only_json");
         assert_eq!(resolved_json, only_json);
 
         let file_url = format!("file://{}", module_ts.display());
         let resolved_file_url =
-            resolve_module_path(base.to_string_lossy().as_ref(), &file_url).expect("file://");
+            resolve_module_path(base.to_string_lossy().as_ref(), &file_url, mode).expect("file://");
         assert_eq!(resolved_file_url, module_ts);
     }
 
@@ -11829,7 +12051,7 @@ mod tests {
                 args: vec!["--flag".to_string()],
                 env,
                 limits: PiJsRuntimeLimits::default(),
-                auto_repair_enabled: true,
+                repair_mode: RepairMode::default(),
             };
             let runtime = PiJsRuntime::with_clock_and_config(Arc::clone(&clock), config)
                 .await
@@ -11885,7 +12107,7 @@ mod tests {
                 args: vec!["a".to_string(), "b".to_string()],
                 env: HashMap::new(),
                 limits: PiJsRuntimeLimits::default(),
-                auto_repair_enabled: true,
+                repair_mode: RepairMode::default(),
             };
             let runtime = PiJsRuntime::with_clock_and_config(Arc::clone(&clock), config)
                 .await
@@ -13826,7 +14048,7 @@ mod tests {
                 args: vec!["arg1".to_string(), "arg2".to_string()],
                 env: HashMap::new(),
                 limits: PiJsRuntimeLimits::default(),
-                auto_repair_enabled: true,
+                repair_mode: RepairMode::default(),
             };
             let runtime = PiJsRuntime::with_clock_and_config(Arc::clone(&clock), config)
                 .await
@@ -13893,7 +14115,7 @@ mod tests {
                 args: Vec::new(),
                 env: HashMap::new(),
                 limits: PiJsRuntimeLimits::default(),
-                auto_repair_enabled: true,
+                repair_mode: RepairMode::default(),
             };
             let runtime = PiJsRuntime::with_clock_and_config(Arc::clone(&clock), config)
                 .await
