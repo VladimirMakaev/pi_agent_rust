@@ -14,7 +14,7 @@ use futures::executor::block_on;
 use pi::extensions::{
     ExtensionEventName, ExtensionManager, JsExtensionLoadSpec, JsExtensionRuntimeHandle,
 };
-use pi::extensions_js::{PiJsRuntime, PiJsRuntimeConfig};
+use pi::extensions_js::{HostcallKind, HostcallRequest, PiJsRuntime, PiJsRuntimeConfig};
 use pi::scheduler::HostcallOutcome;
 use pi::tools::ToolRegistry;
 use serde_json::{Value, json};
@@ -556,6 +556,61 @@ fn bench_js_runtime(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_hostcall_params_hash(c: &mut Criterion) {
+    let small_payload = json!({
+        "name": "read",
+        "input": {
+            "path": "README.md"
+        }
+    });
+
+    let mut large_input = serde_json::Map::new();
+    for idx in 0..64 {
+        large_input.insert(format!("k{idx:02}"), Value::String("x".repeat(64)));
+    }
+    large_input.insert(
+        "nested".to_string(),
+        json!({
+            "z": 1,
+            "a": [1, 2, 3, {"k": "v"}]
+        }),
+    );
+    let large_payload = Value::Object(large_input);
+
+    let req_small = HostcallRequest {
+        call_id: "bench-hash-small".to_string(),
+        kind: HostcallKind::Tool {
+            name: "read".to_string(),
+        },
+        payload: small_payload,
+        trace_id: 1,
+        extension_id: Some("ext.bench".to_string()),
+    };
+
+    let req_large = HostcallRequest {
+        call_id: "bench-hash-large".to_string(),
+        kind: HostcallKind::Tool {
+            name: "read".to_string(),
+        },
+        payload: large_payload,
+        trace_id: 2,
+        extension_id: Some("ext.bench".to_string()),
+    };
+
+    let mut group = c.benchmark_group("ext_hostcall_hash");
+    group.throughput(Throughput::Elements(1));
+
+    group.bench_function("request_small", |b| {
+        b.iter(|| black_box(req_small.params_hash()));
+    });
+
+    group.bench_function("request_large", |b| {
+        b.iter(|| black_box(req_large.params_hash()));
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     name = benches;
     config = criterion_config();
@@ -567,6 +622,7 @@ criterion_group!(
         bench_extension_load_init,
         bench_extension_tool_call_roundtrip,
         bench_extension_event_hook_dispatch,
-        bench_js_runtime
+        bench_js_runtime,
+        bench_hostcall_params_hash
 );
 criterion_main!(benches);
