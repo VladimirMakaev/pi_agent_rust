@@ -187,10 +187,7 @@ pub fn truncate_head(content: &str, max_lines: usize, max_bytes: usize) -> Trunc
         };
     }
 
-    // Iterate lines lazily (no Vec allocation).
-    // Pre-allocate up to the max output byte budget to avoid repeated growth
-    // reallocations while appending line-by-line.
-    let mut output = String::with_capacity(max_bytes.min(total_bytes));
+    // Iterate lines lazily (no Vec allocation), tracking the largest valid prefix.
     let mut line_count = 0;
     let mut byte_count: usize = 0;
     let mut truncated_by = None;
@@ -208,14 +205,13 @@ pub fn truncate_head(content: &str, max_lines: usize, max_bytes: usize) -> Trunc
             break;
         }
 
-        if i > 0 {
-            output.push('\n');
-        }
-        output.push_str(line);
         line_count += 1;
         byte_count += line_bytes;
     }
 
+    // The accepted output is always a prefix of the original string.
+    // Build it with one copy instead of repeated push operations.
+    let output = content.get(..byte_count).unwrap_or_default().to_string();
     let output_bytes = output.len();
 
     TruncationResult {

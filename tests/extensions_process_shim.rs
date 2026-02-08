@@ -23,6 +23,7 @@ fn config_with_env(env: Vec<(&str, &str)>) -> PiJsRuntimeConfig {
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect(),
         limits: PiJsRuntimeLimits::default(),
+        auto_repair_enabled: true,
     }
 }
 
@@ -32,6 +33,7 @@ fn default_config() -> PiJsRuntimeConfig {
         args: vec![],
         env: HashMap::new(),
         limits: PiJsRuntimeLimits::default(),
+        auto_repair_enabled: true,
     }
 }
 

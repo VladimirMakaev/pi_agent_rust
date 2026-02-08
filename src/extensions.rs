@@ -9,8 +9,8 @@ use crate::connectors::http::HttpConnector;
 use crate::error::{Error, Result};
 use crate::extension_events::{ToolCallEventResult, ToolResultEventResult};
 use crate::extensions_js::{
-    ExtensionToolDef, HostcallKind, HostcallRequest, PiJsRuntime, PiJsRuntimeConfig, js_to_json,
-    json_to_js,
+    ExtensionRepairEvent, ExtensionToolDef, HostcallKind, HostcallRequest, PiJsRuntime,
+    PiJsRuntimeConfig, js_to_json, json_to_js,
 };
 use crate::permissions::PermissionStore;
 use crate::scheduler::HostcallOutcome;
@@ -409,30 +409,36 @@ impl CompatibilityScanner {
         text: &str,
         flagged: &mut BTreeMap<(String, String, String), Vec<CompatEvidence>>,
     ) {
-        if let Some(column) = find_regex_column(text, new_function_regex()) {
-            let evidence = CompatEvidence::new(file.to_string(), line, column, text.to_string());
-            flagged
-                .entry((
-                    "flagged_api".to_string(),
-                    "new Function(...)".to_string(),
-                    "Avoid dynamic code generation when possible; prefer static bundling. If required, ensure the function body is a literal and keep it minimal."
-                        .to_string(),
-                ))
-                .or_default()
-                .push(evidence);
+        if text.contains("Function") {
+            if let Some(column) = find_regex_column(text, new_function_regex()) {
+                let evidence =
+                    CompatEvidence::new(file.to_string(), line, column, text.to_string());
+                flagged
+                    .entry((
+                        "flagged_api".to_string(),
+                        "new Function(...)".to_string(),
+                        "Avoid dynamic code generation when possible; prefer static bundling. If required, ensure the function body is a literal and keep it minimal."
+                            .to_string(),
+                    ))
+                    .or_default()
+                    .push(evidence);
+            }
         }
 
-        if let Some(column) = find_regex_column(text, eval_regex()) {
-            let evidence = CompatEvidence::new(file.to_string(), line, column, text.to_string());
-            flagged
-                .entry((
-                    "flagged_api".to_string(),
-                    "eval(...)".to_string(),
-                    "Avoid eval; prefer parsing/dispatch on structured data. If unavoidable, keep the evaluated string literal and log evidence."
-                        .to_string(),
-                ))
-                .or_default()
-                .push(evidence);
+        if text.contains("eval") {
+            if let Some(column) = find_regex_column(text, eval_regex()) {
+                let evidence =
+                    CompatEvidence::new(file.to_string(), line, column, text.to_string());
+                flagged
+                    .entry((
+                        "flagged_api".to_string(),
+                        "eval(...)".to_string(),
+                        "Avoid eval; prefer parsing/dispatch on structured data. If unavoidable, keep the evaluated string literal and log evidence."
+                            .to_string(),
+                    ))
+                    .or_default()
+                    .push(evidence);
+            }
         }
     }
 
@@ -442,28 +448,36 @@ impl CompatibilityScanner {
         text: &str,
         forbidden: &mut BTreeMap<(String, String, String), Vec<CompatEvidence>>,
     ) {
-        if let Some(column) = find_regex_column(text, binding_regex()) {
-            let evidence = CompatEvidence::new(file.to_string(), line, column, text.to_string());
-            forbidden
-                .entry((
-                    "forbidden_api".to_string(),
-                    "process.binding(...)".to_string(),
-                    "Native module access is forbidden; remove this usage.".to_string(),
-                ))
-                .or_default()
-                .push(evidence);
-        }
+        if text.contains("process") {
+            if text.contains("binding") {
+                if let Some(column) = find_regex_column(text, binding_regex()) {
+                    let evidence =
+                        CompatEvidence::new(file.to_string(), line, column, text.to_string());
+                    forbidden
+                        .entry((
+                            "forbidden_api".to_string(),
+                            "process.binding(...)".to_string(),
+                            "Native module access is forbidden; remove this usage.".to_string(),
+                        ))
+                        .or_default()
+                        .push(evidence);
+                }
+            }
 
-        if let Some(column) = find_regex_column(text, dlopen_regex()) {
-            let evidence = CompatEvidence::new(file.to_string(), line, column, text.to_string());
-            forbidden
-                .entry((
-                    "forbidden_api".to_string(),
-                    "process.dlopen(...)".to_string(),
-                    "Native addon loading is forbidden; remove this usage.".to_string(),
-                ))
-                .or_default()
-                .push(evidence);
+            if text.contains("dlopen") {
+                if let Some(column) = find_regex_column(text, dlopen_regex()) {
+                    let evidence =
+                        CompatEvidence::new(file.to_string(), line, column, text.to_string());
+                    forbidden
+                        .entry((
+                            "forbidden_api".to_string(),
+                            "process.dlopen(...)".to_string(),
+                            "Native addon loading is forbidden; remove this usage.".to_string(),
+                        ))
+                        .or_default()
+                        .push(evidence);
+                }
+            }
         }
     }
 }
@@ -614,6 +628,10 @@ fn dlopen_regex() -> &'static Regex {
 }
 
 fn extract_import_specifiers(line: &str) -> Vec<(String, usize)> {
+    if !line.contains("import") {
+        return Vec::new();
+    }
+
     let mut out = Vec::new();
 
     if let Some(caps) = import_from_regex().captures(line) {
@@ -638,6 +656,10 @@ fn extract_import_specifiers(line: &str) -> Vec<(String, usize)> {
 }
 
 fn extract_require_specifiers(line: &str) -> Vec<(String, usize)> {
+    if !line.contains("require") {
+        return Vec::new();
+    }
+
     let mut out = Vec::new();
     for caps in require_regex().captures_iter(line) {
         if let Some(m) = caps.get(1) {
@@ -650,36 +672,52 @@ fn extract_require_specifiers(line: &str) -> Vec<(String, usize)> {
 fn extract_pi_capabilities(line: &str) -> Vec<(String, String, usize)> {
     let mut out = Vec::new();
 
-    for caps in pi_tool_regex().captures_iter(line) {
-        let Some(tool) = caps.get(1) else { continue };
-        let tool_name = tool.as_str().trim().to_ascii_lowercase();
-        let (capability, reason) = match tool_name.as_str() {
-            "read" | "grep" | "find" | "ls" => ("read", format!("pi.tool({tool_name})")),
-            "write" | "edit" => ("write", format!("pi.tool({tool_name})")),
-            "bash" => ("exec", "pi.tool(bash)".to_string()),
-            _ => ("tool", format!("pi.tool({tool_name})")),
-        };
-        out.push((capability.to_string(), reason, tool.start() + 1));
+    if !line.contains("pi") {
+        return out;
     }
 
-    if let Some(column) = find_regex_column(line, pi_exec_regex()) {
-        out.push(("exec".to_string(), "pi.exec".to_string(), column));
+    if line.contains("pi.tool") {
+        for caps in pi_tool_regex().captures_iter(line) {
+            let Some(tool) = caps.get(1) else { continue };
+            let tool_name = tool.as_str().trim().to_ascii_lowercase();
+            let (capability, reason) = match tool_name.as_str() {
+                "read" | "grep" | "find" | "ls" => ("read", format!("pi.tool({tool_name})")),
+                "write" | "edit" => ("write", format!("pi.tool({tool_name})")),
+                "bash" => ("exec", "pi.tool(bash)".to_string()),
+                _ => ("tool", format!("pi.tool({tool_name})")),
+            };
+            out.push((capability.to_string(), reason, tool.start() + 1));
+        }
     }
 
-    if let Some(column) = find_regex_column(line, pi_http_regex()) {
-        out.push(("http".to_string(), "pi.http".to_string(), column));
+    if line.contains("pi.exec") {
+        if let Some(column) = find_regex_column(line, pi_exec_regex()) {
+            out.push(("exec".to_string(), "pi.exec".to_string(), column));
+        }
     }
 
-    if let Some(column) = find_regex_column(line, pi_log_regex()) {
-        out.push(("log".to_string(), "pi.log".to_string(), column));
+    if line.contains("pi.http") {
+        if let Some(column) = find_regex_column(line, pi_http_regex()) {
+            out.push(("http".to_string(), "pi.http".to_string(), column));
+        }
     }
 
-    if let Some(column) = find_regex_column(line, pi_session_regex()) {
-        out.push(("session".to_string(), "pi.session.*".to_string(), column));
+    if line.contains("pi.log") {
+        if let Some(column) = find_regex_column(line, pi_log_regex()) {
+            out.push(("log".to_string(), "pi.log".to_string(), column));
+        }
     }
 
-    if let Some(column) = find_regex_column(line, pi_ui_regex()) {
-        out.push(("ui".to_string(), "pi.ui.*".to_string(), column));
+    if line.contains("pi.session") {
+        if let Some(column) = find_regex_column(line, pi_session_regex()) {
+            out.push(("session".to_string(), "pi.session.*".to_string(), column));
+        }
+    }
+
+    if line.contains("pi.ui") {
+        if let Some(column) = find_regex_column(line, pi_ui_regex()) {
+            out.push(("ui".to_string(), "pi.ui.*".to_string(), column));
+        }
     }
 
     out
@@ -5239,6 +5277,10 @@ enum JsRuntimeCommand {
         value: Value,
         reply: oneshot::Sender<Result<()>>,
     },
+    /// Drain accumulated auto-repair events from the runtime.
+    DrainRepairEvents {
+        reply: oneshot::Sender<Vec<ExtensionRepairEvent>>,
+    },
     /// Request the runtime thread to shut down gracefully.
     Shutdown,
 }
@@ -5493,6 +5535,10 @@ impl JsExtensionRuntimeHandle {
                                 })
                                 .await;
                             let _ = reply.send(&cx, result);
+                        }
+                        JsRuntimeCommand::DrainRepairEvents { reply } => {
+                            let events = js_runtime.drain_repair_events();
+                            let _ = reply.send(&cx, events);
                         }
                     }
                 }
@@ -5824,6 +5870,17 @@ impl JsExtensionRuntimeHandle {
                     "JS extension runtime flag update timed out after {timeout_ms}ms"
                 )))
             })
+    }
+
+    /// Drain all accumulated auto-repair events from the JS runtime.
+    pub async fn drain_repair_events(&self) -> Vec<ExtensionRepairEvent> {
+        let cx = cx_with_deadline(EXTENSION_QUERY_BUDGET_MS);
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let command = JsRuntimeCommand::DrainRepairEvents { reply: reply_tx };
+        let Ok(()) = self.sender.send(&cx, command).await else {
+            return Vec::new();
+        };
+        reply_rx.recv(&cx).await.unwrap_or_default()
     }
 
     pub async fn provider_stream_simple_start(

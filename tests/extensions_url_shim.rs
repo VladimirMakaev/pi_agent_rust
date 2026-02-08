@@ -16,6 +16,7 @@ fn default_config() -> PiJsRuntimeConfig {
         args: vec![],
         env: HashMap::new(),
         limits: PiJsRuntimeLimits::default(),
+        auto_repair_enabled: true,
     }
 }
 

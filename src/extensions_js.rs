@@ -962,6 +962,56 @@ fn format_quickjs_exception<'js>(ctx: &Ctx<'js>, caught: Value<'js>) -> String {
 // Integrated PiJS Runtime with Promise Bridge (bd-2ke)
 // ============================================================================
 
+/// Classification of auto-repair patterns applied at extension load time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RepairPattern {
+    /// Pattern 1: `./dist/X.js` resolved to `./src/X.ts` because the build
+    /// output directory was missing.
+    DistToSrc,
+    /// Pattern 2: `readFileSync` on a missing bundled asset (HTML/CSS/JS)
+    /// within the extension directory returned an empty string fallback.
+    MissingAsset,
+    /// Pattern 3: a monorepo sibling import (`../../shared`) was replaced
+    /// with a generated stub module.
+    MonorepoEscape,
+    /// Pattern 4: a bare npm package specifier was satisfied by a proxy-based
+    /// universal stub.
+    MissingNpmDep,
+    /// Pattern 5: CJS/ESM default-export mismatch was corrected by trying
+    /// alternative lifecycle method names.
+    ExportShape,
+}
+
+impl std::fmt::Display for RepairPattern {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DistToSrc => write!(f, "dist_to_src"),
+            Self::MissingAsset => write!(f, "missing_asset"),
+            Self::MonorepoEscape => write!(f, "monorepo_escape"),
+            Self::MissingNpmDep => write!(f, "missing_npm_dep"),
+            Self::ExportShape => write!(f, "export_shape"),
+        }
+    }
+}
+
+/// A structured record emitted whenever the runtime auto-repairs an extension
+/// load failure.
+#[derive(Debug, Clone)]
+pub struct ExtensionRepairEvent {
+    /// Which extension triggered the repair.
+    pub extension_id: String,
+    /// Which pattern was applied.
+    pub pattern: RepairPattern,
+    /// The original error message that triggered the repair attempt.
+    pub original_error: String,
+    /// Human-readable description of the corrective action taken.
+    pub repair_action: String,
+    /// Whether the repair successfully resolved the load failure.
+    pub success: bool,
+    /// Wall-clock timestamp (ms since UNIX epoch).
+    pub timestamp_ms: u64,
+}
+
 /// Statistics from a tick execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PiJsTickStats {
@@ -981,6 +1031,8 @@ pub struct PiJsTickStats {
     pub memory_used_bytes: u64,
     /// Peak observed QuickJS `memory_used_size` in bytes.
     pub peak_memory_used_bytes: u64,
+    /// Number of auto-repair events recorded since the runtime was created.
+    pub repairs_total: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1004,6 +1056,9 @@ pub struct PiJsRuntimeConfig {
     pub args: Vec<String>,
     pub env: HashMap<String, String>,
     pub limits: PiJsRuntimeLimits,
+    /// Master switch for the auto-repair pipeline. When `false`, no repair
+    /// patterns will fire and extensions that fail to load will fail normally.
+    pub auto_repair_enabled: bool,
 }
 
 impl Default for PiJsRuntimeConfig {
@@ -1013,6 +1068,7 @@ impl Default for PiJsRuntimeConfig {
             args: Vec::new(),
             env: HashMap::new(),
             limits: PiJsRuntimeLimits::default(),
+            auto_repair_enabled: true,
         }
     }
 }
@@ -1322,7 +1378,43 @@ fn resolve_module_path(base: &str, specifier: &str) -> Option<PathBuf> {
         return None;
     };
 
-    resolve_existing_module_candidate(path)
+    if let Some(resolved) = resolve_existing_module_candidate(path.clone()) {
+        return Some(resolved);
+    }
+
+    // Pattern 1 (bd-k5q5.8.2): dist/ → src/ fallback for missing build artifacts.
+    try_dist_to_src_fallback(&path)
+}
+
+/// Auto-repair Pattern 1: when a module path contains `/dist/` and the file
+/// does not exist, try the equivalent path under `/src/` with `.ts`/`.tsx`
+/// extensions.  This handles the common case where an npm-published extension
+/// references compiled output that was never built.
+fn try_dist_to_src_fallback(path: &Path) -> Option<PathBuf> {
+    let path_str = path.to_string_lossy();
+    let idx = path_str.find("/dist/")?;
+
+    let src_path = format!("{}/src/{}", &path_str[..idx], &path_str[idx + 6..]);
+
+    let candidates = [
+        PathBuf::from(&src_path),
+        PathBuf::from(src_path.replace(".js", ".ts")),
+        PathBuf::from(src_path.replace(".js", ".tsx")),
+    ];
+
+    for candidate in &candidates {
+        if let Some(resolved) = resolve_existing_module_candidate(candidate.clone()) {
+            tracing::info!(
+                event = "pijs.repair.dist_to_src",
+                original = %path_str,
+                resolved = %resolved.display(),
+                "auto-repair: resolved dist/ → src/ fallback"
+            );
+            return Some(resolved);
+        }
+    }
+
+    None
 }
 
 fn resolve_existing_file(path: PathBuf) -> Option<PathBuf> {
@@ -6471,6 +6563,9 @@ pub struct PiJsRuntime<C: SchedulerClock = WallClock> {
     /// Additional filesystem roots that `readFileSync` may access (e.g.
     /// extension directories).  Populated lazily as extensions are loaded.
     allowed_read_roots: Arc<std::sync::Mutex<Vec<PathBuf>>>,
+    /// Accumulated auto-repair events.  Use [`Self::record_repair`] to append
+    /// and [`Self::drain_repair_events`] to retrieve and clear.
+    repair_events: Arc<std::sync::Mutex<Vec<ExtensionRepairEvent>>>,
 }
 
 #[allow(clippy::future_not_send)]
@@ -6563,6 +6658,7 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
             interrupt_budget,
             config,
             allowed_read_roots: Arc::new(std::sync::Mutex::new(Vec::new())),
+            repair_events: Arc::new(std::sync::Mutex::new(Vec::new())),
         };
 
         instance.install_pi_bridge().await?;
@@ -6595,6 +6691,45 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
         // Drain any immediate jobs (Promise.resolve chains, etc.)
         self.drain_jobs().await?;
         Ok(())
+    }
+
+    // ---- Auto-repair event infrastructure (bd-k5q5.8.1) --------------------
+
+    /// Whether the auto-repair pipeline is enabled for this runtime.
+    pub const fn auto_repair_enabled(&self) -> bool {
+        self.config.auto_repair_enabled
+    }
+
+    /// Record an auto-repair event.  The event is appended to the internal
+    /// log and emitted as a structured tracing span so external log sinks
+    /// can capture it.
+    pub fn record_repair(&self, event: ExtensionRepairEvent) {
+        tracing::info!(
+            event = "pijs.repair",
+            extension_id = %event.extension_id,
+            pattern = %event.pattern,
+            success = event.success,
+            repair_action = %event.repair_action,
+            "auto-repair applied"
+        );
+        if let Ok(mut events) = self.repair_events.lock() {
+            events.push(event);
+        }
+    }
+
+    /// Drain all accumulated repair events, leaving the internal buffer
+    /// empty.  Useful for conformance reports that need to distinguish
+    /// clean passes from repaired passes.
+    pub fn drain_repair_events(&self) -> Vec<ExtensionRepairEvent> {
+        self.repair_events
+            .lock()
+            .map(|mut v| std::mem::take(&mut *v))
+            .unwrap_or_default()
+    }
+
+    /// Number of repair events recorded since the runtime was created.
+    pub fn repair_count(&self) -> u64 {
+        self.repair_events.lock().map_or(0, |v| v.len() as u64)
     }
 
     /// Evaluate a JavaScript file.
@@ -6805,6 +6940,7 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
                 .store(peak, std::sync::atomic::Ordering::SeqCst);
         }
         stats.peak_memory_used_bytes = peak;
+        stats.repairs_total = self.repair_count();
 
         if let Some(limit) = self.config.limits.memory_limit_bytes {
             let limit = u64::try_from(limit).unwrap_or(u64::MAX);
@@ -11693,6 +11829,7 @@ mod tests {
                 args: vec!["--flag".to_string()],
                 env,
                 limits: PiJsRuntimeLimits::default(),
+                auto_repair_enabled: true,
             };
             let runtime = PiJsRuntime::with_clock_and_config(Arc::clone(&clock), config)
                 .await
@@ -11748,6 +11885,7 @@ mod tests {
                 args: vec!["a".to_string(), "b".to_string()],
                 env: HashMap::new(),
                 limits: PiJsRuntimeLimits::default(),
+                auto_repair_enabled: true,
             };
             let runtime = PiJsRuntime::with_clock_and_config(Arc::clone(&clock), config)
                 .await
@@ -13688,6 +13826,7 @@ mod tests {
                 args: vec!["arg1".to_string(), "arg2".to_string()],
                 env: HashMap::new(),
                 limits: PiJsRuntimeLimits::default(),
+                auto_repair_enabled: true,
             };
             let runtime = PiJsRuntime::with_clock_and_config(Arc::clone(&clock), config)
                 .await
@@ -13754,6 +13893,7 @@ mod tests {
                 args: Vec::new(),
                 env: HashMap::new(),
                 limits: PiJsRuntimeLimits::default(),
+                auto_repair_enabled: true,
             };
             let runtime = PiJsRuntime::with_clock_and_config(Arc::clone(&clock), config)
                 .await
