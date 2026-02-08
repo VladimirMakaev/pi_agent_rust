@@ -6246,6 +6246,128 @@ export const SEMRESATTRS_SERVICE_VERSION = 'service.version';
         .to_string(),
     );
 
+    // ── npm package stubs for extension conformance ──
+
+    modules.insert(
+        "openai".to_string(),
+        r#"
+class OpenAI {
+    constructor(config = {}) { this.config = config; }
+    get chat() {
+        return { completions: { create: async () => ({ choices: [{ message: { content: "" } }] }) } };
+    }
+}
+export default OpenAI;
+export { OpenAI };
+"#
+        .trim()
+        .to_string(),
+    );
+
+    modules.insert(
+        "adm-zip".to_string(),
+        r#"
+class AdmZip {
+    constructor(path) { this.path = path; this.entries = []; }
+    getEntries() { return this.entries; }
+    readAsText() { return ""; }
+    extractAllTo() {}
+    addFile() {}
+    writeZip() {}
+}
+export default AdmZip;
+"#
+        .trim()
+        .to_string(),
+    );
+
+    modules.insert(
+        "linkedom".to_string(),
+        r#"
+export function parseHTML(html) {
+    const doc = {
+        documentElement: { outerHTML: html || "" },
+        querySelector: () => null,
+        querySelectorAll: () => [],
+        createElement: (tag) => ({ tagName: tag, textContent: "", innerHTML: "", children: [], appendChild() {} }),
+        body: { textContent: "", innerHTML: "", children: [] },
+        title: "",
+    };
+    return { document: doc, window: { document: doc } };
+}
+"#
+        .trim()
+        .to_string(),
+    );
+
+    modules.insert(
+        "@sourcegraph/scip-typescript".to_string(),
+        r"
+export const scip = { Index: class {} };
+export default { scip };
+"
+        .trim()
+        .to_string(),
+    );
+
+    modules.insert(
+        "p-limit".to_string(),
+        r"
+export default function pLimit(concurrency) {
+    const queue = [];
+    let active = 0;
+    const next = () => {
+        active--;
+        if (queue.length > 0) queue.shift()();
+    };
+    const run = async (fn, resolve, ...args) => {
+        active++;
+        const result = (async () => fn(...args))();
+        resolve(result);
+        try { await result; } catch {}
+        next();
+    };
+    const enqueue = (fn, resolve, ...args) => {
+        queue.push(run.bind(null, fn, resolve, ...args));
+        (async () => { if (active < concurrency && queue.length > 0) queue.shift()(); })();
+    };
+    const generator = (fn, ...args) => new Promise(resolve => enqueue(fn, resolve, ...args));
+    Object.defineProperties(generator, {
+        activeCount: { get: () => active },
+        pendingCount: { get: () => queue.length },
+        clearQueue: { value: () => { queue.length = 0; } },
+    });
+    return generator;
+}
+"
+        .trim()
+        .to_string(),
+    );
+
+    // Also register the deep import path used by qualisero-pi-agent-scip
+    modules.insert(
+        "@sourcegraph/scip-typescript/dist/src/scip.js".to_string(),
+        r"
+export const scip = { Index: class {} };
+export default { scip };
+"
+        .trim()
+        .to_string(),
+    );
+
+    modules.insert(
+        "unpdf".to_string(),
+        r#"
+export async function getDocumentProxy(data) {
+    return { numPages: 0, getPage: async () => ({ getTextContent: async () => ({ items: [] }) }) };
+}
+export async function extractText(data) { return { totalPages: 0, text: "" }; }
+export async function renderPageAsImage() { return new Uint8Array(); }
+"#
+        .trim()
+        .to_string(),
+    );
+
     modules
 }
 
@@ -6304,6 +6426,9 @@ pub struct PiJsRuntime<C: SchedulerClock = WallClock> {
     peak_memory_used_bytes: Arc<AtomicU64>,
     interrupt_budget: Rc<InterruptBudget>,
     config: PiJsRuntimeConfig,
+    /// Additional filesystem roots that `readFileSync` may access (e.g.
+    /// extension directories).  Populated lazily as extensions are loaded.
+    allowed_read_roots: Arc<std::sync::Mutex<Vec<PathBuf>>>,
 }
 
 #[allow(clippy::future_not_send)]
@@ -6395,6 +6520,7 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
             peak_memory_used_bytes,
             interrupt_budget,
             config,
+            allowed_read_roots: Arc::new(std::sync::Mutex::new(Vec::new())),
         };
 
         instance.install_pi_bridge().await?;
@@ -6841,6 +6967,17 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
     /// 2. JS wrappers (`pi.*`) that create Promises and register them
     ///
     /// This avoids lifetime issues with returning Promises from Rust closures.
+    /// Register an additional filesystem root that `readFileSync` is allowed
+    /// to access.  Called before loading each extension so it can read its own
+    /// bundled assets (HTML templates, markdown docs, etc.).
+    pub fn add_allowed_read_root(&self, root: PathBuf) {
+        if let Ok(mut roots) = self.allowed_read_roots.lock() {
+            if !roots.contains(&root) {
+                roots.push(root);
+            }
+        }
+    }
+
     #[allow(clippy::too_many_lines)]
     async fn install_pi_bridge(&self) -> Result<()> {
         let hostcall_queue = self.hostcall_queue.clone();
@@ -6852,6 +6989,7 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
         let process_cwd = self.config.cwd.clone();
         let process_args = self.config.args.clone();
         let env = self.config.env.clone();
+        let allowed_read_roots = Arc::clone(&self.allowed_read_roots);
 
         self.context
             .with(|ctx| {
@@ -7402,12 +7540,14 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
 
                 // __pi_host_read_file_sync(path) -> string (throws on error)
                 // Synchronous real-filesystem read fallback for node:fs readFileSync.
-                // Reads are confined to the extension runtime cwd to prevent host
-                // filesystem probing outside the project boundary.
+                // Reads are confined to the workspace root AND any registered
+                // extension roots to prevent host filesystem probing outside
+                // project / extension boundaries.
                 global.set(
                     "__pi_host_read_file_sync",
                     Func::from({
                         let process_cwd = process_cwd.clone();
+                        let allowed_read_roots = Arc::clone(&allowed_read_roots);
                         move |path: String| -> rquickjs::Result<String> {
                             let workspace_root = std::fs::canonicalize(&process_cwd)
                                 .unwrap_or_else(|_| PathBuf::from(&process_cwd));
@@ -7426,8 +7566,17 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
                                             if let Ok(canonical_parent) =
                                                 std::fs::canonicalize(parent)
                                             {
+                                                // Check workspace root
                                                 if canonical_parent.starts_with(&workspace_root) {
                                                     return Ok(requested_abs.clone());
+                                                }
+                                                // Check allowed extension roots
+                                                if let Ok(roots) = allowed_read_roots.lock() {
+                                                    for root in roots.iter() {
+                                                        if canonical_parent.starts_with(root) {
+                                                            return Ok(requested_abs.clone());
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
@@ -7441,7 +7590,14 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
                                     )
                                 })?;
 
-                            if !checked_path.starts_with(&workspace_root) {
+                            // Allow reads from workspace root or any registered
+                            // extension root directory.
+                            let allowed = checked_path.starts_with(&workspace_root) || {
+                                allowed_read_roots.lock().is_ok_and(|roots| {
+                                    roots.iter().any(|root| checked_path.starts_with(root))
+                                })
+                            };
+                            if !allowed {
                                 return Err(rquickjs::Error::new_loading_message(
                                     &path,
                                     "host read denied: path outside extension root".to_string(),

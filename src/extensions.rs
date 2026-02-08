@@ -1372,46 +1372,64 @@ impl ExtensionPolicy {
 }
 
 pub fn required_capability_for_host_call(call: &HostCallPayload) -> Option<String> {
-    let method = call.method.trim().to_ascii_lowercase();
+    let method = call.method.trim();
     if method.is_empty() {
         return None;
     }
 
-    match method.as_str() {
-        "fs" => {
-            let op = call
-                .params
-                .get("op")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .unwrap_or_default();
-            let op = FsOp::parse(op)?;
-            Some(op.required_capability().to_string())
+    if method.eq_ignore_ascii_case("fs") {
+        let op = call
+            .params
+            .get("op")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        let op = FsOp::parse(op)?;
+        return Some(op.required_capability().to_string());
+    }
+
+    if method.eq_ignore_ascii_case("tool") {
+        let tool_name = call
+            .params
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)?;
+        if tool_name.is_empty() {
+            return None;
         }
-        "tool" => {
-            let tool_name = call
-                .params
-                .get("name")
-                .and_then(Value::as_str)
-                .map(|name| name.trim().to_ascii_lowercase())?;
-            if tool_name.is_empty() {
-                return None;
-            }
-            match tool_name.as_str() {
-                "read" | "grep" | "find" | "ls" => Some("read".to_string()),
-                "write" | "edit" => Some("write".to_string()),
-                "bash" => Some("exec".to_string()),
-                _ => Some("tool".to_string()),
-            }
+
+        if tool_name.eq_ignore_ascii_case("read")
+            || tool_name.eq_ignore_ascii_case("grep")
+            || tool_name.eq_ignore_ascii_case("find")
+            || tool_name.eq_ignore_ascii_case("ls")
+        {
+            return Some("read".to_string());
         }
-        "exec" => Some("exec".to_string()),
-        "env" => Some("env".to_string()),
-        "http" => Some("http".to_string()),
-        "session" => Some("session".to_string()),
-        "ui" => Some("ui".to_string()),
-        "events" => Some("events".to_string()),
-        "log" => Some("log".to_string()),
-        _ => None,
+        if tool_name.eq_ignore_ascii_case("write") || tool_name.eq_ignore_ascii_case("edit") {
+            return Some("write".to_string());
+        }
+        if tool_name.eq_ignore_ascii_case("bash") {
+            return Some("exec".to_string());
+        }
+        return Some("tool".to_string());
+    }
+
+    if method.eq_ignore_ascii_case("exec") {
+        Some("exec".to_string())
+    } else if method.eq_ignore_ascii_case("env") {
+        Some("env".to_string())
+    } else if method.eq_ignore_ascii_case("http") {
+        Some("http".to_string())
+    } else if method.eq_ignore_ascii_case("session") {
+        Some("session".to_string())
+    } else if method.eq_ignore_ascii_case("ui") {
+        Some("ui".to_string())
+    } else if method.eq_ignore_ascii_case("events") {
+        Some("events".to_string())
+    } else if method.eq_ignore_ascii_case("log") {
+        Some("log".to_string())
+    } else {
+        None
     }
 }
 
@@ -1431,14 +1449,24 @@ pub enum FsOp {
 
 impl FsOp {
     fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "read" => Some(Self::Read),
-            "write" => Some(Self::Write),
-            "list" | "readdir" => Some(Self::List),
-            "stat" => Some(Self::Stat),
-            "mkdir" => Some(Self::Mkdir),
-            "delete" | "remove" | "rm" => Some(Self::Delete),
-            _ => None,
+        let value = value.trim();
+        if value.eq_ignore_ascii_case("read") {
+            Some(Self::Read)
+        } else if value.eq_ignore_ascii_case("write") {
+            Some(Self::Write)
+        } else if value.eq_ignore_ascii_case("list") || value.eq_ignore_ascii_case("readdir") {
+            Some(Self::List)
+        } else if value.eq_ignore_ascii_case("stat") {
+            Some(Self::Stat)
+        } else if value.eq_ignore_ascii_case("mkdir") {
+            Some(Self::Mkdir)
+        } else if value.eq_ignore_ascii_case("delete")
+            || value.eq_ignore_ascii_case("remove")
+            || value.eq_ignore_ascii_case("rm")
+        {
+            Some(Self::Delete)
+        } else {
+            None
         }
     }
 
@@ -5946,6 +5974,15 @@ async fn load_one_extension(
     host: &JsRuntimeHost,
     spec: &JsExtensionLoadSpec,
 ) -> Result<()> {
+    // Register the extension's root directory so `readFileSync` can access
+    // bundled assets (HTML templates, markdown docs, etc.) within the
+    // extension's own directory tree.
+    if let Some(ext_dir) = spec.entry_path.parent() {
+        if let Ok(canonical) = std::fs::canonicalize(ext_dir) {
+            runtime.add_allowed_read_root(canonical);
+        }
+    }
+
     let entry_specifier = spec.entry_path.display().to_string();
     let meta = json!({
         "name": spec.name,

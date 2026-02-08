@@ -340,9 +340,66 @@ export function getHashes() {
   return ['md5', 'sha1', 'sha256', 'sha512'];
 }
 
+export function pbkdf2Sync(password, salt, iterations, keylen, digest) {
+  // Stub: returns a buffer of the requested length filled with deterministic
+  // bytes derived from the inputs.  Real PBKDF2 requires a native hostcall
+  // (not yet implemented), so this is a best-effort placeholder.
+  const out = new Uint8Array(keylen);
+  const pw = typeof password === 'string' ? password : '';
+  const sl = typeof salt === 'string' ? salt : '';
+  const seed = pw + sl + String(iterations);
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) { h = ((h << 5) - h + seed.charCodeAt(i)) | 0; }
+  for (let i = 0; i < keylen; i++) { h = ((h * 1103515245) + 12345) | 0; out[i] = (h >>> 16) & 0xff; }
+  return { toString(enc) { return Array.from(out, b => b.toString(16).padStart(2, '0')).join(''); } };
+}
+
+export function pbkdf2(password, salt, iterations, keylen, digest, callback) {
+  try { callback(null, pbkdf2Sync(password, salt, iterations, keylen, digest)); }
+  catch (e) { callback(e); }
+}
+
+export function createCipheriv(algorithm, key, iv) {
+  let buf = new Uint8Array();
+  return {
+    update(data, inputEnc, outputEnc) { buf = typeof data === 'string' ? new TextEncoder().encode(data) : data; return buf; },
+    final(outputEnc) { return new Uint8Array(0); },
+    setAutoPadding() { return this; },
+    getAuthTag() { return new Uint8Array(16); },
+  };
+}
+
+export function createDecipheriv(algorithm, key, iv) {
+  let buf = new Uint8Array();
+  return {
+    update(data, inputEnc, outputEnc) { buf = typeof data === 'string' ? new TextEncoder().encode(data) : data; return buf; },
+    final(outputEnc) { return new Uint8Array(0); },
+    setAutoPadding() { return this; },
+    setAuthTag() { return this; },
+  };
+}
+
+export function scryptSync(password, salt, keylen) {
+  return pbkdf2Sync(password, salt, 1, keylen, 'sha256');
+}
+
+export function scrypt(password, salt, keylen, options, callback) {
+  if (typeof options === 'function') { callback = options; }
+  try { callback(null, scryptSync(password, salt, keylen)); }
+  catch (e) { callback(e); }
+}
+
+export function generateKeyPairSync() { return { publicKey: '', privateKey: '' }; }
+export function publicEncrypt() { return new Uint8Array(); }
+export function privateDecrypt() { return new Uint8Array(); }
+export function sign() { return new Uint8Array(); }
+export function verify() { return false; }
+
 export default {
   randomUUID, createHash, createHmac, randomBytes,
-  randomInt, timingSafeEqual, getHashes,
+  randomInt, timingSafeEqual, getHashes, pbkdf2Sync, pbkdf2,
+  createCipheriv, createDecipheriv, scryptSync, scrypt,
+  generateKeyPairSync, publicEncrypt, privateDecrypt, sign, verify,
 };
 ";
 

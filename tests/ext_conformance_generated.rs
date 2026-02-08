@@ -903,12 +903,15 @@ conformance_test!(
     ext_third_party_rytswd_questionnaire,
     "third-party/rytswd-questionnaire"
 );
+conformance_test!(ext_redraws, "redraws");
 conformance_test!(ext_timed_confirm, "timed-confirm");
 
 // ─── Tier 2 — Single-file with events (83 extensions) ──────────────────────
 
 conformance_test!(ext_auto_commit_on_exit, "auto-commit-on-exit");
 conformance_test!(ext_claude_rules, "claude-rules");
+conformance_test!(ext_diff, "diff");
+conformance_test!(ext_files, "files");
 conformance_test!(
     ext_community_ferologics_notify,
     "community/ferologics-notify"
@@ -1006,6 +1009,7 @@ conformance_test!(
     ext_community_tmustier_raw_paste,
     "community/tmustier-raw-paste"
 );
+conformance_test!(ext_negative_denied_caps, "negative-denied-caps");
 conformance_test!(ext_confirm_destructive, "confirm-destructive");
 conformance_test!(ext_custom_compaction, "custom-compaction");
 conformance_test!(ext_custom_header, "custom-header");
@@ -1040,6 +1044,7 @@ conformance_test!(ext_overlay_qa_tests, "overlay-qa-tests");
 conformance_test!(ext_permission_gate, "permission-gate");
 conformance_test!(ext_pirate, "pirate");
 conformance_test!(ext_preset, "preset");
+conformance_test!(ext_prompt_url_widget, "prompt-url-widget");
 conformance_test!(ext_protected_paths, "protected-paths");
 conformance_test!(ext_rainbow_editor, "rainbow-editor");
 conformance_test!(ext_rpc_demo, "rpc-demo");
@@ -1266,6 +1271,33 @@ conformance_test!(
     "third-party/zenobi-us-pi-dcp"
 );
 conformance_test!(ext_with_deps, "with-deps");
+conformance_test!(ext_base_fixtures, "base_fixtures", ignore);
+conformance_test!(ext_npm_oh_my_pi_basics, "npm/oh-my-pi-basics", ignore);
+conformance_test!(ext_npm_pi_extensions, "npm/pi-extensions", ignore);
+conformance_test!(
+    ext_npm_pi_interactive_shell,
+    "npm/pi-interactive-shell",
+    ignore
+);
+conformance_test!(ext_npm_pi_mcp_adapter, "npm/pi-mcp-adapter", ignore);
+conformance_test!(ext_npm_pi_package_test, "npm/pi-package-test", ignore);
+conformance_test!(
+    ext_npm_pi_powerline_footer,
+    "npm/pi-powerline-footer",
+    ignore
+);
+conformance_test!(
+    ext_npm_qualisero_pi_agent_scip,
+    "npm/qualisero-pi-agent-scip",
+    ignore
+);
+conformance_test!(ext_npm_shitty_extensions, "npm/shitty-extensions", ignore);
+conformance_test!(ext_npm_tmustier_pi_arcade, "npm/tmustier-pi-arcade", ignore);
+conformance_test!(
+    ext_npm_verioussmith_pi_openrouter,
+    "npm/verioussmith-pi-openrouter",
+    ignore
+);
 
 // ─── Tier 4 — UI-heavy extensions (2 extensions) ───────────────────────────
 
@@ -1274,6 +1306,7 @@ conformance_test!(
     "community/nicobailon-interview-tool",
     ignore
 );
+conformance_test!(ext_npm_pi_interview, "npm/pi-interview", ignore);
 conformance_test!(
     ext_third_party_vtemian_pi_config,
     "third-party/vtemian-pi-config"
@@ -1290,6 +1323,7 @@ conformance_test!(
     "community/mitsuhiko-control"
 );
 conformance_test!(ext_npm_pi_annotate, "npm/pi-annotate");
+conformance_test!(ext_npm_mitsupi, "npm/mitsupi", ignore);
 conformance_test!(
     ext_third_party_kcosr_pi_extensions,
     "third-party/kcosr-pi-extensions"

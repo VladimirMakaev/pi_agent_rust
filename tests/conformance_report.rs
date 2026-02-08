@@ -825,11 +825,13 @@ fn generate_conformance_report_impl() {
         }
     }
 
+    // Coverage rate uses total (pass+fail+na) as denominator to give an
+    // honest picture of how many extensions are actually validated.
     #[allow(clippy::cast_precision_loss)]
-    let pass_rate = if pass + fail > 0 {
-        f64::from(pass) / f64::from(pass + fail) * 100.0
+    let pass_rate = if total > 0 {
+        (pass as f64) / (total as f64) * 100.0
     } else {
-        100.0
+        0.0
     };
 
     // Count evidence artifacts
