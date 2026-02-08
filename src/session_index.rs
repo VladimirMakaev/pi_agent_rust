@@ -4,9 +4,11 @@ use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::session::{Session, SessionEntry, SessionHeader};
 use fs4::fs_std::FileExt;
+use serde::Deserialize;
 use sqlmodel_core::Value;
 use sqlmodel_sqlite::{OpenFlags, SqliteConfig, SqliteConnection};
 use std::fs::{self, File};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -325,27 +327,67 @@ fn build_meta_from_file(path: &Path) -> Result<SessionMeta> {
     }
 }
 
-fn build_meta_from_jsonl(path: &Path) -> Result<SessionMeta> {
-    let content = fs::read_to_string(path)
-        .map_err(|err| Error::session(format!("Read session file {}: {err}", path.display())))?;
-    let mut lines = content.lines();
-    let header: SessionHeader = lines
-        .next()
-        .ok_or_else(|| Error::session(format!("Empty session file {}", path.display())))
-        .and_then(|line| {
-            serde_json::from_str(line).map_err(|err| {
-                Error::session(format!("Parse session header {}: {err}", path.display()))
-            })
-        })?;
+#[derive(Deserialize)]
+struct PartialEntry {
+    #[serde(default)]
+    r#type: String,
+    #[serde(default)]
+    name: Option<String>,
+}
 
-    let mut entries = Vec::new();
+fn build_meta_from_jsonl(path: &Path) -> Result<SessionMeta> {
+    let file = File::open(path)
+        .map_err(|err| Error::session(format!("Read session file {}: {err}", path.display())))?;
+    let reader = BufReader::new(file);
+    let mut lines = reader.lines();
+
+    let header_line = lines
+        .next()
+        .ok_or_else(|| Error::session(format!("Empty session file {}", path.display())))?
+        .map_err(|err| Error::session(format!("Read session header {}: {err}", path.display())))?;
+
+    let header: SessionHeader = serde_json::from_str(&header_line)
+        .map_err(|err| Error::session(format!("Parse session header {}: {err}", path.display())))?;
+
+    let mut message_count = 0u64;
+    let mut name = None;
+
     for line in lines {
-        if let Ok(entry) = serde_json::from_str::<SessionEntry>(line) {
-            entries.push(entry);
+        let line = line.map_err(|err| {
+            Error::session(format!("Read session entry line {}: {err}", path.display()))
+        })?;
+        if let Ok(entry) = serde_json::from_str::<PartialEntry>(&line) {
+            match entry.r#type.as_str() {
+                "message" => message_count += 1,
+                "session_info" => {
+                    if entry.name.is_some() {
+                        name = entry.name;
+                    }
+                }
+                _ => {}
+            }
         }
     }
 
-    build_meta(path, &header, &entries)
+    let meta = fs::metadata(path)?;
+    let size_bytes = meta.len();
+    let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+    let millis = modified
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let last_modified_ms = i64::try_from(millis).unwrap_or(i64::MAX);
+
+    Ok(SessionMeta {
+        path: path.display().to_string(),
+        id: header.id,
+        cwd: header.cwd,
+        timestamp: header.timestamp,
+        message_count,
+        last_modified_ms,
+        size_bytes,
+        name,
+    })
 }
 
 #[cfg(feature = "sqlite-sessions")]
@@ -1277,5 +1319,26 @@ mod tests {
         let meta = build_meta_from_jsonl(&path).expect("build_meta");
         // Bad line is skipped, so we get 2 messages
         assert_eq!(meta.message_count, 2);
+    }
+
+    #[test]
+    fn build_meta_from_jsonl_errors_on_invalid_utf8_entry_line() {
+        let harness = TestHarness::new("build_meta_from_jsonl_errors_on_invalid_utf8_entry_line");
+        let path = harness.temp_path("invalid_utf8.jsonl");
+
+        let header = make_header("id-invalid", "cwd-invalid");
+        let mut bytes = serde_json::to_vec(&header).expect("serialize header");
+        bytes.push(b'\n');
+        bytes.extend_from_slice(br#"{"type":"message","message":{"role":"user","content":"ok"}}"#);
+        bytes.push(b'\n');
+        bytes.extend_from_slice(&[0xFF, 0xFE, b'\n']);
+
+        fs::write(&path, bytes).expect("write");
+
+        let err = build_meta_from_jsonl(&path).expect_err("invalid utf8 should error");
+        assert!(
+            matches!(err, Error::Session(ref msg) if msg.contains("Read session entry line")),
+            "Expected entry line read error, got {err:?}"
+        );
     }
 }

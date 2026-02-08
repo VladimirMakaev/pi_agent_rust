@@ -1,6 +1,6 @@
 # Performance Budgets
 
-> Generated: 2026-02-08T20:44:22Z
+> Generated: 2026-02-08T21:20:42Z
 
 ## Summary
 
@@ -40,7 +40,7 @@
 
 | Budget | Metric | Threshold | Actual | Status | CI |
 |---|---|---|---|---|---|
-| `event_dispatch_p99` | p99 dispatch latency | 5000 us | 47 | PASS | No |
+| `event_dispatch_p99` | p99 dispatch latency | 5000 us | 50 | PASS | No |
 
 ## Policy
 
@@ -53,7 +53,7 @@
 | Budget | Metric | Threshold | Actual | Status | CI |
 |---|---|---|---|---|---|
 | `idle_memory_rss` | RSS at idle | 50 MB | 4.2 | PASS | Yes |
-| `sustained_load_rss_growth` | RSS growth under 30s sustained load | 5 percent | 1.8 | PASS | No |
+| `sustained_load_rss_growth` | RSS growth under 30s sustained load | 5 percent | 0.0 | PASS | No |
 
 ## Binary
 

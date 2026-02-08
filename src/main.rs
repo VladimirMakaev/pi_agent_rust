@@ -61,16 +61,33 @@ fn main_impl() -> Result<()> {
     }
 
     // Ultra-fast paths that don't need tracing or the async runtime.
-    if matches!(cli.command, Some(cli::Commands::Config)) {
-        handle_config(&cwd)?;
-        return Ok(());
-    }
-
-    // List is an offline local query; keep it on the same fast path as config.
-    if matches!(cli.command, Some(cli::Commands::List)) {
-        let manager = PackageManager::new(cwd);
-        handle_package_list_blocking(&manager)?;
-        return Ok(());
+    if let Some(command) = &cli.command {
+        match command {
+            cli::Commands::Config => {
+                handle_config(&cwd)?;
+                return Ok(());
+            }
+            cli::Commands::List => {
+                let manager = PackageManager::new(cwd);
+                handle_package_list_blocking(&manager)?;
+                return Ok(());
+            }
+            cli::Commands::Info { name } => {
+                handle_info_blocking(name)?;
+                return Ok(());
+            }
+            cli::Commands::Search {
+                query,
+                tag,
+                sort,
+                limit,
+            } => {
+                if handle_search_blocking(query, tag.as_deref(), sort, *limit)? {
+                    return Ok(());
+                }
+            }
+            _ => {}
+        }
     }
 
     if cli.explain_extension_policy {
@@ -953,7 +970,58 @@ async fn handle_search(query: &str, tag: Option<&str>, sort: &str, limit: usize)
         }
     }
 
-    // Search
+    render_search_results(&index, query, tag, sort, limit);
+    Ok(())
+}
+
+fn handle_search_blocking(
+    query: &str,
+    tag: Option<&str>,
+    sort: &str,
+    limit: usize,
+) -> Result<bool> {
+    let store = ExtensionIndexStore::default_store();
+    let index = store.load_or_seed()?;
+
+    // Preserve refresh semantics: if cache is stale, fall back to async path so we can
+    // attempt network refresh before searching.
+    let has_cache = store.path().exists();
+    if has_cache
+        && index.is_stale(
+            chrono::Utc::now(),
+            pi::extension_index::DEFAULT_INDEX_MAX_AGE,
+        )
+    {
+        return Ok(false);
+    }
+
+    render_search_results(&index, query, tag, sort, limit);
+    Ok(true)
+}
+
+fn render_search_results(
+    index: &pi::extension_index::ExtensionIndex,
+    query: &str,
+    tag: Option<&str>,
+    sort: &str,
+    limit: usize,
+) {
+    let hits = collect_search_hits(index, tag, sort, limit, query);
+    if hits.is_empty() {
+        println!("No extensions found for \"{query}\".");
+        return;
+    }
+
+    print_search_results(&hits);
+}
+
+fn collect_search_hits(
+    index: &pi::extension_index::ExtensionIndex,
+    tag: Option<&str>,
+    sort: &str,
+    limit: usize,
+    query: &str,
+) -> Vec<pi::extension_index::ExtensionSearchHit> {
     let mut hits = index.search(query, limit);
 
     // Filter by tag if requested
@@ -977,13 +1045,7 @@ async fn handle_search(query: &str, tag: Option<&str>, sort: &str, limit: usize)
         });
     }
 
-    if hits.is_empty() {
-        println!("No extensions found for \"{query}\".");
-        return Ok(());
-    }
-
-    print_search_results(&hits);
-    Ok(())
+    hits
 }
 
 #[allow(clippy::uninlined_format_args)]
@@ -1060,11 +1122,27 @@ fn print_search_results(hits: &[pi::extension_index::ExtensionSearchHit]) {
 }
 
 async fn handle_info(name: &str) -> Result<()> {
-    let store = ExtensionIndexStore::default_store();
-    let index = store.load_or_seed()?;
+    handle_info_blocking(name)
+}
 
+fn handle_info_blocking(name: &str) -> Result<()> {
+    let index = ExtensionIndexStore::default_store().load_or_seed()?;
+    let entry = find_index_entry_by_name_or_id(&index, name);
+    let Some(entry) = entry else {
+        println!("Extension \"{name}\" not found.");
+        println!("Try: pi search {name}");
+        return Ok(());
+    };
+    print_extension_info(entry);
+    Ok(())
+}
+
+fn find_index_entry_by_name_or_id<'a>(
+    index: &'a pi::extension_index::ExtensionIndex,
+    name: &str,
+) -> Option<&'a pi::extension_index::ExtensionIndexEntry> {
     // Look up by exact id, name, or fuzzy match (top-1 search hit)
-    let entry = index
+    index
         .entries
         .iter()
         .find(|e| e.id.eq_ignore_ascii_case(name) || e.name.eq_ignore_ascii_case(name))
@@ -1077,16 +1155,7 @@ async fn handle_info(name: &str) -> Result<()> {
                     // Return a reference from the index, not the owned clone
                     index.entries.iter().find(|e| e.id == matched.id)
                 })
-        });
-
-    let Some(entry) = entry else {
-        println!("Extension \"{name}\" not found.");
-        println!("Try: pi search {name}");
-        return Ok(());
-    };
-
-    print_extension_info(entry);
-    Ok(())
+        })
 }
 
 fn print_extension_info(entry: &pi::extension_index::ExtensionIndexEntry) {

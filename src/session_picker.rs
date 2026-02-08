@@ -5,15 +5,17 @@
 use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::fmt::Write;
-use std::fs;
+use std::fs::{self, File};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bubbletea::{Cmd, KeyMsg, KeyType, Message, Program, quit};
+use serde::Deserialize;
 
 use crate::config::Config;
 use crate::error::{Error, Result};
-use crate::session::{Session, SessionEntry, SessionHeader, encode_cwd};
+use crate::session::{Session, SessionHeader, encode_cwd};
 use crate::session_index::{SessionIndex, SessionMeta};
 use crate::theme::{Theme, TuiStyles};
 
@@ -420,24 +422,38 @@ fn build_meta_from_file(path: &Path) -> crate::error::Result<SessionMeta> {
     }
 }
 
+#[derive(Deserialize)]
+struct PartialEntry {
+    #[serde(default)]
+    r#type: String,
+    #[serde(default)]
+    name: Option<String>,
+}
+
 fn build_meta_from_jsonl(path: &Path) -> crate::error::Result<SessionMeta> {
-    let content = fs::read_to_string(path)?;
-    let mut lines = content.lines();
-    let header: SessionHeader = lines
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut lines = reader.lines();
+
+    let header_line = lines
         .next()
-        .map(serde_json::from_str)
         .transpose()?
         .ok_or_else(|| crate::error::Error::session("Empty session file"))?;
 
+    let header: SessionHeader = serde_json::from_str(&header_line)
+        .map_err(|e| crate::error::Error::session(format!("Parse session header: {e}")))?;
+
     let mut message_count = 0u64;
     let mut name = None;
-    for line in lines {
-        if let Ok(entry) = serde_json::from_str::<SessionEntry>(line) {
-            match entry {
-                SessionEntry::Message(_) => message_count += 1,
-                SessionEntry::SessionInfo(info) => {
-                    if info.name.is_some() {
-                        name.clone_from(&info.name);
+
+    for line_res in lines {
+        let line = line_res?;
+        if let Ok(entry) = serde_json::from_str::<PartialEntry>(&line) {
+            match entry.r#type.as_str() {
+                "message" => message_count += 1,
+                "session_info" => {
+                    if entry.name.is_some() {
+                        name = entry.name;
                     }
                 }
                 _ => {}

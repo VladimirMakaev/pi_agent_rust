@@ -1366,7 +1366,7 @@
       "directory": "npm/aliou-pi-processes",
       "retrieved": "2026-02-05",
       "checksum": {
-        "sha256": "f88f2a6d86c9b22eea010043de078de999812dc5b54b002a388d5919b79a0c4d"
+        "sha256": "41f8c5d1a554f6b7592a0a471514860e9020587bebecbd9ac3f2ca3ceb7ff952"
       },
       "name": "@aliou/pi-processes",
       "version": "0.3.3",

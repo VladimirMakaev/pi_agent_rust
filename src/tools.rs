@@ -188,7 +188,9 @@ pub fn truncate_head(content: &str, max_lines: usize, max_bytes: usize) -> Trunc
     }
 
     // Iterate lines lazily (no Vec allocation).
-    let mut output = String::new();
+    // Pre-allocate up to the max output byte budget to avoid repeated growth
+    // reallocations while appending line-by-line.
+    let mut output = String::with_capacity(max_bytes.min(total_bytes));
     let mut line_count = 0;
     let mut byte_count: usize = 0;
     let mut truncated_by = None;
@@ -1350,7 +1352,7 @@ pub(crate) async fn run_bash_command(
             process_bash_chunk(&chunk, &mut bash_output, on_update).await?;
         }
 
-        match guard.child.as_mut().unwrap().try_wait() {
+        match guard.try_wait_child() {
             Ok(Some(status)) => {
                 exit_code = Some(exit_status_code(status));
                 break;
@@ -2556,7 +2558,7 @@ impl Tool for GrepTool {
                 break;
             }
 
-            match guard.child.as_mut().unwrap().try_wait() {
+            match guard.try_wait_child() {
                 Ok(Some(_)) => break,
                 Ok(None) => {
                     let now = AgentCx::for_current_or_request()
@@ -2899,7 +2901,7 @@ impl Tool for FindTool {
 
         loop {
             // Check if process is done
-            match guard.child.as_mut().unwrap().try_wait() {
+            match guard.try_wait_child() {
                 Ok(Some(_)) => break,
                 Ok(None) => {
                     let now = AgentCx::for_current_or_request()
@@ -3361,6 +3363,12 @@ impl ProcessGuard {
             child: Some(child),
             kill_tree,
         }
+    }
+
+    fn try_wait_child(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        self.child
+            .as_mut()
+            .map_or(Ok(None), std::process::Child::try_wait)
     }
 
     fn kill(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
