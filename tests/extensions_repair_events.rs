@@ -13,10 +13,11 @@ mod common;
 
 use pi::extensions::{ExtensionManager, JsExtensionLoadSpec, JsExtensionRuntimeHandle};
 use pi::extensions_js::{
-    tolerant_parse, validate_repaired_artifact, AmbiguitySignal, ExtensionRepairEvent, IntentGraph,
+    compute_confidence, compute_gating_verdict, tolerant_parse, validate_repaired_artifact,
+    AmbiguitySignal, ConfidenceReport, ExtensionRepairEvent, GatingDecision, IntentGraph,
     IntentSignal, MonotonicityVerdict, PatchOp, PatchProposal, PiJsRuntimeConfig, PiJsTickStats,
-    RepairMode, RepairPattern, RepairRisk, StructuralVerdict, REPAIR_REGISTRY_VERSION,
-    REPAIR_RULES,
+    RepairMode, RepairPattern, RepairRisk, StructuralVerdict, TolerantParseResult,
+    REPAIR_REGISTRY_VERSION, REPAIR_RULES,
 };
 use pi::tools::ToolRegistry;
 use std::sync::Arc;
@@ -1408,6 +1409,240 @@ fn unsupported_extension_returns_not_parsed() {
     let result = tolerant_parse("binary data", "data.wasm");
     assert!(!result.parsed_ok);
     assert_eq!(result.statement_count, 0);
+}
+
+// ─── Confidence scoring model (bd-k5q5.9.2.3) ───────────────────────────────
+
+fn well_formed_parse() -> TolerantParseResult {
+    tolerant_parse(
+        "import { foo } from './bar';\nexport function hello() { return foo; }\n",
+        "test.ts",
+    )
+}
+
+fn rich_intent() -> IntentGraph {
+    IntentGraph::from_register_payload(
+        "test-ext",
+        &sample_register_payload(),
+        &["read".to_string()],
+    )
+}
+
+#[test]
+fn confidence_high_for_clean_rich_extension() {
+    let report = compute_confidence(&rich_intent(), &well_formed_parse());
+    assert!(
+        report.score >= 0.8,
+        "clean rich extension should have high confidence, got {}",
+        report.score
+    );
+    assert!(report.is_repairable());
+    assert!(!report.reasons.is_empty());
+}
+
+#[test]
+fn confidence_low_for_broken_empty_extension() {
+    let parse = tolerant_parse("export function {{{ broken", "broken.ts");
+    let intent = IntentGraph::from_register_payload("test-ext", &serde_json::json!({}), &[]);
+    let report = compute_confidence(&intent, &parse);
+    assert!(
+        report.score < 0.5,
+        "broken empty extension should have low confidence, got {}",
+        report.score
+    );
+    assert!(!report.is_repairable());
+}
+
+#[test]
+fn confidence_penalized_by_eval() {
+    let parse = tolerant_parse("eval('code');\nexport const x = 1;\n", "test.js");
+    let intent = IntentGraph::from_register_payload("test-ext", &serde_json::json!({}), &[]);
+    let no_eval_parse = well_formed_parse();
+    let report_with_eval = compute_confidence(&intent, &parse);
+    let report_clean = compute_confidence(&intent, &no_eval_parse);
+    assert!(
+        report_with_eval.score < report_clean.score,
+        "eval should penalize confidence: {} vs {}",
+        report_with_eval.score,
+        report_clean.score
+    );
+}
+
+#[test]
+fn confidence_boosted_by_tools() {
+    let parse = well_formed_parse();
+    let with_tools = rich_intent();
+    let no_tools = IntentGraph::from_register_payload("test-ext", &serde_json::json!({}), &[]);
+    let report_with = compute_confidence(&with_tools, &parse);
+    let report_without = compute_confidence(&no_tools, &parse);
+    assert!(
+        report_with.score > report_without.score,
+        "tools should boost confidence: {} vs {}",
+        report_with.score,
+        report_without.score
+    );
+}
+
+#[test]
+fn confidence_reasons_are_explainable() {
+    let report = compute_confidence(&rich_intent(), &well_formed_parse());
+    // Every reason should have a non-empty code and explanation.
+    for reason in &report.reasons {
+        assert!(!reason.code.is_empty(), "reason code should not be empty");
+        assert!(
+            !reason.explanation.is_empty(),
+            "reason explanation should not be empty"
+        );
+    }
+    // Should have at least parsed_ok + has_tools.
+    let codes: Vec<&str> = report.reasons.iter().map(|r| r.code.as_str()).collect();
+    assert!(codes.contains(&"parsed_ok"), "should have parsed_ok reason");
+    assert!(codes.contains(&"has_tools"), "should have has_tools reason");
+}
+
+#[test]
+fn confidence_report_is_repairable_threshold() {
+    // Score exactly at threshold.
+    let report = ConfidenceReport {
+        score: 0.5,
+        reasons: vec![],
+    };
+    assert!(report.is_repairable());
+
+    let report_below = ConfidenceReport {
+        score: 0.49,
+        reasons: vec![],
+    };
+    assert!(!report_below.is_repairable());
+}
+
+#[test]
+fn confidence_report_is_suggestable_threshold() {
+    let report = ConfidenceReport {
+        score: 0.2,
+        reasons: vec![],
+    };
+    assert!(report.is_suggestable());
+
+    let report_below = ConfidenceReport {
+        score: 0.19,
+        reasons: vec![],
+    };
+    assert!(!report_below.is_suggestable());
+}
+
+#[test]
+fn confidence_clamped_to_unit_range() {
+    // Very clean extension with many signals shouldn't exceed 1.0.
+    let parse = well_formed_parse();
+    let intent = rich_intent();
+    let report = compute_confidence(&intent, &parse);
+    assert!(report.score <= 1.0, "score should not exceed 1.0");
+    assert!(report.score >= 0.0, "score should not be negative");
+}
+
+#[test]
+fn confidence_deterministic() {
+    let parse = well_formed_parse();
+    let intent = rich_intent();
+    let r1 = compute_confidence(&intent, &parse);
+    let r2 = compute_confidence(&intent, &parse);
+    assert!(
+        (r1.score - r2.score).abs() < f64::EPSILON,
+        "confidence should be deterministic"
+    );
+}
+
+// ─── Gating decision API (bd-k5q5.9.2.4) ────────────────────────────────────
+
+#[test]
+fn gating_allow_for_clean_extension() {
+    let verdict = compute_gating_verdict(&rich_intent(), &well_formed_parse());
+    assert_eq!(verdict.decision, GatingDecision::Allow);
+    assert!(verdict.allows_repair());
+    assert!(verdict.allows_suggestion());
+    assert!(verdict.reason_codes.is_empty(), "Allow should have no reason codes");
+}
+
+#[test]
+fn gating_deny_for_broken_opaque_extension() {
+    let parse = tolerant_parse("export function {{{ broken", "broken.ts");
+    let intent = IntentGraph::from_register_payload("test-ext", &serde_json::json!({}), &[]);
+    let verdict = compute_gating_verdict(&intent, &parse);
+    assert_eq!(verdict.decision, GatingDecision::Deny);
+    assert!(!verdict.allows_repair());
+    assert!(!verdict.allows_suggestion());
+    assert!(!verdict.reason_codes.is_empty(), "Deny should have reason codes");
+    // Should have parse_failed reason code.
+    assert!(
+        verdict.reason_codes.iter().any(|r| r.code == "parse_failed"),
+        "should have parse_failed reason code"
+    );
+}
+
+#[test]
+fn gating_suggest_for_ambiguous_but_parseable() {
+    // eval + new Function in source with no tool registrations should push
+    // below 0.5 (Suggest) but above 0.2 (not Deny).
+    // Base 0.5 + parsed_ok(0.15) - eval(-0.27) - new_function(-0.27) - no_registrations(-0.15)
+    // = 0.5 + 0.15 - 0.27 - 0.27 - 0.15 = -0.04 → clamped to ~0.0 → Deny
+    // Need something in between. Use just eval with no tools:
+    // 0.5 + 0.15 - 0.27 - 0.15 = 0.23 → Suggest
+    let parse = tolerant_parse(
+        "eval('code');\nexport const x = 1;\n",
+        "test.js",
+    );
+    let intent = IntentGraph::from_register_payload("test-ext", &serde_json::json!({}), &[]);
+    let verdict = compute_gating_verdict(&intent, &parse);
+    assert_eq!(
+        verdict.decision,
+        GatingDecision::Suggest,
+        "eval + no registrations should produce Suggest, score={}",
+        verdict.confidence.score
+    );
+    assert!(!verdict.allows_repair());
+    assert!(verdict.allows_suggestion());
+}
+
+#[test]
+fn gating_decision_display() {
+    assert_eq!(GatingDecision::Allow.to_string(), "allow");
+    assert_eq!(GatingDecision::Suggest.to_string(), "suggest");
+    assert_eq!(GatingDecision::Deny.to_string(), "deny");
+}
+
+#[test]
+fn gating_reason_codes_have_remediation() {
+    let parse = tolerant_parse("export function {{{ broken", "broken.ts");
+    let intent = IntentGraph::from_register_payload("test-ext", &serde_json::json!({}), &[]);
+    let verdict = compute_gating_verdict(&intent, &parse);
+    for rc in &verdict.reason_codes {
+        assert!(!rc.code.is_empty());
+        assert!(!rc.remediation.is_empty());
+    }
+}
+
+#[test]
+fn gating_high_ambiguity_produces_reason_code() {
+    let parse = tolerant_parse("eval('x');\n", "test.js");
+    let intent = IntentGraph::from_register_payload("test-ext", &serde_json::json!({}), &[]);
+    let verdict = compute_gating_verdict(&intent, &parse);
+    // eval has weight >= 0.7, should produce a high_ambiguity reason code.
+    let has_ambiguity_code = verdict
+        .reason_codes
+        .iter()
+        .any(|r| r.code.starts_with("high_ambiguity_"));
+    assert!(
+        has_ambiguity_code,
+        "should have high_ambiguity reason code for eval"
+    );
+}
+
+#[test]
+fn gating_verdict_confidence_preserved() {
+    let verdict = compute_gating_verdict(&rich_intent(), &well_formed_parse());
+    assert!(verdict.confidence.score > 0.0);
+    assert!(!verdict.confidence.reasons.is_empty());
 }
 
 use std::path::Path;

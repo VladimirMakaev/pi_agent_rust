@@ -1804,6 +1804,311 @@ impl IntentGraph {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Confidence scoring model (bd-k5q5.9.2.3)
+// ---------------------------------------------------------------------------
+
+/// An individual reason contributing to the confidence score.
+#[derive(Debug, Clone)]
+pub struct ConfidenceReason {
+    /// Short machine-readable code (e.g., "parsed_ok", "has_tools").
+    pub code: String,
+    /// Human-readable explanation.
+    pub explanation: String,
+    /// How much this reason contributes (+) or penalizes (-) the score.
+    pub delta: f64,
+}
+
+/// Result of confidence scoring: a score plus explainable reasons.
+#[derive(Debug, Clone)]
+pub struct ConfidenceReport {
+    /// Overall confidence (0.0–1.0). Higher = more legible / safer to repair.
+    pub score: f64,
+    /// Ordered list of reasons that contributed to the score.
+    pub reasons: Vec<ConfidenceReason>,
+}
+
+impl ConfidenceReport {
+    /// True if the confidence is high enough for automated repair.
+    pub fn is_repairable(&self) -> bool {
+        self.score >= 0.5
+    }
+
+    /// True if the confidence is high enough only for suggest mode.
+    pub fn is_suggestable(&self) -> bool {
+        self.score >= 0.2
+    }
+}
+
+/// Compute legibility confidence from intent graph and parse results.
+///
+/// The model is deterministic: same inputs always produce the same score.
+/// The score starts at a base of 0.5 and is adjusted by weighted signals:
+///
+/// **Positive signals** (increase confidence):
+/// - Source parsed successfully
+/// - Extension registers at least one tool/command/hook
+/// - Multiple intent categories present (well-structured extension)
+///
+/// **Negative signals** (decrease confidence):
+/// - Parse failed
+/// - Ambiguity detected (weighted by severity)
+/// - No registrations (opaque extension)
+/// - Zero statements recovered
+#[allow(clippy::too_many_lines)]
+pub fn compute_confidence(
+    intent: &IntentGraph,
+    parse: &TolerantParseResult,
+) -> ConfidenceReport {
+    let mut score: f64 = 0.5;
+    let mut reasons = Vec::new();
+
+    // ── Parse quality ────────────────────────────────────────────────────
+    if parse.parsed_ok {
+        let delta = 0.15;
+        score += delta;
+        reasons.push(ConfidenceReason {
+            code: "parsed_ok".to_string(),
+            explanation: "Source parsed without fatal errors".to_string(),
+            delta,
+        });
+    } else {
+        let delta = -0.3;
+        score += delta;
+        reasons.push(ConfidenceReason {
+            code: "parse_failed".to_string(),
+            explanation: "Source failed to parse".to_string(),
+            delta,
+        });
+    }
+
+    // ── Statement count ──────────────────────────────────────────────────
+    if parse.statement_count == 0 && parse.parsed_ok {
+        let delta = -0.1;
+        score += delta;
+        reasons.push(ConfidenceReason {
+            code: "empty_module".to_string(),
+            explanation: "Module has no statements".to_string(),
+            delta,
+        });
+    }
+
+    // ── Import/export presence ───────────────────────────────────────────
+    if parse.import_export_count > 0 {
+        let delta = 0.05;
+        score += delta;
+        reasons.push(ConfidenceReason {
+            code: "has_imports_exports".to_string(),
+            explanation: format!(
+                "{} import/export declarations found",
+                parse.import_export_count
+            ),
+            delta,
+        });
+    }
+
+    // ── Ambiguity penalties ──────────────────────────────────────────────
+    for ambiguity in &parse.ambiguities {
+        let weight = ambiguity.weight();
+        let delta = -weight * 0.3;
+        score += delta;
+        reasons.push(ConfidenceReason {
+            code: format!("ambiguity_{}", ambiguity.tag()),
+            explanation: format!("Ambiguity detected: {ambiguity} (weight={weight:.1})"),
+            delta,
+        });
+    }
+
+    // ── Intent signal richness ───────────────────────────────────────────
+    let tool_count = intent.signals_by_category("tool").len();
+    if tool_count > 0 {
+        let delta = 0.1;
+        score += delta;
+        reasons.push(ConfidenceReason {
+            code: "has_tools".to_string(),
+            explanation: format!("{tool_count} tool(s) registered"),
+            delta,
+        });
+    }
+
+    let hook_count = intent.signals_by_category("event_hook").len();
+    if hook_count > 0 {
+        let delta = 0.05;
+        score += delta;
+        reasons.push(ConfidenceReason {
+            code: "has_event_hooks".to_string(),
+            explanation: format!("{hook_count} event hook(s) registered"),
+            delta,
+        });
+    }
+
+    let categories = intent.category_count();
+    if categories >= 3 {
+        let delta = 0.1;
+        score += delta;
+        reasons.push(ConfidenceReason {
+            code: "multi_category".to_string(),
+            explanation: format!("{categories} distinct intent categories"),
+            delta,
+        });
+    }
+
+    if intent.is_empty() && parse.parsed_ok {
+        let delta = -0.15;
+        score += delta;
+        reasons.push(ConfidenceReason {
+            code: "no_registrations".to_string(),
+            explanation: "No tools, commands, or hooks registered".to_string(),
+            delta,
+        });
+    }
+
+    // Clamp to [0.0, 1.0].
+    score = score.clamp(0.0, 1.0);
+
+    ConfidenceReport { score, reasons }
+}
+
+// ---------------------------------------------------------------------------
+// Gating decision API (bd-k5q5.9.2.4)
+// ---------------------------------------------------------------------------
+
+/// The repair gating decision: what action the system should take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GatingDecision {
+    /// Extension is legible and safe for automated repair.
+    Allow,
+    /// Extension is partially legible; suggest repairs but do not auto-apply.
+    Suggest,
+    /// Extension is too opaque or risky; deny automated repair.
+    Deny,
+}
+
+impl GatingDecision {
+    /// Short label for structured logging.
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::Suggest => "suggest",
+            Self::Deny => "deny",
+        }
+    }
+}
+
+impl std::fmt::Display for GatingDecision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// A structured reason code explaining why a gating decision was made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GatingReasonCode {
+    /// Machine-readable code (e.g., "low_confidence", "parse_failed").
+    pub code: String,
+    /// Human-readable remediation guidance.
+    pub remediation: String,
+}
+
+/// Full gating verdict: decision + confidence + reason codes.
+#[derive(Debug, Clone)]
+pub struct GatingVerdict {
+    /// The decision: allow / suggest / deny.
+    pub decision: GatingDecision,
+    /// The underlying confidence report.
+    pub confidence: ConfidenceReport,
+    /// Structured reason codes (empty for Allow).
+    pub reason_codes: Vec<GatingReasonCode>,
+}
+
+impl GatingVerdict {
+    /// Whether the verdict permits automated repair.
+    pub fn allows_repair(&self) -> bool {
+        self.decision == GatingDecision::Allow
+    }
+
+    /// Whether the verdict permits at least suggestion output.
+    pub const fn allows_suggestion(&self) -> bool {
+        matches!(
+            self.decision,
+            GatingDecision::Allow | GatingDecision::Suggest
+        )
+    }
+}
+
+/// Compute the gating verdict from intent graph and parse results.
+///
+/// Combines `compute_confidence` with threshold-based decision logic:
+/// - score >= 0.5 → Allow
+/// - 0.2 <= score < 0.5 → Suggest
+/// - score < 0.2 → Deny
+///
+/// Reason codes are generated for Suggest and Deny decisions to guide
+/// the user on what needs to change for the extension to become repairable.
+pub fn compute_gating_verdict(
+    intent: &IntentGraph,
+    parse: &TolerantParseResult,
+) -> GatingVerdict {
+    let confidence = compute_confidence(intent, parse);
+    let decision = if confidence.is_repairable() {
+        GatingDecision::Allow
+    } else if confidence.is_suggestable() {
+        GatingDecision::Suggest
+    } else {
+        GatingDecision::Deny
+    };
+
+    let reason_codes = if decision == GatingDecision::Allow {
+        vec![]
+    } else {
+        build_reason_codes(&confidence, parse)
+    };
+
+    GatingVerdict {
+        decision,
+        confidence,
+        reason_codes,
+    }
+}
+
+/// Generate structured reason codes with remediation guidance.
+fn build_reason_codes(
+    confidence: &ConfidenceReport,
+    parse: &TolerantParseResult,
+) -> Vec<GatingReasonCode> {
+    let mut codes = Vec::new();
+
+    if !parse.parsed_ok {
+        codes.push(GatingReasonCode {
+            code: "parse_failed".to_string(),
+            remediation: "Fix syntax errors in the extension source code".to_string(),
+        });
+    }
+
+    for ambiguity in &parse.ambiguities {
+        if ambiguity.weight() >= 0.7 {
+            codes.push(GatingReasonCode {
+                code: format!("high_ambiguity_{}", ambiguity.tag()),
+                remediation: format!(
+                    "Remove or refactor {} usage to improve repair safety",
+                    ambiguity.tag().replace('_', " ")
+                ),
+            });
+        }
+    }
+
+    if confidence.score < 0.2 {
+        codes.push(GatingReasonCode {
+            code: "very_low_confidence".to_string(),
+            remediation: "Extension is too opaque for automated analysis; \
+                          add explicit tool/hook registrations and remove dynamic constructs"
+                .to_string(),
+        });
+    }
+
+    codes
+}
+
 /// Statistics from a tick execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PiJsTickStats {
