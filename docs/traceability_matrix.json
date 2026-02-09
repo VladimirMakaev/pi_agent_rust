@@ -253,6 +253,26 @@
         {
           "path": "tests/e2e_auto_repair.rs",
           "justification": "Corpus-wide auto-repair end-to-end verification and report generation."
+        },
+        {
+          "path": "tests/e2e_extension_registration.rs",
+          "justification": "Verifies extension registration workflows in end-to-end runtime conditions."
+        },
+        {
+          "path": "tests/e2e_library_integration.rs",
+          "justification": "Covers end-to-end extension library integration behavior and compatibility."
+        },
+        {
+          "path": "tests/e2e_live.rs",
+          "justification": "Runs live end-to-end extension/provider flows for real integration behavior checks."
+        },
+        {
+          "path": "tests/e2e_live_harness.rs",
+          "justification": "Validates live harness wiring and execution contract for extension-centric E2E runs."
+        },
+        {
+          "path": "tests/e2e_ts_extension_loading.rs",
+          "justification": "Checks TypeScript extension loading behavior end-to-end across the runtime pipeline."
         }
       ],
       "e2e_scripts": [
