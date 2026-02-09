@@ -361,7 +361,7 @@ fn scan_extension_entry_points() {
             .strip_prefix(&root)
             .unwrap_or(file)
             .to_string_lossy()
-            .to_string();
+            .replace('\\', "/");
 
         let Ok(content) = std::fs::read_to_string(file) else {
             classifications.push(FileClassification {
@@ -529,7 +529,7 @@ fn sub_modules_not_classified_as_entry_points() {
             .strip_prefix(&root)
             .unwrap_or(file)
             .to_string_lossy()
-            .to_string();
+            .replace('\\', "/");
         let content = std::fs::read_to_string(file).unwrap();
         let patterns = detect_patterns(&content);
         let (classification, _confidence) = classify(&patterns, &rel_path);
