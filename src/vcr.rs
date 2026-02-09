@@ -34,11 +34,14 @@ pub struct RedactionSummary {
     pub json_fields_redacted: usize,
 }
 
+/// Map from env var name to override value. `Some(val)` overrides to that value,
+/// `None` means the var is explicitly unset (tombstone), preventing fallthrough
+/// to the real process environment.
 #[cfg(test)]
-static TEST_ENV_OVERRIDES: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+static TEST_ENV_OVERRIDES: OnceLock<Mutex<HashMap<String, Option<String>>>> = OnceLock::new();
 
 #[cfg(test)]
-fn test_env_overrides() -> &'static Mutex<HashMap<String, String>> {
+fn test_env_overrides() -> &'static Mutex<HashMap<String, Option<String>>> {
     TEST_ENV_OVERRIDES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -46,8 +49,9 @@ fn env_var(name: &str) -> Option<String> {
     #[cfg(test)]
     {
         if let Ok(guard) = test_env_overrides().lock() {
-            if let Some(value) = guard.get(name) {
-                return Some(value.clone());
+            if let Some(maybe_value) = guard.get(name) {
+                // Some(val) = override to val; None = explicitly unset (tombstone)
+                return maybe_value.clone();
             }
         }
     }
@@ -57,15 +61,9 @@ fn env_var(name: &str) -> Option<String> {
 #[cfg(test)]
 fn set_test_env_var(name: &str, value: Option<&str>) -> Option<String> {
     let mut guard = test_env_overrides().lock().expect("env override lock");
-    let previous = guard.get(name).cloned();
-    match value {
-        Some(value) => {
-            guard.insert(name.to_string(), value.to_string());
-        }
-        None => {
-            guard.remove(name);
-        }
-    }
+    let previous = guard.get(name).and_then(Clone::clone);
+    // Store Some(val) for override or None as tombstone (explicitly unset)
+    guard.insert(name.to_string(), value.map(String::from));
     previous
 }
 
@@ -74,9 +72,10 @@ fn restore_test_env_var(name: &str, previous: Option<String>) {
     let mut guard = test_env_overrides().lock().expect("env override lock");
     match previous {
         Some(value) => {
-            guard.insert(name.to_string(), value);
+            guard.insert(name.to_string(), Some(value));
         }
         None => {
+            // Remove the override entirely (go back to real env)
             guard.remove(name);
         }
     }
