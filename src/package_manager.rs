@@ -2686,6 +2686,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_package_identity_matches_pi_mono() {
         let dir = tempfile::tempdir().expect("tempdir");
         let manager = PackageManager::new(dir.path().to_path_buf());
@@ -3830,6 +3831,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn parse_source_local_absolute() {
         let dir = tempfile::tempdir().expect("tempdir");
         match parse_source("/abs/my-ext", dir.path()) {

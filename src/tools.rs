@@ -4344,6 +4344,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_bash_working_directory() {
         asupersync::test_utils::run_test(|| async {
             let tmp = tempfile::tempdir().unwrap();

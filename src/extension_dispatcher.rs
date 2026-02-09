@@ -5399,8 +5399,11 @@ mod tests {
     }
 
     // ---- Additional exec conformance tests ----
+    // These tests use Unix-specific commands (/bin/sh, /bin/echo) and are
+    // skipped on Windows.
 
     #[test]
+    #[cfg(unix)]
     fn dispatcher_exec_with_args_array() {
         futures::executor::block_on(async {
             let runtime = Rc::new(
@@ -5454,6 +5457,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn dispatcher_exec_null_args_defaults_to_empty() {
         futures::executor::block_on(async {
             let runtime = Rc::new(
@@ -5554,6 +5558,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn dispatcher_exec_captures_stdout_and_stderr() {
         futures::executor::block_on(async {
             let runtime = Rc::new(
@@ -5607,6 +5612,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn dispatcher_exec_nonzero_exit_code() {
         futures::executor::block_on(async {
             let runtime = Rc::new(

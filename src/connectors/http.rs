@@ -1164,6 +1164,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_dispatch_treats_zero_timeout_as_unset() {
         use std::io::Write;
 
@@ -1217,6 +1218,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_dispatch_streaming_returns_status_headers_and_body_stream() {
         use futures::StreamExt as _;
         use std::io::Write;

@@ -1329,6 +1329,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn is_absolute_like_absolute_path() {
         assert!(is_absolute_like("/usr/bin"));
     }
@@ -1640,6 +1641,7 @@ mod tests {
     // ── resolve_file_ref ─────────────────────────────────────────────
 
     #[test]
+    #[cfg(unix)]
     fn resolve_file_ref_absolute_returns_normalized() {
         let mut provider =
             AutocompleteProvider::new(PathBuf::from("/tmp"), AutocompleteCatalog::default());

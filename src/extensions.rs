@@ -38,6 +38,29 @@ use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
+/// Canonicalize a path, stripping the `\\?\` verbatim prefix on Windows.
+///
+/// `std::fs::canonicalize` on Windows returns extended-length paths (`\\?\C:\...`)
+/// which break QuickJS module resolution and JS string interpolation. This helper
+/// strips that prefix so paths remain compatible with downstream consumers.
+pub fn safe_canonicalize(path: &Path) -> PathBuf {
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    strip_unc_prefix(canonical)
+}
+
+/// Strip the `\\?\` verbatim prefix from a path on Windows. No-op on Unix.
+#[allow(clippy::missing_const_for_fn)]
+pub fn strip_unc_prefix(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let s = path.to_string_lossy();
+        if let Some(stripped) = s.strip_prefix(r"\\?\") {
+            return PathBuf::from(stripped);
+        }
+    }
+    path
+}
+
 fn hostcall_params_hash(method: &str, params: &Value) -> String {
     fn canonicalize_json(value: &Value) -> Value {
         match value {
@@ -1971,7 +1994,9 @@ fn resolve_target_path(cwd: &Path, raw: &str) -> std::result::Result<PathBuf, Ho
 }
 
 fn canonicalize_root(path: &Path) -> Result<PathBuf> {
-    std::fs::canonicalize(path).map_err(|err| Error::extension(format!("canonicalize: {err}")))
+    std::fs::canonicalize(path)
+        .map(strip_unc_prefix)
+        .map_err(|err| Error::extension(format!("canonicalize: {err}")))
 }
 
 fn resolve_scoped_root(raw: &str, cwd: &Path) -> Result<PathBuf> {
@@ -1991,12 +2016,14 @@ fn resolve_scoped_root(raw: &str, cwd: &Path) -> Result<PathBuf> {
 }
 
 fn canonicalize_existing(path: &Path) -> std::result::Result<PathBuf, HostCallError> {
-    std::fs::canonicalize(path).map_err(|err| HostCallError {
-        code: HostCallErrorCode::Io,
-        message: format!("canonicalize: {err}"),
-        details: Some(json!({ "path": path.display().to_string() })),
-        retryable: None,
-    })
+    std::fs::canonicalize(path)
+        .map(strip_unc_prefix)
+        .map_err(|err| HostCallError {
+            code: HostCallErrorCode::Io,
+            message: format!("canonicalize: {err}"),
+            details: Some(json!({ "path": path.display().to_string() })),
+            retryable: None,
+        })
 }
 
 fn canonicalize_for_create(path: &Path) -> std::result::Result<PathBuf, HostCallError> {
@@ -2014,12 +2041,14 @@ fn canonicalize_for_create(path: &Path) -> std::result::Result<PathBuf, HostCall
             .to_path_buf();
     }
 
-    let canonical_ancestor = std::fs::canonicalize(&ancestor).map_err(|err| HostCallError {
-        code: HostCallErrorCode::Io,
-        message: format!("canonicalize: {err}"),
-        details: Some(json!({ "path": ancestor.display().to_string() })),
-        retryable: None,
-    })?;
+    let canonical_ancestor = std::fs::canonicalize(&ancestor)
+        .map(strip_unc_prefix)
+        .map_err(|err| HostCallError {
+            code: HostCallErrorCode::Io,
+            message: format!("canonicalize: {err}"),
+            details: Some(json!({ "path": ancestor.display().to_string() })),
+            retryable: None,
+        })?;
 
     let suffix = path.strip_prefix(&ancestor).map_err(|_| HostCallError {
         code: HostCallErrorCode::Internal,
@@ -5143,7 +5172,7 @@ impl JsExtensionLoadSpec {
             )));
         }
 
-        let entry_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let entry_path = safe_canonicalize(path);
 
         let file_stem = entry_path
             .file_stem()
@@ -5219,9 +5248,7 @@ impl JsExtensionLoadSpec {
             )));
         }
 
-        let entry_path = entry_path
-            .canonicalize()
-            .unwrap_or_else(|_| entry_path.clone());
+        let entry_path = safe_canonicalize(&entry_path);
 
         if manifest.extension_id.trim().is_empty() {
             return Err(Error::validation(
@@ -6244,7 +6271,7 @@ async fn load_one_extension(
     // extension's own directory tree, and so the resolver can detect
     // monorepo escape patterns (Pattern 3).
     if let Some(ext_dir) = spec.entry_path.parent() {
-        if let Ok(canonical) = std::fs::canonicalize(ext_dir) {
+        if let Ok(canonical) = std::fs::canonicalize(ext_dir).map(strip_unc_prefix) {
             runtime.add_extension_root_with_id(canonical, Some(spec.extension_id.as_str()));
         }
     }

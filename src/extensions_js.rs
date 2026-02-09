@@ -2725,13 +2725,9 @@ pub fn verify_repair_monotonicity(
 ) -> MonotonicityVerdict {
     // Canonicalise the root to resolve symlinks. Fall back to the raw path
     // if canonicalization fails (the directory might not exist in tests).
-    let canonical_root = extension_root
-        .canonicalize()
-        .unwrap_or_else(|_| extension_root.to_path_buf());
+    let canonical_root = crate::extensions::safe_canonicalize(extension_root);
 
-    let canonical_resolved = resolved_path
-        .canonicalize()
-        .unwrap_or_else(|_| resolved_path.to_path_buf());
+    let canonical_resolved = crate::extensions::safe_canonicalize(resolved_path);
 
     // The resolved path MUST be a descendant of the extension root.
     if !canonical_resolved.starts_with(&canonical_root) {
@@ -4908,11 +4904,11 @@ fn classify_proxy_stub_source_tier(extension_id: &str, root: &Path) -> ProxyStub
 
 fn resolve_extension_root_for_base<'a>(base: &str, roots: &'a [PathBuf]) -> Option<&'a PathBuf> {
     let base_path = Path::new(base);
-    let canonical_base = fs::canonicalize(base_path).unwrap_or_else(|_| base_path.to_path_buf());
+    let canonical_base = crate::extensions::safe_canonicalize(base_path);
     roots
         .iter()
         .filter(|root| {
-            let canonical_root = fs::canonicalize(root).unwrap_or_else(|_| (*root).clone());
+            let canonical_root = crate::extensions::safe_canonicalize(root);
             canonical_base.starts_with(&canonical_root)
         })
         .max_by_key(|root| root.components().count())
@@ -5470,10 +5466,15 @@ fn detect_monorepo_escape(
     // Canonicalize as much as possible — if the exact path doesn't exist,
     // try the parent directory.
     let effective = std::fs::canonicalize(&resolved)
+        .map(crate::extensions::strip_unc_prefix)
         .or_else(|_| {
             resolved
                 .parent()
-                .and_then(|p| std::fs::canonicalize(p).ok())
+                .and_then(|p| {
+                    std::fs::canonicalize(p)
+                        .map(crate::extensions::strip_unc_prefix)
+                        .ok()
+                })
                 .map(|p| p.join(resolved.file_name().unwrap_or_default()))
                 .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no parent"))
         })
@@ -5735,6 +5736,7 @@ fn transpile_typescript_module(source: &str, name: &str) -> std::result::Result<
 /// Build the `node:os` virtual module with real system values injected at init
 /// time. Values are captured once and cached in the JS module source, so no
 /// per-call hostcalls are needed.
+#[allow(clippy::too_many_lines)]
 fn build_node_os_module() -> String {
     // Map Rust target constants to Node.js conventions.
     let node_platform = match std::env::consts::OS {
@@ -5755,14 +5757,22 @@ fn build_node_os_module() -> String {
         "windows" => "Windows_NT",
         other => other,
     };
-    let tmpdir = std::env::temp_dir().display().to_string();
-    let homedir = std::env::var("HOME").unwrap_or_else(|_| "/home/unknown".to_string());
+    // Escape backslashes for safe JS string interpolation (Windows paths).
+    let tmpdir = std::env::temp_dir()
+        .display()
+        .to_string()
+        .replace('\\', "\\\\");
+    let homedir = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| "/home/unknown".to_string())
+        .replace('\\', "\\\\");
     // Read hostname from /etc/hostname (Linux) or fall back to env/default.
     let hostname = std::fs::read_to_string("/etc/hostname")
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .or_else(|| std::env::var("HOSTNAME").ok())
+        .or_else(|| std::env::var("COMPUTERNAME").ok())
         .unwrap_or_else(|| "localhost".to_string());
     let num_cpus = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
     let eol = if cfg!(windows) { "\\r\\n" } else { "\\n" };
@@ -5771,8 +5781,16 @@ fn build_node_os_module() -> String {
     } else {
         "/dev/null"
     };
-    let username = std::env::var("USER").unwrap_or_else(|_| "unknown".to_string());
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    let username = std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_else(|_| "unknown".to_string());
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| {
+        if cfg!(windows) {
+            "cmd.exe".to_string()
+        } else {
+            "/bin/sh".to_string()
+        }
+    });
     // Read uid/gid from /proc/self/status on Linux, fall back to defaults.
     let (uid, gid) = read_proc_uid_gid().unwrap_or((1000, 1000));
 
@@ -11892,8 +11910,8 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
                         let repair_mode = bridge_repair_mode;
                         let repair_events = Arc::clone(&bridge_repair_events);
                         move |path: String| -> rquickjs::Result<String> {
-                            let workspace_root = std::fs::canonicalize(&process_cwd)
-                                .unwrap_or_else(|_| PathBuf::from(&process_cwd));
+                            let workspace_root =
+                                crate::extensions::safe_canonicalize(Path::new(&process_cwd));
 
                             let requested = PathBuf::from(&path);
                             let requested_abs = if requested.is_absolute() {
@@ -11903,11 +11921,13 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
                             };
 
                             let checked_path = std::fs::canonicalize(&requested_abs)
+                                .map(crate::extensions::strip_unc_prefix)
                                 .or_else(|err| {
                                     if err.kind() == std::io::ErrorKind::NotFound {
                                         if let Some(parent) = requested_abs.parent() {
                                             if let Ok(canonical_parent) =
                                                 std::fs::canonicalize(parent)
+                                                    .map(crate::extensions::strip_unc_prefix)
                                             {
                                                 // Check workspace root
                                                 if canonical_parent.starts_with(&workspace_root) {
@@ -19478,6 +19498,7 @@ export default ConfigLoader;
     }
 
     #[test]
+    #[cfg(unix)]
     fn pijs_exec_sync_with_cwd_option() {
         futures::executor::block_on(async {
             let clock = Arc::new(DeterministicClock::new(0));
@@ -19550,6 +19571,7 @@ export default ConfigLoader;
     }
 
     #[test]
+    #[cfg(unix)]
     fn pijs_spawn_sync_options_as_second_arg() {
         futures::executor::block_on(async {
             let clock = Arc::new(DeterministicClock::new(0));

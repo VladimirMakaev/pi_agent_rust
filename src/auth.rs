@@ -1258,6 +1258,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_refresh_expired_extension_oauth_tokens_updates_and_persists() {
         let rt = asupersync::runtime::RuntimeBuilder::current_thread().build();
         rt.expect("runtime").block_on(async {
@@ -1325,6 +1326,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_refresh_extension_oauth_token_redacts_secret_in_error() {
         let rt = asupersync::runtime::RuntimeBuilder::current_thread().build();
         rt.expect("runtime").block_on(async {

@@ -11084,6 +11084,7 @@ mod tests {
     // --- file_url_to_path tests ---
 
     #[test]
+    #[cfg(unix)]
     fn file_url_to_path_valid() {
         let result = file_url_to_path("file:///tmp/test.txt");
         assert_eq!(result, Some(std::path::PathBuf::from("/tmp/test.txt")));

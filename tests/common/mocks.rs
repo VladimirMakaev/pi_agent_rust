@@ -1061,6 +1061,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn exec_fixture_creates_mock_scripts() {
         let dir = tempfile::tempdir().unwrap();
         let mut fixture = ExecFixture::new(dir.path());
