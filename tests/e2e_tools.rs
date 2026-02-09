@@ -848,10 +848,10 @@ fn find_directory_suffix() {
     let text = first_text(&result.content);
     h.log().info("result", text.to_string());
 
-    // Directories should have '/' suffix
+    // Directories should have '/' suffix (on Windows fd returns absolute paths)
     assert!(
         text.lines()
-            .any(|line| line.starts_with("subdir_") && line.ends_with('/')),
+            .any(|line| line.contains("subdir_") && line.ends_with('/')),
         "directories should have '/' suffix, got: {text}"
     );
 }
