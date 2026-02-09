@@ -15381,6 +15381,7 @@ mod tests {
 
     #[test]
     fn pijs_dynamic_import_autostrict_allows_missing_npm_proxy_stub() {
+        const TEST_PKG: &str = "@aliou/pi-missing-proxy-test";
         futures::executor::block_on(async {
             let temp_dir = tempfile::tempdir().expect("tempdir");
             let ext_dir = temp_dir.path().join("community").join("proxy-ext");
@@ -15389,7 +15390,7 @@ mod tests {
             std::fs::write(
                 &entry,
                 r#"
-import dep from "@aliou/pi-utils-settings";
+import dep from "@aliou/pi-missing-proxy-test";
 globalThis.__proxyProbe = {
   kind: typeof dep,
   chain: typeof dep.foo.bar(),
@@ -15438,13 +15439,14 @@ export default dep;
             let events = runtime.drain_repair_events();
             assert!(events.iter().any(|event| {
                 event.pattern == RepairPattern::MissingNpmDep
-                    && event.repair_action.contains("@aliou/pi-utils-settings")
+                    && event.repair_action.contains(TEST_PKG)
             }));
         });
     }
 
     #[test]
     fn pijs_dynamic_import_autosafe_rejects_missing_npm_proxy_stub() {
+        const TEST_PKG: &str = "@aliou/pi-missing-proxy-test-safe";
         futures::executor::block_on(async {
             let temp_dir = tempfile::tempdir().expect("tempdir");
             let ext_dir = temp_dir.path().join("community").join("proxy-ext-safe");
@@ -15452,7 +15454,7 @@ export default dep;
             let entry = ext_dir.join("index.mjs");
             std::fs::write(
                 &entry,
-                r#"import dep from "@aliou/pi-utils-settings"; export default dep;"#,
+                r#"import dep from "@aliou/pi-missing-proxy-test-safe"; export default dep;"#,
             )
             .expect("write extension module");
 
@@ -15486,10 +15488,71 @@ export default dep;
             assert_eq!(result["done"], serde_json::json!(true));
             let message = result["error"].as_str().unwrap_or_default();
             assert!(
-                message.contains(
-                    "Package module specifiers are not supported in PiJS: @aliou/pi-utils-settings"
-                ),
+                message.contains(&format!(
+                    "Package module specifiers are not supported in PiJS: {TEST_PKG}"
+                )),
                 "unexpected message: {message}"
+            );
+        });
+    }
+
+    #[test]
+    fn pijs_dynamic_import_existing_virtual_module_does_not_emit_missing_npm_repair() {
+        futures::executor::block_on(async {
+            let temp_dir = tempfile::tempdir().expect("tempdir");
+            let ext_dir = temp_dir.path().join("community").join("proxy-ext-existing");
+            std::fs::create_dir_all(&ext_dir).expect("mkdir ext");
+            let entry = ext_dir.join("index.mjs");
+            std::fs::write(
+                &entry,
+                r#"
+import { ConfigLoader } from "@aliou/pi-utils-settings";
+globalThis.__existingVirtualProbe = typeof ConfigLoader;
+export default ConfigLoader;
+"#,
+            )
+            .expect("write extension module");
+
+            let config = PiJsRuntimeConfig {
+                repair_mode: RepairMode::AutoStrict,
+                ..PiJsRuntimeConfig::default()
+            };
+            let runtime = PiJsRuntime::with_clock_and_config(DeterministicClock::new(0), config)
+                .await
+                .expect("create runtime");
+            runtime
+                .add_extension_root_with_id(ext_dir.clone(), Some("community/proxy-ext-existing"));
+
+            let entry_spec = format!("file://{}", entry.display());
+            let script = format!(
+                r#"
+                globalThis.proxyExistingImport = {{}};
+                import({entry_spec:?})
+                  .then(() => {{
+                    globalThis.proxyExistingImport.done = true;
+                    globalThis.proxyExistingImport.error = "";
+                  }})
+                  .catch((err) => {{
+                    globalThis.proxyExistingImport.done = true;
+                    globalThis.proxyExistingImport.error = String((err && err.message) || err || "");
+                  }});
+                "#
+            );
+            runtime.eval(&script).await.expect("eval import");
+
+            let result = get_global_json(&runtime, "proxyExistingImport").await;
+            assert_eq!(result["done"], serde_json::json!(true));
+            assert_eq!(result["error"], serde_json::json!(""));
+
+            let probe = get_global_json(&runtime, "__existingVirtualProbe").await;
+            assert_eq!(probe, serde_json::json!("function"));
+
+            let events = runtime.drain_repair_events();
+            assert!(
+                !events
+                    .iter()
+                    .any(|event| event.pattern == RepairPattern::MissingNpmDep),
+                "existing virtual module should suppress missing_npm_dep repair events"
             );
         });
     }

@@ -269,10 +269,13 @@ impl CompatibilityScanner {
 
         for (idx, raw_line) in content.lines().enumerate() {
             let line_no = idx + 1;
-            let stripped = if !in_block_comment && !raw_line.as_bytes().contains(&b'/') {
-                Cow::Borrowed(raw_line)
-            } else {
+            let maybe_contains_comment = in_block_comment
+                || (raw_line.as_bytes().contains(&b'/')
+                    && (raw_line.contains("//") || raw_line.contains("/*")));
+            let stripped = if maybe_contains_comment {
                 Cow::Owned(strip_js_comments(raw_line, &mut in_block_comment))
+            } else {
+                Cow::Borrowed(raw_line)
             };
             let trimmed = stripped.trim_end();
             let raw_trimmed = raw_line.trim_end();
