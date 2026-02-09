@@ -79,8 +79,10 @@ impl TestHarness {
     pub fn new(name: impl Into<String>) -> Self {
         let name = name.into();
         let temp_dir = TempDir::new().expect("Failed to create temp directory");
-        let canonical_dir = std::fs::canonicalize(temp_dir.path())
-            .unwrap_or_else(|_| temp_dir.path().to_path_buf());
+        let canonical_dir = pi::extensions::strip_unc_prefix(
+            std::fs::canonicalize(temp_dir.path())
+                .unwrap_or_else(|_| temp_dir.path().to_path_buf()),
+        );
         let logger = Arc::new(TestLogger::new());
         logger.set_test_name(&name);
         logger.set_normalization_root(&canonical_dir);
@@ -438,8 +440,10 @@ impl TestHarnessBuilder {
     /// Build the test harness.
     pub fn build(self) -> TestHarness {
         let temp_dir = TempDir::new().expect("Failed to create temp directory");
-        let canonical_dir = std::fs::canonicalize(temp_dir.path())
-            .unwrap_or_else(|_| temp_dir.path().to_path_buf());
+        let canonical_dir = pi::extensions::strip_unc_prefix(
+            std::fs::canonicalize(temp_dir.path())
+                .unwrap_or_else(|_| temp_dir.path().to_path_buf()),
+        );
         let logger = Arc::new(TestLogger::with_min_level(self.min_log_level));
         let name = self.name;
         logger.set_test_name(&name);
