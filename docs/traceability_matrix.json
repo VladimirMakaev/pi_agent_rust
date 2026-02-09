@@ -28,6 +28,46 @@
         {
           "path": "tests/conformance_regression_gate.rs",
           "justification": "12 regression gate tests validating pass-rate thresholds, N/A limits, exception policy, and verdict generation."
+        },
+        {
+          "path": "tests/e2e_agent_loop.rs",
+          "justification": "Validates end-to-end agent loop behavior through realistic integration turns."
+        },
+        {
+          "path": "tests/e2e_cli.rs",
+          "justification": "Covers CLI-level interactive and non-interactive end-to-end execution flows."
+        },
+        {
+          "path": "tests/e2e_cross_provider_parity.rs",
+          "justification": "Checks cross-provider behavioral parity across the end-to-end integration surface."
+        },
+        {
+          "path": "tests/e2e_message_session_control.rs",
+          "justification": "Exercises session/message orchestration controls in end-to-end workflows."
+        },
+        {
+          "path": "tests/e2e_provider_streaming.rs",
+          "justification": "Verifies provider streaming behavior in full end-to-end execution paths."
+        },
+        {
+          "path": "tests/e2e_rpc.rs",
+          "justification": "Ensures RPC mode and transport semantics hold under end-to-end test conditions."
+        },
+        {
+          "path": "tests/e2e_session_persistence.rs",
+          "justification": "Validates end-to-end session persistence, resume, and state continuity behavior."
+        },
+        {
+          "path": "tests/e2e_tools.rs",
+          "justification": "Runs end-to-end tool invocation and result handling across representative tool paths."
+        },
+        {
+          "path": "tests/e2e_tui.rs",
+          "justification": "Covers terminal UI interaction loops and rendering-relevant end-to-end behavior."
+        },
+        {
+          "path": "tests/e2e_workflow_preflight.rs",
+          "justification": "Validates preflight workflow expectations before end-to-end runtime execution."
         }
       ],
       "e2e_scripts": [
