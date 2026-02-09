@@ -381,7 +381,7 @@
             "id": "scn-status-line-001",
             "kind": "event",
             "event_name": "turn_start",
-            "summary": "Updates footer status across session_start \u2192 turn_start \u2192 turn_end",
+            "summary": "Updates footer status across session_start → turn_start → turn_end",
             "input": {
               "ctx": {
                 "has_ui": true
