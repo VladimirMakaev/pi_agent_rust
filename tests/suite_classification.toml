@@ -68,10 +68,12 @@ files = [
     "ext_provenance_verification",
     "ext_random_trials",
     "ext_risk_review",
+    "extension_auto_repair_integration",
     "extension_code_search",
     "extension_license",
     "extension_tiered_corpus",
     "extension_validation",
+    "extensions_auto_repair_unit",
     "extensions_concurrent_correctness",
     "extensions_event_cancellation",
     "extensions_event_wiring",
@@ -83,6 +85,7 @@ files = [
     "extensions_provider_oauth",
     "extensions_provider_streaming",
     "extensions_registration",
+    "extensions_repair_events",
     "extensions_reliability",
     "extensions_stress",
     "extensions_url_shim",
@@ -135,6 +138,7 @@ files = [
 
 [suite.e2e]
 files = [
+    "e2e_auto_repair",
     "e2e_agent_loop",
     "e2e_cli",
     "e2e_cross_provider_parity",
