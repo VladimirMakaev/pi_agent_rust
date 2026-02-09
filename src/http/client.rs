@@ -227,8 +227,17 @@ async fn send_parts(
 
     let state = BodyStreamState::new(transport, body_kind, leftover);
     let stream = stream::try_unfold(state, |mut state| async move {
-        let chunk = Box::pin(state.next_bytes()).await?;
-        Ok(chunk.map(|chunk| (chunk, state)))
+        match Box::pin(state.next_bytes()).await {
+            Ok(Some(chunk)) => Ok(Some((chunk, state))),
+            Ok(None) => {
+                state.shutdown_transport_best_effort().await;
+                Ok(None)
+            }
+            Err(err) => {
+                state.shutdown_transport_best_effort().await;
+                Err(err)
+            }
+        }
     })
     .boxed();
 
@@ -524,6 +533,7 @@ struct BodyStreamState {
     buf: Buffer,
     chunked_state: ChunkedState,
     remaining: usize,
+    transport_closed: bool,
 }
 
 impl BodyStreamState {
@@ -538,6 +548,7 @@ impl BodyStreamState {
             buf: Buffer::new(leftover),
             chunked_state: ChunkedState::SizeLine,
             remaining,
+            transport_closed: false,
         }
     }
 
@@ -548,6 +559,14 @@ impl BodyStreamState {
             BodyKind::ContentLength(_) => Box::pin(self.next_content_length()).await,
             BodyKind::Chunked => Box::pin(self.next_chunked()).await,
         }
+    }
+
+    async fn shutdown_transport_best_effort(&mut self) {
+        if self.transport_closed {
+            return;
+        }
+        self.transport_closed = true;
+        let _ = self.transport.shutdown().await;
     }
 
     async fn read_more(&mut self) -> std::io::Result<usize> {
