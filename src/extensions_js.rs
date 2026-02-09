@@ -5065,7 +5065,12 @@ impl JsModuleResolver for PiJsResolver {
         drop(state);
 
         if let Some(path) = resolve_module_path(base, spec, repair_mode) {
-            return Ok(path.to_string_lossy().to_string());
+            // Canonicalize to collapse `.` / `..` segments and normalise
+            // separators (Windows backslashes → forward slashes for QuickJS).
+            let canonical = std::fs::canonicalize(&path)
+                .map(crate::extensions::strip_unc_prefix)
+                .unwrap_or(path);
+            return Ok(canonical.to_string_lossy().replace('\\', "/"));
         }
 
         // Pattern 3 (bd-k5q5.8.4): monorepo sibling module stubs.
@@ -7032,16 +7037,24 @@ export default { config, parse };
     modules.insert(
         "node:path".to_string(),
         r#"
+function __pi_is_abs(s) {
+  return s.startsWith("/") || (s.length >= 3 && s[1] === ":" && s[2] === "/");
+}
+
 export function join(...parts) {
   const cleaned = parts.map((p) => String(p ?? "").replace(/\\/g, "/")).filter((p) => p.length > 0);
-  return cleaned.join("/").replace(/\/+/g, "/");
+  if (cleaned.length === 0) return ".";
+  return normalize(cleaned.join("/"));
 }
 
 export function dirname(p) {
   const s = String(p ?? "").replace(/\\/g, "/");
   const idx = s.lastIndexOf("/");
-  if (idx <= 0) return "/";
-  return s.slice(0, idx);
+  if (idx <= 0) return s.startsWith("/") ? "/" : ".";
+  const dir = s.slice(0, idx);
+  // Keep trailing slash for drive root: D:/ not D:
+  if (dir.length === 2 && dir[1] === ":") return dir + "/";
+  return dir;
 }
 
 export function resolve(...parts) {
@@ -7055,16 +7068,16 @@ export function resolve(...parts) {
 
   let out = "";
   for (const part of cleaned) {
-    if (part.startsWith("/")) {
+    if (__pi_is_abs(part)) {
       out = part;
       continue;
     }
     out = out === "" || out.endsWith("/") ? out + part : out + "/" + part;
   }
-  if (!out.startsWith("/")) {
+  if (!__pi_is_abs(out)) {
     out = base.endsWith("/") ? base + out : base + "/" + out;
   }
-  return out.replace(/\/+/g, "/");
+  return normalize(out);
 }
 
 export function basename(p, ext) {
@@ -7093,7 +7106,8 @@ export function relative(from, to) {
 }
 
 export function isAbsolute(p) {
-  return String(p ?? "").startsWith("/");
+  const s = String(p ?? "").replace(/\\/g, "/");
+  return __pi_is_abs(s);
 }
 
 export function extname(p) {
@@ -7107,7 +7121,7 @@ export function extname(p) {
 
 export function normalize(p) {
   const s = String(p ?? "").replace(/\\/g, "/");
-  const isAbs = s.startsWith("/");
+  const isAbs = __pi_is_abs(s);
   const parts = s.split("/").filter(Boolean);
   const out = [];
   for (const part of parts) {
@@ -7115,6 +7129,7 @@ export function normalize(p) {
     else if (part !== ".") out.push(part);
   }
   const result = out.join("/");
+  if (out.length > 0 && out[0].length === 2 && out[0][1] === ":") return result;
   return isAbs ? "/" + result : result || ".";
 }
 
