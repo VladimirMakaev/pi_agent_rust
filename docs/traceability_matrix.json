@@ -136,6 +136,82 @@
         {
           "path": "tests/session_conformance.rs",
           "justification": "Session contract conformance for persistence, structure, and replay behavior."
+        },
+        {
+          "path": "tests/agent_loop_vcr.rs",
+          "justification": "Agent-loop behavior verification against recorded VCR fixtures."
+        },
+        {
+          "path": "tests/auth_oauth_refresh_vcr.rs",
+          "justification": "OAuth refresh-path behavior and token lifecycle checks using deterministic VCR traces."
+        },
+        {
+          "path": "tests/http_client.rs",
+          "justification": "HTTP client request/response behavior and transport-level diagnostics coverage."
+        },
+        {
+          "path": "tests/main_cli_selection.rs",
+          "justification": "CLI command/model selection behavior and argument-routing correctness."
+        },
+        {
+          "path": "tests/model_registry.rs",
+          "justification": "Model registry loading, lookup, and selection behavior under realistic fixtures."
+        },
+        {
+          "path": "tests/provider_factory.rs",
+          "justification": "Provider construction and backend-selection invariants across configured providers."
+        },
+        {
+          "path": "tests/provider_streaming.rs",
+          "justification": "Streaming provider behavior and event-shape stability across runtimes."
+        },
+        {
+          "path": "tests/resource_loader.rs",
+          "justification": "Resource loading and path-resolution correctness for runtime dependency inputs."
+        },
+        {
+          "path": "tests/rpc_mode.rs",
+          "justification": "RPC mode lifecycle and execution-path correctness checks."
+        },
+        {
+          "path": "tests/rpc_protocol.rs",
+          "justification": "RPC protocol message contract validation and compatibility checks."
+        },
+        {
+          "path": "tests/rpc_session_connector.rs",
+          "justification": "Session-connector behavior in RPC flows and state-carrying interactions."
+        },
+        {
+          "path": "tests/session_connector_conformance.rs",
+          "justification": "Conformance coverage for session connector semantics and invariants."
+        },
+        {
+          "path": "tests/session_index_tests.rs",
+          "justification": "Session index creation, lookup, and persistence consistency checks."
+        },
+        {
+          "path": "tests/session_picker.rs",
+          "justification": "Session picker behavior, ordering, and selection edge-case coverage."
+        },
+        {
+          "path": "tests/session_sqlite.rs",
+          "justification": "SQLite-backed session persistence and retrieval correctness checks."
+        },
+        {
+          "path": "tests/sse_strict_compliance.rs",
+          "justification": "Strict Server-Sent Events parsing and protocol compliance verification."
+        },
+        {
+          "path": "tests/streaming_hostcall.rs",
+          "justification": "Streaming hostcall handling and event-forwarding correctness checks."
+        },
+        {
+          "path": "tests/repro_sse_flush.rs",
+          "justification": "Regression reproducer for SSE flush-boundary handling stability."
+        },
+        {
+          "path": "tests/repro_sse_newline.rs",
+          "justification": "Regression reproducer for newline-sensitive SSE parsing behavior."
         }
       ],
       "e2e_scripts": [
