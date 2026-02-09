@@ -502,7 +502,7 @@
       "directory": "community/nicobailon-interview-tool",
       "retrieved": "2026-02-05",
       "checksum": {
-        "sha256": "a97fb744fd931e76155f5f31f37652b7801f1ceaa0730af9ef330136147e3fd3"
+        "sha256": "c3589f0daacbf63f54da18e4483efc8d93d98e5ed65fd9f5fd1c6a27db5a53cc"
       },
       "name": "nicobailon-interview-tool",
       "license": "MIT",
@@ -1090,7 +1090,7 @@
       "directory": "doom-overlay",
       "retrieved": "2026-02-05",
       "checksum": {
-        "sha256": "e1bfb470c443d962bfca79a8863d0a01caf2c2041ee4b7e93988a94335c69b10"
+        "sha256": "5c269a38b71e7e18003daaf3cf752a99e42eb6afa017e295c47fc9f8cd0ad51a"
       },
       "name": "doom-overlay",
       "license": "MIT",
@@ -1604,7 +1604,7 @@
       "directory": "npm/ogulcancelik-pi-sketch",
       "retrieved": "2026-02-05",
       "checksum": {
-        "sha256": "a4e95b67e0cc2dd1a0147dd9efcf09d775bb1550c3aee8358329dac16442d399"
+        "sha256": "604fdc741ab17d3f482737615532e86d39a0d95a0e4254135139a9b645f2c803"
       },
       "name": "@ogulcancelik/pi-sketch",
       "version": "0.1.1",
@@ -1672,7 +1672,7 @@
       "directory": "npm/pi-annotate",
       "retrieved": "2026-02-05",
       "checksum": {
-        "sha256": "cf98e955a19bb579e4117a0878abcce650cc539d563ef8987da1107536ba8b6b"
+        "sha256": "06e660432388303a270b6053566309458d177947e55a8f4701f1c55cac1b0e2f"
       },
       "name": "pi-annotate",
       "version": "0.3.6",
@@ -1825,7 +1825,7 @@
       "directory": "npm/pi-messenger",
       "retrieved": "2026-02-05",
       "checksum": {
-        "sha256": "648ac76846fab38495eff900e8459f4446bb921bb063308ab76e8075f74040c8"
+        "sha256": "ab4b0e0267133ac5ff15f8864e5bd192d5097ca52e026cb63517a7d7c14898b8"
       },
       "name": "pi-messenger",
       "version": "0.8.2",
@@ -1876,7 +1876,7 @@
       "directory": "npm/pi-multicodex",
       "retrieved": "2026-02-05",
       "checksum": {
-        "sha256": "5062226f7706474d7fa67a1835cd0428bf86d4e9087f0a4804608ad151048152"
+        "sha256": "dd264c074fefe7beb7bb5298d86009666951a9c6c504364b8b176d3a1dbb3be6"
       },
       "name": "pi-multicodex",
       "version": "1.0.2",
@@ -1893,7 +1893,7 @@
       "directory": "npm/pi-notify",
       "retrieved": "2026-02-05",
       "checksum": {
-        "sha256": "76957c026ee81629146b914d34dd32892ee2db62125d846af5470b516246cbf1"
+        "sha256": "aab4f0c8d44a39b306cc9a15256dc8fed516f9032cf5434b4ccc49e6ebcca027"
       },
       "name": "pi-notify",
       "version": "1.0.3",
@@ -1927,7 +1927,7 @@
       "directory": "npm/pi-prompt-template-model",
       "retrieved": "2026-02-05",
       "checksum": {
-        "sha256": "faaee501cfc8824e12fc2003885f8b45975159fa90b6cec8ae4618290746a1fe"
+        "sha256": "6dca196820839176a66ccf3a9290b32de4a06b17ea6aa70c0c92d933f21b46cf"
       },
       "name": "pi-prompt-template-model",
       "version": "0.2.1",
@@ -1961,7 +1961,7 @@
       "directory": "npm/pi-review-loop",
       "retrieved": "2026-02-05",
       "checksum": {
-        "sha256": "702b84a720521184955491fd2ca72b6b0e15d86a9b1636f87d03fbddcf6bff69"
+        "sha256": "54824a3e7e92d2565adb6319a6849607db6b6fef54945459ec12659096b86c97"
       },
       "name": "pi-review-loop",
       "version": "0.4.2",
@@ -1978,7 +1978,7 @@
       "directory": "npm/pi-screenshots-picker",
       "retrieved": "2026-02-05",
       "checksum": {
-        "sha256": "cd5ac0eea7259bba6cf02dc7c0793336aa15ffe25bc7b0cfee8226d2172d22d5"
+        "sha256": "5b0abc4ebe179d072610d02f0294d90bac00b975a84f47d6034ca6e007b3f1c2"
       },
       "name": "pi-screenshots-picker",
       "version": "1.1.10",
@@ -2029,7 +2029,7 @@
       "directory": "npm/pi-shadow-git",
       "retrieved": "2026-02-05",
       "checksum": {
-        "sha256": "55eb623f2c2389218d0a6cd8c536df22fc2f54fb955fc0ce89dd70aca52be46c"
+        "sha256": "f3c251c0f4f3be4ba3b97146b52179530d6675fa4949ba48fdd82c0708134d0f"
       },
       "name": "pi-shadow-git",
       "version": "2.1.0",
@@ -2199,7 +2199,7 @@
       "directory": "npm/pi-web-access",
       "retrieved": "2026-02-05",
       "checksum": {
-        "sha256": "62427a5f9452041963b260175572780d760599534dc0749ae66ed5154a71011b"
+        "sha256": "a5de8dc38b5ec95d7cc6b0fbcd7b14e323a0fc2a664a18320ca8ef1ab8a2bff1"
       },
       "name": "pi-web-access",
       "version": "0.7.2",
@@ -2267,7 +2267,7 @@
       "directory": "npm/tmustier-pi-arcade",
       "retrieved": "2026-02-05",
       "checksum": {
-        "sha256": "a198925c198669dcfcc5287ed9f5974d1a58ad43e3619b7a01903328b61602e7"
+        "sha256": "af722a01c27ce97d24a3d5b561b201318fe4aa3dc2d20caaa6a3bd678d217321"
       },
       "name": "@tmustier/pi-arcade",
       "version": "0.1.5",
@@ -2369,7 +2369,7 @@
       "directory": "npm/vpellegrino-pi-skills",
       "retrieved": "2026-02-05",
       "checksum": {
-        "sha256": "8f6034974269cb16a2afd43af934ed82cc7f8c69a2c37ef7b4048aa39b531994"
+        "sha256": "482c04ffc4c4dce864caa270629663cf422882ba1999389984ecca3a41ae026a"
       },
       "name": "@vpellegrino/pi-skills",
       "version": "1.0.5",
@@ -2420,7 +2420,7 @@
       "directory": "npm/zenobius-pi-dcp",
       "retrieved": "2026-02-05",
       "checksum": {
-        "sha256": "9d891ad9a87696e3ef20ffb7a1dbc1f30d89da0ad9d0f4f1323d7dd40cdf092c"
+        "sha256": "6e0263edbbc673af68cf43d671e7d9d23046932cafd47557022520355a8147a4"
       },
       "name": "@zenobius/pi-dcp",
       "version": "0.1.0",
@@ -2882,7 +2882,7 @@
       "directory": "third-party/kcosr-pi-extensions",
       "retrieved": "2026-02-05",
       "checksum": {
-        "sha256": "f6b3ff290505757043ea983c7dd25450fb9c72de3fac14a38a2bcbe6f97ddb93"
+        "sha256": "3ae6c9a2c50ec4cfa38ee50a8cecde77ea40683b90cdb8b741bbca7c19093857"
       },
       "name": "kcosr-pi-extensions",
       "license": "UNKNOWN",
@@ -2896,7 +2896,7 @@
       "directory": "third-party/limouren-agent-things",
       "retrieved": "2026-02-05",
       "checksum": {
-        "sha256": "21eee9be6d91393d856e1db08abadf41b691c0f704ff68c4e00f37d5af510b7d"
+        "sha256": "186ff16f9e9facfb2467cda452d3f11307a55f1f8c62cf98e33679b8ebeaa791"
       },
       "name": "limouren-agent-things",
       "license": "UNKNOWN",
@@ -3078,7 +3078,7 @@
       "directory": "third-party/w-winter-dot314",
       "retrieved": "2026-02-05",
       "checksum": {
-        "sha256": "f91b288aab011778eb0cbac75849731c3d36ac2e2369cf23a28ccb990461b6a1"
+        "sha256": "8deb3029e326eb4eccc713c4de1214876125edf834eef5da2bb9135f1b6bb17e"
       },
       "name": "w-winter-dot314",
       "license": "UNKNOWN",
