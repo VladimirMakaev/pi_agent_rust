@@ -21,7 +21,7 @@ fn create_runtime(
     harness: &common::TestHarness,
     mode: RepairMode,
 ) -> (ExtensionManager, JsExtensionRuntimeHandle) {
-    let cwd = harness.temp_dir().to_path_buf();
+    let cwd = pi::extensions::strip_unc_prefix(harness.temp_dir().to_path_buf());
     let manager = ExtensionManager::new();
     let tools = Arc::new(ToolRegistry::new(&[], &cwd, None));
     let config = PiJsRuntimeConfig {
