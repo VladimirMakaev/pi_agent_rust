@@ -43,10 +43,7 @@ fn create_runtime(
     (manager, runtime)
 }
 
-fn load_and_verify(
-    manager: &ExtensionManager,
-    entry: &std::path::Path,
-) {
+fn load_and_verify(manager: &ExtensionManager, entry: &std::path::Path) {
     let spec = JsExtensionLoadSpec::from_entry_path(entry).expect("load spec");
     common::run_async({
         let mgr = manager.clone();
@@ -85,9 +82,7 @@ fn integration_monorepo_escape_like_qualisero() {
     let harness = common::TestHarness::new("int_monorepo");
     let cwd = harness.temp_dir().to_path_buf();
 
-    let ext_dir = cwd
-        .join("community")
-        .join("qualisero-bg-notify-sim");
+    let ext_dir = cwd.join("community").join("qualisero-bg-notify-sim");
     std::fs::create_dir_all(&ext_dir).unwrap();
     std::fs::write(
         ext_dir.join("index.mjs"),
@@ -334,5 +329,8 @@ export default function activate(pi) {
 
     let result = dispatch_result(manager);
     assert!(result.contains("greet=hello"), "dist→src repair: {result}");
-    assert!(result.contains("tmpl=html"), "missing asset repair: {result}");
+    assert!(
+        result.contains("tmpl=html"),
+        "missing asset repair: {result}"
+    );
 }

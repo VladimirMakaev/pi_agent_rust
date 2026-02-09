@@ -712,7 +712,7 @@
       "directory": "community/qualisero-pi-agent-scip",
       "retrieved": "2026-02-05",
       "checksum": {
-        "sha256": "8ccb331d582aa712c55da71b83a5a1d941e7469b673c76c30170974c2ebfa950"
+        "sha256": "0320a754323cc480229a4ed5b931542d0c5095c3033e52f67ec0cc0be78e6d8b"
       },
       "name": "qualisero-pi-agent-scip",
       "license": "MIT",

@@ -146,10 +146,7 @@ fn load_one(entry: &ManifestEntry, mode: RepairMode) -> ExtResult {
         }
     };
 
-    let cwd = std::env::temp_dir().join(format!(
-        "pi-e2e-repair-{}",
-        entry.id.replace('/', "_")
-    ));
+    let cwd = std::env::temp_dir().join(format!("pi-e2e-repair-{}", entry.id.replace('/', "_")));
     let _ = std::fs::create_dir_all(&cwd);
 
     let tools = Arc::new(ToolRegistry::new(&[], &cwd, None));
@@ -265,7 +262,10 @@ fn summarize(results: &[ExtResult]) -> AutoRepairSummary {
         let tier = per_tier.entry(r.source_tier.clone()).or_default();
         tier.total += 1;
 
-        if r.error.as_deref().is_some_and(|e| e.starts_with("artifact not found")) {
+        if r.error
+            .as_deref()
+            .is_some_and(|e| e.starts_with("artifact not found"))
+        {
             skipped += 1;
             tier.skipped += 1;
             continue;
@@ -430,7 +430,13 @@ fn full_corpus_with_auto_repair() {
     // Assert: no failures among extensions that have artifacts
     let real_failures: Vec<_> = results
         .iter()
-        .filter(|r| !r.loaded && !r.error.as_deref().is_some_and(|e| e.starts_with("artifact not found")))
+        .filter(|r| {
+            !r.loaded
+                && !r
+                    .error
+                    .as_deref()
+                    .is_some_and(|e| e.starts_with("artifact not found"))
+        })
         .collect();
     assert!(
         real_failures.is_empty(),
@@ -453,25 +459,33 @@ fn subset_without_auto_repair_shows_failures() {
 
     let off_failures: usize = results_off
         .iter()
-        .filter(|r| !r.loaded && !r.error.as_deref().is_some_and(|e| e.starts_with("artifact not found")))
+        .filter(|r| {
+            !r.loaded
+                && !r
+                    .error
+                    .as_deref()
+                    .is_some_and(|e| e.starts_with("artifact not found"))
+        })
         .count();
     let on_failures: usize = results_on
         .iter()
-        .filter(|r| !r.loaded && !r.error.as_deref().is_some_and(|e| e.starts_with("artifact not found")))
+        .filter(|r| {
+            !r.loaded
+                && !r
+                    .error
+                    .as_deref()
+                    .is_some_and(|e| e.starts_with("artifact not found"))
+        })
         .count();
 
-    eprintln!(
-        "[auto-repair:e2e] Failures: OFF={off_failures}, ON={on_failures}"
-    );
+    eprintln!("[auto-repair:e2e] Failures: OFF={off_failures}, ON={on_failures}");
 
     // Auto-repair should fix at least some extensions
     // (If off_failures == on_failures, auto-repair isn't doing anything)
     // Note: we don't require off_failures > on_failures because some extensions
     // may not need repair at all. But if any repair events fired, there should
     // be a difference.
-    let any_repairs = results_on
-        .iter()
-        .any(|r| !r.repair_events.is_empty());
+    let any_repairs = results_on.iter().any(|r| !r.repair_events.is_empty());
 
     if any_repairs {
         assert!(
@@ -526,8 +540,7 @@ fn report_structure_is_valid() {
     let json_str = serde_json::to_string_pretty(&summary).expect("serialize");
 
     // Verify it round-trips
-    let parsed: serde_json::Value =
-        serde_json::from_str(&json_str).expect("parse back");
+    let parsed: serde_json::Value = serde_json::from_str(&json_str).expect("parse back");
     assert_eq!(
         parsed["schema"].as_str().unwrap(),
         "pi.ext.auto_repair_summary.v1"

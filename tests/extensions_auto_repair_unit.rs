@@ -11,7 +11,7 @@ use pi::extensions::{
     ExtensionEventName, ExtensionManager, JsExtensionLoadSpec, JsExtensionRuntimeHandle,
 };
 use pi::extensions_js::{
-    extract_import_names, generate_monorepo_stub, PiJsRuntimeConfig, RepairMode, RepairPattern,
+    PiJsRuntimeConfig, RepairMode, RepairPattern, extract_import_names, generate_monorepo_stub,
 };
 use pi::tools::ToolRegistry;
 use std::sync::Arc;
@@ -138,7 +138,10 @@ export default function(pi) {
     load_ext(&harness, &manager, &ext_dir.join("index.mjs"));
 
     let result = dispatch_and_get_result(manager);
-    assert_eq!(result, "from_src", "dist→src fallback should resolve to src/helper.ts");
+    assert_eq!(
+        result, "from_src",
+        "dist→src fallback should resolve to src/helper.ts"
+    );
 }
 
 #[test]
@@ -159,10 +162,8 @@ fn p1_dist_to_src_disabled_in_off_mode() {
     let (manager, runtime) = create_repair_runtime(&harness, RepairMode::Off);
     manager.set_js_runtime(runtime);
 
-    let spec =
-        JsExtensionLoadSpec::from_entry_path(ext_dir.join("index.mjs")).expect("load spec");
-    let result =
-        common::run_async(async move { manager.load_js_extensions(vec![spec]).await });
+    let spec = JsExtensionLoadSpec::from_entry_path(ext_dir.join("index.mjs")).expect("load spec");
+    let result = common::run_async(async move { manager.load_js_extensions(vec![spec]).await });
 
     assert!(result.is_err(), "dist→src should fail with repair mode Off");
 }
@@ -381,12 +382,13 @@ fn p3_monorepo_escape_rejects_in_safe_mode() {
     let (manager, runtime) = create_repair_runtime(&harness, RepairMode::AutoSafe);
     manager.set_js_runtime(runtime);
 
-    let spec =
-        JsExtensionLoadSpec::from_entry_path(ext_dir.join("index.mjs")).expect("load spec");
-    let result =
-        common::run_async(async move { manager.load_js_extensions(vec![spec]).await });
+    let spec = JsExtensionLoadSpec::from_entry_path(ext_dir.join("index.mjs")).expect("load spec");
+    let result = common::run_async(async move { manager.load_js_extensions(vec![spec]).await });
 
-    assert!(result.is_err(), "monorepo escape should fail in AutoSafe mode");
+    assert!(
+        result.is_err(),
+        "monorepo escape should fail in AutoSafe mode"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -502,7 +504,10 @@ fn safe_patterns_in_auto_safe() {
     use pi::extensions_js::RepairRisk;
     assert_eq!(RepairPattern::DistToSrc.risk(), RepairRisk::Safe);
     assert_eq!(RepairPattern::MissingAsset.risk(), RepairRisk::Safe);
-    assert_eq!(RepairPattern::ManifestNormalization.risk(), RepairRisk::Safe);
+    assert_eq!(
+        RepairPattern::ManifestNormalization.risk(),
+        RepairRisk::Safe
+    );
 }
 
 #[test]

@@ -1002,7 +1002,7 @@
       "source_tier": "community",
       "license": "MIT",
       "provenance": {
-        "checksum_sha256": "8ccb331d582aa712c55da71b83a5a1d941e7469b673c76c30170974c2ebfa950",
+        "checksum_sha256": "0320a754323cc480229a4ed5b931542d0c5095c3033e52f67ec0cc0be78e6d8b",
         "source_type": "git",
         "source_repo": "https://github.com/badlogic/pi-mono",
         "source_path": "packages/coding-agent/community/qualisero/index.ts"
