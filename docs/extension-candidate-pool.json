@@ -6506,7 +6506,7 @@
       "retrieved": "2026-02-05",
       "artifact_path": "tests/ext_conformance/artifacts/npm/zenobius-pi-dcp",
       "checksum": {
-        "sha256": "fe664f6434f7532d6751f29f43ab04131567e05644009651ceda5cb322a72adc"
+        "sha256": "9d891ad9a87696e3ef20ffb7a1dbc1f30d89da0ad9d0f4f1323d7dd40cdf092c"
       },
       "source": {
         "type": "npm",

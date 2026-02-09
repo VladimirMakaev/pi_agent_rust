@@ -1,6 +1,6 @@
 {
   "schema": "pi.ext.inclusion_list.v1",
-  "generated_at": "2026-02-09T05:04:34.680838895+00:00",
+  "generated_at": "2026-02-09T06:26:28.308449320+00:00",
   "summary": {
     "tier1_count": 179,
     "tier1_review_count": 29,
@@ -3094,7 +3094,7 @@
       "license": "MIT",
       "score": 27.0,
       "provenance": {
-        "checksum_sha256": "fe664f6434f7532d6751f29f43ab04131567e05644009651ceda5cb322a72adc",
+        "checksum_sha256": "9d891ad9a87696e3ef20ffb7a1dbc1f30d89da0ad9d0f4f1323d7dd40cdf092c",
         "source_type": "npm",
         "npm_package": "zenobius-pi-dcp",
         "npm_version": "0.1.0"
