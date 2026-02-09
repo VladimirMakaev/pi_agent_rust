@@ -13,26 +13,24 @@ mod common;
 
 use pi::extensions::{ExtensionManager, JsExtensionLoadSpec, JsExtensionRuntimeHandle};
 use pi::extensions_js::{
-    allowed_op_tags_for_mode, apply_proposal, build_approval_request,
-    build_forensic_bundle, build_golden_manifest, build_inspection,
-    check_approval_requirement, compute_artifact_checksum, compute_canary_bucket,
-    compute_capability_proof, compute_confidence, compute_gating_verdict,
-    compute_semantic_parity, decide_promotion, detect_conflict, evaluate_health,
-    execute_promotion, execute_rollback, explain_gating, extract_hostcall_surface,
-    format_proposal_diff, replay_conformance_fixtures, resolve_conflicts,
-    run_governance_checklist, select_best_candidate, should_auto_rollback, tolerant_parse,
-    transition_overlay, validate_proposal, validate_repaired_artifact, AmbiguitySignal,
-    ApprovalRequirement, AuditEntryKind, AuditLedger, CanaryConfig, CanaryRoute,
-    CapabilityDelta, CapabilityMonotonicityVerdict, ConformanceFixture,
-    ConformanceReplayVerdict, ConfidenceReport, ConflictKind, DeveloperGuide,
-    ExtensionRepairEvent, GatingDecision, HealthSignal, HostcallCategory, HostcallDelta,
-    IntentGraph, IntentSignal, LisrAdr, MonotonicityVerdict, OperatorPlaybook,
-    OverlayArtifact, OverlayState, OverlayTransitionError, PatchOp, PatchProposal,
-    PiJsRuntimeConfig, PiJsTickStats, PromotionDecision, ProposalValidationError,
-    RepairMode, RepairPattern, RepairRisk, SemanticDriftSeverity, SemanticParityVerdict,
-    SloVerdict, StructuralVerdict, TelemetryCollector, TelemetryMetric,
-    TolerantParseResult, VerificationBundle, REPAIR_REGISTRY_VERSION, REPAIR_RULES,
-    extract_import_names, generate_monorepo_stub,
+    AmbiguitySignal, ApprovalRequirement, AuditEntryKind, AuditLedger, CanaryConfig, CanaryRoute,
+    CapabilityDelta, CapabilityMonotonicityVerdict, ConfidenceReport, ConflictKind,
+    ConformanceFixture, ConformanceReplayVerdict, DeveloperGuide, ExtensionRepairEvent,
+    GatingDecision, HealthSignal, HostcallCategory, HostcallDelta, IntentGraph, IntentSignal,
+    LisrAdr, MonotonicityVerdict, OperatorPlaybook, OverlayArtifact, OverlayState,
+    OverlayTransitionError, PatchOp, PatchProposal, PiJsRuntimeConfig, PiJsTickStats,
+    PromotionDecision, ProposalValidationError, REPAIR_REGISTRY_VERSION, REPAIR_RULES, RepairMode,
+    RepairPattern, RepairRisk, SemanticDriftSeverity, SemanticParityVerdict, SloVerdict,
+    StructuralVerdict, TelemetryCollector, TelemetryMetric, TolerantParseResult,
+    VerificationBundle, allowed_op_tags_for_mode, apply_proposal, build_approval_request,
+    build_forensic_bundle, build_golden_manifest, build_inspection, check_approval_requirement,
+    compute_artifact_checksum, compute_canary_bucket, compute_capability_proof, compute_confidence,
+    compute_gating_verdict, compute_semantic_parity, decide_promotion, detect_conflict,
+    evaluate_health, execute_promotion, execute_rollback, explain_gating, extract_hostcall_surface,
+    extract_import_names, format_proposal_diff, generate_monorepo_stub,
+    replay_conformance_fixtures, resolve_conflicts, run_governance_checklist,
+    select_best_candidate, should_auto_rollback, tolerant_parse, transition_overlay,
+    validate_proposal, validate_repaired_artifact,
 };
 use pi::tools::ToolRegistry;
 use std::sync::Arc;
@@ -965,8 +963,7 @@ fn structural_verdict_parse_error_is_not_valid() {
 fn validate_valid_typescript_file() {
     let dir = tempfile::tempdir().expect("tempdir");
     let file = dir.path().join("index.ts");
-    std::fs::write(&file, "export function hello(): string { return 'hi'; }\n")
-        .expect("write");
+    std::fs::write(&file, "export function hello(): string { return 'hi'; }\n").expect("write");
     let v = validate_repaired_artifact(&file);
     assert!(v.is_valid(), "expected valid, got: {v}");
 }
@@ -975,8 +972,7 @@ fn validate_valid_typescript_file() {
 fn validate_valid_tsx_file() {
     let dir = tempfile::tempdir().expect("tempdir");
     let file = dir.path().join("component.tsx");
-    std::fs::write(&file, "export const App = () => <div>Hello</div>;\n")
-        .expect("write");
+    std::fs::write(&file, "export const App = () => <div>Hello</div>;\n").expect("write");
     let v = validate_repaired_artifact(&file);
     assert!(v.is_valid(), "expected valid, got: {v}");
 }
@@ -985,8 +981,7 @@ fn validate_valid_tsx_file() {
 fn validate_valid_js_file() {
     let dir = tempfile::tempdir().expect("tempdir");
     let file = dir.path().join("index.js");
-    std::fs::write(&file, "module.exports = { hello: 'world' };\n")
-        .expect("write");
+    std::fs::write(&file, "module.exports = { hello: 'world' };\n").expect("write");
     let v = validate_repaired_artifact(&file);
     assert!(v.is_valid(), "expected valid, got: {v}");
 }
@@ -995,8 +990,7 @@ fn validate_valid_js_file() {
 fn validate_valid_json_file() {
     let dir = tempfile::tempdir().expect("tempdir");
     let file = dir.path().join("package.json");
-    std::fs::write(&file, r#"{"name": "test", "version": "1.0.0"}"#)
-        .expect("write");
+    std::fs::write(&file, r#"{"name": "test", "version": "1.0.0"}"#).expect("write");
     let v = validate_repaired_artifact(&file);
     assert!(v.is_valid(), "expected valid, got: {v}");
 }
@@ -1197,8 +1191,7 @@ fn intent_graph_extracts_event_hooks() {
 #[test]
 fn intent_graph_extracts_capabilities() {
     let caps = vec!["read".to_string(), "exec".to_string()];
-    let graph =
-        IntentGraph::from_register_payload("test-ext", &serde_json::json!({}), &caps);
+    let graph = IntentGraph::from_register_payload("test-ext", &serde_json::json!({}), &caps);
     let cap_signals = graph.signals_by_category("capability");
     assert_eq!(cap_signals.len(), 2);
     assert_eq!(cap_signals[0].name(), "read");
@@ -1220,8 +1213,7 @@ fn intent_graph_deduplicates_signals() {
 
 #[test]
 fn intent_graph_empty_payload() {
-    let graph =
-        IntentGraph::from_register_payload("test-ext", &serde_json::json!({}), &[]);
+    let graph = IntentGraph::from_register_payload("test-ext", &serde_json::json!({}), &[]);
     assert!(graph.is_empty());
     assert_eq!(graph.signal_count(), 0);
     assert_eq!(graph.category_count(), 0);
@@ -1252,11 +1244,7 @@ fn intent_signal_display() {
 
 #[test]
 fn intent_graph_extension_id_preserved() {
-    let graph = IntentGraph::from_register_payload(
-        "my-ext-123",
-        &serde_json::json!({}),
-        &[],
-    );
+    let graph = IntentGraph::from_register_payload("my-ext-123", &serde_json::json!({}), &[]);
     assert_eq!(graph.extension_id, "my-ext-123");
 }
 
@@ -1277,10 +1265,7 @@ fn tolerant_parse_valid_ts() {
 
 #[test]
 fn tolerant_parse_broken_ts() {
-    let result = tolerant_parse(
-        "export function {{{ totally broken",
-        "broken.ts",
-    );
+    let result = tolerant_parse("export function {{{ totally broken", "broken.ts");
     assert!(!result.parsed_ok);
     assert_eq!(result.statement_count, 0);
     assert!(!result.ambiguities.is_empty()); // Should have RecoverableParseErrors
@@ -1298,10 +1283,7 @@ fn tolerant_parse_valid_js() {
 
 #[test]
 fn tolerant_parse_detects_dynamic_eval() {
-    let result = tolerant_parse(
-        "const code = 'console.log(1)';\neval(code);\n",
-        "test.js",
-    );
+    let result = tolerant_parse("const code = 'console.log(1)';\neval(code);\n", "test.js");
     assert!(result.ambiguities.contains(&AmbiguitySignal::DynamicEval));
     // eval has weight 0.9, which is >= 0.8 threshold.
     assert!(!result.is_legible());
@@ -1309,28 +1291,23 @@ fn tolerant_parse_detects_dynamic_eval() {
 
 #[test]
 fn tolerant_parse_detects_new_function() {
-    let result = tolerant_parse(
-        "const fn = new Function('return 1');\n",
-        "test.js",
+    let result = tolerant_parse("const fn = new Function('return 1');\n", "test.js");
+    assert!(
+        result
+            .ambiguities
+            .contains(&AmbiguitySignal::DynamicFunction)
     );
-    assert!(result.ambiguities.contains(&AmbiguitySignal::DynamicFunction));
 }
 
 #[test]
 fn tolerant_parse_detects_dynamic_import() {
-    let result = tolerant_parse(
-        "const mod = await import('./dynamic.js');\n",
-        "test.mjs",
-    );
+    let result = tolerant_parse("const mod = await import('./dynamic.js');\n", "test.mjs");
     assert!(result.ambiguities.contains(&AmbiguitySignal::DynamicImport));
 }
 
 #[test]
 fn tolerant_parse_detects_star_reexport() {
-    let result = tolerant_parse(
-        "export * from './utils';\n",
-        "test.ts",
-    );
+    let result = tolerant_parse("export * from './utils';\n", "test.ts");
     assert!(result.ambiguities.contains(&AmbiguitySignal::StarReExport));
     // StarReExport has weight 0.3, still legible.
     assert!(result.is_legible());
@@ -1347,10 +1324,7 @@ fn tolerant_parse_detects_proxy() {
 
 #[test]
 fn tolerant_parse_detects_with_statement() {
-    let result = tolerant_parse(
-        "with (obj) { foo(); }\n",
-        "test.js",
-    );
+    let result = tolerant_parse("with (obj) { foo(); }\n", "test.js");
     assert!(result.ambiguities.contains(&AmbiguitySignal::WithStatement));
 }
 
@@ -1360,17 +1334,20 @@ fn tolerant_parse_detects_dynamic_require() {
         "const mod = require(path.join(__dirname, 'foo'));\n",
         "test.js",
     );
-    assert!(result.ambiguities.contains(&AmbiguitySignal::DynamicRequire));
+    assert!(
+        result
+            .ambiguities
+            .contains(&AmbiguitySignal::DynamicRequire)
+    );
 }
 
 #[test]
 fn tolerant_parse_static_require_not_flagged() {
-    let result = tolerant_parse(
-        "const mod = require('./static-path');\n",
-        "test.js",
-    );
+    let result = tolerant_parse("const mod = require('./static-path');\n", "test.js");
     assert!(
-        !result.ambiguities.contains(&AmbiguitySignal::DynamicRequire),
+        !result
+            .ambiguities
+            .contains(&AmbiguitySignal::DynamicRequire),
         "static string require should not be flagged"
     );
 }
@@ -1403,19 +1380,13 @@ fn ambiguity_signal_display() {
 
 #[test]
 fn ambiguity_score_zero_for_clean_source() {
-    let result = tolerant_parse(
-        "export const x = 42;\n",
-        "clean.ts",
-    );
+    let result = tolerant_parse("export const x = 42;\n", "clean.ts");
     assert!(result.ambiguity_score().abs() < f64::EPSILON);
 }
 
 #[test]
 fn ambiguity_score_high_for_eval() {
-    let result = tolerant_parse(
-        "eval('code');\n",
-        "dangerous.js",
-    );
+    let result = tolerant_parse("eval('code');\n", "dangerous.js");
     assert!(result.ambiguity_score() >= 0.9);
 }
 
@@ -1576,7 +1547,10 @@ fn gating_allow_for_clean_extension() {
     assert_eq!(verdict.decision, GatingDecision::Allow);
     assert!(verdict.allows_repair());
     assert!(verdict.allows_suggestion());
-    assert!(verdict.reason_codes.is_empty(), "Allow should have no reason codes");
+    assert!(
+        verdict.reason_codes.is_empty(),
+        "Allow should have no reason codes"
+    );
 }
 
 #[test]
@@ -1587,10 +1561,16 @@ fn gating_deny_for_broken_opaque_extension() {
     assert_eq!(verdict.decision, GatingDecision::Deny);
     assert!(!verdict.allows_repair());
     assert!(!verdict.allows_suggestion());
-    assert!(!verdict.reason_codes.is_empty(), "Deny should have reason codes");
+    assert!(
+        !verdict.reason_codes.is_empty(),
+        "Deny should have reason codes"
+    );
     // Should have parse_failed reason code.
     assert!(
-        verdict.reason_codes.iter().any(|r| r.code == "parse_failed"),
+        verdict
+            .reason_codes
+            .iter()
+            .any(|r| r.code == "parse_failed"),
         "should have parse_failed reason code"
     );
 }
@@ -1603,10 +1583,7 @@ fn gating_suggest_for_ambiguous_but_parseable() {
     // = 0.5 + 0.15 - 0.27 - 0.27 - 0.15 = -0.04 → clamped to ~0.0 → Deny
     // Need something in between. Use just eval with no tools:
     // 0.5 + 0.15 - 0.27 - 0.15 = 0.23 → Suggest
-    let parse = tolerant_parse(
-        "eval('code');\nexport const x = 1;\n",
-        "test.js",
-    );
+    let parse = tolerant_parse("eval('code');\nexport const x = 1;\n", "test.js");
     let intent = IntentGraph::from_register_payload("test-ext", &serde_json::json!({}), &[]);
     let verdict = compute_gating_verdict(&intent, &parse);
     assert_eq!(
@@ -1749,7 +1726,10 @@ fn select_filters_by_mode() {
     let candidates = vec![aggressive];
     // AutoSafe shouldn't allow aggressive proposals.
     let result = select_best_candidate(&candidates, RepairMode::AutoSafe);
-    assert!(result.is_none(), "AutoSafe should not select aggressive proposal");
+    assert!(
+        result.is_none(),
+        "AutoSafe should not select aggressive proposal"
+    );
 }
 
 #[test]
@@ -1896,7 +1876,10 @@ fn validate_empty_proposal_rejected() {
 fn validate_safe_proposal_in_auto_safe() {
     let proposal = make_safe_proposal("dist_to_src_v1", "./a.js", "./b.ts");
     let errors = validate_proposal(&proposal, RepairMode::AutoSafe, None);
-    assert!(errors.is_empty(), "safe proposal should pass in AutoSafe: {errors:?}");
+    assert!(
+        errors.is_empty(),
+        "safe proposal should pass in AutoSafe: {errors:?}"
+    );
 }
 
 #[test]
@@ -1917,7 +1900,10 @@ fn validate_aggressive_proposal_rejected_in_auto_safe() {
 fn validate_aggressive_proposal_passes_in_auto_strict() {
     let proposal = make_aggressive_proposal("monorepo_escape_v1");
     let errors = validate_proposal(&proposal, RepairMode::AutoStrict, None);
-    assert!(errors.is_empty(), "aggressive should pass in AutoStrict: {errors:?}");
+    assert!(
+        errors.is_empty(),
+        "aggressive should pass in AutoStrict: {errors:?}"
+    );
 }
 
 #[test]
@@ -1933,7 +1919,9 @@ fn validate_unknown_rule_rejected() {
     };
     let errors = validate_proposal(&proposal, RepairMode::AutoSafe, None);
     assert!(
-        errors.iter().any(|e| matches!(e, ProposalValidationError::UnknownRule { .. })),
+        errors
+            .iter()
+            .any(|e| matches!(e, ProposalValidationError::UnknownRule { .. })),
         "unknown rule should be flagged: {errors:?}"
     );
 }
@@ -1951,7 +1939,9 @@ fn validate_empty_rule_id_accepted() {
     };
     let errors = validate_proposal(&proposal, RepairMode::AutoSafe, None);
     assert!(
-        !errors.iter().any(|e| matches!(e, ProposalValidationError::UnknownRule { .. })),
+        !errors
+            .iter()
+            .any(|e| matches!(e, ProposalValidationError::UnknownRule { .. })),
         "empty rule_id should not trigger unknown rule"
     );
 }
@@ -2226,8 +2216,14 @@ fn cap_proof_delta_is_methods() {
 
 #[test]
 fn cap_proof_verdict_display() {
-    assert_eq!(CapabilityMonotonicityVerdict::Monotonic.to_string(), "monotonic");
-    assert_eq!(CapabilityMonotonicityVerdict::Escalation.to_string(), "escalation");
+    assert_eq!(
+        CapabilityMonotonicityVerdict::Monotonic.to_string(),
+        "monotonic"
+    );
+    assert_eq!(
+        CapabilityMonotonicityVerdict::Escalation.to_string(),
+        "escalation"
+    );
 }
 
 #[test]
@@ -2361,10 +2357,7 @@ fn semantic_parity_divergent_on_expansion() {
 
 #[test]
 fn semantic_parity_low_drift_with_aggressive_ops() {
-    let before = graph_with_signals(
-        "ext-o",
-        vec![IntentSignal::RegistersTool("t".to_string())],
-    );
+    let before = graph_with_signals("ext-o", vec![IntentSignal::RegistersTool("t".to_string())]);
     let after = before.clone();
     let ops = [PatchOp::AddExport {
         module_path: "./a.ts".to_string(),
@@ -2378,10 +2371,7 @@ fn semantic_parity_low_drift_with_aggressive_ops() {
 
 #[test]
 fn semantic_parity_medium_drift_with_many_stubs() {
-    let before = graph_with_signals(
-        "ext-p",
-        vec![IntentSignal::RegistersTool("t".to_string())],
-    );
+    let before = graph_with_signals("ext-p", vec![IntentSignal::RegistersTool("t".to_string())]);
     let after = before.clone();
     let ops = [
         PatchOp::InjectStub {
@@ -2444,10 +2434,7 @@ fn semantic_drift_severity_is_acceptable() {
 
 #[test]
 fn semantic_parity_report_expansions() {
-    let before = graph_with_signals(
-        "ext-r",
-        vec![IntentSignal::RegistersTool("a".to_string())],
-    );
+    let before = graph_with_signals("ext-r", vec![IntentSignal::RegistersTool("a".to_string())]);
     let after = graph_with_signals(
         "ext-r",
         vec![
@@ -2471,10 +2458,7 @@ fn semantic_parity_preserves_extension_id() {
 
 #[test]
 fn semantic_parity_safe_ops_no_drift() {
-    let before = graph_with_signals(
-        "ext-s",
-        vec![IntentSignal::RegistersTool("t".to_string())],
-    );
+    let before = graph_with_signals("ext-s", vec![IntentSignal::RegistersTool("t".to_string())]);
     let after = before.clone();
     let ops = [
         PatchOp::ReplaceModulePath {
@@ -2553,10 +2537,7 @@ fn golden_manifest_verify_entry_match() {
 #[test]
 fn golden_manifest_verify_entry_mismatch() {
     let manifest = build_golden_manifest("ext-c", &[("index.ts", b"original")], 0);
-    assert_eq!(
-        manifest.verify_entry("index.ts", b"tampered"),
-        Some(false)
-    );
+    assert_eq!(manifest.verify_entry("index.ts", b"tampered"), Some(false));
 }
 
 #[test]
@@ -2631,10 +2612,7 @@ fn replay_verdict_display() {
 
 #[test]
 fn verification_bundle_all_pass() {
-    let intent = graph_with_signals(
-        "ext-h",
-        vec![IntentSignal::RegistersTool("t".to_string())],
-    );
+    let intent = graph_with_signals("ext-h", vec![IntentSignal::RegistersTool("t".to_string())]);
     let cap_proof = compute_capability_proof(&intent, &intent);
     let sem_proof = compute_semantic_parity(&intent, &intent, &[]);
     let conformance = replay_conformance_fixtures("ext-h", &[]);
@@ -3135,7 +3113,13 @@ fn audit_ledger_append_and_get() {
 #[test]
 fn audit_ledger_monotonic_sequence() {
     let mut ledger = AuditLedger::new();
-    let s1 = ledger.append(1000, "ext-a", AuditEntryKind::Analysis, String::new(), vec![]);
+    let s1 = ledger.append(
+        1000,
+        "ext-a",
+        AuditEntryKind::Analysis,
+        String::new(),
+        vec![],
+    );
     let s2 = ledger.append(
         2000,
         "ext-a",
@@ -3158,9 +3142,27 @@ fn audit_ledger_monotonic_sequence() {
 #[test]
 fn audit_ledger_query_by_extension() {
     let mut ledger = AuditLedger::new();
-    ledger.append(1000, "ext-a", AuditEntryKind::Analysis, String::new(), vec![]);
-    ledger.append(2000, "ext-b", AuditEntryKind::Analysis, String::new(), vec![]);
-    ledger.append(3000, "ext-a", AuditEntryKind::Activated, String::new(), vec![]);
+    ledger.append(
+        1000,
+        "ext-a",
+        AuditEntryKind::Analysis,
+        String::new(),
+        vec![],
+    );
+    ledger.append(
+        2000,
+        "ext-b",
+        AuditEntryKind::Analysis,
+        String::new(),
+        vec![],
+    );
+    ledger.append(
+        3000,
+        "ext-a",
+        AuditEntryKind::Activated,
+        String::new(),
+        vec![],
+    );
     let ext_a = ledger.entries_for_extension("ext-a");
     assert_eq!(ext_a.len(), 2);
     let ext_b = ledger.entries_for_extension("ext-b");
@@ -3170,9 +3172,27 @@ fn audit_ledger_query_by_extension() {
 #[test]
 fn audit_ledger_query_by_kind() {
     let mut ledger = AuditLedger::new();
-    ledger.append(1000, "ext-a", AuditEntryKind::Analysis, String::new(), vec![]);
-    ledger.append(2000, "ext-b", AuditEntryKind::Analysis, String::new(), vec![]);
-    ledger.append(3000, "ext-a", AuditEntryKind::RolledBack, String::new(), vec![]);
+    ledger.append(
+        1000,
+        "ext-a",
+        AuditEntryKind::Analysis,
+        String::new(),
+        vec![],
+    );
+    ledger.append(
+        2000,
+        "ext-b",
+        AuditEntryKind::Analysis,
+        String::new(),
+        vec![],
+    );
+    ledger.append(
+        3000,
+        "ext-a",
+        AuditEntryKind::RolledBack,
+        String::new(),
+        vec![],
+    );
     let analyses = ledger.entries_by_kind(AuditEntryKind::Analysis);
     assert_eq!(analyses.len(), 2);
     let rollbacks = ledger.entries_by_kind(AuditEntryKind::RolledBack);
@@ -3182,7 +3202,10 @@ fn audit_ledger_query_by_kind() {
 #[test]
 fn audit_entry_kind_display() {
     assert_eq!(AuditEntryKind::Analysis.to_string(), "analysis");
-    assert_eq!(AuditEntryKind::GatingDecision.to_string(), "gating_decision");
+    assert_eq!(
+        AuditEntryKind::GatingDecision.to_string(),
+        "gating_decision"
+    );
     assert_eq!(AuditEntryKind::RolledBack.to_string(), "rolled_back");
     assert_eq!(AuditEntryKind::Promoted.to_string(), "promoted");
     assert_eq!(AuditEntryKind::Superseded.to_string(), "superseded");
@@ -3219,9 +3242,18 @@ fn telemetry_collector_sum() {
 
 #[test]
 fn telemetry_metric_display() {
-    assert_eq!(TelemetryMetric::RepairAttempted.to_string(), "repair.attempted");
-    assert_eq!(TelemetryMetric::OverlayRolledBack.to_string(), "overlay.rolled_back");
-    assert_eq!(TelemetryMetric::ApprovalLatencyMs.to_string(), "approval.latency_ms");
+    assert_eq!(
+        TelemetryMetric::RepairAttempted.to_string(),
+        "repair.attempted"
+    );
+    assert_eq!(
+        TelemetryMetric::OverlayRolledBack.to_string(),
+        "overlay.rolled_back"
+    );
+    assert_eq!(
+        TelemetryMetric::ApprovalLatencyMs.to_string(),
+        "approval.latency_ms"
+    );
 }
 
 // ─── Operator CLI inspect/explain/diff tests (bd-k5q5.9.7.3) ───────────────
@@ -3263,10 +3295,7 @@ fn inspection_record_no_gating() {
 
 #[test]
 fn explain_gating_output() {
-    let intent = graph_with_signals(
-        "ext-c",
-        vec![IntentSignal::RegistersTool("t".to_string())],
-    );
+    let intent = graph_with_signals("ext-c", vec![IntentSignal::RegistersTool("t".to_string())]);
     let parse = TolerantParseResult {
         parsed_ok: true,
         statement_count: 10,
@@ -3292,9 +3321,27 @@ fn format_proposal_diff_output() {
 #[test]
 fn forensic_bundle_basic() {
     let mut ledger = AuditLedger::new();
-    ledger.append(1000, "ext-a", AuditEntryKind::Analysis, "analyzed".to_string(), vec![]);
-    ledger.append(2000, "ext-a", AuditEntryKind::Activated, "activated".to_string(), vec![]);
-    ledger.append(3000, "ext-b", AuditEntryKind::Analysis, "other".to_string(), vec![]);
+    ledger.append(
+        1000,
+        "ext-a",
+        AuditEntryKind::Analysis,
+        "analyzed".to_string(),
+        vec![],
+    );
+    ledger.append(
+        2000,
+        "ext-a",
+        AuditEntryKind::Activated,
+        "activated".to_string(),
+        vec![],
+    );
+    ledger.append(
+        3000,
+        "ext-b",
+        AuditEntryKind::Analysis,
+        "other".to_string(),
+        vec![],
+    );
 
     let mut collector = TelemetryCollector::new();
     collector.increment(
@@ -3308,16 +3355,7 @@ fn forensic_bundle_basic() {
         vec![("extension_id".to_string(), "ext-b".to_string())],
     );
 
-    let bundle = build_forensic_bundle(
-        "ext-a",
-        None,
-        None,
-        &ledger,
-        &collector,
-        None,
-        None,
-        9000,
-    );
+    let bundle = build_forensic_bundle("ext-a", None, None, &ledger, &collector, None, None, 9000);
     assert_eq!(bundle.extension_id, "ext-a");
     assert_eq!(bundle.audit_count(), 2); // Only ext-a entries
     assert_eq!(bundle.telemetry_points.len(), 1); // Only ext-a points
@@ -3670,8 +3708,7 @@ export default function activate(pi) {
     let (manager, runtime) = start_runtime_with_repair_mode(&harness, RepairMode::AutoStrict);
     manager.set_js_runtime(runtime);
 
-    let spec =
-        JsExtensionLoadSpec::from_entry_path(ext_dir.join("index.mjs")).expect("load spec");
+    let spec = JsExtensionLoadSpec::from_entry_path(ext_dir.join("index.mjs")).expect("load spec");
 
     common::run_async({
         let mgr = manager.clone();
@@ -3728,16 +3765,157 @@ export default function activate(pi) {}
     let (manager, runtime) = start_runtime_with_repair_mode(&harness, RepairMode::AutoSafe);
     manager.set_js_runtime(runtime);
 
-    let spec =
-        JsExtensionLoadSpec::from_entry_path(ext_dir.join("index.mjs")).expect("load spec");
+    let spec = JsExtensionLoadSpec::from_entry_path(ext_dir.join("index.mjs")).expect("load spec");
 
-    let result = common::run_async(async move {
-        manager.load_js_extensions(vec![spec]).await
-    });
+    let result = common::run_async(async move { manager.load_js_extensions(vec![spec]).await });
 
     // Should fail because AutoSafe doesn't allow aggressive patterns
     assert!(
         result.is_err(),
         "expected monorepo escape to fail under AutoSafe mode"
     );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Pattern 5 (bd-k5q5.8.6): Export Shape Normalization
+// ═══════════════════════════════════════════════════════════════════════════════
+
+fn load_ext_with_source(harness: &common::TestHarness, source: &str) -> ExtensionManager {
+    use pi::extensions::JsExtensionLoadSpec;
+
+    let cwd = harness.temp_dir().to_path_buf();
+    let ext_dir = cwd.join("extensions").join("shape-test");
+    std::fs::create_dir_all(&ext_dir).unwrap();
+    std::fs::write(ext_dir.join("index.mjs"), source).unwrap();
+
+    let (manager, runtime) = start_runtime_with_repair_mode(harness, RepairMode::AutoSafe);
+    manager.set_js_runtime(runtime);
+
+    let spec = JsExtensionLoadSpec::from_entry_path(ext_dir.join("index.mjs")).expect("load spec");
+
+    common::run_async({
+        let mgr = manager.clone();
+        async move {
+            mgr.load_js_extensions(vec![spec])
+                .await
+                .expect("load extension");
+        }
+    });
+
+    manager
+}
+
+#[test]
+fn export_shape_named_activate_fallback() {
+    use pi::extensions::ExtensionEventName;
+
+    let harness = common::TestHarness::new("shape_named");
+    let source = r#"
+export function activate(pi) {
+    pi.on("agent_start", (event, ctx) => {
+        return { result: "named_activate_ok" };
+    });
+}
+"#;
+
+    let manager = load_ext_with_source(&harness, source);
+
+    let response = common::run_async(async move {
+        manager
+            .dispatch_event_with_response(ExtensionEventName::AgentStart, None, 10000)
+            .await
+            .expect("dispatch")
+    });
+
+    let result = response
+        .and_then(|v| v.get("result").and_then(|r| r.as_str()).map(String::from))
+        .unwrap_or_default();
+    assert_eq!(result, "named_activate_ok");
+}
+
+#[test]
+fn export_shape_double_wrapped_default() {
+    use pi::extensions::ExtensionEventName;
+
+    let harness = common::TestHarness::new("shape_double");
+    let source = r#"
+const activator = function(pi) {
+    pi.on("agent_start", (event, ctx) => {
+        return { result: "double_wrapped_ok" };
+    });
+};
+export default { default: activator };
+"#;
+
+    let manager = load_ext_with_source(&harness, source);
+
+    let response = common::run_async(async move {
+        manager
+            .dispatch_event_with_response(ExtensionEventName::AgentStart, None, 10000)
+            .await
+            .expect("dispatch")
+    });
+
+    let result = response
+        .and_then(|v| v.get("result").and_then(|r| r.as_str()).map(String::from))
+        .unwrap_or_default();
+    assert_eq!(result, "double_wrapped_ok");
+}
+
+#[test]
+fn export_shape_default_with_activate_method() {
+    use pi::extensions::ExtensionEventName;
+
+    let harness = common::TestHarness::new("shape_method");
+    let source = r#"
+export default {
+    activate(pi) {
+        pi.on("agent_start", (event, ctx) => {
+            return { result: "activate_method_ok" };
+        });
+    }
+};
+"#;
+
+    let manager = load_ext_with_source(&harness, source);
+
+    let response = common::run_async(async move {
+        manager
+            .dispatch_event_with_response(ExtensionEventName::AgentStart, None, 10000)
+            .await
+            .expect("dispatch")
+    });
+
+    let result = response
+        .and_then(|v| v.get("result").and_then(|r| r.as_str()).map(String::from))
+        .unwrap_or_default();
+    assert_eq!(result, "activate_method_ok");
+}
+
+#[test]
+fn export_shape_normal_default_still_works() {
+    use pi::extensions::ExtensionEventName;
+
+    let harness = common::TestHarness::new("shape_normal");
+    let source = r#"
+export default function(pi) {
+    pi.on("agent_start", (event, ctx) => {
+        return { result: "normal_ok" };
+    });
+}
+"#;
+
+    let manager = load_ext_with_source(&harness, source);
+
+    let response = common::run_async(async move {
+        manager
+            .dispatch_event_with_response(ExtensionEventName::AgentStart, None, 10000)
+            .await
+            .expect("dispatch")
+    });
+
+    let result = response
+        .and_then(|v| v.get("result").and_then(|r| r.as_str()).map(String::from))
+        .unwrap_or_default();
+    assert_eq!(result, "normal_ok");
 }

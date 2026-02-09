@@ -1007,14 +1007,11 @@ impl RepairPattern {
     pub const fn risk(self) -> RepairRisk {
         match self {
             // Patterns 1, 2, 6: path remaps, empty strings, manifest JSON.
-            Self::DistToSrc | Self::MissingAsset | Self::ManifestNormalization => {
-                RepairRisk::Safe
-            }
+            Self::DistToSrc | Self::MissingAsset | Self::ManifestNormalization => RepairRisk::Safe,
             // Patterns 3-5 and 7: inject stubs, rewrite exports, or modify AST.
-            Self::MonorepoEscape
-            | Self::MissingNpmDep
-            | Self::ExportShape
-            | Self::ApiMigration => RepairRisk::Aggressive,
+            Self::MonorepoEscape | Self::MissingNpmDep | Self::ExportShape | Self::ApiMigration => {
+                RepairRisk::Aggressive
+            }
         }
     }
 
@@ -1169,10 +1166,7 @@ pub const REPAIR_REGISTRY_VERSION: &str = "1.1.0";
 pub enum PatchOp {
     /// Replace a module import path with a different path.
     /// Both paths must resolve within the extension root.
-    ReplaceModulePath {
-        from: String,
-        to: String,
-    },
+    ReplaceModulePath { from: String, to: String },
     /// Add a named export to a module's source text.
     AddExport {
         module_path: String,
@@ -1395,7 +1389,9 @@ fn compare_proposals(a: &PatchProposal, b: &PatchProposal) -> std::cmp::Ordering
     let conf_a = a.confidence.unwrap_or(0.0);
     let conf_b = b.confidence.unwrap_or(0.0);
     // Reverse: higher confidence = better = Less in ordering.
-    let conf_ord = conf_b.partial_cmp(&conf_a).unwrap_or(std::cmp::Ordering::Equal);
+    let conf_ord = conf_b
+        .partial_cmp(&conf_a)
+        .unwrap_or(std::cmp::Ordering::Equal);
     if conf_ord != std::cmp::Ordering::Equal {
         return conf_ord;
     }
@@ -1422,8 +1418,7 @@ pub fn resolve_conflicts(proposals: &[PatchProposal]) -> Vec<&PatchProposal> {
     }
 
     // Sort by selection order.
-    let mut indexed: Vec<(usize, &PatchProposal)> =
-        proposals.iter().enumerate().collect();
+    let mut indexed: Vec<(usize, &PatchProposal)> = proposals.iter().enumerate().collect();
     indexed.sort_by(|(_, a), (_, b)| compare_proposals(a, b));
 
     let mut accepted: Vec<&PatchProposal> = Vec::new();
@@ -1592,9 +1587,7 @@ pub fn validate_proposal(
             if target.is_absolute() {
                 let verdict = verify_repair_monotonicity(root, root, target);
                 if !verdict.is_safe() {
-                    errors.push(ProposalValidationError::MonotonicityViolation {
-                        path: path_str,
-                    });
+                    errors.push(ProposalValidationError::MonotonicityViolation { path: path_str });
                 }
             }
         }
@@ -1841,7 +1834,7 @@ pub fn validate_repaired_artifact(path: &Path) -> StructuralVerdict {
 
 /// Try to parse a TypeScript/TSX source with SWC.
 fn validate_typescript_parse(path: &Path, source: &str, ext: &str) -> StructuralVerdict {
-    use swc_common::{FileName, Globals, GLOBALS};
+    use swc_common::{FileName, GLOBALS, Globals};
     use swc_ecma_parser::{Parser as SwcParser, StringInput, Syntax, TsSyntax};
 
     let globals = Globals::new();
@@ -2015,7 +2008,7 @@ pub fn tolerant_parse(source: &str, filename: &str) -> TolerantParseResult {
 
 /// Attempt SWC parse and return (ok, stmts, imports, error_count).
 fn try_swc_parse(source: &str, filename: &str, ext: &str) -> (bool, usize, usize, usize) {
-    use swc_common::{FileName, Globals, GLOBALS};
+    use swc_common::{FileName, GLOBALS, Globals};
     use swc_ecma_parser::{Parser as SwcParser, StringInput, Syntax, TsSyntax};
 
     let globals = Globals::new();
@@ -2104,9 +2097,8 @@ fn detect_ambiguity_patterns(source: &str) -> Vec<AmbiguitySignal> {
         ]
     });
 
-    let dyn_require = DYN_REQUIRE.get_or_init(|| {
-        regex::Regex::new(r#"\brequire\s*\(\s*[^"'`\s)]"#).expect("regex")
-    });
+    let dyn_require = DYN_REQUIRE
+        .get_or_init(|| regex::Regex::new(r#"\brequire\s*\(\s*[^"'`\s)]"#).expect("regex"));
 
     let mut signals = Vec::new();
     for (re, signal) in patterns {
@@ -2345,10 +2337,7 @@ impl ConfidenceReport {
 /// - No registrations (opaque extension)
 /// - Zero statements recovered
 #[allow(clippy::too_many_lines)]
-pub fn compute_confidence(
-    intent: &IntentGraph,
-    parse: &TolerantParseResult,
-) -> ConfidenceReport {
+pub fn compute_confidence(intent: &IntentGraph, parse: &TolerantParseResult) -> ConfidenceReport {
     let mut score: f64 = 0.5;
     let mut reasons = Vec::new();
 
@@ -2534,10 +2523,7 @@ impl GatingVerdict {
 ///
 /// Reason codes are generated for Suggest and Deny decisions to guide
 /// the user on what needs to change for the extension to become repairable.
-pub fn compute_gating_verdict(
-    intent: &IntentGraph,
-    parse: &TolerantParseResult,
-) -> GatingVerdict {
+pub fn compute_gating_verdict(intent: &IntentGraph, parse: &TolerantParseResult) -> GatingVerdict {
     let confidence = compute_confidence(intent, parse);
     let decision = if confidence.is_repairable() {
         GatingDecision::Allow
@@ -3101,7 +3087,9 @@ impl SemanticParityReport {
 ///
 /// Maps `IntentSignal`s to the hostcall categories they exercise at runtime.
 /// This provides a static approximation of the extension's hostcall surface.
-pub fn extract_hostcall_surface(intent: &IntentGraph) -> std::collections::HashSet<HostcallCategory> {
+pub fn extract_hostcall_surface(
+    intent: &IntentGraph,
+) -> std::collections::HashSet<HostcallCategory> {
     let mut surface = std::collections::HashSet::new();
 
     for signal in &intent.signals {
@@ -3161,10 +3149,7 @@ pub fn compute_semantic_parity(
         }
     }
 
-    let expanded_count = hostcall_deltas
-        .iter()
-        .filter(|d| d.is_expansion())
-        .count();
+    let expanded_count = hostcall_deltas.iter().filter(|d| d.is_expansion()).count();
     let removed_count = hostcall_deltas
         .iter()
         .filter(|d| matches!(d, HostcallDelta::Removed(_)))
@@ -3182,7 +3167,9 @@ pub fn compute_semantic_parity(
         if removed_count == 0 {
             SemanticParityVerdict::Equivalent
         } else {
-            notes.push(format!("{removed_count} hostcall(s) removed — acceptable reduction"));
+            notes.push(format!(
+                "{removed_count} hostcall(s) removed — acceptable reduction"
+            ));
             SemanticParityVerdict::AcceptableDrift
         }
     } else {
@@ -3768,10 +3755,7 @@ impl HealthReport {
 }
 
 /// Evaluate health signals against SLO thresholds.
-pub fn evaluate_health(
-    extension_id: &str,
-    signals: &[HealthSignal],
-) -> HealthReport {
+pub fn evaluate_health(extension_id: &str, signals: &[HealthSignal]) -> HealthReport {
     let violations: Vec<String> = signals
         .iter()
         .filter(|s| !s.is_healthy())
@@ -4154,9 +4138,10 @@ pub fn build_inspection(
         .iter()
         .filter(|e| e.kind == AuditEntryKind::GatingDecision)
         .collect::<Vec<_>>();
-    let gating_summary = gating_entries
-        .last()
-        .map_or_else(|| "no gating decision recorded".to_string(), |e| e.summary.clone());
+    let gating_summary = gating_entries.last().map_or_else(
+        || "no gating decision recorded".to_string(),
+        |e| e.summary.clone(),
+    );
 
     let verification_summary = if verification_passed {
         "all proofs passed".to_string()
@@ -4205,7 +4190,12 @@ pub fn format_proposal_diff(proposal: &PatchProposal) -> Vec<String> {
         lines.push(format!("Rationale: {}", proposal.rationale));
     }
     for (i, op) in proposal.ops.iter().enumerate() {
-        lines.push(format!("  Op {}: [{}] {}", i + 1, op.tag(), op_target_path(op)));
+        lines.push(format!(
+            "  Op {}: [{}] {}",
+            i + 1,
+            op.tag(),
+            op_target_path(op)
+        ));
     }
     lines
 }
@@ -4740,8 +4730,21 @@ struct PiJsModuleState {
     /// Extension root directories used to detect monorepo escape (Pattern 3).
     /// Populated as extensions are loaded via [`PiJsRuntime::add_extension_root`].
     extension_roots: Vec<PathBuf>,
+    /// Source-tier classification per extension root. Used by Pattern 4 to
+    /// avoid proxy stubs for official/first-party extensions.
+    extension_root_tiers: HashMap<PathBuf, ProxyStubSourceTier>,
+    /// Package scope (`@scope`) per extension root (when discoverable from
+    /// package.json name). Pattern 4 allows same-scope packages.
+    extension_root_scopes: HashMap<PathBuf, String>,
     /// Shared handle for recording repair events from the resolver.
     repair_events: Arc<std::sync::Mutex<Vec<ExtensionRepairEvent>>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProxyStubSourceTier {
+    Official,
+    Community,
+    Unknown,
 }
 
 impl PiJsModuleState {
@@ -4751,6 +4754,8 @@ impl PiJsModuleState {
             compiled_sources: HashMap::new(),
             repair_mode: RepairMode::default(),
             extension_roots: Vec::new(),
+            extension_root_tiers: HashMap::new(),
+            extension_root_scopes: HashMap::new(),
             repair_events: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
@@ -4830,6 +4835,212 @@ fn unsupported_module_specifier_message(spec: &str) -> String {
     format!("Unsupported module specifier: {spec}")
 }
 
+fn split_scoped_package(spec: &str) -> Option<(&str, &str)> {
+    if !spec.starts_with('@') {
+        return None;
+    }
+    let mut parts = spec.split('/');
+    let scope = parts.next()?;
+    let package = parts.next()?;
+    Some((scope, package))
+}
+
+fn package_scope(spec: &str) -> Option<&str> {
+    split_scoped_package(spec).map(|(scope, _)| scope)
+}
+
+fn read_extension_package_scope(root: &Path) -> Option<String> {
+    let package_json = root.join("package.json");
+    let raw = fs::read_to_string(package_json).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let name = parsed.get("name").and_then(serde_json::Value::as_str)?;
+    let (scope, _) = split_scoped_package(name.trim())?;
+    Some(scope.to_string())
+}
+
+fn root_path_hint_tier(root: &Path) -> ProxyStubSourceTier {
+    let normalized = root
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    let community_hints = [
+        "/community/",
+        "/npm/",
+        "/agents-",
+        "/third-party",
+        "/third_party",
+        "/plugins-community/",
+    ];
+    if community_hints.iter().any(|hint| normalized.contains(hint)) {
+        return ProxyStubSourceTier::Community;
+    }
+
+    let official_hints = ["/official-pi-mono/", "/plugins-official/", "/official/"];
+    if official_hints.iter().any(|hint| normalized.contains(hint)) {
+        return ProxyStubSourceTier::Official;
+    }
+
+    ProxyStubSourceTier::Unknown
+}
+
+fn classify_proxy_stub_source_tier(extension_id: &str, root: &Path) -> ProxyStubSourceTier {
+    let id = extension_id.trim().to_ascii_lowercase();
+    if id.starts_with("community/")
+        || id.starts_with("npm/")
+        || id.starts_with("agents-")
+        || id.starts_with("plugins-community/")
+        || id.starts_with("third-party")
+        || id.starts_with("third_party")
+    {
+        return ProxyStubSourceTier::Community;
+    }
+
+    if id.starts_with("plugins-official/") {
+        return ProxyStubSourceTier::Official;
+    }
+
+    root_path_hint_tier(root)
+}
+
+fn resolve_extension_root_for_base<'a>(base: &str, roots: &'a [PathBuf]) -> Option<&'a PathBuf> {
+    let base_path = Path::new(base);
+    let canonical_base = fs::canonicalize(base_path).unwrap_or_else(|_| base_path.to_path_buf());
+    roots
+        .iter()
+        .filter(|root| canonical_base.starts_with(root))
+        .max_by_key(|root| root.components().count())
+}
+
+fn is_proxy_blocklisted_package(spec: &str) -> bool {
+    if spec.starts_with("node:") {
+        return true;
+    }
+
+    let top = spec.split('/').next().unwrap_or(spec);
+    matches!(
+        top,
+        "fs" | "path"
+            | "child_process"
+            | "net"
+            | "http"
+            | "https"
+            | "crypto"
+            | "tls"
+            | "dgram"
+            | "dns"
+            | "vm"
+            | "worker_threads"
+            | "cluster"
+            | "module"
+            | "os"
+            | "process"
+    )
+}
+
+fn is_proxy_allowlisted_package(spec: &str) -> bool {
+    const ALLOWLIST_SCOPES: &[&str] = &["@sourcegraph", "@marckrenn", "@aliou"];
+    const ALLOWLIST_PACKAGES: &[&str] = &[
+        "openai",
+        "adm-zip",
+        "linkedom",
+        "p-limit",
+        "unpdf",
+        "node-pty",
+        "chokidar",
+        "jsdom",
+        "turndown",
+        "beautiful-mermaid",
+    ];
+
+    if ALLOWLIST_PACKAGES.contains(&spec) {
+        return true;
+    }
+
+    if let Some((scope, package)) = split_scoped_package(spec) {
+        if ALLOWLIST_SCOPES.contains(&scope) {
+            return true;
+        }
+
+        // Generic ecosystem package pattern (`@scope/pi-*`).
+        if package.starts_with("pi-") {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn should_auto_stub_package(
+    spec: &str,
+    base: &str,
+    extension_roots: &[PathBuf],
+    extension_root_tiers: &HashMap<PathBuf, ProxyStubSourceTier>,
+    extension_root_scopes: &HashMap<PathBuf, String>,
+) -> bool {
+    if !is_bare_package_specifier(spec) || is_proxy_blocklisted_package(spec) {
+        return false;
+    }
+
+    if let Some(root) = resolve_extension_root_for_base(base, extension_roots)
+        && extension_root_tiers
+            .get(root)
+            .copied()
+            .unwrap_or(ProxyStubSourceTier::Unknown)
+            == ProxyStubSourceTier::Official
+    {
+        return false;
+    }
+
+    if is_proxy_allowlisted_package(spec) {
+        return true;
+    }
+
+    if let Some(spec_scope) = package_scope(spec)
+        && let Some(root) = resolve_extension_root_for_base(base, extension_roots)
+        && let Some(extension_scope) = extension_root_scopes.get(root)
+    {
+        return extension_scope == spec_scope;
+    }
+
+    false
+}
+
+fn generate_proxy_stub_module(spec: &str) -> String {
+    let spec_literal = serde_json::to_string(spec).unwrap_or_else(|_| "\"<unknown>\"".to_string());
+    format!(
+        r"// Auto-generated npm proxy stub (Pattern 4) for {spec}
+const __pkg = {spec_literal};
+const __handler = {{
+  get(_target, prop) {{
+    if (typeof prop === 'symbol') {{
+      if (prop === Symbol.toPrimitive) return () => '';
+      return undefined;
+    }}
+    if (prop === '__esModule') return true;
+    if (prop === 'default') return __stub;
+    if (prop === 'toString') return () => '';
+    if (prop === 'valueOf') return () => '';
+    if (prop === 'name') return __pkg;
+    // Promise assimilation guard: do not pretend to be then-able.
+    if (prop === 'then') return undefined;
+    return __stub;
+  }},
+  apply() {{ return __stub; }},
+  construct() {{ return __stub; }},
+  has() {{ return false; }},
+  ownKeys() {{ return []; }},
+  getOwnPropertyDescriptor() {{
+    return {{ configurable: true, enumerable: false }};
+  }},
+}};
+const __stub = new Proxy(function __pijs_noop() {{}}, __handler);
+export default __stub;
+export const __pijs_proxy_stub = __stub;
+export const __esModule = true;
+"
+    )
+}
+
 impl JsModuleResolver for PiJsResolver {
     #[allow(clippy::too_many_lines)]
     fn resolve(&mut self, _ctx: &Ctx<'_>, base: &str, name: &str) -> rquickjs::Result<String> {
@@ -4867,10 +5078,7 @@ impl JsModuleResolver for PiJsResolver {
                 let names = extract_import_names(&source, spec);
 
                 let stub = generate_monorepo_stub(&names);
-                let virtual_key = format!(
-                    "pijs-repair://monorepo/{}",
-                    escaped_path.display()
-                );
+                let virtual_key = format!("pijs-repair://monorepo/{}", escaped_path.display());
 
                 tracing::info!(
                     event = "pijs.repair.monorepo_escape",
@@ -4905,6 +5113,47 @@ impl JsModuleResolver for PiJsResolver {
                 let mut state = self.state.borrow_mut();
                 state.virtual_modules.insert(virtual_key.clone(), stub);
                 return Ok(virtual_key);
+            }
+        }
+
+        // Pattern 4 (bd-k5q5.8.5): proxy-based stubs for allowlisted npm deps.
+        // This only fires in aggressive mode and never for blocklisted/system
+        // packages. Existing hand-written virtual modules continue to win
+        // because we only reach this branch after the initial lookup misses.
+        if is_bare_package_specifier(spec) && repair_mode.allows_aggressive() {
+            let state = self.state.borrow();
+            let roots = state.extension_roots.clone();
+            let tiers = state.extension_root_tiers.clone();
+            let scopes = state.extension_root_scopes.clone();
+            drop(state);
+
+            if should_auto_stub_package(spec, base, &roots, &tiers, &scopes) {
+                tracing::info!(
+                    event = "pijs.repair.missing_npm_dep",
+                    base = %base,
+                    specifier = %spec,
+                    "auto-repair: generated proxy stub for missing npm dependency"
+                );
+
+                let mut state = self.state.borrow_mut();
+                state
+                    .virtual_modules
+                    .entry(spec.to_string())
+                    .or_insert_with(|| generate_proxy_stub_module(spec));
+                state.compiled_sources.remove(spec);
+
+                if let Ok(mut events) = state.repair_events.lock() {
+                    events.push(ExtensionRepairEvent {
+                        extension_id: String::new(),
+                        pattern: RepairPattern::MissingNpmDep,
+                        original_error: format!("missing npm dependency: {spec} from {base}"),
+                        repair_action: format!("generated proxy stub for package '{spec}'"),
+                        success: true,
+                        timestamp_ms: 0,
+                    });
+                }
+
+                return Ok(spec.to_string());
             }
         }
 
@@ -5168,10 +5417,8 @@ static IMPORT_NAMES_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock:
 
 fn import_names_regex() -> &'static regex::Regex {
     IMPORT_NAMES_RE.get_or_init(|| {
-        regex::Regex::new(
-            r#"(?m)import\s*\{([^}]+)\}\s*from\s*['"]([^'"]+)['"]"#,
-        )
-        .expect("import names regex")
+        regex::Regex::new(r#"(?m)import\s*\{([^}]+)\}\s*from\s*['"]([^'"]+)['"]"#)
+            .expect("import names regex")
     })
 }
 
@@ -5265,11 +5512,7 @@ fn parse_import_list(raw: &str, out: &mut Vec<String>) {
             continue;
         }
         // Handle `X as Y` — we export the original name `X`.
-        let name = token
-            .split_whitespace()
-            .next()
-            .unwrap_or(token)
-            .trim();
+        let name = token.split_whitespace().next().unwrap_or(token).trim();
         if !name.is_empty() {
             out.push(name.to_string());
         }
@@ -5294,10 +5537,7 @@ pub fn generate_monorepo_stub(names: &[String]) -> String {
         {
             // ALL_CAPS constant
             format!("export const {name} = [];")
-        } else if name.starts_with("is")
-            || name.starts_with("has")
-            || name.starts_with("check")
-        {
+        } else if name.starts_with("is") || name.starts_with("has") || name.starts_with("check") {
             format!("export const {name} = () => false;")
         } else if name.starts_with("get")
             || name.starts_with("detect")
@@ -5306,11 +5546,7 @@ pub fn generate_monorepo_stub(names: &[String]) -> String {
             || name.starts_with("make")
         {
             format!("export const {name} = () => ({{}});")
-        } else if name
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_uppercase())
-        {
+        } else if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
             // Likely a class or type — export as class
             format!("export class {name} {{}}")
         } else {
@@ -11030,10 +11266,29 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
     /// monorepo escape patterns (Pattern 3).  Also registers the root
     /// for `readFileSync` access.
     pub fn add_extension_root(&self, root: PathBuf) {
+        self.add_extension_root_with_id(root, None);
+    }
+
+    /// Register an extension root with optional extension ID metadata.
+    ///
+    /// Pattern 4 (missing npm dependency proxy stubs) uses this metadata to
+    /// apply stricter policy for official/first-party extensions and to allow
+    /// same-scope package imports (`@scope/*`) when scope can be discovered.
+    pub fn add_extension_root_with_id(&self, root: PathBuf, extension_id: Option<&str>) {
         self.add_allowed_read_root(root.clone());
         let mut state = self.module_state.borrow_mut();
         if !state.extension_roots.contains(&root) {
-            state.extension_roots.push(root);
+            state.extension_roots.push(root.clone());
+        }
+
+        let tier = extension_id.map_or_else(
+            || root_path_hint_tier(&root),
+            |id| classify_proxy_stub_source_tier(id, &root),
+        );
+        state.extension_root_tiers.insert(root.clone(), tier);
+
+        if let Some(scope) = read_extension_package_scope(&root) {
+            state.extension_root_scopes.insert(root, scope);
         }
     }
 
@@ -11658,8 +11913,7 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
                             let in_ext_root = allowed_read_roots.lock().is_ok_and(|roots| {
                                 roots.iter().any(|root| checked_path.starts_with(root))
                             });
-                            let allowed =
-                                checked_path.starts_with(&workspace_root) || in_ext_root;
+                            let allowed = checked_path.starts_with(&workspace_root) || in_ext_root;
                             if !allowed {
                                 return Err(rquickjs::Error::new_loading_message(
                                     &path,
@@ -11712,11 +11966,10 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
                                             extension_id: String::new(),
                                             pattern: RepairPattern::MissingAsset,
                                             original_error: format!(
-                                                "ENOENT: {}", checked_path.display()
+                                                "ENOENT: {}",
+                                                checked_path.display()
                                             ),
-                                            repair_action: format!(
-                                                "returned empty {ext} fallback"
-                                            ),
+                                            repair_action: format!("returned empty {ext} fallback"),
                                             success: true,
                                             timestamp_ms: 0,
                                         });
@@ -12204,6 +12457,19 @@ async function __pi_with_extension_async(extension_id, fn) {
     }
 }
 
+// Pattern 5 (bd-k5q5.8.6): log export shape normalization repairs.
+// This is a lightweight JS-side event emitter; the Rust repair_events
+// collector is not called from here to keep the bridge minimal.
+function __pi_emit_repair_event(pattern, ext_id, entry, error, action) {
+    if (typeof globalThis.__pi_host_log_event === 'function') {
+        try {
+            globalThis.__pi_host_log_event('pijs.repair.' + pattern, JSON.stringify({
+                extension_id: ext_id, entry, error, action
+            }));
+        } catch (_) { /* best-effort */ }
+    }
+}
+
 async function __pi_load_extension(extension_id, entry_specifier, meta) {
     const id = String(extension_id || '').trim();
     const entry = String(entry_specifier || '').trim();
@@ -12218,7 +12484,31 @@ async function __pi_load_extension(extension_id, entry_specifier, meta) {
     __pi_begin_extension(id, meta);
     try {
         const mod = await import(entry);
-        const init = mod && mod.default;
+        let init = mod && mod.default;
+
+        // Pattern 5 (bd-k5q5.8.6): export shape normalization.
+        // Try alternative activation function shapes before failing.
+        if (typeof init !== 'function') {
+            // 5a: double-wrapped default (CJS→ESM artifact)
+            if (init && typeof init === 'object' && typeof init.default === 'function') {
+                init = init.default;
+                __pi_emit_repair_event('export_shape', id, entry,
+                    'double-wrapped default export', 'unwrapped mod.default.default');
+            }
+            // 5b: named 'activate' export
+            else if (typeof mod.activate === 'function') {
+                init = mod.activate;
+                __pi_emit_repair_event('export_shape', id, entry,
+                    'no default export function', 'used named export mod.activate');
+            }
+            // 5c: nested CJS default with activate method
+            else if (init && typeof init === 'object' && typeof init.activate === 'function') {
+                init = init.activate;
+                __pi_emit_repair_event('export_shape', id, entry,
+                    'default is object with activate method', 'used mod.default.activate');
+            }
+        }
+
         if (typeof init !== 'function') {
             throw new Error('load_extension: entry module must default-export a function');
         }
@@ -15021,6 +15311,180 @@ mod tests {
             let message = result["message"].as_str().unwrap_or_default();
             assert!(
                 message.contains("Package module specifiers are not supported in PiJS: left-pad"),
+                "unexpected message: {message}"
+            );
+        });
+    }
+
+    #[test]
+    fn proxy_stub_allowlist_blocks_sensitive_packages() {
+        assert!(is_proxy_blocklisted_package("node:fs"));
+        assert!(is_proxy_blocklisted_package("fs"));
+        assert!(is_proxy_blocklisted_package("child_process"));
+        assert!(!is_proxy_blocklisted_package("@aliou/pi-utils-settings"));
+    }
+
+    #[test]
+    fn proxy_stub_allowlist_accepts_curated_scope_and_pi_pattern() {
+        assert!(is_proxy_allowlisted_package("@sourcegraph/scip-python"));
+        assert!(is_proxy_allowlisted_package("@aliou/pi-utils-settings"));
+        assert!(is_proxy_allowlisted_package("@example/pi-helpers"));
+        assert!(!is_proxy_allowlisted_package("left-pad"));
+    }
+
+    #[test]
+    fn proxy_stub_allows_same_scope_packages_for_extension() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let root = temp_dir.path().join("community").join("scope-ext");
+        std::fs::create_dir_all(&root).expect("mkdir root");
+        std::fs::write(
+            root.join("package.json"),
+            r#"{ "name": "@qualisero/my-ext", "version": "1.0.0" }"#,
+        )
+        .expect("write package.json");
+        let base = root.join("index.mjs");
+        std::fs::write(&base, "export {};\n").expect("write base");
+
+        let mut tiers = HashMap::new();
+        tiers.insert(root.clone(), ProxyStubSourceTier::Community);
+        let mut scopes = HashMap::new();
+        scopes.insert(root.clone(), "@qualisero".to_string());
+
+        assert!(should_auto_stub_package(
+            "@qualisero/shared-lib",
+            base.to_string_lossy().as_ref(),
+            &[root],
+            &tiers,
+            &scopes,
+        ));
+    }
+
+    #[test]
+    fn proxy_stub_disallowed_for_official_tier() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let root = temp_dir.path().join("official-pi-mono").join("my-ext");
+        std::fs::create_dir_all(&root).expect("mkdir root");
+        let base = root.join("index.mjs");
+        std::fs::write(&base, "export {};\n").expect("write base");
+
+        let mut tiers = HashMap::new();
+        tiers.insert(root.clone(), ProxyStubSourceTier::Official);
+
+        assert!(!should_auto_stub_package(
+            "@aliou/pi-utils-settings",
+            base.to_string_lossy().as_ref(),
+            &[root],
+            &tiers,
+            &HashMap::new(),
+        ));
+    }
+
+    #[test]
+    fn pijs_dynamic_import_autostrict_allows_missing_npm_proxy_stub() {
+        futures::executor::block_on(async {
+            let temp_dir = tempfile::tempdir().expect("tempdir");
+            let ext_dir = temp_dir.path().join("community").join("proxy-ext");
+            std::fs::create_dir_all(&ext_dir).expect("mkdir ext");
+            let entry = ext_dir.join("index.mjs");
+            std::fs::write(
+                &entry,
+                r#"
+import dep from "@aliou/pi-utils-settings";
+globalThis.__proxyProbe = {
+  kind: typeof dep,
+  chain: typeof dep.foo.bar(),
+  primitive: String(dep),
+};
+export default dep;
+"#,
+            )
+            .expect("write extension module");
+
+            let mut config = PiJsRuntimeConfig::default();
+            config.repair_mode = RepairMode::AutoStrict;
+            let runtime = PiJsRuntime::with_clock_and_config(DeterministicClock::new(0), config)
+                .await
+                .expect("create runtime");
+            runtime.add_extension_root_with_id(ext_dir.clone(), Some("community/proxy-ext"));
+
+            let entry_spec = format!("file://{}", entry.display());
+            let script = format!(
+                r#"
+                globalThis.proxyImport = {{}};
+                import({entry_spec:?})
+                  .then(() => {{
+                    globalThis.proxyImport.done = true;
+                    globalThis.proxyImport.error = "";
+                  }})
+                  .catch((err) => {{
+                    globalThis.proxyImport.done = true;
+                    globalThis.proxyImport.error = String((err && err.message) || err || "");
+                  }});
+                "#
+            );
+            runtime.eval(&script).await.expect("eval import");
+
+            let result = get_global_json(&runtime, "proxyImport").await;
+            assert_eq!(result["done"], serde_json::json!(true));
+            assert_eq!(result["error"], serde_json::json!(""));
+
+            let probe = get_global_json(&runtime, "__proxyProbe").await;
+            assert_eq!(probe["kind"], serde_json::json!("function"));
+            assert_eq!(probe["chain"], serde_json::json!("function"));
+            assert_eq!(probe["primitive"], serde_json::json!(""));
+
+            let events = runtime.drain_repair_events();
+            assert!(events.iter().any(|event| {
+                event.pattern == RepairPattern::MissingNpmDep
+                    && event.repair_action.contains("@aliou/pi-utils-settings")
+            }));
+        });
+    }
+
+    #[test]
+    fn pijs_dynamic_import_autosafe_rejects_missing_npm_proxy_stub() {
+        futures::executor::block_on(async {
+            let temp_dir = tempfile::tempdir().expect("tempdir");
+            let ext_dir = temp_dir.path().join("community").join("proxy-ext-safe");
+            std::fs::create_dir_all(&ext_dir).expect("mkdir ext");
+            let entry = ext_dir.join("index.mjs");
+            std::fs::write(
+                &entry,
+                r#"import dep from "@aliou/pi-utils-settings"; export default dep;"#,
+            )
+            .expect("write extension module");
+
+            let mut config = PiJsRuntimeConfig::default();
+            config.repair_mode = RepairMode::AutoSafe;
+            let runtime = PiJsRuntime::with_clock_and_config(DeterministicClock::new(0), config)
+                .await
+                .expect("create runtime");
+            runtime.add_extension_root_with_id(ext_dir.clone(), Some("community/proxy-ext-safe"));
+
+            let entry_spec = format!("file://{}", entry.display());
+            let script = format!(
+                r#"
+                globalThis.proxySafeImport = {{}};
+                import({entry_spec:?})
+                  .then(() => {{
+                    globalThis.proxySafeImport.done = true;
+                    globalThis.proxySafeImport.error = "";
+                  }})
+                  .catch((err) => {{
+                    globalThis.proxySafeImport.done = true;
+                    globalThis.proxySafeImport.error = String((err && err.message) || err || "");
+                  }});
+                "#
+            );
+            runtime.eval(&script).await.expect("eval import");
+
+            let result = get_global_json(&runtime, "proxySafeImport").await;
+            assert_eq!(result["done"], serde_json::json!(true));
+            let message = result["error"].as_str().unwrap_or_default();
+            assert!(
+                message.contains(
+                    "Package module specifiers are not supported in PiJS: @aliou/pi-utils-settings"
+                ),
                 "unexpected message: {message}"
             );
         });
