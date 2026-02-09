@@ -486,15 +486,16 @@ bv --robot-insights | jq '.Cycles'                         # Circular deps (must
 
 ## UBS — Ultimate Bug Scanner
 
-**Golden Rule:** `ubs <changed-files>` before every commit. Exit 0 = safe. Exit >0 = fix & re-run.
+**Golden Rule:** `ubs --staged --only=rust .` before every commit. Exit 0 = safe. Exit >0 = fix & re-run.
 
 ### Commands
 
 ```bash
-ubs file.rs file2.rs                    # Specific files (< 1s) — USE THIS
-ubs $(git diff --name-only --cached)    # Staged files — before commit
-ubs --only=rust,toml src/               # Language filter (3-5x faster)
+ubs --staged --only=rust .              # Staged Rust changes — USE THIS
+ubs --diff --only=rust .                # Unstaged+staged Rust changes vs HEAD
+ubs --only=rust,toml .                  # Language-filtered project scan
 ubs --ci --fail-on-warning .            # CI mode — before PR
+timeout 60s ubs --staged --only=rust .  # Bounded pre-commit run if UBS stalls
 ubs .                                   # Whole project (ignores target/, Cargo.lock)
 ```
 
@@ -515,7 +516,7 @@ Parse: `file:line:col` → location | 💡 → how to fix | Exit 0/1 → pass/fa
 2. Navigate `file:line:col` → view context
 3. Verify real issue (not false positive)
 4. Fix root cause (not symptom)
-5. Re-run `ubs <file>` → exit 0
+5. Re-stage and re-run `ubs --staged --only=rust .` → exit 0
 6. Commit
 
 ### Bug Severity
