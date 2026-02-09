@@ -14,20 +14,22 @@ mod common;
 use pi::extensions::{ExtensionManager, JsExtensionLoadSpec, JsExtensionRuntimeHandle};
 use pi::extensions_js::{
     allowed_op_tags_for_mode, apply_proposal, build_approval_request,
-    build_golden_manifest, check_approval_requirement, compute_artifact_checksum,
-    compute_canary_bucket, compute_capability_proof, compute_confidence,
-    compute_gating_verdict, compute_semantic_parity, decide_promotion, detect_conflict,
-    evaluate_health, execute_promotion, execute_rollback, extract_hostcall_surface,
-    replay_conformance_fixtures, resolve_conflicts, select_best_candidate,
-    should_auto_rollback, tolerant_parse, transition_overlay, validate_proposal,
-    validate_repaired_artifact, AmbiguitySignal, ApprovalRequirement, CanaryConfig,
-    CanaryRoute, CapabilityDelta, CapabilityMonotonicityVerdict, ConformanceFixture,
-    ConformanceReplayVerdict, ConfidenceReport, ConflictKind, ExtensionRepairEvent,
-    GatingDecision, HealthSignal, HostcallCategory, HostcallDelta, IntentGraph,
-    IntentSignal, MonotonicityVerdict, OverlayArtifact, OverlayState,
-    OverlayTransitionError, PatchOp, PatchProposal, PiJsRuntimeConfig, PiJsTickStats,
-    PromotionDecision, ProposalValidationError, RepairMode, RepairPattern, RepairRisk,
-    SemanticDriftSeverity, SemanticParityVerdict, SloVerdict, StructuralVerdict,
+    build_forensic_bundle, build_golden_manifest, build_inspection,
+    check_approval_requirement, compute_artifact_checksum, compute_canary_bucket,
+    compute_capability_proof, compute_confidence, compute_gating_verdict,
+    compute_semantic_parity, decide_promotion, detect_conflict, evaluate_health,
+    execute_promotion, execute_rollback, explain_gating, extract_hostcall_surface,
+    format_proposal_diff, replay_conformance_fixtures, resolve_conflicts,
+    select_best_candidate, should_auto_rollback, tolerant_parse, transition_overlay,
+    validate_proposal, validate_repaired_artifact, AmbiguitySignal, ApprovalRequirement,
+    AuditEntryKind, AuditLedger, CanaryConfig, CanaryRoute, CapabilityDelta,
+    CapabilityMonotonicityVerdict, ConformanceFixture, ConformanceReplayVerdict,
+    ConfidenceReport, ConflictKind, ExtensionRepairEvent, GatingDecision, HealthSignal,
+    HostcallCategory, HostcallDelta, IntentGraph, IntentSignal, MonotonicityVerdict,
+    OverlayArtifact, OverlayState, OverlayTransitionError, PatchOp, PatchProposal,
+    PiJsRuntimeConfig, PiJsTickStats, PromotionDecision, ProposalValidationError,
+    RepairMode, RepairPattern, RepairRisk, SemanticDriftSeverity, SemanticParityVerdict,
+    SloVerdict, StructuralVerdict, TelemetryCollector, TelemetryMetric,
     TolerantParseResult, VerificationBundle, REPAIR_REGISTRY_VERSION, REPAIR_RULES,
 };
 use pi::tools::ToolRegistry;
@@ -3100,4 +3102,282 @@ fn full_canary_lifecycle() {
     assert!(transition_overlay(&mut ovl, OverlayState::Superseded, 3000).is_ok());
     assert!(!ovl.is_active());
     assert!(ovl.state.is_terminal());
+}
+
+// ─── Audit ledger tests (bd-k5q5.9.7.1) ────────────────────────────────────
+
+#[test]
+fn audit_ledger_starts_empty() {
+    let ledger = AuditLedger::new();
+    assert!(ledger.is_empty());
+    assert_eq!(ledger.len(), 0);
+}
+
+#[test]
+fn audit_ledger_append_and_get() {
+    let mut ledger = AuditLedger::new();
+    let seq = ledger.append(
+        1000,
+        "ext-a",
+        AuditEntryKind::Analysis,
+        "analyzed extension".to_string(),
+        vec![("confidence".to_string(), "0.75".to_string())],
+    );
+    assert_eq!(seq, 0);
+    assert_eq!(ledger.len(), 1);
+    let entry = ledger.get(0).unwrap();
+    assert_eq!(entry.extension_id, "ext-a");
+    assert_eq!(entry.kind, AuditEntryKind::Analysis);
+}
+
+#[test]
+fn audit_ledger_monotonic_sequence() {
+    let mut ledger = AuditLedger::new();
+    let s1 = ledger.append(1000, "ext-a", AuditEntryKind::Analysis, String::new(), vec![]);
+    let s2 = ledger.append(
+        2000,
+        "ext-a",
+        AuditEntryKind::GatingDecision,
+        String::new(),
+        vec![],
+    );
+    let s3 = ledger.append(
+        3000,
+        "ext-b",
+        AuditEntryKind::Activated,
+        String::new(),
+        vec![],
+    );
+    assert_eq!(s1, 0);
+    assert_eq!(s2, 1);
+    assert_eq!(s3, 2);
+}
+
+#[test]
+fn audit_ledger_query_by_extension() {
+    let mut ledger = AuditLedger::new();
+    ledger.append(1000, "ext-a", AuditEntryKind::Analysis, String::new(), vec![]);
+    ledger.append(2000, "ext-b", AuditEntryKind::Analysis, String::new(), vec![]);
+    ledger.append(3000, "ext-a", AuditEntryKind::Activated, String::new(), vec![]);
+    let ext_a = ledger.entries_for_extension("ext-a");
+    assert_eq!(ext_a.len(), 2);
+    let ext_b = ledger.entries_for_extension("ext-b");
+    assert_eq!(ext_b.len(), 1);
+}
+
+#[test]
+fn audit_ledger_query_by_kind() {
+    let mut ledger = AuditLedger::new();
+    ledger.append(1000, "ext-a", AuditEntryKind::Analysis, String::new(), vec![]);
+    ledger.append(2000, "ext-b", AuditEntryKind::Analysis, String::new(), vec![]);
+    ledger.append(3000, "ext-a", AuditEntryKind::RolledBack, String::new(), vec![]);
+    let analyses = ledger.entries_by_kind(AuditEntryKind::Analysis);
+    assert_eq!(analyses.len(), 2);
+    let rollbacks = ledger.entries_by_kind(AuditEntryKind::RolledBack);
+    assert_eq!(rollbacks.len(), 1);
+}
+
+#[test]
+fn audit_entry_kind_display() {
+    assert_eq!(AuditEntryKind::Analysis.to_string(), "analysis");
+    assert_eq!(AuditEntryKind::GatingDecision.to_string(), "gating_decision");
+    assert_eq!(AuditEntryKind::RolledBack.to_string(), "rolled_back");
+    assert_eq!(AuditEntryKind::Promoted.to_string(), "promoted");
+    assert_eq!(AuditEntryKind::Superseded.to_string(), "superseded");
+}
+
+// ─── Telemetry tests (bd-k5q5.9.7.2) ───────────────────────────────────────
+
+#[test]
+fn telemetry_collector_starts_empty() {
+    let collector = TelemetryCollector::new();
+    assert!(collector.is_empty());
+    assert_eq!(collector.len(), 0);
+}
+
+#[test]
+fn telemetry_collector_record_and_count() {
+    let mut collector = TelemetryCollector::new();
+    collector.increment(TelemetryMetric::RepairAttempted, 1000, vec![]);
+    collector.increment(TelemetryMetric::RepairAttempted, 2000, vec![]);
+    collector.increment(TelemetryMetric::RepairDenied, 3000, vec![]);
+    assert_eq!(collector.count(TelemetryMetric::RepairAttempted), 2);
+    assert_eq!(collector.count(TelemetryMetric::RepairDenied), 1);
+    assert_eq!(collector.count(TelemetryMetric::OverlayPromoted), 0);
+}
+
+#[test]
+fn telemetry_collector_sum() {
+    let mut collector = TelemetryCollector::new();
+    collector.record(TelemetryMetric::ApprovalLatencyMs, 150.0, 1000, vec![]);
+    collector.record(TelemetryMetric::ApprovalLatencyMs, 250.0, 2000, vec![]);
+    let total = collector.sum(TelemetryMetric::ApprovalLatencyMs);
+    assert!((total - 400.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn telemetry_metric_display() {
+    assert_eq!(TelemetryMetric::RepairAttempted.to_string(), "repair.attempted");
+    assert_eq!(TelemetryMetric::OverlayRolledBack.to_string(), "overlay.rolled_back");
+    assert_eq!(TelemetryMetric::ApprovalLatencyMs.to_string(), "approval.latency_ms");
+}
+
+// ─── Operator CLI inspect/explain/diff tests (bd-k5q5.9.7.3) ───────────────
+
+#[test]
+fn inspection_record_from_ledger() {
+    let mut ledger = AuditLedger::new();
+    ledger.append(
+        1000,
+        "ext-a",
+        AuditEntryKind::Analysis,
+        "analyzed".to_string(),
+        vec![],
+    );
+    ledger.append(
+        2000,
+        "ext-a",
+        AuditEntryKind::GatingDecision,
+        "allow".to_string(),
+        vec![],
+    );
+    let record = build_inspection("ext-a", &ledger, Some(OverlayState::Canary), true);
+    assert_eq!(record.extension_id, "ext-a");
+    assert_eq!(record.timeline.len(), 2);
+    assert_eq!(record.gating_summary, "allow");
+    assert_eq!(record.overlay_state, Some("canary".to_string()));
+    assert_eq!(record.verification_summary, "all proofs passed");
+}
+
+#[test]
+fn inspection_record_no_gating() {
+    let ledger = AuditLedger::new();
+    let record = build_inspection("ext-b", &ledger, None, false);
+    assert!(record.timeline.is_empty());
+    assert_eq!(record.gating_summary, "no gating decision recorded");
+    assert!(record.overlay_state.is_none());
+    assert_eq!(record.verification_summary, "one or more proofs failed");
+}
+
+#[test]
+fn explain_gating_output() {
+    let intent = graph_with_signals(
+        "ext-c",
+        vec![IntentSignal::RegistersTool("t".to_string())],
+    );
+    let parse = TolerantParseResult {
+        parsed_ok: true,
+        statement_count: 10,
+        import_export_count: 2,
+        ambiguities: vec![],
+    };
+    let verdict = compute_gating_verdict(&intent, &parse);
+    let lines = explain_gating(&verdict);
+    assert!(!lines.is_empty());
+    assert!(lines[0].contains("Decision:"));
+}
+
+#[test]
+fn format_proposal_diff_output() {
+    let proposal = make_safe_proposal("dist_to_src_v1", "./dist/a.js", "./src/a.ts");
+    let lines = format_proposal_diff(&proposal);
+    assert!(lines[0].contains("dist_to_src_v1"));
+    assert!(lines.iter().any(|l| l.contains("replace_module_path")));
+}
+
+// ─── Forensic bundle tests (bd-k5q5.9.7.4) ─────────────────────────────────
+
+#[test]
+fn forensic_bundle_basic() {
+    let mut ledger = AuditLedger::new();
+    ledger.append(1000, "ext-a", AuditEntryKind::Analysis, "analyzed".to_string(), vec![]);
+    ledger.append(2000, "ext-a", AuditEntryKind::Activated, "activated".to_string(), vec![]);
+    ledger.append(3000, "ext-b", AuditEntryKind::Analysis, "other".to_string(), vec![]);
+
+    let mut collector = TelemetryCollector::new();
+    collector.increment(
+        TelemetryMetric::RepairAttempted,
+        1000,
+        vec![("extension_id".to_string(), "ext-a".to_string())],
+    );
+    collector.increment(
+        TelemetryMetric::RepairAttempted,
+        2000,
+        vec![("extension_id".to_string(), "ext-b".to_string())],
+    );
+
+    let bundle = build_forensic_bundle(
+        "ext-a",
+        None,
+        None,
+        &ledger,
+        &collector,
+        None,
+        None,
+        9000,
+    );
+    assert_eq!(bundle.extension_id, "ext-a");
+    assert_eq!(bundle.audit_count(), 2); // Only ext-a entries
+    assert_eq!(bundle.telemetry_points.len(), 1); // Only ext-a points
+    assert!(!bundle.has_verification());
+    assert!(!bundle.has_health_data());
+    assert_eq!(bundle.exported_at_ms, 9000);
+}
+
+#[test]
+fn forensic_bundle_with_overlay() {
+    let ovl = make_overlay(OverlayState::Canary, true);
+    let ledger = AuditLedger::new();
+    let collector = TelemetryCollector::new();
+    let signals = vec![HealthSignal {
+        name: "error_rate".to_string(),
+        value: 0.01,
+        threshold: 0.05,
+    }];
+    let health = evaluate_health("ext-a", &signals);
+
+    let bundle = build_forensic_bundle(
+        "ext-a",
+        Some(&ovl),
+        None,
+        &ledger,
+        &collector,
+        Some(&health),
+        None,
+        10_000,
+    );
+    assert!(bundle.overlay.is_some());
+    assert!(bundle.has_health_data());
+}
+
+#[test]
+fn forensic_bundle_with_verification() {
+    let intent = graph_with_signals("ext-a", vec![]);
+    let cap_proof = compute_capability_proof(&intent, &intent);
+    let sem_proof = compute_semantic_parity(&intent, &intent, &[]);
+    let conformance = replay_conformance_fixtures("ext-a", &[]);
+    let manifest = build_golden_manifest("ext-a", &[], 0);
+
+    let vb = VerificationBundle {
+        extension_id: "ext-a".to_string(),
+        structural: StructuralVerdict::Valid,
+        capability_proof: cap_proof,
+        semantic_proof: sem_proof,
+        conformance,
+        checksum_manifest: manifest,
+    };
+
+    let ledger = AuditLedger::new();
+    let collector = TelemetryCollector::new();
+    let bundle = build_forensic_bundle(
+        "ext-a",
+        None,
+        Some(&vb),
+        &ledger,
+        &collector,
+        None,
+        None,
+        11_000,
+    );
+    assert!(bundle.has_verification());
 }
