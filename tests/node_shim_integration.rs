@@ -116,7 +116,10 @@ import os from "node:os";"#,
         r#"(() => {
         const home = os.homedir();
         const configPath = path.join(home, ".config", "ext.json");
-        return configPath.startsWith(home) && (configPath.endsWith(".config/ext.json") || configPath.endsWith(".config\\ext.json"));
+        // Normalize both to forward slashes before comparison so mixed
+        // separators on Windows don't cause a startsWith mismatch.
+        const norm = s => s.replace(/\\/g, "/");
+        return norm(configPath).startsWith(norm(home)) && norm(configPath).endsWith(".config/ext.json");
     })()"#,
     );
     assert_eq!(result, "true");
