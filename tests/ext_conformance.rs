@@ -184,7 +184,7 @@ fn normalizes_dynamic_fields_paths_and_ansi() {
         },
         "source": { "component": "runtime", "host": "host.name", "pid": 4242 },
         "data": {
-            "path": cwd.join("dir/sub/file.rs").display().to_string(),
+            "path": cwd.join("dir").join("sub").join("file.rs").display().to_string(),
             "note": "\u{1b}[1mBold\u{1b}[0m"
         }
     });
