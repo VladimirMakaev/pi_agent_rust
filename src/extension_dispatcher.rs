@@ -419,6 +419,7 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
             Ok(())
         }
 
+        #[allow(clippy::unnecessary_lazy_evaluations)] // lazy eval needed on unix for signal()
         fn exit_status_code(status: std::process::ExitStatus) -> i32 {
             status.code().unwrap_or_else(|| {
                 #[cfg(unix)]

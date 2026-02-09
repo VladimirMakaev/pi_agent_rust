@@ -1163,9 +1163,6 @@ mod tests {
         let temp = TempDir::new().expect("create tempdir");
         let cwd = temp.path().join("cwd");
         let global_dir = temp.path().join("global");
-        let settings_path =
-            Config::settings_path_with_roots(SettingsScope::Project, &global_dir, &cwd);
-
         Config::patch_settings_with_roots(
             SettingsScope::Project,
             &global_dir,
@@ -1177,6 +1174,8 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
+            let settings_path =
+                Config::settings_path_with_roots(SettingsScope::Project, &global_dir, &cwd);
             let mode = std::fs::metadata(&settings_path)
                 .expect("metadata")
                 .permissions()

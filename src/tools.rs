@@ -1249,6 +1249,7 @@ pub struct BashRunResult {
     pub truncation: Option<TruncationResult>,
 }
 
+#[allow(clippy::unnecessary_lazy_evaluations)] // lazy eval needed on unix for signal()
 fn exit_status_code(status: std::process::ExitStatus) -> i32 {
     status.code().unwrap_or_else(|| {
         #[cfg(unix)]
@@ -3524,6 +3525,7 @@ fn find_fd_binary() -> Option<&'static str> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+    #[cfg(unix)]
     use std::time::Duration;
 
     #[test]
