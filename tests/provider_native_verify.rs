@@ -2576,3 +2576,608 @@ mod cohere_smoke {
             });
     }
 }
+
+// ============================================================================
+// Anthropic Provider Smoke Tests
+// ============================================================================
+
+mod anthropic_smoke {
+    use super::*;
+    use pi::providers::anthropic::AnthropicProvider;
+
+    const TEST_MODEL: &str = "claude-sonnet-4-20250514";
+    const API_URL: &str = "https://api.anthropic.com/v1/messages";
+
+    fn cassette_name(tag: &str) -> String {
+        format!("verify_anthropic_{tag}")
+    }
+
+    /// Build an Anthropic SSE text response.
+    fn anthropic_text_sse(text: &str) -> RecordedResponse {
+        let msg_start = format!(
+            "event: message_start\ndata: {}\n\n",
+            serde_json::to_string(&json!({
+                "type": "message_start",
+                "message": {
+                    "id": "msg_verify_001",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": TEST_MODEL,
+                    "content": [],
+                    "stop_reason": Value::Null,
+                    "stop_sequence": Value::Null,
+                    "usage": {"input_tokens": 20, "output_tokens": 1}
+                }
+            }))
+            .unwrap()
+        );
+        let block_start = format!(
+            "event: content_block_start\ndata: {}\n\n",
+            serde_json::to_string(&json!({
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""}
+            }))
+            .unwrap()
+        );
+        let block_delta = format!(
+            "event: content_block_delta\ndata: {}\n\n",
+            serde_json::to_string(&json!({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": text}
+            }))
+            .unwrap()
+        );
+        let block_stop = format!(
+            "event: content_block_stop\ndata: {}\n\n",
+            serde_json::to_string(&json!({
+                "type": "content_block_stop",
+                "index": 0
+            }))
+            .unwrap()
+        );
+        let msg_delta = format!(
+            "event: message_delta\ndata: {}\n\n",
+            serde_json::to_string(&json!({
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn", "stop_sequence": Value::Null},
+                "usage": {"output_tokens": 10}
+            }))
+            .unwrap()
+        );
+        let msg_stop = format!(
+            "event: message_stop\ndata: {}\n\n",
+            serde_json::to_string(&json!({"type": "message_stop"})).unwrap()
+        );
+
+        RecordedResponse {
+            status: 200,
+            headers: vec![("Content-Type".to_string(), "text/event-stream".to_string())],
+            body_chunks: vec![
+                msg_start,
+                block_start,
+                block_delta,
+                block_stop,
+                msg_delta,
+                msg_stop,
+            ],
+            body_chunks_base64: None,
+        }
+    }
+
+    /// Build an Anthropic SSE tool call response.
+    fn anthropic_tool_sse(tool_name: &str, tool_args: &Value) -> RecordedResponse {
+        let args_str = serde_json::to_string(tool_args).unwrap_or_else(|_| "{}".to_string());
+        let msg_start = format!(
+            "event: message_start\ndata: {}\n\n",
+            serde_json::to_string(&json!({
+                "type": "message_start",
+                "message": {
+                    "id": "msg_verify_002",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": TEST_MODEL,
+                    "content": [],
+                    "stop_reason": Value::Null,
+                    "stop_sequence": Value::Null,
+                    "usage": {"input_tokens": 25, "output_tokens": 1}
+                }
+            }))
+            .unwrap()
+        );
+        let block_start = format!(
+            "event: content_block_start\ndata: {}\n\n",
+            serde_json::to_string(&json!({
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": format!("toolu_verify_{tool_name}"),
+                    "name": tool_name,
+                    "input": {}
+                }
+            }))
+            .unwrap()
+        );
+        let block_delta = format!(
+            "event: content_block_delta\ndata: {}\n\n",
+            serde_json::to_string(&json!({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "input_json_delta", "partial_json": args_str}
+            }))
+            .unwrap()
+        );
+        let block_stop = format!(
+            "event: content_block_stop\ndata: {}\n\n",
+            serde_json::to_string(&json!({
+                "type": "content_block_stop",
+                "index": 0
+            }))
+            .unwrap()
+        );
+        let msg_delta = format!(
+            "event: message_delta\ndata: {}\n\n",
+            serde_json::to_string(&json!({
+                "type": "message_delta",
+                "delta": {"stop_reason": "tool_use", "stop_sequence": Value::Null},
+                "usage": {"output_tokens": 12}
+            }))
+            .unwrap()
+        );
+        let msg_stop = format!(
+            "event: message_stop\ndata: {}\n\n",
+            serde_json::to_string(&json!({"type": "message_stop"})).unwrap()
+        );
+
+        RecordedResponse {
+            status: 200,
+            headers: vec![("Content-Type".to_string(), "text/event-stream".to_string())],
+            body_chunks: vec![
+                msg_start,
+                block_start,
+                block_delta,
+                block_stop,
+                msg_delta,
+                msg_stop,
+            ],
+            body_chunks_base64: None,
+        }
+    }
+
+    fn ensure_fixture(tag: &str, scenario: &CanonicalScenario) -> PathBuf {
+        let dir = cassette_root();
+        let name = cassette_name(tag);
+        let path = dir.join(format!("{name}.json"));
+
+        if should_generate_fixture(&path, &name) {
+            let response = match &scenario.expectation {
+                CanonicalExpectation::Error(e) => RecordedResponse {
+                    status: e.status,
+                    headers: vec![("Content-Type".to_string(), "application/json".to_string())],
+                    body_chunks: vec![
+                        serde_json::to_string(&json!({
+                            "type": "error",
+                            "error": {
+                                "type": "authentication_error",
+                                "message": format!("Simulated error {}", e.status)
+                            }
+                        }))
+                        .unwrap_or_default(),
+                    ],
+                    body_chunks_base64: None,
+                },
+                CanonicalExpectation::Stream(exp) => {
+                    if exp.min_tool_calls > 0 {
+                        let tool_name = scenario
+                            .tools
+                            .first()
+                            .map(|t| t.name.as_str())
+                            .unwrap_or("echo");
+                        anthropic_tool_sse(tool_name, &json!({"text": "verification test"}))
+                    } else if exp.require_unicode {
+                        anthropic_text_sse("日本語テスト — émojis: 🦀🔥")
+                    } else {
+                        anthropic_text_sse("Hello from the verification harness.")
+                    }
+                }
+            };
+
+            let cassette = Cassette {
+                version: "1.0".to_string(),
+                test_name: name.clone(),
+                recorded_at: chrono::Utc::now()
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                interactions: vec![Interaction {
+                    request: RecordedRequest {
+                        method: "POST".to_string(),
+                        url: API_URL.to_string(),
+                        headers: vec![
+                            ("Content-Type".to_string(), "application/json".to_string()),
+                            ("X-API-Key".to_string(), "[REDACTED]".to_string()),
+                            ("anthropic-version".to_string(), "2023-06-01".to_string()),
+                        ],
+                        body: None,
+                        body_text: None,
+                    },
+                    response,
+                }],
+            };
+            write_cassette(&path, &cassette);
+        }
+
+        path
+    }
+
+    fn build_provider(tag: &str) -> AnthropicProvider {
+        let cassette_dir = cassette_root();
+        let name = cassette_name(tag);
+        let recorder = VcrRecorder::new_with(&name, vcr_mode(), &cassette_dir);
+        let client = Client::new().with_vcr(recorder);
+        AnthropicProvider::new(TEST_MODEL).with_client(client)
+    }
+
+    #[test]
+    fn anthropic_simple_text() {
+        let scenarios = canonical_scenarios();
+        let scenario = scenarios.iter().find(|s| s.tag == "simple_text").unwrap();
+        ensure_fixture("simple_text", scenario);
+        let provider = build_provider("simple_text");
+
+        asupersync::runtime::RuntimeBuilder::current_thread()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let harness = TestHarness::new("verify_anthropic_simple_text");
+                run_canonical_scenario(&provider, scenario, &harness).await;
+            });
+    }
+
+    #[test]
+    fn anthropic_unicode_text() {
+        let scenarios = canonical_scenarios();
+        let scenario = scenarios.iter().find(|s| s.tag == "unicode_text").unwrap();
+        ensure_fixture("unicode_text", scenario);
+        let provider = build_provider("unicode_text");
+
+        asupersync::runtime::RuntimeBuilder::current_thread()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let harness = TestHarness::new("verify_anthropic_unicode_text");
+                run_canonical_scenario(&provider, scenario, &harness).await;
+            });
+    }
+
+    #[test]
+    fn anthropic_tool_call_single() {
+        let scenarios = canonical_scenarios();
+        let scenario = scenarios
+            .iter()
+            .find(|s| s.tag == "tool_call_single")
+            .unwrap();
+        ensure_fixture("tool_call_single", scenario);
+        let provider = build_provider("tool_call_single");
+
+        asupersync::runtime::RuntimeBuilder::current_thread()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let harness = TestHarness::new("verify_anthropic_tool_call_single");
+                run_canonical_scenario(&provider, scenario, &harness).await;
+            });
+    }
+
+    #[test]
+    fn anthropic_error_auth_401() {
+        let scenarios = canonical_scenarios();
+        let scenario = scenarios
+            .iter()
+            .find(|s| s.tag == "error_auth_401")
+            .unwrap();
+        ensure_fixture("error_auth_401", scenario);
+        let provider = build_provider("error_auth_401");
+
+        asupersync::runtime::RuntimeBuilder::current_thread()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let harness = TestHarness::new("verify_anthropic_error_auth_401");
+                run_canonical_scenario(&provider, scenario, &harness).await;
+            });
+    }
+
+    #[test]
+    fn anthropic_error_bad_request_400() {
+        let scenarios = canonical_scenarios();
+        let scenario = scenarios
+            .iter()
+            .find(|s| s.tag == "error_bad_request_400")
+            .unwrap();
+        ensure_fixture("error_bad_request_400", scenario);
+        let provider = build_provider("error_bad_request_400");
+
+        asupersync::runtime::RuntimeBuilder::current_thread()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let harness = TestHarness::new("verify_anthropic_error_bad_request_400");
+                run_canonical_scenario(&provider, scenario, &harness).await;
+            });
+    }
+
+    #[test]
+    fn anthropic_error_rate_limit_429() {
+        let scenarios = canonical_scenarios();
+        let scenario = scenarios
+            .iter()
+            .find(|s| s.tag == "error_rate_limit_429")
+            .unwrap();
+        ensure_fixture("error_rate_limit_429", scenario);
+        let provider = build_provider("error_rate_limit_429");
+
+        asupersync::runtime::RuntimeBuilder::current_thread()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let harness = TestHarness::new("verify_anthropic_error_rate_limit_429");
+                run_canonical_scenario(&provider, scenario, &harness).await;
+            });
+    }
+}
+
+// ============================================================================
+// Gemini Provider Smoke Tests
+// ============================================================================
+
+mod gemini_smoke {
+    use super::*;
+    use pi::providers::gemini::GeminiProvider;
+
+    const TEST_MODEL: &str = "gemini-1.5-flash";
+    // Must match the api_key used in StreamOptions during VCR playback.
+    const TEST_API_KEY: &str = "vcr-playback";
+
+    fn gemini_url() -> String {
+        format!(
+            "https://generativelanguage.googleapis.com/v1beta/models/{TEST_MODEL}:streamGenerateContent?alt=sse&key={TEST_API_KEY}"
+        )
+    }
+
+    fn cassette_name(tag: &str) -> String {
+        format!("verify_gemini_{tag}")
+    }
+
+    /// Build a Gemini SSE text response.
+    fn gemini_text_sse(text: &str) -> RecordedResponse {
+        let chunk = json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [{"text": text}]},
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 15,
+                "candidatesTokenCount": 10,
+                "totalTokenCount": 25
+            }
+        });
+
+        RecordedResponse {
+            status: 200,
+            headers: vec![("Content-Type".to_string(), "text/event-stream".to_string())],
+            body_chunks: vec![format!(
+                "data: {}\n\n",
+                serde_json::to_string(&chunk).unwrap()
+            )],
+            body_chunks_base64: None,
+        }
+    }
+
+    /// Build a Gemini SSE tool call response.
+    fn gemini_tool_sse(tool_name: &str, tool_args: &Value) -> RecordedResponse {
+        let chunk = json!({
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [{"functionCall": {"name": tool_name, "args": tool_args}}]
+                },
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 20,
+                "candidatesTokenCount": 8,
+                "totalTokenCount": 28
+            }
+        });
+
+        RecordedResponse {
+            status: 200,
+            headers: vec![("Content-Type".to_string(), "text/event-stream".to_string())],
+            body_chunks: vec![format!(
+                "data: {}\n\n",
+                serde_json::to_string(&chunk).unwrap()
+            )],
+            body_chunks_base64: None,
+        }
+    }
+
+    fn ensure_fixture(tag: &str, scenario: &CanonicalScenario) -> PathBuf {
+        let dir = cassette_root();
+        let name = cassette_name(tag);
+        let path = dir.join(format!("{name}.json"));
+
+        if should_generate_fixture(&path, &name) {
+            let response = match &scenario.expectation {
+                CanonicalExpectation::Error(e) => RecordedResponse {
+                    status: e.status,
+                    headers: vec![("Content-Type".to_string(), "application/json".to_string())],
+                    body_chunks: vec![
+                        serde_json::to_string(&json!({
+                            "error": {
+                                "code": e.status,
+                                "message": format!("Simulated error {}", e.status),
+                                "status": "UNAUTHENTICATED"
+                            }
+                        }))
+                        .unwrap_or_default(),
+                    ],
+                    body_chunks_base64: None,
+                },
+                CanonicalExpectation::Stream(exp) => {
+                    if exp.min_tool_calls > 0 {
+                        let tool_name = scenario
+                            .tools
+                            .first()
+                            .map(|t| t.name.as_str())
+                            .unwrap_or("echo");
+                        gemini_tool_sse(tool_name, &json!({"text": "verification test"}))
+                    } else if exp.require_unicode {
+                        gemini_text_sse("日本語テスト — émojis: 🦀🔥")
+                    } else {
+                        gemini_text_sse("Hello from the verification harness.")
+                    }
+                }
+            };
+
+            let cassette = Cassette {
+                version: "1.0".to_string(),
+                test_name: name.clone(),
+                recorded_at: chrono::Utc::now()
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                interactions: vec![Interaction {
+                    request: RecordedRequest {
+                        method: "POST".to_string(),
+                        url: gemini_url(),
+                        headers: vec![
+                            ("Content-Type".to_string(), "application/json".to_string()),
+                            ("Accept".to_string(), "text/event-stream".to_string()),
+                        ],
+                        body: None,
+                        body_text: None,
+                    },
+                    response,
+                }],
+            };
+            write_cassette(&path, &cassette);
+        }
+
+        path
+    }
+
+    fn build_provider(tag: &str) -> GeminiProvider {
+        let cassette_dir = cassette_root();
+        let name = cassette_name(tag);
+        let recorder = VcrRecorder::new_with(&name, vcr_mode(), &cassette_dir);
+        let client = Client::new().with_vcr(recorder);
+        GeminiProvider::new(TEST_MODEL).with_client(client)
+    }
+
+    #[test]
+    fn gemini_simple_text() {
+        let scenarios = canonical_scenarios();
+        let scenario = scenarios.iter().find(|s| s.tag == "simple_text").unwrap();
+        ensure_fixture("simple_text", scenario);
+        let provider = build_provider("simple_text");
+
+        asupersync::runtime::RuntimeBuilder::current_thread()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let harness = TestHarness::new("verify_gemini_simple_text");
+                run_canonical_scenario(&provider, scenario, &harness).await;
+            });
+    }
+
+    #[test]
+    fn gemini_unicode_text() {
+        let scenarios = canonical_scenarios();
+        let scenario = scenarios.iter().find(|s| s.tag == "unicode_text").unwrap();
+        ensure_fixture("unicode_text", scenario);
+        let provider = build_provider("unicode_text");
+
+        asupersync::runtime::RuntimeBuilder::current_thread()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let harness = TestHarness::new("verify_gemini_unicode_text");
+                run_canonical_scenario(&provider, scenario, &harness).await;
+            });
+    }
+
+    #[test]
+    fn gemini_tool_call_single() {
+        let scenarios = canonical_scenarios();
+        let scenario = scenarios
+            .iter()
+            .find(|s| s.tag == "tool_call_single")
+            .unwrap();
+        ensure_fixture("tool_call_single", scenario);
+        let provider = build_provider("tool_call_single");
+
+        asupersync::runtime::RuntimeBuilder::current_thread()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let harness = TestHarness::new("verify_gemini_tool_call_single");
+                run_canonical_scenario(&provider, scenario, &harness).await;
+            });
+    }
+
+    #[test]
+    fn gemini_error_auth_401() {
+        let scenarios = canonical_scenarios();
+        let scenario = scenarios
+            .iter()
+            .find(|s| s.tag == "error_auth_401")
+            .unwrap();
+        ensure_fixture("error_auth_401", scenario);
+        let provider = build_provider("error_auth_401");
+
+        asupersync::runtime::RuntimeBuilder::current_thread()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let harness = TestHarness::new("verify_gemini_error_auth_401");
+                run_canonical_scenario(&provider, scenario, &harness).await;
+            });
+    }
+
+    #[test]
+    fn gemini_error_bad_request_400() {
+        let scenarios = canonical_scenarios();
+        let scenario = scenarios
+            .iter()
+            .find(|s| s.tag == "error_bad_request_400")
+            .unwrap();
+        ensure_fixture("error_bad_request_400", scenario);
+        let provider = build_provider("error_bad_request_400");
+
+        asupersync::runtime::RuntimeBuilder::current_thread()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let harness = TestHarness::new("verify_gemini_error_bad_request_400");
+                run_canonical_scenario(&provider, scenario, &harness).await;
+            });
+    }
+
+    #[test]
+    fn gemini_error_rate_limit_429() {
+        let scenarios = canonical_scenarios();
+        let scenario = scenarios
+            .iter()
+            .find(|s| s.tag == "error_rate_limit_429")
+            .unwrap();
+        ensure_fixture("error_rate_limit_429", scenario);
+        let provider = build_provider("error_rate_limit_429");
+
+        asupersync::runtime::RuntimeBuilder::current_thread()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let harness = TestHarness::new("verify_gemini_error_rate_limit_429");
+                run_canonical_scenario(&provider, scenario, &harness).await;
+            });
+    }
+}
