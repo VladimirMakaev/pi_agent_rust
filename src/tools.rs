@@ -272,8 +272,12 @@ pub fn truncate_tail(content: &str, max_lines: usize, max_bytes: usize) -> Trunc
         if byte_count + added_bytes > max_bytes {
             // Preserve existing behavior: partial suffix is only allowed when no full
             // line has been included yet and there is at least one byte available.
+            //
+            // Fix: Also allow partial fallback if we have only consumed the trailing
+            // empty line (line_count == 1 && byte_count == 0), which happens for
+            // files ending in newline (e.g. "a\n") when the limit is small.
             let remaining = max_bytes.saturating_sub(byte_count);
-            if remaining > 0 && line_count == 0 {
+            if remaining > 0 && (line_count == 0 || (line_count == 1 && byte_count == 0)) {
                 let truncated =
                     truncate_string_to_bytes_from_end(&content[line_start..search_end], max_bytes);
                 line_count = 1;
@@ -2505,7 +2509,8 @@ impl Tool for GrepTool {
         let mut guard = ProcessGuard::new(child, false);
 
         let (stdout_tx, stdout_rx) = std::sync::mpsc::sync_channel(1024);
-        let (stderr_tx, stderr_rx) = std::sync::mpsc::sync_channel(1024);
+        let (stderr_tx, stderr_rx) =
+            std::sync::mpsc::sync_channel::<std::result::Result<Vec<u8>, String>>(1024);
 
         let stdout_thread = std::thread::spawn(move || {
             let reader = std::io::BufReader::new(stdout);
@@ -2519,9 +2524,12 @@ impl Tool for GrepTool {
         let stderr_thread = std::thread::spawn(move || {
             let mut reader = std::io::BufReader::new(stderr);
             let mut buf = Vec::new();
-            if reader.read_to_end(&mut buf).is_ok() {
-                let _ = stderr_tx.send(buf);
-            }
+            let _ = stderr_tx.send(
+                reader
+                    .read_to_end(&mut buf)
+                    .map(|_| buf)
+                    .map_err(|err| err.to_string()),
+            );
         });
 
         let mut matches: Vec<(PathBuf, usize)> = Vec::new();
@@ -2545,7 +2553,9 @@ impl Tool for GrepTool {
                 }
             }
 
-            while let Ok(chunk) = stderr_rx.try_recv() {
+            while let Ok(chunk_result) = stderr_rx.try_recv() {
+                let chunk = chunk_result
+                    .map_err(|err| Error::tool("grep", format!("Failed to read stderr: {err}")))?;
                 stderr_bytes.extend_from_slice(&chunk);
             }
 
@@ -2601,8 +2611,12 @@ impl Tool for GrepTool {
         // we decide whether matches were found. Without this, fast ripgrep runs can
         // exit before the reader thread has delivered JSON match lines, causing
         // false "No matches found" results.
-        let _ = stdout_thread.join();
-        let _ = stderr_thread.join();
+        stdout_thread
+            .join()
+            .map_err(|_| Error::tool("grep", "ripgrep stdout reader thread panicked"))?;
+        stderr_thread
+            .join()
+            .map_err(|_| Error::tool("grep", "ripgrep stderr reader thread panicked"))?;
 
         // Drain any remaining stdout/stderr produced after the last poll.
         while let Ok(line_res) = stdout_rx.try_recv() {
@@ -2617,7 +2631,9 @@ impl Tool for GrepTool {
                 break;
             }
         }
-        while let Ok(chunk) = stderr_rx.try_recv() {
+        while let Ok(chunk_result) = stderr_rx.try_recv() {
+            let chunk = chunk_result
+                .map_err(|err| Error::tool("grep", format!("Failed to read stderr: {err}")))?;
             stderr_bytes.extend_from_slice(&chunk);
         }
 
@@ -2875,21 +2891,20 @@ impl Tool for FindTool {
 
         let mut guard = ProcessGuard::new(child, false);
 
-        let (stdout_tx, stdout_rx) = std::sync::mpsc::channel();
-        let (stderr_tx, stderr_rx) = std::sync::mpsc::channel();
-
-        std::thread::spawn(move || {
+        let stdout_handle = std::thread::spawn(move || -> std::result::Result<Vec<u8>, String> {
             let mut buf = Vec::new();
-            if stdout_pipe.read_to_end(&mut buf).is_ok() {
-                let _ = stdout_tx.send(buf);
-            }
+            stdout_pipe
+                .read_to_end(&mut buf)
+                .map_err(|err| err.to_string())?;
+            Ok(buf)
         });
 
-        std::thread::spawn(move || {
+        let stderr_handle = std::thread::spawn(move || -> std::result::Result<Vec<u8>, String> {
             let mut buf = Vec::new();
-            if stderr_pipe.read_to_end(&mut buf).is_ok() {
-                let _ = stderr_tx.send(buf);
-            }
+            stderr_pipe
+                .read_to_end(&mut buf)
+                .map_err(|err| err.to_string())?;
+            Ok(buf)
         });
 
         let tick = Duration::from_millis(10);
@@ -2913,9 +2928,14 @@ impl Tool for FindTool {
             .wait()
             .map_err(|e| Error::tool("find", e.to_string()))?;
 
-        // Read results from channels (should be available since process exited)
-        let stdout_bytes = stdout_rx.recv().unwrap_or_default();
-        let stderr_bytes = stderr_rx.recv().unwrap_or_default();
+        let stdout_bytes = stdout_handle
+            .join()
+            .map_err(|_| Error::tool("find", "fd stdout reader thread panicked"))?
+            .map_err(|err| Error::tool("find", format!("Failed to read fd stdout: {err}")))?;
+        let stderr_bytes = stderr_handle
+            .join()
+            .map_err(|_| Error::tool("find", "fd stderr reader thread panicked"))?
+            .map_err(|err| Error::tool("find", format!("Failed to read fd stderr: {err}")))?;
 
         let stdout = String::from_utf8_lossy(&stdout_bytes).trim().to_string();
         let stderr = String::from_utf8_lossy(&stderr_bytes).trim().to_string();

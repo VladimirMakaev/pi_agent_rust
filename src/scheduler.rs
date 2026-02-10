@@ -34,7 +34,7 @@ impl Seq {
     /// Get the next sequence value, incrementing the counter.
     #[must_use]
     pub const fn next(self) -> Self {
-        Self(self.0 + 1)
+        Self(self.0.saturating_add(1))
     }
 
     /// Get the raw value.
@@ -319,7 +319,7 @@ impl<C: Clock> Scheduler<C> {
     /// Returns the timer ID for cancellation.
     pub fn set_timeout(&mut self, delay_ms: u64) -> u64 {
         let timer_id = self.next_timer_id;
-        self.next_timer_id += 1;
+        self.next_timer_id = self.next_timer_id.saturating_add(1);
         let deadline_ms = self.clock.now_ms().saturating_add(delay_ms);
         let seq = self.next_seq();
 
@@ -342,17 +342,26 @@ impl<C: Clock> Scheduler<C> {
     ///
     /// Returns true if the timer was found and cancelled.
     pub fn clear_timeout(&mut self, timer_id: u64) -> bool {
-        // Mark as cancelled; will be skipped when popped
-        let inserted = self.cancelled_timers.insert(timer_id);
+        let pending = self
+            .timer_heap
+            .iter()
+            .any(|entry| entry.timer_id == timer_id)
+            && !self.cancelled_timers.contains(&timer_id);
+
+        let cancelled = if pending {
+            self.cancelled_timers.insert(timer_id)
+        } else {
+            false
+        };
 
         tracing::trace!(
             event = "scheduler.timer.cancel",
             timer_id,
-            cancelled = inserted,
+            cancelled,
             "Timer cancelled"
         );
 
-        inserted
+        cancelled
     }
 
     /// Enqueue a hostcall completion.
@@ -523,6 +532,12 @@ mod tests {
     }
 
     #[test]
+    fn seq_next_saturates_at_u64_max() {
+        let max = Seq(u64::MAX);
+        assert_eq!(max.next(), max);
+    }
+
+    #[test]
     fn timer_ordering() {
         // Earlier deadline = higher priority (lower in min-heap)
         let t1 = TimerEntry::new(1, 100, Seq(0));
@@ -572,6 +587,19 @@ mod tests {
             MacrotaskKind::TimerFired { timer_id: id } => assert_eq!(id, timer_id),
             other => unreachable!("Expected TimerFired, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn scheduler_timer_id_saturates_at_u64_max() {
+        let clock = DeterministicClock::new(0);
+        let mut sched = Scheduler::with_clock(clock);
+        sched.next_timer_id = u64::MAX;
+
+        let first = sched.set_timeout(10);
+        let second = sched.set_timeout(20);
+
+        assert_eq!(first, u64::MAX);
+        assert_eq!(second, u64::MAX);
     }
 
     #[test]
@@ -1078,10 +1106,13 @@ mod tests {
     // ── clear_timeout edge cases ─────────────────────────────────────
 
     #[test]
-    fn clear_timeout_nonexistent_returns_true() {
-        // Inserting a new ID into the cancel set always returns true
+    fn clear_timeout_nonexistent_returns_false() {
         let mut sched = Scheduler::with_clock(DeterministicClock::new(0));
-        assert!(sched.clear_timeout(999));
+        assert!(!sched.clear_timeout(999));
+        assert!(
+            sched.cancelled_timers.is_empty(),
+            "unknown timer ids should not pollute cancelled set"
+        );
     }
 
     #[test]

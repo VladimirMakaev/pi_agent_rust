@@ -703,10 +703,30 @@ fn load_skills_from_dir(
     source: String,
     include_root_files: bool,
 ) -> LoadSkillsResult {
+    let mut visited_dirs = HashSet::new();
+    load_skills_from_dir_inner(dir, source, include_root_files, &mut visited_dirs)
+}
+
+#[allow(clippy::needless_pass_by_value)] // Recursive function that clones arguments
+fn load_skills_from_dir_inner(
+    dir: PathBuf,
+    source: String,
+    include_root_files: bool,
+    visited_dirs: &mut HashSet<PathBuf>,
+) -> LoadSkillsResult {
     let mut skills = Vec::new();
     let mut diagnostics = Vec::new();
 
     if !dir.exists() {
+        return LoadSkillsResult {
+            skills,
+            diagnostics,
+        };
+    }
+
+    // Prevent unbounded recursion for symlink cycles (e.g. `a/loop -> a`).
+    let canonical_dir = fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+    if !visited_dirs.insert(canonical_dir) {
         return LoadSkillsResult {
             skills,
             diagnostics,
@@ -741,7 +761,7 @@ fn load_skills_from_dir(
         };
 
         if is_dir {
-            let sub = load_skills_from_dir(full_path, source.clone(), false);
+            let sub = load_skills_from_dir_inner(full_path, source.clone(), false, visited_dirs);
             skills.extend(sub.skills);
             diagnostics.extend(sub.diagnostics);
             continue;
@@ -2223,5 +2243,26 @@ still frontmatter",
 
         let result = load_skill_from_file(&skill_file, "test".to_string());
         assert!(!result.diagnostics.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_load_skills_from_dir_ignores_symlink_cycles() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let skills_root = tmp.path().join("skills");
+        let skill_dir = skills_root.join("my-skill");
+        fs::create_dir_all(&skill_dir).expect("mkdir");
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: my-skill\ndescription: Cyclic symlink guard test\n---\nBody",
+        )
+        .expect("write skill");
+
+        let loop_link = skill_dir.join("loop");
+        std::os::unix::fs::symlink(&skill_dir, &loop_link).expect("create symlink loop");
+
+        let result = load_skills_from_dir(skills_root, "test".to_string(), true);
+        assert_eq!(result.skills.len(), 1);
+        assert_eq!(result.skills[0].name, "my-skill");
     }
 }

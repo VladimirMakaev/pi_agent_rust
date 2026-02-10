@@ -185,6 +185,7 @@ impl RpcSharedState {
 
 /// Tracks a running bash command so it can be aborted.
 struct RunningBash {
+    id: String,
     abort_tx: oneshot::Sender<()>,
 }
 
@@ -1078,8 +1079,12 @@ pub async fn run(
                     continue;
                 }
 
+                let run_id = uuid::Uuid::new_v4().to_string();
                 let (abort_tx, abort_rx) = oneshot::channel();
-                *running = Some(RunningBash { abort_tx });
+                *running = Some(RunningBash {
+                    id: run_id.clone(),
+                    abort_tx,
+                });
 
                 let out_tx = out_tx.clone();
                 let session = Arc::clone(&session);
@@ -1128,7 +1133,9 @@ pub async fn run(
 
                     let _ = out_tx.send(response);
                     if let Ok(mut running) = bash_state.lock(&cx).await {
-                        *running = None;
+                        if running.as_ref().is_some_and(|r| r.id == run_id) {
+                            *running = None;
+                        }
                     }
                 });
             }

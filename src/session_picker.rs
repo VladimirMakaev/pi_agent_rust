@@ -520,35 +520,43 @@ fn is_session_file_path(path: &Path) -> bool {
 }
 
 pub(crate) fn delete_session_file(path: &Path) -> Result<()> {
-    if try_trash(path)? {
-        return Ok(());
-    }
-    fs::remove_file(path).map_err(|err| {
-        Error::session(format!(
-            "Failed to delete session {}: {err}",
-            path.display()
-        ))
-    })
+    delete_session_file_with_trash_cmd(path, "trash")
 }
 
-fn try_trash(path: &Path) -> Result<bool> {
-    match std::process::Command::new("trash").arg(path).status() {
-        Ok(status) => {
-            if status.success() {
-                Ok(true)
-            } else {
-                Err(Error::session(format!(
-                    "trash failed for {} (exit={})",
-                    path.display(),
-                    status.code().unwrap_or(-1)
-                )))
-            }
-        }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+fn delete_session_file_with_trash_cmd(path: &Path, trash_cmd: &str) -> Result<()> {
+    if try_trash_with_cmd(path, trash_cmd) {
+        return Ok(());
+    }
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(Error::session(format!(
-            "trash invocation failed for {}: {err}",
+            "Failed to delete session {}: {err}",
             path.display()
         ))),
+    }
+}
+
+fn try_trash_with_cmd(path: &Path, trash_cmd: &str) -> bool {
+    match std::process::Command::new(trash_cmd).arg(path).status() {
+        Ok(status) if status.success() => true,
+        Ok(status) => {
+            tracing::warn!(
+                path = %path.display(),
+                exit = status.code().unwrap_or(-1),
+                "trash command failed; falling back to direct file removal"
+            );
+            false
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
+        Err(err) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %err,
+                "trash command invocation failed; falling back to direct file removal"
+            );
+            false
+        }
     }
 }
 
@@ -1045,5 +1053,68 @@ mod tests {
         // Selection should clamp back to 0
         assert_eq!(picker.selected, 0);
         assert_eq!(picker.sessions.len(), 1);
+    }
+
+    #[test]
+    fn delete_session_file_falls_back_when_trash_command_missing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let session_path = tmp.path().join("missing-trash-fallback.jsonl");
+        fs::write(&session_path, "test").expect("write");
+
+        let result = delete_session_file_with_trash_cmd(
+            &session_path,
+            "__pi_agent_rust_nonexistent_trash_command__",
+        );
+        assert!(result.is_ok(), "delete should fall back to remove_file");
+        assert!(!session_path.exists(), "session file should be deleted");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_session_file_falls_back_when_trash_exits_non_zero() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let session_path = tmp.path().join("failing-trash-fallback.jsonl");
+        fs::write(&session_path, "test").expect("write");
+
+        let trash_script = tmp.path().join("fake-trash.sh");
+        fs::write(&trash_script, "#!/bin/sh\nexit 2\n").expect("write script");
+        let mut perms = fs::metadata(&trash_script).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&trash_script, perms).expect("chmod");
+
+        let trash_cmd = trash_script.to_string_lossy();
+        let result = delete_session_file_with_trash_cmd(&session_path, &trash_cmd);
+        assert!(result.is_ok(), "delete should fall back to remove_file");
+        assert!(!session_path.exists(), "session file should be deleted");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_session_file_succeeds_when_trash_deleted_file_then_failed() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let session_path = tmp.path().join("trash-deleted-then-failed.jsonl");
+        fs::write(&session_path, "test").expect("write");
+
+        let trash_script = tmp.path().join("fake-trash-delete-then-fail.sh");
+        fs::write(
+            &trash_script,
+            format!("#!/bin/sh\nrm -f \"{}\"\nexit 2\n", session_path.display()),
+        )
+        .expect("write script");
+        let mut perms = fs::metadata(&trash_script).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&trash_script, perms).expect("chmod");
+
+        let trash_cmd = trash_script.to_string_lossy();
+        let result = delete_session_file_with_trash_cmd(&session_path, &trash_cmd);
+        assert!(
+            result.is_ok(),
+            "delete should be idempotent when file is already gone"
+        );
+        assert!(!session_path.exists(), "session file should remain deleted");
     }
 }

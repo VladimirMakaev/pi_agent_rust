@@ -235,9 +235,11 @@ where
                 let valid_len = err.valid_up_to();
                 self.feed_valid_prefix(&bytes[..valid_len]);
 
-                if err.error_len().is_some() {
-                    // Hard UTF-8 error: drop invalid tail so future chunks can recover.
-                    self.utf8_buffer.clear();
+                if let Some(invalid_len) = err.error_len() {
+                    // Hard UTF-8 error: skip invalid sequence, keep the rest.
+                    let mut remainder = bytes;
+                    remainder.drain(..valid_len + invalid_len);
+                    self.utf8_buffer = remainder;
                     return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, err));
                 }
 
@@ -263,9 +265,10 @@ where
                 let valid_len = err.valid_up_to();
                 self.feed_valid_prefix(&utf8_buffer[..valid_len]);
 
-                if err.error_len().is_some() {
-                    // Hard UTF-8 error: clear carry buffer so stream can continue.
-                    self.utf8_buffer.clear();
+                if let Some(invalid_len) = err.error_len() {
+                    // Hard UTF-8 error: skip invalid sequence, keep the rest.
+                    utf8_buffer.drain(..valid_len + invalid_len);
+                    self.utf8_buffer = utf8_buffer;
                     return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, err));
                 }
 

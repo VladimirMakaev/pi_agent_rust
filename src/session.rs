@@ -453,7 +453,7 @@ impl Session {
             })
             .unwrap_or_default();
 
-        let scanned = scan_sessions_on_disk(&project_session_dir)?;
+        let scanned = scan_sessions_on_disk(&project_session_dir).await?;
         let mut by_path: HashMap<PathBuf, SessionPickEntry> = HashMap::new();
         for entry in entries.into_iter().chain(scanned.into_iter()) {
             by_path
@@ -748,7 +748,7 @@ impl Session {
                 .unwrap_or_default();
         }
 
-        let scanned = scan_sessions_on_disk(&project_session_dir)?;
+        let scanned = scan_sessions_on_disk(&project_session_dir).await?;
 
         let mut by_path: HashMap<PathBuf, SessionPickEntry> = HashMap::new();
         for entry in indexed_sessions.into_iter().chain(scanned.into_iter()) {
@@ -1706,20 +1706,37 @@ impl SessionPickEntry {
     }
 }
 
-fn scan_sessions_on_disk(project_session_dir: &Path) -> Result<Vec<SessionPickEntry>> {
-    let mut entries = Vec::new();
-    let dir_entries = std::fs::read_dir(project_session_dir)
-        .map_err(|e| Error::session(format!("Failed to read sessions: {e}")))?;
-    for entry in dir_entries {
-        let entry = entry.map_err(|e| Error::session(format!("Read dir entry: {e}")))?;
-        let path = entry.path();
-        if is_session_file_path(&path) {
-            if let Ok(meta) = load_session_meta(&path) {
-                entries.push(meta);
-            }
-        }
-    }
-    Ok(entries)
+async fn scan_sessions_on_disk(project_session_dir: &Path) -> Result<Vec<SessionPickEntry>> {
+    let path_buf = project_session_dir.to_path_buf();
+    let (tx, rx) = oneshot::channel();
+
+    thread::Builder::new()
+        .name("session-scan".to_string())
+        .spawn(move || {
+            let res = (|| -> Result<Vec<SessionPickEntry>> {
+                let mut entries = Vec::new();
+                let dir_entries = std::fs::read_dir(&path_buf)
+                    .map_err(|e| Error::session(format!("Failed to read sessions: {e}")))?;
+                for entry in dir_entries {
+                    let entry = entry.map_err(|e| Error::session(format!("Read dir entry: {e}")))?;
+                    let path = entry.path();
+                    if is_session_file_path(&path) {
+                        if let Ok(meta) = load_session_meta(&path) {
+                            entries.push(meta);
+                        }
+                    }
+                }
+                Ok(entries)
+            })();
+            let cx = AgentCx::for_request();
+            let _ = tx.send(cx.cx(), res);
+        })
+        .map_err(|e| Error::session(format!("Failed to spawn session scan thread: {e}")))?;
+
+    let cx = AgentCx::for_request();
+    rx.recv(cx.cx())
+        .await
+        .map_err(|_| Error::session("Scan task cancelled"))?
 }
 
 fn is_session_file_path(path: &Path) -> bool {
