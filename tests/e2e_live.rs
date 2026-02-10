@@ -343,11 +343,16 @@ fn provider_env_var_names(provider: &str) -> &'static [&'static str] {
     match provider {
         "anthropic" => &["ANTHROPIC_API_KEY"],
         "openai" => &["OPENAI_API_KEY"],
-        "google" => &["GOOGLE_API_KEY"],
+        "google" | "gemini" => &["GOOGLE_API_KEY", "GEMINI_API_KEY"],
         "openrouter" => &["OPENROUTER_API_KEY"],
         "xai" => &["XAI_API_KEY"],
         "deepseek" => &["DEEPSEEK_API_KEY"],
-        "azure-openai" => &["AZURE_OPENAI_API_KEY"],
+        "azure-openai" | "azure" => &["AZURE_OPENAI_API_KEY"],
+        "amazon-bedrock" | "bedrock" => &["AWS_ACCESS_KEY_ID"],
+        "google-vertex" | "vertexai" => &["GOOGLE_CLOUD_API_KEY"],
+        "github-copilot" | "copilot" => &["GITHUB_COPILOT_API_KEY", "GITHUB_TOKEN"],
+        "gitlab" | "gitlab-duo" => &["GITLAB_TOKEN", "GITLAB_API_KEY"],
+        "fireworks" | "fireworks-ai" => &["FIREWORKS_API_KEY"],
         _ => &[],
     }
 }

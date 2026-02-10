@@ -88,8 +88,8 @@ pub const PROVIDER_METADATA: &[ProviderMetadata] = &[
     },
     ProviderMetadata {
         canonical_id: "google",
-        aliases: &[],
-        auth_env_keys: &["GOOGLE_API_KEY"],
+        aliases: &["gemini"],
+        auth_env_keys: &["GOOGLE_API_KEY", "GEMINI_API_KEY"],
         onboarding: ProviderOnboardingMode::BuiltInNative,
         routing_defaults: Some(ProviderRoutingDefaults {
             api: "google-generative-ai",
@@ -248,7 +248,7 @@ pub const PROVIDER_METADATA: &[ProviderMetadata] = &[
     },
     ProviderMetadata {
         canonical_id: "fireworks",
-        aliases: &[],
+        aliases: &["fireworks-ai"],
         auth_env_keys: &["FIREWORKS_API_KEY"],
         onboarding: ProviderOnboardingMode::OpenAICompatiblePreset,
         routing_defaults: Some(ProviderRoutingDefaults {
@@ -310,9 +310,139 @@ pub const PROVIDER_METADATA: &[ProviderMetadata] = &[
         }),
         test_obligations: TEST_REQUIRED,
     },
+    // ── Batch A1: OAI-compatible preset providers ──────────────────────
+    ProviderMetadata {
+        canonical_id: "302ai",
+        aliases: &[],
+        auth_env_keys: &["302AI_API_KEY"],
+        onboarding: ProviderOnboardingMode::OpenAICompatiblePreset,
+        routing_defaults: Some(ProviderRoutingDefaults {
+            api: "openai-completions",
+            base_url: "https://api.302.ai/v1",
+            auth_header: true,
+            reasoning: true,
+            input: &INPUT_TEXT,
+            context_window: 128_000,
+            max_tokens: 16_384,
+        }),
+        test_obligations: TEST_REQUIRED,
+    },
+    ProviderMetadata {
+        canonical_id: "abacus",
+        aliases: &[],
+        auth_env_keys: &["ABACUS_API_KEY"],
+        onboarding: ProviderOnboardingMode::OpenAICompatiblePreset,
+        routing_defaults: Some(ProviderRoutingDefaults {
+            api: "openai-completions",
+            base_url: "https://routellm.abacus.ai/v1",
+            auth_header: true,
+            reasoning: true,
+            input: &INPUT_TEXT,
+            context_window: 128_000,
+            max_tokens: 16_384,
+        }),
+        test_obligations: TEST_REQUIRED,
+    },
+    ProviderMetadata {
+        canonical_id: "aihubmix",
+        aliases: &[],
+        auth_env_keys: &["AIHUBMIX_API_KEY"],
+        onboarding: ProviderOnboardingMode::OpenAICompatiblePreset,
+        routing_defaults: Some(ProviderRoutingDefaults {
+            api: "openai-completions",
+            base_url: "https://aihubmix.com/v1",
+            auth_header: true,
+            reasoning: true,
+            input: &INPUT_TEXT,
+            context_window: 128_000,
+            max_tokens: 16_384,
+        }),
+        test_obligations: TEST_REQUIRED,
+    },
+    ProviderMetadata {
+        canonical_id: "bailing",
+        aliases: &[],
+        auth_env_keys: &["BAILING_API_TOKEN"],
+        onboarding: ProviderOnboardingMode::OpenAICompatiblePreset,
+        routing_defaults: Some(ProviderRoutingDefaults {
+            api: "openai-completions",
+            base_url: "https://api.tbox.cn/api/llm/v1",
+            auth_header: true,
+            reasoning: false,
+            input: &INPUT_TEXT,
+            context_window: 128_000,
+            max_tokens: 16_384,
+        }),
+        test_obligations: TEST_REQUIRED,
+    },
+    ProviderMetadata {
+        canonical_id: "berget",
+        aliases: &[],
+        auth_env_keys: &["BERGET_API_KEY"],
+        onboarding: ProviderOnboardingMode::OpenAICompatiblePreset,
+        routing_defaults: Some(ProviderRoutingDefaults {
+            api: "openai-completions",
+            base_url: "https://api.berget.ai/v1",
+            auth_header: true,
+            reasoning: true,
+            input: &INPUT_TEXT,
+            context_window: 128_000,
+            max_tokens: 16_384,
+        }),
+        test_obligations: TEST_REQUIRED,
+    },
+    ProviderMetadata {
+        canonical_id: "chutes",
+        aliases: &[],
+        auth_env_keys: &["CHUTES_API_KEY"],
+        onboarding: ProviderOnboardingMode::OpenAICompatiblePreset,
+        routing_defaults: Some(ProviderRoutingDefaults {
+            api: "openai-completions",
+            base_url: "https://llm.chutes.ai/v1",
+            auth_header: true,
+            reasoning: true,
+            input: &INPUT_TEXT,
+            context_window: 128_000,
+            max_tokens: 16_384,
+        }),
+        test_obligations: TEST_REQUIRED,
+    },
+    ProviderMetadata {
+        canonical_id: "cortecs",
+        aliases: &[],
+        auth_env_keys: &["CORTECS_API_KEY"],
+        onboarding: ProviderOnboardingMode::OpenAICompatiblePreset,
+        routing_defaults: Some(ProviderRoutingDefaults {
+            api: "openai-completions",
+            base_url: "https://api.cortecs.ai/v1",
+            auth_header: true,
+            reasoning: true,
+            input: &INPUT_TEXT,
+            context_window: 128_000,
+            max_tokens: 16_384,
+        }),
+        test_obligations: TEST_REQUIRED,
+    },
+    ProviderMetadata {
+        canonical_id: "fastrouter",
+        aliases: &[],
+        auth_env_keys: &["FASTROUTER_API_KEY"],
+        onboarding: ProviderOnboardingMode::OpenAICompatiblePreset,
+        routing_defaults: Some(ProviderRoutingDefaults {
+            api: "openai-completions",
+            base_url: "https://go.fastrouter.ai/api/v1",
+            auth_header: true,
+            reasoning: true,
+            input: &INPUT_TEXT,
+            context_window: 128_000,
+            max_tokens: 16_384,
+        }),
+        test_obligations: TEST_REQUIRED,
+    },
+    // ── Native adapter required providers ────────────────────────────────
     ProviderMetadata {
         canonical_id: "google-vertex",
-        aliases: &[],
+        aliases: &["vertexai"],
         auth_env_keys: &["GOOGLE_CLOUD_API_KEY"],
         onboarding: ProviderOnboardingMode::NativeAdapterRequired,
         routing_defaults: None,
@@ -320,7 +450,7 @@ pub const PROVIDER_METADATA: &[ProviderMetadata] = &[
     },
     ProviderMetadata {
         canonical_id: "amazon-bedrock",
-        aliases: &[],
+        aliases: &["bedrock"],
         auth_env_keys: &["AWS_ACCESS_KEY_ID"],
         onboarding: ProviderOnboardingMode::NativeAdapterRequired,
         routing_defaults: None,
@@ -328,7 +458,7 @@ pub const PROVIDER_METADATA: &[ProviderMetadata] = &[
     },
     ProviderMetadata {
         canonical_id: "azure-openai",
-        aliases: &[],
+        aliases: &["azure"],
         auth_env_keys: &["AZURE_OPENAI_API_KEY"],
         onboarding: ProviderOnboardingMode::NativeAdapterRequired,
         routing_defaults: None,
@@ -336,8 +466,16 @@ pub const PROVIDER_METADATA: &[ProviderMetadata] = &[
     },
     ProviderMetadata {
         canonical_id: "github-copilot",
-        aliases: &[],
-        auth_env_keys: &["GITHUB_COPILOT_API_KEY"],
+        aliases: &["copilot"],
+        auth_env_keys: &["GITHUB_COPILOT_API_KEY", "GITHUB_TOKEN"],
+        onboarding: ProviderOnboardingMode::NativeAdapterRequired,
+        routing_defaults: None,
+        test_obligations: TEST_REQUIRED,
+    },
+    ProviderMetadata {
+        canonical_id: "gitlab",
+        aliases: &["gitlab-duo"],
+        auth_env_keys: &["GITLAB_TOKEN", "GITLAB_API_KEY"],
         onboarding: ProviderOnboardingMode::NativeAdapterRequired,
         routing_defaults: None,
         test_obligations: TEST_REQUIRED,
@@ -380,6 +518,10 @@ mod tests {
         assert_eq!(canonical.canonical_id, "moonshotai");
         let alias = provider_metadata("kimi").expect("alias metadata");
         assert_eq!(alias.canonical_id, "moonshotai");
+        let google_alias = provider_metadata("gemini").expect("gemini alias metadata");
+        assert_eq!(google_alias.canonical_id, "google");
+        let azure_alias = provider_metadata("azure").expect("azure alias metadata");
+        assert_eq!(azure_alias.canonical_id, "azure-openai");
     }
 
     #[test]
@@ -388,6 +530,28 @@ mod tests {
         assert_eq!(
             provider_auth_env_keys("togetherai"),
             &["TOGETHER_API_KEY", "TOGETHER_AI_API_KEY"]
+        );
+        assert_eq!(
+            provider_auth_env_keys("fireworks-ai"),
+            &["FIREWORKS_API_KEY"]
+        );
+        assert_eq!(
+            provider_auth_env_keys("vertexai"),
+            &["GOOGLE_CLOUD_API_KEY"]
+        );
+        assert_eq!(provider_auth_env_keys("bedrock"), &["AWS_ACCESS_KEY_ID"]);
+        assert_eq!(provider_auth_env_keys("azure"), &["AZURE_OPENAI_API_KEY"]);
+        assert_eq!(
+            provider_auth_env_keys("copilot"),
+            &["GITHUB_COPILOT_API_KEY", "GITHUB_TOKEN"]
+        );
+    }
+
+    #[test]
+    fn provider_auth_env_keys_support_shared_fallbacks() {
+        assert_eq!(
+            provider_auth_env_keys("google"),
+            &["GOOGLE_API_KEY", "GEMINI_API_KEY"]
         );
     }
 
@@ -402,5 +566,94 @@ mod tests {
     #[test]
     fn provider_routing_defaults_absent_for_native_adapter_only_providers() {
         assert!(provider_routing_defaults("azure-openai").is_none());
+    }
+
+    #[test]
+    fn batch_a1_metadata_resolves_all_eight_providers() {
+        let ids = [
+            "302ai",
+            "abacus",
+            "aihubmix",
+            "bailing",
+            "berget",
+            "chutes",
+            "cortecs",
+            "fastrouter",
+        ];
+        for id in &ids {
+            let meta = provider_metadata(id).unwrap_or_else(|| panic!("{id} metadata missing"));
+            assert_eq!(meta.canonical_id, *id);
+            assert_eq!(
+                meta.onboarding,
+                ProviderOnboardingMode::OpenAICompatiblePreset
+            );
+        }
+    }
+
+    #[test]
+    fn batch_a1_env_keys_match_upstream_registry() {
+        assert_eq!(provider_auth_env_keys("302ai"), &["302AI_API_KEY"]);
+        assert_eq!(provider_auth_env_keys("abacus"), &["ABACUS_API_KEY"]);
+        assert_eq!(provider_auth_env_keys("aihubmix"), &["AIHUBMIX_API_KEY"]);
+        assert_eq!(provider_auth_env_keys("bailing"), &["BAILING_API_TOKEN"]);
+        assert_eq!(provider_auth_env_keys("berget"), &["BERGET_API_KEY"]);
+        assert_eq!(provider_auth_env_keys("chutes"), &["CHUTES_API_KEY"]);
+        assert_eq!(provider_auth_env_keys("cortecs"), &["CORTECS_API_KEY"]);
+        assert_eq!(
+            provider_auth_env_keys("fastrouter"),
+            &["FASTROUTER_API_KEY"]
+        );
+    }
+
+    #[test]
+    fn batch_a1_routing_defaults_use_openai_completions() {
+        let ids = [
+            "302ai",
+            "abacus",
+            "aihubmix",
+            "bailing",
+            "berget",
+            "chutes",
+            "cortecs",
+            "fastrouter",
+        ];
+        for id in &ids {
+            let defaults =
+                provider_routing_defaults(id).unwrap_or_else(|| panic!("{id} defaults missing"));
+            assert_eq!(defaults.api, "openai-completions", "{id} api mismatch");
+            assert!(defaults.auth_header, "{id} must use auth header");
+        }
+    }
+
+    #[test]
+    fn batch_a1_base_urls_are_distinct_and_nonempty() {
+        let ids = [
+            "302ai",
+            "abacus",
+            "aihubmix",
+            "bailing",
+            "berget",
+            "chutes",
+            "cortecs",
+            "fastrouter",
+        ];
+        let mut urls: Vec<&str> = Vec::new();
+        for id in &ids {
+            let defaults =
+                provider_routing_defaults(id).unwrap_or_else(|| panic!("{id} defaults missing"));
+            assert!(
+                !defaults.base_url.is_empty(),
+                "{id} base_url must not be empty"
+            );
+            assert!(
+                defaults.base_url.starts_with("https://"),
+                "{id} base_url must use HTTPS"
+            );
+            urls.push(defaults.base_url);
+        }
+        // All URLs must be unique.
+        urls.sort();
+        urls.dedup();
+        assert_eq!(urls.len(), ids.len(), "duplicate base URLs detected");
     }
 }
