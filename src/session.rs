@@ -353,6 +353,7 @@ pub struct ForkPlan {
 #[derive(Debug, Clone, Default)]
 pub struct SessionOpenDiagnostics {
     pub skipped_entries: Vec<SessionOpenSkippedEntry>,
+    pub orphaned_parent_links: Vec<SessionOpenOrphanedParentLink>,
 }
 
 #[derive(Debug, Clone)]
@@ -360,6 +361,12 @@ pub struct SessionOpenSkippedEntry {
     /// 1-based line number in the session file.
     pub line_number: usize,
     pub error: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionOpenOrphanedParentLink {
+    pub entry_id: String,
+    pub missing_parent_id: String,
 }
 
 impl SessionOpenDiagnostics {
@@ -376,6 +383,20 @@ impl SessionOpenDiagnostics {
             lines.push(format!(
                 "Warning: Skipped {} corrupted entries while loading session",
                 self.skipped_entries.len()
+            ));
+        }
+
+        for orphan in &self.orphaned_parent_links {
+            lines.push(format!(
+                "Warning: Entry {} references missing parent {}",
+                orphan.entry_id, orphan.missing_parent_id
+            ));
+        }
+
+        if !self.orphaned_parent_links.is_empty() {
+            lines.push(format!(
+                "Warning: Detected {} orphaned parent links while loading session",
+                self.orphaned_parent_links.len()
             ));
         }
 
@@ -651,6 +672,27 @@ impl Session {
                 }
 
                 ensure_entry_ids(&mut entries);
+
+                let existing_ids: HashSet<String> = entries
+                    .iter()
+                    .filter_map(|entry| entry.base_id().cloned())
+                    .collect();
+                for entry in &entries {
+                    let Some(entry_id) = entry.base_id() else {
+                        continue;
+                    };
+                    let Some(parent_id) = entry.base().parent_id.as_ref() else {
+                        continue;
+                    };
+                    if !existing_ids.contains(parent_id) {
+                        diagnostics
+                            .orphaned_parent_links
+                            .push(SessionOpenOrphanedParentLink {
+                                entry_id: entry_id.clone(),
+                                missing_parent_id: parent_id.clone(),
+                            });
+                    }
+                }
 
                 let leaf_id = entries.iter().rev().find_map(|e| e.base_id().cloned());
 
@@ -1718,7 +1760,8 @@ async fn scan_sessions_on_disk(project_session_dir: &Path) -> Result<Vec<Session
                 let dir_entries = std::fs::read_dir(&path_buf)
                     .map_err(|e| Error::session(format!("Failed to read sessions: {e}")))?;
                 for entry in dir_entries {
-                    let entry = entry.map_err(|e| Error::session(format!("Read dir entry: {e}")))?;
+                    let entry =
+                        entry.map_err(|e| Error::session(format!("Read dir entry: {e}")))?;
                     let path = entry.path();
                     if is_session_file_path(&path) {
                         if let Ok(meta) = load_session_meta(&path) {
@@ -3413,7 +3456,7 @@ mod tests {
         let mut session = Session::create_with_dir(Some(temp.path().to_path_buf()));
 
         let id1 = session.append_message(make_test_message("First"));
-        let _id2 = session.append_message(make_test_message("Second"));
+        let id2 = session.append_message(make_test_message("Second"));
         let id3 = session.append_message(make_test_message("Third"));
 
         run_async(async { session.save().await }).unwrap();
@@ -3434,13 +3477,46 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(diagnostics.skipped_entries.len(), 1);
-        assert_eq!(diagnostics.skipped_entries[0].line_number, 3);
+        let diag = serde_json::json!({
+            "fixture_id": "session-corrupted-middle-entry-replay-integrity",
+            "path": path.display().to_string(),
+            "seed": "deterministic-static",
+            "env": {
+                "os": std::env::consts::OS,
+                "arch": std::env::consts::ARCH,
+            },
+            "expected": {
+                "skipped_entries": 1,
+                "orphaned_parent_links": 1,
+            },
+            "actual": {
+                "skipped_entries": diagnostics.skipped_entries.len(),
+                "orphaned_parent_links": diagnostics.orphaned_parent_links.len(),
+                "leaf_id": loaded.leaf_id,
+            },
+        })
+        .to_string();
+
+        assert_eq!(diagnostics.skipped_entries.len(), 1, "{diag}");
+        assert_eq!(diagnostics.skipped_entries[0].line_number, 3, "{diag}");
+        assert_eq!(diagnostics.orphaned_parent_links.len(), 1, "{diag}");
+        assert_eq!(diagnostics.orphaned_parent_links[0].entry_id, id3, "{diag}");
+        assert_eq!(
+            diagnostics.orphaned_parent_links[0].missing_parent_id, id2,
+            "{diag}"
+        );
+        assert!(
+            diagnostics.warning_lines().iter().any(|line| {
+                line.contains("references missing parent")
+                    && line.contains(diagnostics.orphaned_parent_links[0].entry_id.as_str())
+            }),
+            "{diag}"
+        );
 
         // First and third entries should survive
-        assert_eq!(loaded.entries.len(), 2);
-        assert!(loaded.get_entry(&id1).is_some());
-        assert!(loaded.get_entry(&id3).is_some());
+        assert_eq!(loaded.entries.len(), 2, "{diag}");
+        assert!(loaded.get_entry(&id1).is_some(), "{diag}");
+        assert!(loaded.get_entry(&id3).is_some(), "{diag}");
     }
 
     #[test]

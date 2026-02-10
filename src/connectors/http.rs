@@ -252,6 +252,13 @@ impl HttpConnector {
             )
         })?;
 
+        if request.body.is_some() && request.body_bytes.is_some() {
+            return Err((
+                HostCallErrorCode::InvalidRequest,
+                "Request must specify either 'body' or 'body_bytes', not both".to_string(),
+            ));
+        }
+
         // Validate method (connector supports GET/POST only)
         let method_upper = request.method.to_ascii_uppercase();
         if !matches!(method_upper.as_str(), "GET" | "POST") {
@@ -1020,6 +1027,27 @@ mod tests {
         assert!(result.is_err());
         let (code, _) = result.unwrap_err();
         assert_eq!(code, HostCallErrorCode::InvalidRequest);
+    }
+
+    #[test]
+    fn test_parse_request_rejects_both_body_and_body_bytes() {
+        let connector = HttpConnector::with_defaults();
+
+        let params = json!({
+            "url": "https://api.example.com/data",
+            "method": "POST",
+            "body": "{\"key\": \"value\"}",
+            "body_bytes": "eyJrZXkiOiAidmFsdWUifQ=="
+        });
+
+        let result = connector.parse_request(&params);
+        assert!(result.is_err());
+        let (code, message) = result.unwrap_err();
+        assert_eq!(code, HostCallErrorCode::InvalidRequest);
+        assert!(
+            message.contains("not both"),
+            "expected ambiguity error, got: {message}"
+        );
     }
 
     #[test]

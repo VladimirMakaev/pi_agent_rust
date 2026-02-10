@@ -141,6 +141,10 @@ impl SseParser {
                     if self.current.data.ends_with('\n') {
                         self.current.data.pop();
                     }
+                    // Per SSE spec, an empty event name dispatches as "message".
+                    if self.current.event.is_empty() {
+                        self.current.event = "message".to_string();
+                    }
                     events.push(std::mem::take(&mut self.current));
                     self.current = SseEvent::default();
                     self.has_data = false;
@@ -174,6 +178,9 @@ impl SseParser {
         if self.has_data {
             if self.current.data.ends_with('\n') {
                 self.current.data.pop();
+            }
+            if self.current.event.is_empty() {
+                self.current.event = "message".to_string();
             }
             let event = std::mem::take(&mut self.current);
             self.current = SseEvent::default();
@@ -360,6 +367,7 @@ mod tests {
     use futures::StreamExt;
     use futures::stream;
     use proptest::prelude::*;
+    use serde_json::json;
     use std::fmt::Write as _;
 
     #[derive(Debug, Clone)]
@@ -472,6 +480,31 @@ mod tests {
         }
 
         events
+    }
+
+    fn diag_json(
+        fixture_id: &str,
+        parser: &SseParser,
+        input: &str,
+        expected: &str,
+        actual: &str,
+    ) -> String {
+        json!({
+            "fixture_id": fixture_id,
+            "seed": "deterministic-static",
+            "env": {
+                "os": std::env::consts::OS,
+                "arch": std::env::consts::ARCH,
+                "cwd": std::env::current_dir().ok().map(|path| path.display().to_string()),
+            },
+            "input_preview": input,
+            "parser_state": {
+                "has_pending": parser.has_pending(),
+            },
+            "expected": expected,
+            "actual": actual,
+        })
+        .to_string()
     }
 
     #[test]
@@ -609,6 +642,24 @@ mod tests {
     }
 
     #[test]
+    fn test_empty_event_field_defaults_to_message() {
+        let mut parser = SseParser::new();
+        let input = "event\ndata: hello\n\n";
+        let events = parser.feed(input);
+        let diag = diag_json(
+            "sse-empty-event-field-default",
+            &parser,
+            input,
+            r#"{"event":"message","data":"hello"}"#,
+            &format!("{events:?}"),
+        );
+
+        assert_eq!(events.len(), 1, "{diag}");
+        assert_eq!(events[0].event, "message", "{diag}");
+        assert_eq!(events[0].data, "hello", "{diag}");
+    }
+
+    #[test]
     fn test_large_payload_event() {
         let mut parser = SseParser::new();
         let payload = "x".repeat(128 * 1024);
@@ -729,6 +780,30 @@ data: {"type":"message_stop"}
     }
 
     #[test]
+    fn test_stream_handles_crlf_split_across_partial_frames() {
+        let chunks = vec![
+            Ok(b"data: first\r".to_vec()),
+            Ok(b"\n".to_vec()),
+            Ok(b"\r".to_vec()),
+            Ok(b"\n".to_vec()),
+        ];
+        let mut stream = SseStream::new(stream::iter(chunks));
+
+        futures::executor::block_on(async {
+            let first = stream.next().await.expect("first event").expect("ok");
+            let diag = json!({
+                "fixture_id": "sse-crlf-split-across-chunks",
+                "seed": "deterministic-static",
+                "expected": {"event": "message", "data": "first"},
+                "actual": {"event": first.event, "data": first.data},
+            })
+            .to_string();
+            assert_eq!(first.data, "first", "{diag}");
+            assert!(stream.next().await.is_none(), "{diag}");
+        });
+    }
+
+    #[test]
     fn test_stream_flushes_pending_event_at_end() {
         let mut stream = SseStream::new(stream::iter(vec![Ok(b"data: last".to_vec())]));
 
@@ -750,6 +825,31 @@ data: {"type":"message_stop"}
                 .expect("expected a result")
                 .expect_err("expected utf8 error");
             assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        });
+    }
+
+    #[test]
+    fn test_stream_surfaces_pending_event_before_utf8_error() {
+        let chunks = vec![Ok(b"data: ok\n\ndata: \xFF\n\n".to_vec())];
+        let mut stream = SseStream::new(stream::iter(chunks));
+
+        futures::executor::block_on(async {
+            let first = stream.next().await.expect("first item").expect("first ok");
+            let diag = json!({
+                "fixture_id": "sse-valid-event-before-invalid-utf8",
+                "seed": "deterministic-static",
+                "expected_sequence": ["Ok(data=ok)", "Err(invalid utf8)"],
+                "actual_first": {"event": first.event, "data": first.data},
+            })
+            .to_string();
+            assert_eq!(first.data, "ok", "{diag}");
+
+            let err = stream
+                .next()
+                .await
+                .expect("second item")
+                .expect_err("second should be utf8 error");
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidData, "{diag}");
         });
     }
 
