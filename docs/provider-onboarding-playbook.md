@@ -1,0 +1,276 @@
+# Provider Onboarding Playbook
+
+This playbook is the execution-focused companion to `providers.md`.
+
+Use it when you need to:
+- onboard a provider configuration quickly,
+- debug provider auth/routing failures without guesswork, and
+- add or update provider support without creating metadata/factory drift.
+
+Primary bead coverage:
+- `bd-3uqg.9` (parent)
+- working draft support for `bd-3uqg.9.2` and `bd-3uqg.9.3`
+
+## Scope and source of truth
+
+Use these files as authoritative:
+- Provider metadata (canonical IDs, aliases, env keys, routing defaults): `../src/provider_metadata.rs`
+- Runtime route selection and provider factory dispatch: `../src/providers/mod.rs`
+- API key resolution precedence: `../src/app.rs`, `../src/auth.rs`, `../src/models.rs`
+- Existing provider baseline and matrix: `providers.md`
+- Error-hint taxonomy and remediation messages: `../src/error.rs`
+
+Use these tests/artifacts as verification anchors:
+- Factory/routing behavior: `../tests/provider_factory.rs`
+- Metadata invariants and alias correctness: `../tests/provider_metadata_comprehensive.rs`
+- Streaming/provider contracts: `../tests/provider_streaming.rs`
+- Live parity/artifact lanes: `../tests/e2e_cross_provider_parity.rs`, `../tests/e2e_live_harness.rs`, `../tests/e2e_live.rs`
+
+## Runtime model: how provider selection actually works
+
+Selection pipeline:
+1. Model entry is chosen (`--provider/--model`, defaults, or scoped models) in `../src/app.rs`.
+2. API key resolution is attempted in this order:
+   - `--api-key`
+   - provider env vars (`provider_auth_env_keys` via `../src/provider_metadata.rs`)
+   - `auth.json`
+   - `models.json` `providers.<id>.apiKey` (fallback)
+3. Provider route is selected in `resolve_provider_route(...)` in `../src/providers/mod.rs`.
+4. A concrete provider implementation is created in `create_provider(...)`.
+
+Important caveat:
+- `github-copilot` currently reads `GITHUB_COPILOT_API_KEY` / `GITHUB_TOKEN` directly in `create_provider(...)`. For Copilot, setting only `models.json` `apiKey` is not sufficient.
+
+## Provider family map
+
+| Family | Typical canonical IDs | Route style | Core config surface |
+|---|---|---|---|
+| Built-in native | `anthropic`, `openai`, `google`, `cohere` | Native provider modules | Usually `--provider/--model` + env key |
+| OpenAI-compatible presets | `openrouter`, `xai`, `deepseek`, `groq`, `cloudflare-ai-gateway`, `cloudflare-workers-ai`, etc. | API fallback to `openai-completions` | Provider metadata defaults + standard bearer auth |
+| Native adapters | `azure-openai`, `google-vertex`, `github-copilot`, `gitlab` | Dedicated adapter route in factory | Provider-specific env/config requirements |
+| Native adapter required (not wired yet) | `amazon-bedrock`, `sap-ai-core` | Metadata/auth surface present; dispatch path pending | Track dependent provider beads before marking dispatchable |
+
+## Copy-paste configuration examples
+
+### 1) Built-in native providers (quick CLI)
+
+```bash
+export ANTHROPIC_API_KEY="..."
+export OPENAI_API_KEY="..."
+export GOOGLE_API_KEY="..."
+export COHERE_API_KEY="..."
+
+pi --provider anthropic --model claude-sonnet-4-5 -p "Say hello"
+pi --provider openai --model gpt-4o-mini -p "Say hello"
+pi --provider google --model gemini-2.5-flash -p "Say hello"
+pi --provider cohere --model command-r-plus -p "Say hello"
+```
+
+Expected check:
+- Command returns model text output with no provider/auth error.
+
+### 2) OpenAI-compatible preset providers (`models.json` optional)
+
+Minimal env-only path (example: OpenRouter):
+
+```bash
+export OPENROUTER_API_KEY="..."
+pi --provider openrouter --model openai/gpt-4o-mini -p "Say hello"
+```
+
+Optional explicit config (example: Cloudflare AI Gateway):
+
+```json
+{
+  "providers": {
+    "cloudflare-ai-gateway": {
+      "baseUrl": "https://gateway.ai.cloudflare.com/v1/<account_id>/<gateway_id>/openai",
+      "models": [
+        { "id": "gpt-4o-mini" }
+      ]
+    }
+  }
+}
+```
+
+```bash
+export CLOUDFLARE_API_TOKEN="..."
+pi --provider cloudflare-ai-gateway --model gpt-4o-mini -p "Say hello"
+```
+
+Expected check:
+- Factory resolves to `openai-completions` route for these providers (see `../tests/provider_factory.rs`).
+
+### 3) Azure OpenAI (`azure-openai` / aliases `azure`, `azure-cognitive-services`)
+
+```json
+{
+  "providers": {
+    "azure-openai": {
+      "baseUrl": "https://<resource>.openai.azure.com",
+      "models": [
+        { "id": "gpt-4o" }
+      ]
+    }
+  }
+}
+```
+
+```bash
+export AZURE_OPENAI_API_KEY="..."
+# Optional overrides used by runtime resolver:
+# export AZURE_OPENAI_RESOURCE="<resource>"
+# export AZURE_OPENAI_DEPLOYMENT="<deployment>"
+# export AZURE_OPENAI_API_VERSION="2024-08-01-preview"
+
+pi --provider azure-openai --model gpt-4o -p "Say hello"
+```
+
+Expected check:
+- Route is native Azure path.
+- Missing deployment/resource failures include explicit remediation text from `resolve_azure_provider_runtime(...)` in `../src/providers/mod.rs`.
+
+### 4) Google Vertex (`google-vertex` / alias `vertexai`)
+
+Recommended explicit base URL shape:
+
+```json
+{
+  "providers": {
+    "google-vertex": {
+      "baseUrl": "https://us-central1-aiplatform.googleapis.com/v1/projects/<project>/locations/us-central1/publishers/google/models/gemini-2.0-flash",
+      "models": [
+        { "id": "gemini-2.0-flash", "api": "google-vertex" }
+      ]
+    }
+  }
+}
+```
+
+```bash
+export GOOGLE_CLOUD_API_KEY="..."   # or VERTEX_API_KEY
+export GOOGLE_CLOUD_PROJECT="<project>"   # optional if embedded in baseUrl
+export GOOGLE_CLOUD_LOCATION="us-central1" # optional if embedded in baseUrl
+
+pi --provider google-vertex --model gemini-2.0-flash -p "Say hello"
+```
+
+Expected check:
+- Provider route is native vertex.
+- Missing project/auth errors match messages in `../src/providers/vertex.rs`.
+
+### 5) GitHub Copilot (`github-copilot` / alias `copilot`)
+
+```json
+{
+  "providers": {
+    "github-copilot": {
+      "baseUrl": "https://api.github.com",
+      "models": [
+        { "id": "gpt-4o" }
+      ]
+    }
+  }
+}
+```
+
+```bash
+export GITHUB_TOKEN="..."   # or GITHUB_COPILOT_API_KEY
+pi --provider github-copilot --model gpt-4o -p "Say hello"
+```
+
+Expected check:
+- Provider performs token exchange against GitHub API before chat call.
+- If token exchange fails, error contains Copilot-specific diagnostic context.
+
+### 6) GitLab Duo (`gitlab` / alias `gitlab-duo`)
+
+```json
+{
+  "providers": {
+    "gitlab": {
+      "baseUrl": "https://gitlab.com",
+      "models": [
+        { "id": "gitlab-duo-chat", "api": "gitlab-chat" }
+      ]
+    }
+  }
+}
+```
+
+```bash
+export GITLAB_TOKEN="..."   # or GITLAB_API_KEY
+pi --provider gitlab --model gitlab-duo-chat -p "Say hello"
+```
+
+Expected check:
+- Provider sends request to `/api/v4/chat/completions` and returns a non-streaming done event path.
+
+### 7) Bedrock / SAP AI Core (planned native adapters)
+
+Current status in runtime metadata:
+- `amazon-bedrock` and `sap-ai-core` are classified as native-adapter-required.
+- Auth/env mapping exists in `../src/provider_metadata.rs` and `../src/auth.rs`.
+- Dedicated factory dispatch path is not yet the default in `../src/providers/mod.rs`.
+
+Do not claim dispatch parity for these until linked provider implementation and parity beads are closed.
+
+## Troubleshooting matrix (symptom -> action)
+
+| Symptom | Fast diagnosis | Remediation |
+|---|---|---|
+| `Missing API key` / auth error at startup | Check provider env key mapping in `provider_auth_env_keys(...)` | Set provider env var, or `--api-key`, or persisted `auth.json`; re-run |
+| `Provider not implemented (api: ...)` | Route fell through unknown provider/api in `resolve_provider_route(...)` | Fix provider ID/api in `models.json`; verify canonical ID or alias in `../src/provider_metadata.rs` |
+| Azure missing resource/deployment | Resolver could not infer `resource` / `deployment` from base URL/env | Set `AZURE_OPENAI_RESOURCE`, `AZURE_OPENAI_DEPLOYMENT`, or include full Azure host/deployments path |
+| Vertex missing project | Project not in base URL and not in env | Set `GOOGLE_CLOUD_PROJECT` or `VERTEX_PROJECT`; or encode project in base URL |
+| Vertex missing token | No `api_key` and no `GOOGLE_CLOUD_API_KEY`/`VERTEX_API_KEY` | Set one of those env vars (bearer token/access token) |
+| Copilot auth failure | GitHub token missing/invalid or token exchange rejected | Set `GITHUB_COPILOT_API_KEY`/`GITHUB_TOKEN`; verify Copilot entitlement |
+| GitLab auth failure | Missing or invalid PAT/OAuth token | Set `GITLAB_TOKEN` or `GITLAB_API_KEY`; validate instance URL and scopes |
+| 429/quota/5xx | Provider-side limit or outage | Retry policy tuning in settings, reduce request size, or switch model/provider |
+
+## OAuth and login caveat
+
+Interactive slash help currently advertises `/login` as Anthropic-first (`../src/interactive.rs`).
+For non-Anthropic providers, prefer explicit env/auth.json setup unless extension/provider-specific OAuth wiring is confirmed in your target flow.
+
+## Validation commands for doc and onboarding changes
+
+Targeted checks (fast):
+
+```bash
+cargo test provider_factory -- --nocapture
+cargo test provider_metadata_comprehensive -- --nocapture
+```
+
+Broader quality gates:
+
+```bash
+cargo check --all-targets
+cargo clippy --all-targets -- -D warnings
+cargo fmt --check
+```
+
+Live parity lanes (gated, real APIs):
+
+```bash
+CI_E2E_TESTS=1 cargo test e2e_cross_provider_parity -- --nocapture
+CI_E2E_TESTS=1 cargo test e2e_live_harness -- --nocapture
+```
+
+## Contributor checklist (new provider or major provider update)
+
+1. Add or update canonical metadata entry in `../src/provider_metadata.rs`.
+2. Ensure alias resolution + env key mapping are covered by tests.
+3. Wire route and provider factory behavior in `../src/providers/mod.rs`.
+4. Add/update provider-specific tests:
+   - factory selection,
+   - metadata invariants,
+   - streaming contract behavior.
+5. Update docs:
+   - `providers.md` (matrix/status)
+   - this playbook (config/troubleshooting)
+6. Attach evidence links (tests + artifact outputs) before closing provider-doc beads.
+
+## Current evidence-backed limits
+
+The canonical matrix/evidence table in `providers.md` is under active parallel edits. Treat that file as the source for final matrix status, and this playbook as the operational implementation guide for onboarding and troubleshooting.

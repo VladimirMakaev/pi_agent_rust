@@ -877,6 +877,46 @@ fn factory_routes_batch_a4_providers_correctly() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// Native: GitLab Duo factory routing (bd-3uqg.3.5)
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn factory_routes_gitlab_native_provider() {
+    use pi::provider::{InputType, Model, ModelCost};
+    use pi::providers::create_provider;
+
+    let entry = pi::models::ModelEntry {
+        model: Model {
+            id: "gitlab-duo-chat".to_string(),
+            name: "GitLab Duo Chat".to_string(),
+            api: String::new(),
+            provider: "gitlab".to_string(),
+            base_url: "https://gitlab.example.com".to_string(),
+            reasoning: false,
+            input: vec![InputType::Text],
+            cost: ModelCost {
+                input: 0.0,
+                output: 0.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
+            context_window: 128_000,
+            max_tokens: 16_384,
+            headers: HashMap::new(),
+        },
+        api_key: Some("glpat-test-token".to_string()),
+        headers: HashMap::new(),
+        auth_header: true,
+        compat: None,
+        oauth_config: None,
+    };
+    let p = create_provider(&entry, None).expect("factory should route gitlab");
+    assert_eq!(p.name(), "gitlab");
+    assert_eq!(p.api(), "gitlab-chat");
+    assert_eq!(p.model_id(), "gitlab-duo-chat");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // Cross-provider: field name differences (locked)
 // ═══════════════════════════════════════════════════════════════════════
 

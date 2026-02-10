@@ -9,8 +9,8 @@
 mod common;
 
 use pi::provider_metadata::{
-    canonical_provider_id, provider_auth_env_keys, provider_metadata, provider_routing_defaults,
-    ProviderOnboardingMode, PROVIDER_METADATA,
+    PROVIDER_METADATA, ProviderOnboardingMode, canonical_provider_id, provider_auth_env_keys,
+    provider_metadata, provider_routing_defaults,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -343,7 +343,9 @@ fn factory_dispatches_every_oai_compatible_provider() {
         if meta.onboarding != ProviderOnboardingMode::OpenAICompatiblePreset {
             continue;
         }
-        let defaults = meta.routing_defaults.expect("OAI provider must have defaults");
+        let defaults = meta
+            .routing_defaults
+            .expect("OAI provider must have defaults");
         let entry = oai_entry(meta.canonical_id, defaults.base_url);
         let provider = create_provider(&entry, None)
             .unwrap_or_else(|e| panic!("factory failed for '{}': {e}", meta.canonical_id));
@@ -455,6 +457,38 @@ fn factory_dispatches_native_established_providers() {
     };
     let p = create_provider(&cohere_entry, None).expect("cohere factory");
     assert_eq!(p.api(), "cohere-chat");
+
+    // Amazon Bedrock
+    let bedrock_entry = {
+        use pi::provider::{InputType, Model, ModelCost};
+        pi::models::ModelEntry {
+            model: Model {
+                id: "anthropic.claude-3-5-sonnet-20240620-v1:0".to_string(),
+                name: "Claude Sonnet via Bedrock".to_string(),
+                api: "bedrock-converse-stream".to_string(),
+                provider: "amazon-bedrock".to_string(),
+                base_url: "https://bedrock-runtime.us-east-1.amazonaws.com".to_string(),
+                reasoning: true,
+                input: vec![InputType::Text],
+                cost: ModelCost {
+                    input: 0.0,
+                    output: 0.0,
+                    cache_read: 0.0,
+                    cache_write: 0.0,
+                },
+                context_window: 200_000,
+                max_tokens: 8_192,
+                headers: std::collections::HashMap::new(),
+            },
+            api_key: Some("test-bedrock-token".to_string()),
+            headers: std::collections::HashMap::new(),
+            auth_header: false,
+            compat: None,
+            oauth_config: None,
+        }
+    };
+    let p = create_provider(&bedrock_entry, None).expect("bedrock factory");
+    assert_eq!(p.api(), "bedrock-converse-stream");
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -480,5 +514,65 @@ fn total_aliases_count_is_consistent() {
     assert!(
         total_aliases >= 13,
         "expected at least 13 aliases, found {total_aliases}"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Artifact generation: canonical ID + alias table (JSON)
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn generate_canonical_id_alias_table_json() {
+    use serde_json::{Value, json};
+
+    let mut entries: Vec<Value> = Vec::new();
+    for meta in PROVIDER_METADATA {
+        let onboarding = match meta.onboarding {
+            ProviderOnboardingMode::BuiltInNative => "built-in-native",
+            ProviderOnboardingMode::NativeAdapterRequired => "native-adapter-required",
+            ProviderOnboardingMode::OpenAICompatiblePreset => "oai-compatible-preset",
+        };
+
+        let mut entry = json!({
+            "canonical_id": meta.canonical_id,
+            "aliases": meta.aliases,
+            "onboarding_mode": onboarding,
+            "auth_env_keys": meta.auth_env_keys,
+        });
+
+        if let Some(defaults) = &meta.routing_defaults {
+            entry["routing"] = json!({
+                "api": defaults.api,
+                "base_url": defaults.base_url,
+                "auth_header": defaults.auth_header,
+                "context_window": defaults.context_window,
+                "max_tokens": defaults.max_tokens,
+            });
+        }
+
+        entries.push(entry);
+    }
+
+    let table = json!({
+        "schema_version": "1.0",
+        "bead_id": "bd-3uqg.9.1.1",
+        "description": "Canonical provider ID + alias table generated from PROVIDER_METADATA",
+        "total_providers": PROVIDER_METADATA.len(),
+        "total_aliases": PROVIDER_METADATA.iter().map(|m| m.aliases.len()).sum::<usize>(),
+        "providers": entries,
+    });
+
+    let json_str = serde_json::to_string_pretty(&table).expect("JSON serialization");
+
+    // Write to docs directory
+    let path = std::path::Path::new("docs/provider-canonical-id-table.json");
+    std::fs::write(path, &json_str).expect("write canonical ID table");
+
+    // Verify the file round-trips
+    let readback = std::fs::read_to_string(path).expect("read back");
+    let parsed: Value = serde_json::from_str(&readback).expect("parse back");
+    assert_eq!(
+        parsed["total_providers"].as_u64().unwrap() as usize,
+        PROVIDER_METADATA.len()
     );
 }

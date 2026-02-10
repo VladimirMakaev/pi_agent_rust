@@ -373,6 +373,18 @@ fn provider_env_var_names_support_azure_cognitive_alias() {
 }
 
 #[test]
+fn provider_env_var_names_support_cloudflare_ids() {
+    assert_eq!(
+        provider_env_var_names("cloudflare-ai-gateway"),
+        &["CLOUDFLARE_API_TOKEN"]
+    );
+    assert_eq!(
+        provider_env_var_names("cloudflare-workers-ai"),
+        &["CLOUDFLARE_API_TOKEN"]
+    );
+}
+
+#[test]
 fn oai_auth_failure_script_matrix_maps_to_taxonomy() {
     let cases = [
         (

@@ -828,6 +828,153 @@ fn create_provider_azure_cognitive_services_alias_routes_natively() {
 }
 
 #[test]
+fn create_provider_amazon_bedrock_routes_natively() {
+    let harness = TestHarness::new("create_provider_amazon_bedrock_routes_natively");
+    let entry = make_model_entry(
+        "amazon-bedrock",
+        "anthropic.claude-3-5-sonnet-20240620-v1:0",
+        "https://bedrock-runtime.us-east-1.amazonaws.com",
+    );
+    let provider = create_provider(&entry, None).expect("amazon-bedrock provider");
+    harness.log().info_ctx("provider", "bedrock route", |ctx| {
+        ctx.push(("name".to_string(), provider.name().to_string()));
+        ctx.push(("api".to_string(), provider.api().to_string()));
+        ctx.push(("model".to_string(), provider.model_id().to_string()));
+    });
+    assert_eq!(provider.name(), "amazon-bedrock");
+    assert_eq!(provider.api(), "bedrock-converse-stream");
+    assert_eq!(
+        provider.model_id(),
+        "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    );
+}
+
+#[test]
+fn bedrock_provider_uses_bearer_auth_and_converse_payload() {
+    let harness = TestHarness::new("bedrock_provider_uses_bearer_auth_and_converse_payload");
+    let server = harness.start_mock_http_server();
+    let bedrock_model = "anthropic.claude-3-5-sonnet-20240620-v1:0";
+    server.add_route(
+        "POST",
+        "/model/anthropic.claude-3-5-sonnet-20240620-v1:0/converse",
+        MockHttpResponse::json(
+            200,
+            &serde_json::json!({
+                "output": {
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"text": "pong"}]
+                    }
+                },
+                "stopReason": "end_turn",
+                "usage": {"inputTokens": 11, "outputTokens": 7, "totalTokens": 18}
+            }),
+        ),
+    );
+
+    let base_url = server.base_url();
+    let mut entry = make_model_entry("amazon-bedrock", bedrock_model, &base_url);
+    entry.model.api = "bedrock-converse-stream".to_string();
+    let provider = create_provider(&entry, None).expect("amazon-bedrock provider");
+    let context = Context {
+        system_prompt: Some("Be concise.".to_string()),
+        messages: vec![Message::User(UserMessage {
+            content: UserContent::Text("Ping".to_string()),
+            timestamp: 0,
+        })],
+        tools: vec![ToolDef {
+            name: "search".to_string(),
+            description: "Search docs".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "q": {"type": "string"}
+                },
+                "required": ["q"]
+            }),
+        }],
+    };
+    let options = StreamOptions {
+        api_key: Some("bedrock-test-token".to_string()),
+        max_tokens: Some(128),
+        temperature: Some(0.1),
+        ..Default::default()
+    };
+
+    drive_provider_stream_to_done(provider, context, options);
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1, "expected exactly one request");
+    let request = &requests[0];
+    assert_eq!(
+        request.path,
+        "/model/anthropic.claude-3-5-sonnet-20240620-v1:0/converse"
+    );
+    assert_eq!(
+        request_header(&request.headers, "authorization").as_deref(),
+        Some("Bearer bedrock-test-token")
+    );
+    assert_eq!(
+        request_header(&request.headers, "content-type").as_deref(),
+        Some("application/json")
+    );
+
+    let body: serde_json::Value =
+        serde_json::from_slice(&request.body).expect("request body should be json");
+    assert_eq!(body["messages"][0]["role"], "user");
+    assert_eq!(body["messages"][0]["content"][0]["text"], "Ping");
+    assert_eq!(body["system"][0]["text"], "Be concise.");
+    assert_eq!(body["inferenceConfig"]["maxTokens"], 128);
+    assert_eq!(body["toolConfig"]["tools"][0]["toolSpec"]["name"], "search");
+}
+
+#[test]
+fn create_provider_cloudflare_workers_ai_routes_via_openai_compat() {
+    let harness =
+        TestHarness::new("create_provider_cloudflare_workers_ai_routes_via_openai_compat");
+    let mut entry = make_model_entry(
+        "cloudflare-workers-ai",
+        "@cf/meta/llama-3.1-8b-instruct",
+        "https://api.cloudflare.com/client/v4/accounts/test-account/ai/v1",
+    );
+    entry.model.api.clear();
+    let provider = create_provider(&entry, None).expect("cloudflare-workers-ai provider");
+    harness
+        .log()
+        .info_ctx("provider", "cloudflare workers route", |ctx| {
+            ctx.push(("name".to_string(), provider.name().to_string()));
+            ctx.push(("api".to_string(), provider.api().to_string()));
+            ctx.push(("model".to_string(), provider.model_id().to_string()));
+        });
+    assert_eq!(provider.name(), "cloudflare-workers-ai");
+    assert_eq!(provider.api(), "openai-completions");
+    assert_eq!(provider.model_id(), "@cf/meta/llama-3.1-8b-instruct");
+}
+
+#[test]
+fn create_provider_cloudflare_ai_gateway_routes_via_openai_compat() {
+    let harness =
+        TestHarness::new("create_provider_cloudflare_ai_gateway_routes_via_openai_compat");
+    let mut entry = make_model_entry(
+        "cloudflare-ai-gateway",
+        "gpt-4o-mini",
+        "https://gateway.ai.cloudflare.com/v1/account-id/gateway-id/openai",
+    );
+    entry.model.api.clear();
+    let provider = create_provider(&entry, None).expect("cloudflare-ai-gateway provider");
+    harness
+        .log()
+        .info_ctx("provider", "cloudflare gateway route", |ctx| {
+            ctx.push(("name".to_string(), provider.name().to_string()));
+            ctx.push(("api".to_string(), provider.api().to_string()));
+            ctx.push(("model".to_string(), provider.model_id().to_string()));
+        });
+    assert_eq!(provider.name(), "cloudflare-ai-gateway");
+    assert_eq!(provider.api(), "openai-completions");
+    assert_eq!(provider.model_id(), "gpt-4o-mini");
+}
+
+#[test]
 fn create_provider_rejects_unknown_provider() {
     let harness = TestHarness::new("create_provider_rejects_unknown_provider");
     let entry = make_model_entry("mystery", "mystery-model", "https://example.com/v1");

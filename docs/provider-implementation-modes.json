@@ -395,9 +395,9 @@
       "provider_id": "google-vertex",
       "canonical_id": "google-vertex",
       "id_kind": "canonical",
-      "profile": "native-new-high-risk",
-      "current_runtime_status": "enum-or-auth-only",
-      "rationale": "Known enum/auth mapping exists, but Vertex-specific request signing/routing requires native adapter."
+      "profile": "native-established",
+      "current_runtime_status": "implemented",
+      "rationale": "Native Vertex AI adapter implemented (bd-3uqg.3.1): supports Google (Gemini) and Anthropic publishers with Bearer token auth, streaming, and tool calls."
     },
     {
       "provider_id": "google-vertex-anthropic",
