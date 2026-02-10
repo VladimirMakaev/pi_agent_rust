@@ -909,6 +909,14 @@ fn press_tab(harness: &TestHarness, app: &mut PiApp) -> StepOutcome {
     apply_key(harness, app, "key:Tab", KeyMsg::from_type(KeyType::Tab))
 }
 
+fn press_f1(harness: &TestHarness, app: &mut PiApp) -> StepOutcome {
+    apply_key(harness, app, "key:F1", KeyMsg::from_type(KeyType::F1))
+}
+
+fn press_f2(harness: &TestHarness, app: &mut PiApp) -> StepOutcome {
+    apply_key(harness, app, "key:F2", KeyMsg::from_type(KeyType::F2))
+}
+
 fn user_msg(text: &str) -> ConversationMessage {
     ConversationMessage {
         role: MessageRole::User,
@@ -3076,6 +3084,49 @@ fn tui_state_slash_resume_selects_latest_session_and_loads_messages() {
     let step = apply_pi(&harness, &mut app, "PiMsg::ConversationReset", reset);
     assert_after_contains(&harness, &step, "Session resumed");
     assert_after_contains(&harness, &step, "Newer session message");
+}
+
+#[test]
+fn tui_state_slash_resume_filters_sessions_from_typed_query() {
+    let harness = TestHarness::new("tui_state_slash_resume_filters_sessions_from_typed_query");
+    let base_dir = harness.temp_path("sessions");
+    let cwd = harness.temp_dir().to_path_buf();
+
+    create_session_on_disk(&base_dir, &cwd, "older", "Older session message");
+    thread::sleep(Duration::from_millis(10));
+    create_session_on_disk(&base_dir, &cwd, "newer", "Newer session message");
+
+    let mut session = Session::create_with_dir(Some(base_dir));
+    session.header.cwd = cwd.display().to_string();
+    let (mut app, event_rx) = build_app_with_session_and_events(&harness, Vec::new(), session);
+    log_initial_state(&harness, &app);
+
+    type_text(&harness, &mut app, "/resume");
+    let step = press_enter(&harness, &mut app);
+    assert_after_contains(&harness, &step, "Select a session to resume");
+    assert_after_contains(&harness, &step, "newer");
+    assert_after_contains(&harness, &step, "older");
+
+    let step = type_text(&harness, &mut app, "old");
+    assert_after_contains(&harness, &step, "Select a session to resume");
+    assert_after_contains(&harness, &step, "> old");
+    assert_after_contains(&harness, &step, "older");
+    assert_after_not_contains(&harness, &step, "newer");
+
+    let step = press_enter(&harness, &mut app);
+    assert_after_contains(&harness, &step, "Loading session...");
+
+    let events = wait_for_pi_msgs(&event_rx, Duration::from_secs(2), |msgs| {
+        msgs.iter()
+            .any(|msg| matches!(msg, PiMsg::ConversationReset { .. }))
+    });
+    let reset = events
+        .into_iter()
+        .find(|msg| matches!(msg, PiMsg::ConversationReset { .. }))
+        .expect("expected ConversationReset after filtered resume");
+    let step = apply_pi(&harness, &mut app, "PiMsg::ConversationReset", reset);
+    assert_after_contains(&harness, &step, "Session resumed");
+    assert_after_contains(&harness, &step, "Older session message");
 }
 
 #[test]
@@ -5491,6 +5542,26 @@ fn tui_grad_integration_diff_with_collapse_toggle() {
 
 fn press_ctrll(harness: &TestHarness, app: &mut PiApp) -> StepOutcome {
     apply_key(harness, app, "key:CtrlL", KeyMsg::from_type(KeyType::CtrlL))
+}
+
+#[test]
+fn tui_state_f1_opens_help() {
+    let harness = TestHarness::new("tui_state_f1_opens_help");
+    let mut app = build_app(&harness, Vec::new());
+    log_initial_state(&harness, &app);
+
+    let step = press_f1(&harness, &mut app);
+    assert_after_contains(&harness, &step, "Available commands:");
+}
+
+#[test]
+fn tui_state_f2_opens_settings() {
+    let harness = TestHarness::new("tui_state_f2_opens_settings");
+    let mut app = build_app(&harness, Vec::new());
+    log_initial_state(&harness, &app);
+
+    let step = press_f2(&harness, &mut app);
+    assert_after_contains(&harness, &step, "Settings");
 }
 
 #[test]

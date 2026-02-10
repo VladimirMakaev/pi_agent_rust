@@ -238,6 +238,8 @@ pub enum AppAction {
     Exit,
     Suspend,
     ExternalEditor,
+    Help,
+    OpenSettings,
 
     // Session
     NewSession,
@@ -325,6 +327,8 @@ impl AppAction {
             Self::Exit => "Exit (when editor empty)",
             Self::Suspend => "Suspend to background",
             Self::ExternalEditor => "Open in external editor",
+            Self::Help => "Show help",
+            Self::OpenSettings => "Open settings",
 
             // Session
             Self::NewSession => "Start a new session",
@@ -396,9 +400,13 @@ impl AppAction {
 
             Self::Copy | Self::PasteImage => ActionCategory::Clipboard,
 
-            Self::Interrupt | Self::Clear | Self::Exit | Self::Suspend | Self::ExternalEditor => {
-                ActionCategory::Application
-            }
+            Self::Interrupt
+            | Self::Clear
+            | Self::Exit
+            | Self::Suspend
+            | Self::ExternalEditor
+            | Self::Help
+            | Self::OpenSettings => ActionCategory::Application,
 
             Self::NewSession
             | Self::Tree
@@ -483,6 +491,8 @@ impl AppAction {
             Self::Exit,
             Self::Suspend,
             Self::ExternalEditor,
+            Self::Help,
+            Self::OpenSettings,
             // Session
             Self::NewSession,
             Self::Tree,
@@ -1386,6 +1396,8 @@ impl KeyBindings {
         m.insert(AppAction::Exit, vec![KeyBinding::ctrl("d")]);
         m.insert(AppAction::Suspend, vec![KeyBinding::ctrl("z")]);
         m.insert(AppAction::ExternalEditor, vec![KeyBinding::ctrl("g")]);
+        m.insert(AppAction::Help, vec![KeyBinding::plain("f1")]);
+        m.insert(AppAction::OpenSettings, vec![KeyBinding::plain("f2")]);
 
         // Session (no default bindings)
         m.insert(AppAction::NewSession, vec![]);
