@@ -1,0 +1,986 @@
+{
+  "schema_version": "1.0",
+  "bead_id": "bd-3uqg.1.4",
+  "generated_at_utc": "2026-02-10T06:15:39Z",
+  "depends_on": [
+    "bd-3uqg.1.1",
+    "bd-3uqg.1.2",
+    "bd-3uqg.1.3"
+  ],
+  "upstream_snapshot_ref": "docs/provider-upstream-catalog-snapshot.json",
+  "canonical_policy_ref": "docs/provider-canonical-id-policy.json",
+  "bucket_definitions": {
+    "native-adapter-required": "Provider requires a dedicated native adapter path in Rust runtime/factory.",
+    "openai-compatible-preset": "Provider can route through existing OpenAI-compatible adapter with provider-specific defaults.",
+    "gateway-wrapper-routing": "Provider is primarily a gateway/router/wrapper requiring routing, provenance, and header-policy handling.",
+    "deferred": "Provider is not selected for immediate implementation pending stronger protocol/auth evidence."
+  },
+  "classification_profiles": {
+    "native-established": {
+      "implementation_bucket": "native-adapter-required",
+      "protocol_complexity": "high",
+      "auth_complexity": "medium",
+      "tool_schema_complexity": "high",
+      "risk_level": "medium",
+      "test_burden_level": "high",
+      "required_test_tiers": [
+        "unit",
+        "contract",
+        "e2e-live-smoke"
+      ],
+      "logging_depth": "verbose-jsonl+wire-redaction",
+      "prerequisite_beads": [],
+      "diagnostic_artifacts": [
+        "provider-streaming fixture transcript",
+        "error-path cassette replay",
+        "live parity summary"
+      ]
+    },
+    "native-new-high-risk": {
+      "implementation_bucket": "native-adapter-required",
+      "protocol_complexity": "high",
+      "auth_complexity": "high",
+      "tool_schema_complexity": "high",
+      "risk_level": "high",
+      "test_burden_level": "very-high",
+      "required_test_tiers": [
+        "unit",
+        "contract",
+        "conformance",
+        "e2e-live-smoke"
+      ],
+      "logging_depth": "full request/response timeline + auth redaction + usage parity",
+      "prerequisite_beads": [
+        "bd-3uqg.2.1",
+        "bd-3uqg.7.4",
+        "bd-3uqg.1.5"
+      ],
+      "diagnostic_artifacts": [
+        "provider metadata schema conformance output",
+        "auth resolution trace with redaction summary",
+        "streaming/event parity report",
+        "error taxonomy mapping dossier"
+      ]
+    },
+    "oai-compatible-preset": {
+      "implementation_bucket": "openai-compatible-preset",
+      "protocol_complexity": "low",
+      "auth_complexity": "low",
+      "tool_schema_complexity": "medium",
+      "risk_level": "medium",
+      "test_burden_level": "medium",
+      "required_test_tiers": [
+        "unit",
+        "contract",
+        "live-smoke"
+      ],
+      "logging_depth": "standard-jsonl + compat normalization traces",
+      "prerequisite_beads": [],
+      "diagnostic_artifacts": [
+        "base-url/header normalization test output",
+        "tool-call schema compatibility transcript"
+      ]
+    },
+    "gateway-wrapper-high-risk": {
+      "implementation_bucket": "gateway-wrapper-routing",
+      "protocol_complexity": "medium",
+      "auth_complexity": "medium",
+      "tool_schema_complexity": "high",
+      "risk_level": "high",
+      "test_burden_level": "high",
+      "required_test_tiers": [
+        "unit",
+        "contract",
+        "conformance",
+        "e2e-live-smoke"
+      ],
+      "logging_depth": "full routing trace + upstream header map + error provenance",
+      "prerequisite_beads": [
+        "bd-3uqg.2.1",
+        "bd-3uqg.10.1",
+        "bd-3uqg.1.5"
+      ],
+      "diagnostic_artifacts": [
+        "routing decision matrix",
+        "header/query passthrough audit",
+        "upstream provider attribution trace"
+      ]
+    },
+    "deferred-watchlist": {
+      "implementation_bucket": "deferred",
+      "protocol_complexity": "unknown",
+      "auth_complexity": "unknown",
+      "tool_schema_complexity": "unknown",
+      "risk_level": "low",
+      "test_burden_level": "deferred",
+      "required_test_tiers": [
+        "unit-metadata"
+      ],
+      "logging_depth": "catalog-diff-only",
+      "prerequisite_beads": [],
+      "diagnostic_artifacts": [
+        "upstream capability notes",
+        "auth-method verification notes"
+      ]
+    },
+    "alias-forwarder": {
+      "implementation_bucket": "deferred",
+      "protocol_complexity": "low",
+      "auth_complexity": "low",
+      "tool_schema_complexity": "low",
+      "risk_level": "low",
+      "test_burden_level": "low",
+      "required_test_tiers": [
+        "unit-alias-resolution",
+        "e2e-alias-smoke"
+      ],
+      "logging_depth": "alias-resolution trace",
+      "prerequisite_beads": [],
+      "diagnostic_artifacts": [
+        "alias normalization unit report",
+        "deprecation-warning assertion log"
+      ]
+    }
+  },
+  "entries": [
+    {
+      "provider_id": "302ai",
+      "canonical_id": "302ai",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No in-repo runtime/auth evidence yet; keep deferred until protocol/auth are verified."
+    },
+    {
+      "provider_id": "abacus",
+      "canonical_id": "abacus",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No in-repo runtime/auth evidence yet; keep deferred until protocol/auth are verified."
+    },
+    {
+      "provider_id": "aihubmix",
+      "canonical_id": "aihubmix",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No in-repo runtime/auth evidence yet; keep deferred until protocol/auth are verified."
+    },
+    {
+      "provider_id": "alibaba",
+      "canonical_id": "alibaba",
+      "id_kind": "canonical",
+      "profile": "oai-compatible-preset",
+      "current_runtime_status": "preset-dispatchable",
+      "rationale": "Existing ad-hoc defaults route Alibaba/DashScope traffic through OpenAI-compatible adapter."
+    },
+    {
+      "provider_id": "alibaba-cn",
+      "canonical_id": "alibaba-cn",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "Regional CN variant has no verified endpoint/auth path in current runtime."
+    },
+    {
+      "provider_id": "amazon-bedrock",
+      "canonical_id": "amazon-bedrock",
+      "id_kind": "canonical",
+      "profile": "native-new-high-risk",
+      "current_runtime_status": "enum-or-auth-only",
+      "rationale": "Auth/env + enum scaffolding exists, but Bedrock Converse API needs dedicated native adapter."
+    },
+    {
+      "provider_id": "anthropic",
+      "canonical_id": "anthropic",
+      "id_kind": "canonical",
+      "profile": "native-established",
+      "current_runtime_status": "implemented",
+      "rationale": "Native provider module is dispatchable with streaming + OAuth refresh support."
+    },
+    {
+      "provider_id": "azure",
+      "canonical_id": "azure",
+      "id_kind": "canonical",
+      "profile": "native-new-high-risk",
+      "current_runtime_status": "module-present-factory-blocked",
+      "rationale": "Native Azure module exists but canonical ID routing and factory wiring are still incomplete."
+    },
+    {
+      "provider_id": "azure-cognitive-services",
+      "canonical_id": "azure-cognitive-services",
+      "id_kind": "canonical",
+      "profile": "native-new-high-risk",
+      "current_runtime_status": "missing",
+      "rationale": "Distinct Azure Cognitive path requires dedicated auth/routing semantics beyond current Azure OpenAI handling."
+    },
+    {
+      "provider_id": "bailing",
+      "canonical_id": "bailing",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No runtime/auth evidence beyond upstream catalog listing."
+    },
+    {
+      "provider_id": "baseten",
+      "canonical_id": "baseten",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No runtime/auth evidence beyond upstream catalog listing."
+    },
+    {
+      "provider_id": "bedrock",
+      "canonical_id": "amazon-bedrock",
+      "id_kind": "alias",
+      "profile": "alias-forwarder",
+      "current_runtime_status": "alias-only",
+      "rationale": "opencode alias; normalize to canonical amazon-bedrock before provider selection."
+    },
+    {
+      "provider_id": "berget",
+      "canonical_id": "berget",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No runtime/auth evidence beyond upstream catalog listing."
+    },
+    {
+      "provider_id": "cerebras",
+      "canonical_id": "cerebras",
+      "id_kind": "canonical",
+      "profile": "oai-compatible-preset",
+      "current_runtime_status": "preset-dispatchable",
+      "rationale": "Provider is already represented by OpenAI-compatible ad-hoc defaults."
+    },
+    {
+      "provider_id": "chutes",
+      "canonical_id": "chutes",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No runtime/auth evidence beyond upstream catalog listing."
+    },
+    {
+      "provider_id": "cloudflare-ai-gateway",
+      "canonical_id": "cloudflare-ai-gateway",
+      "id_kind": "canonical",
+      "profile": "gateway-wrapper-high-risk",
+      "current_runtime_status": "missing",
+      "rationale": "Gateway product implies wrapper-style routing and provenance tracing requirements."
+    },
+    {
+      "provider_id": "cloudflare-workers-ai",
+      "canonical_id": "cloudflare-workers-ai",
+      "id_kind": "canonical",
+      "profile": "native-new-high-risk",
+      "current_runtime_status": "missing",
+      "rationale": "Workers AI has provider-specific protocol/auth patterns and needs a native adapter."
+    },
+    {
+      "provider_id": "cohere",
+      "canonical_id": "cohere",
+      "id_kind": "canonical",
+      "profile": "native-established",
+      "current_runtime_status": "implemented",
+      "rationale": "Cohere native adapter is dispatchable and covered by provider streaming suites."
+    },
+    {
+      "provider_id": "copilot",
+      "canonical_id": "github-copilot",
+      "id_kind": "alias",
+      "profile": "alias-forwarder",
+      "current_runtime_status": "alias-only",
+      "rationale": "opencode alias; normalize to canonical github-copilot."
+    },
+    {
+      "provider_id": "cortecs",
+      "canonical_id": "cortecs",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No runtime/auth evidence beyond upstream catalog listing."
+    },
+    {
+      "provider_id": "deepinfra",
+      "canonical_id": "deepinfra",
+      "id_kind": "canonical",
+      "profile": "oai-compatible-preset",
+      "current_runtime_status": "preset-dispatchable",
+      "rationale": "Provider is already represented by OpenAI-compatible ad-hoc defaults."
+    },
+    {
+      "provider_id": "deepseek",
+      "canonical_id": "deepseek",
+      "id_kind": "canonical",
+      "profile": "oai-compatible-preset",
+      "current_runtime_status": "preset-dispatchable",
+      "rationale": "Provider is already represented by OpenAI-compatible ad-hoc defaults."
+    },
+    {
+      "provider_id": "fastrouter",
+      "canonical_id": "fastrouter",
+      "id_kind": "canonical",
+      "profile": "gateway-wrapper-high-risk",
+      "current_runtime_status": "missing",
+      "rationale": "Router-oriented provider likely multiplexes upstream models and needs wrapper diagnostics."
+    },
+    {
+      "provider_id": "fireworks-ai",
+      "canonical_id": "fireworks-ai",
+      "id_kind": "canonical",
+      "profile": "oai-compatible-preset",
+      "current_runtime_status": "preset-dispatchable",
+      "rationale": "Already reachable through OpenAI-compatible path; canonical ID should normalize legacy fireworks alias."
+    },
+    {
+      "provider_id": "firmware",
+      "canonical_id": "firmware",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No runtime/auth evidence beyond upstream catalog listing."
+    },
+    {
+      "provider_id": "friendli",
+      "canonical_id": "friendli",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No runtime/auth evidence beyond upstream catalog listing."
+    },
+    {
+      "provider_id": "gemini",
+      "canonical_id": "google",
+      "id_kind": "alias",
+      "profile": "alias-forwarder",
+      "current_runtime_status": "alias-only",
+      "rationale": "opencode alias; normalize to canonical google."
+    },
+    {
+      "provider_id": "github-copilot",
+      "canonical_id": "github-copilot",
+      "id_kind": "canonical",
+      "profile": "native-new-high-risk",
+      "current_runtime_status": "enum-or-auth-only",
+      "rationale": "Enum/env presence exists, but provider protocol/auth flow still needs native adapter implementation."
+    },
+    {
+      "provider_id": "github-models",
+      "canonical_id": "github-models",
+      "id_kind": "canonical",
+      "profile": "gateway-wrapper-high-risk",
+      "current_runtime_status": "missing",
+      "rationale": "Service acts as a routed model gateway requiring provider attribution and wrapper-level diagnostics."
+    },
+    {
+      "provider_id": "gitlab",
+      "canonical_id": "gitlab",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "Upstream listing exists but protocol/auth/tool contract is not yet validated."
+    },
+    {
+      "provider_id": "google",
+      "canonical_id": "google",
+      "id_kind": "canonical",
+      "profile": "native-established",
+      "current_runtime_status": "implemented",
+      "rationale": "Gemini native adapter is dispatchable with streaming and contract coverage."
+    },
+    {
+      "provider_id": "google-vertex",
+      "canonical_id": "google-vertex",
+      "id_kind": "canonical",
+      "profile": "native-new-high-risk",
+      "current_runtime_status": "enum-or-auth-only",
+      "rationale": "Known enum/auth mapping exists, but Vertex-specific request signing/routing requires native adapter."
+    },
+    {
+      "provider_id": "google-vertex-anthropic",
+      "canonical_id": "google-vertex-anthropic",
+      "id_kind": "canonical",
+      "profile": "native-new-high-risk",
+      "current_runtime_status": "missing",
+      "rationale": "Hybrid Vertex Anthropic surface requires dedicated native protocol/auth path."
+    },
+    {
+      "provider_id": "groq",
+      "canonical_id": "groq",
+      "id_kind": "canonical",
+      "profile": "oai-compatible-preset",
+      "current_runtime_status": "preset-dispatchable",
+      "rationale": "Provider is already represented by OpenAI-compatible ad-hoc defaults."
+    },
+    {
+      "provider_id": "helicone",
+      "canonical_id": "helicone",
+      "id_kind": "canonical",
+      "profile": "gateway-wrapper-high-risk",
+      "current_runtime_status": "missing",
+      "rationale": "Proxy/gateway service requires wrapper routing semantics and telemetry correctness."
+    },
+    {
+      "provider_id": "huggingface",
+      "canonical_id": "huggingface",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No validated runtime/auth contract yet for this provider surface."
+    },
+    {
+      "provider_id": "iflowcn",
+      "canonical_id": "iflowcn",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No runtime/auth evidence beyond upstream catalog listing."
+    },
+    {
+      "provider_id": "inception",
+      "canonical_id": "inception",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No runtime/auth evidence beyond upstream catalog listing."
+    },
+    {
+      "provider_id": "inference",
+      "canonical_id": "inference",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No runtime/auth evidence beyond upstream catalog listing."
+    },
+    {
+      "provider_id": "io-net",
+      "canonical_id": "io-net",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No runtime/auth evidence beyond upstream catalog listing."
+    },
+    {
+      "provider_id": "jiekou",
+      "canonical_id": "jiekou",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No runtime/auth evidence beyond upstream catalog listing."
+    },
+    {
+      "provider_id": "kimi-for-coding",
+      "canonical_id": "kimi-for-coding",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "Distinct coding-plan style ID is not currently represented by runtime routing."
+    },
+    {
+      "provider_id": "llama",
+      "canonical_id": "llama",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No confirmed API/auth contract in current provider runtime."
+    },
+    {
+      "provider_id": "lmstudio",
+      "canonical_id": "lmstudio",
+      "id_kind": "canonical",
+      "profile": "native-new-high-risk",
+      "current_runtime_status": "missing",
+      "rationale": "Local-provider transport and lifecycle behavior require a dedicated native adapter path."
+    },
+    {
+      "provider_id": "local",
+      "canonical_id": "local",
+      "id_kind": "canonical",
+      "profile": "native-new-high-risk",
+      "current_runtime_status": "missing",
+      "rationale": "Generic local runtime mode requires explicit process/model lifecycle integration."
+    },
+    {
+      "provider_id": "lucidquery",
+      "canonical_id": "lucidquery",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No runtime/auth evidence beyond upstream catalog listing."
+    },
+    {
+      "provider_id": "minimax",
+      "canonical_id": "minimax",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No validated provider protocol/auth details in current runtime."
+    },
+    {
+      "provider_id": "minimax-cn",
+      "canonical_id": "minimax-cn",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "Regional CN variant requires separate endpoint/auth validation before onboarding."
+    },
+    {
+      "provider_id": "minimax-cn-coding-plan",
+      "canonical_id": "minimax-cn-coding-plan",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "Coding-plan variant lacks verified transport/auth requirements."
+    },
+    {
+      "provider_id": "minimax-coding-plan",
+      "canonical_id": "minimax-coding-plan",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "Coding-plan variant lacks verified transport/auth requirements."
+    },
+    {
+      "provider_id": "mistral",
+      "canonical_id": "mistral",
+      "id_kind": "canonical",
+      "profile": "oai-compatible-preset",
+      "current_runtime_status": "preset-dispatchable",
+      "rationale": "Provider is already represented by OpenAI-compatible ad-hoc defaults."
+    },
+    {
+      "provider_id": "moark",
+      "canonical_id": "moark",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No runtime/auth evidence beyond upstream catalog listing."
+    },
+    {
+      "provider_id": "modelscope",
+      "canonical_id": "modelscope",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No validated protocol/auth route in current runtime."
+    },
+    {
+      "provider_id": "moonshotai",
+      "canonical_id": "moonshotai",
+      "id_kind": "canonical",
+      "profile": "oai-compatible-preset",
+      "current_runtime_status": "preset-dispatchable",
+      "rationale": "Provider is already represented by OpenAI-compatible ad-hoc defaults."
+    },
+    {
+      "provider_id": "moonshotai-cn",
+      "canonical_id": "moonshotai-cn",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "Regional CN variant requires separate endpoint/auth verification."
+    },
+    {
+      "provider_id": "morph",
+      "canonical_id": "morph",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No runtime/auth evidence beyond upstream catalog listing."
+    },
+    {
+      "provider_id": "nano-gpt",
+      "canonical_id": "nano-gpt",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No runtime/auth evidence beyond upstream catalog listing."
+    },
+    {
+      "provider_id": "nebius",
+      "canonical_id": "nebius",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No validated protocol/auth route in current runtime."
+    },
+    {
+      "provider_id": "nova",
+      "canonical_id": "nova",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No runtime/auth evidence beyond upstream catalog listing."
+    },
+    {
+      "provider_id": "novita-ai",
+      "canonical_id": "novita-ai",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No validated protocol/auth route in current runtime."
+    },
+    {
+      "provider_id": "nvidia",
+      "canonical_id": "nvidia",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No validated protocol/auth route in current runtime."
+    },
+    {
+      "provider_id": "ollama",
+      "canonical_id": "ollama",
+      "id_kind": "canonical",
+      "profile": "native-new-high-risk",
+      "current_runtime_status": "missing",
+      "rationale": "Local OSS provider requires dedicated process/orchestration adapter and lifecycle tests."
+    },
+    {
+      "provider_id": "ollama-cloud",
+      "canonical_id": "ollama-cloud",
+      "id_kind": "canonical",
+      "profile": "native-new-high-risk",
+      "current_runtime_status": "missing",
+      "rationale": "Cloud variant needs dedicated protocol/auth treatment beyond local OSS assumptions."
+    },
+    {
+      "provider_id": "openai",
+      "canonical_id": "openai",
+      "id_kind": "canonical",
+      "profile": "native-established",
+      "current_runtime_status": "implemented",
+      "rationale": "Native OpenAI adapters (responses + completions) are dispatchable and heavily exercised."
+    },
+    {
+      "provider_id": "opencode",
+      "canonical_id": "opencode",
+      "id_kind": "canonical",
+      "profile": "gateway-wrapper-high-risk",
+      "current_runtime_status": "missing",
+      "rationale": "Meta-routing provider requires wrapper routing semantics and upstream provider provenance."
+    },
+    {
+      "provider_id": "openrouter",
+      "canonical_id": "openrouter",
+      "id_kind": "canonical",
+      "profile": "oai-compatible-preset",
+      "current_runtime_status": "preset-dispatchable",
+      "rationale": "Provider is already represented by OpenAI-compatible ad-hoc defaults."
+    },
+    {
+      "provider_id": "ovhcloud",
+      "canonical_id": "ovhcloud",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No validated protocol/auth route in current runtime."
+    },
+    {
+      "provider_id": "perplexity",
+      "canonical_id": "perplexity",
+      "id_kind": "canonical",
+      "profile": "oai-compatible-preset",
+      "current_runtime_status": "preset-dispatchable",
+      "rationale": "Provider is already represented by OpenAI-compatible ad-hoc defaults."
+    },
+    {
+      "provider_id": "poe",
+      "canonical_id": "poe",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No validated protocol/auth route in current runtime."
+    },
+    {
+      "provider_id": "privatemode-ai",
+      "canonical_id": "privatemode-ai",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No validated protocol/auth route in current runtime."
+    },
+    {
+      "provider_id": "requesty",
+      "canonical_id": "requesty",
+      "id_kind": "canonical",
+      "profile": "gateway-wrapper-high-risk",
+      "current_runtime_status": "missing",
+      "rationale": "Router/gateway style integration requires wrapper-level traceability and error attribution."
+    },
+    {
+      "provider_id": "sap-ai-core",
+      "canonical_id": "sap-ai-core",
+      "id_kind": "canonical",
+      "profile": "gateway-wrapper-high-risk",
+      "current_runtime_status": "missing",
+      "rationale": "Enterprise gateway surface typically multiplexes backends and needs routing/audit semantics."
+    },
+    {
+      "provider_id": "scaleway",
+      "canonical_id": "scaleway",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No validated protocol/auth route in current runtime."
+    },
+    {
+      "provider_id": "siliconflow",
+      "canonical_id": "siliconflow",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No validated protocol/auth route in current runtime."
+    },
+    {
+      "provider_id": "siliconflow-cn",
+      "canonical_id": "siliconflow-cn",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "Regional CN variant requires separate endpoint/auth verification."
+    },
+    {
+      "provider_id": "submodel",
+      "canonical_id": "submodel",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No validated protocol/auth route in current runtime."
+    },
+    {
+      "provider_id": "synthetic",
+      "canonical_id": "synthetic",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No validated protocol/auth route in current runtime."
+    },
+    {
+      "provider_id": "togetherai",
+      "canonical_id": "togetherai",
+      "id_kind": "canonical",
+      "profile": "oai-compatible-preset",
+      "current_runtime_status": "preset-dispatchable",
+      "rationale": "Provider is already represented by OpenAI-compatible ad-hoc defaults."
+    },
+    {
+      "provider_id": "upstage",
+      "canonical_id": "upstage",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No validated protocol/auth route in current runtime."
+    },
+    {
+      "provider_id": "v0",
+      "canonical_id": "v0",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No validated protocol/auth route in current runtime."
+    },
+    {
+      "provider_id": "venice",
+      "canonical_id": "venice",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No validated protocol/auth route in current runtime."
+    },
+    {
+      "provider_id": "vercel",
+      "canonical_id": "vercel",
+      "id_kind": "canonical",
+      "profile": "gateway-wrapper-high-risk",
+      "current_runtime_status": "missing",
+      "rationale": "Gateway-hosted routing surface requires wrapper semantics and provider attribution telemetry."
+    },
+    {
+      "provider_id": "vertexai",
+      "canonical_id": "google-vertex",
+      "id_kind": "alias",
+      "profile": "alias-forwarder",
+      "current_runtime_status": "alias-only",
+      "rationale": "opencode alias; normalize to canonical google-vertex."
+    },
+    {
+      "provider_id": "vivgrid",
+      "canonical_id": "vivgrid",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No validated protocol/auth route in current runtime."
+    },
+    {
+      "provider_id": "vultr",
+      "canonical_id": "vultr",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No validated protocol/auth route in current runtime."
+    },
+    {
+      "provider_id": "wandb",
+      "canonical_id": "wandb",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No validated protocol/auth route in current runtime."
+    },
+    {
+      "provider_id": "xai",
+      "canonical_id": "xai",
+      "id_kind": "canonical",
+      "profile": "oai-compatible-preset",
+      "current_runtime_status": "preset-dispatchable",
+      "rationale": "Provider is already represented by OpenAI-compatible ad-hoc defaults."
+    },
+    {
+      "provider_id": "xiaomi",
+      "canonical_id": "xiaomi",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No validated protocol/auth route in current runtime."
+    },
+    {
+      "provider_id": "zai",
+      "canonical_id": "zai",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No validated protocol/auth route in current runtime."
+    },
+    {
+      "provider_id": "zai-coding-plan",
+      "canonical_id": "zai-coding-plan",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "Coding-plan variant lacks verified transport/auth requirements."
+    },
+    {
+      "provider_id": "zenmux",
+      "canonical_id": "zenmux",
+      "id_kind": "canonical",
+      "profile": "gateway-wrapper-high-risk",
+      "current_runtime_status": "missing",
+      "rationale": "Routing/mux abstraction requires gateway-style provenance and error-source diagnostics."
+    },
+    {
+      "provider_id": "zhipuai",
+      "canonical_id": "zhipuai",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "No validated protocol/auth route in current runtime."
+    },
+    {
+      "provider_id": "zhipuai-coding-plan",
+      "canonical_id": "zhipuai-coding-plan",
+      "id_kind": "canonical",
+      "profile": "deferred-watchlist",
+      "current_runtime_status": "missing",
+      "rationale": "Coding-plan variant lacks verified transport/auth requirements."
+    },
+    {
+      "provider_id": "azure-openai",
+      "canonical_id": "azure",
+      "id_kind": "pi-legacy-alias",
+      "profile": "alias-forwarder",
+      "current_runtime_status": "alias-only",
+      "rationale": "Pi legacy ID should normalize to canonical azure with deprecation warning."
+    },
+    {
+      "provider_id": "dashscope",
+      "canonical_id": "alibaba",
+      "id_kind": "pi-alias",
+      "profile": "alias-forwarder",
+      "current_runtime_status": "alias-only",
+      "rationale": "Alias resolves to canonical alibaba provider defaults."
+    },
+    {
+      "provider_id": "fireworks",
+      "canonical_id": "fireworks-ai",
+      "id_kind": "pi-legacy-alias",
+      "profile": "alias-forwarder",
+      "current_runtime_status": "alias-only",
+      "rationale": "Pi legacy ID should normalize to canonical fireworks-ai with deprecation warning."
+    },
+    {
+      "provider_id": "kimi",
+      "canonical_id": "moonshotai",
+      "id_kind": "pi-alias",
+      "profile": "alias-forwarder",
+      "current_runtime_status": "alias-only",
+      "rationale": "Alias resolves to canonical moonshotai provider defaults."
+    },
+    {
+      "provider_id": "moonshot",
+      "canonical_id": "moonshotai",
+      "id_kind": "pi-alias",
+      "profile": "alias-forwarder",
+      "current_runtime_status": "alias-only",
+      "rationale": "Alias resolves to canonical moonshotai provider defaults."
+    },
+    {
+      "provider_id": "qwen",
+      "canonical_id": "alibaba",
+      "id_kind": "pi-alias",
+      "profile": "alias-forwarder",
+      "current_runtime_status": "alias-only",
+      "rationale": "Alias resolves to canonical alibaba provider defaults."
+    }
+  ],
+  "summary": {
+    "upstream_union_provider_ids": 93,
+    "supplemental_pi_alias_ids": 6,
+    "total_entries": 99,
+    "classification_profile_counts": {
+      "native-established": 4,
+      "native-new-high-risk": 11,
+      "oai-compatible-preset": 12,
+      "gateway-wrapper-high-risk": 9,
+      "deferred-watchlist": 53,
+      "alias-forwarder": 10
+    },
+    "bucket_counts": {
+      "native-adapter-required": 15,
+      "openai-compatible-preset": 12,
+      "gateway-wrapper-routing": 9,
+      "deferred": 63
+    },
+    "high_risk_provider_count": 20,
+    "high_risk_provider_ids": [
+      "amazon-bedrock",
+      "azure",
+      "azure-cognitive-services",
+      "cloudflare-ai-gateway",
+      "cloudflare-workers-ai",
+      "fastrouter",
+      "github-copilot",
+      "github-models",
+      "google-vertex",
+      "google-vertex-anthropic",
+      "helicone",
+      "lmstudio",
+      "local",
+      "ollama",
+      "ollama-cloud",
+      "opencode",
+      "requesty",
+      "sap-ai-core",
+      "vercel",
+      "zenmux"
+    ],
+    "coverage_assertions": {
+      "all_upstream_ids_classified": true,
+      "all_alias_ids_classified": true,
+      "unclassified_upstream_ids": []
+    }
+  }
+}

@@ -1,0 +1,104 @@
+{
+  "schema": "pi.qa.coverage_baseline.v1",
+  "bead_id": "bd-1f42.1.2.1",
+  "status": "blocked_runtime_contention",
+  "generated_at": "2026-02-10T06:50:00Z",
+  "workspace": "/data/projects/pi_agent_rust",
+  "collection": {
+    "status": "incomplete",
+    "blockers": [
+      "Concurrent cargo/llvm-cov workloads in shared workspace generated stale object references and malformed coverage export records.",
+      "Observed llvm-cov export failures include missing temporary object paths and malformed function filename metadata in ext-conformance objects."
+    ],
+    "attempted_commands": [
+      "cargo llvm-cov --workspace --all-targets --json --summary-only --branch --output-path target/coverage-summary-branch.json",
+      "cargo llvm-cov report --json --summary-only --output-path target/coverage-summary.json",
+      "CARGO_TARGET_DIR=target/coverage-fuchsia cargo llvm-cov --workspace --all-targets --json --summary-only --output-path target/coverage-baseline-raw.json --ignore-run-fail",
+      "CARGO_TARGET_DIR=target/coverage-fuchsia cargo llvm-cov report --json --summary-only --output-path target/coverage-baseline-raw.json"
+    ],
+    "recommended_next_command": "CARGO_TARGET_DIR=target/coverage-fuchsia cargo llvm-cov --workspace --all-targets --json --summary-only --output-path target/coverage-baseline-raw.json --ignore-run-fail"
+  },
+  "summary": {
+    "line_pct": null,
+    "branch_pct": null,
+    "function_pct": null,
+    "region_pct": null,
+    "uncovered_line_count": null,
+    "notes": "Populate after successful llvm-cov export; this placeholder keeps downstream schema contracts stable."
+  },
+  "critical_paths": [
+    {
+      "area": "agent_loop",
+      "paths": [
+        "src/agent.rs"
+      ],
+      "coverage": {
+        "line_pct": null,
+        "branch_pct": null,
+        "function_pct": null
+      },
+      "status": "pending"
+    },
+    {
+      "area": "tools",
+      "paths": [
+        "src/tools.rs"
+      ],
+      "coverage": {
+        "line_pct": null,
+        "branch_pct": null,
+        "function_pct": null
+      },
+      "status": "pending"
+    },
+    {
+      "area": "providers",
+      "paths": [
+        "src/provider.rs",
+        "src/providers/*.rs",
+        "src/providers/mod.rs"
+      ],
+      "coverage": {
+        "line_pct": null,
+        "branch_pct": null,
+        "function_pct": null
+      },
+      "status": "pending"
+    },
+    {
+      "area": "session",
+      "paths": [
+        "src/session.rs"
+      ],
+      "coverage": {
+        "line_pct": null,
+        "branch_pct": null,
+        "function_pct": null
+      },
+      "status": "pending"
+    },
+    {
+      "area": "extensions",
+      "paths": [
+        "src/extensions.rs",
+        "src/extension_dispatcher.rs",
+        "src/extensions_js.rs"
+      ],
+      "coverage": {
+        "line_pct": null,
+        "branch_pct": null,
+        "function_pct": null
+      },
+      "status": "pending"
+    }
+  ],
+  "handoff": {
+    "owner": "FuchsiaLynx",
+    "next_owner": "StormyCastle",
+    "next_actions": [
+      "Re-run the recommended llvm-cov command in a low-contention window.",
+      "Extract per-file summaries into this artifact for all critical paths.",
+      "Add uncovered critical-path risk notes consumed by bd-1f42.1.4."
+    ]
+  }
+}

@@ -127,6 +127,33 @@ See [releasing.md](releasing.md) for the full release process.
 | Conformance regression review | Agent triage | Nightly CI reports |
 | Bead backlog grooming | Primary maintainer | `bv --robot-triage` |
 
+### Weekly QA Burndown (bd-1f42, as of 2026-02-10)
+
+Snapshot:
+- Scope: `bd-1f42*` QA epic and sub-beads
+- Total: 51 beads (`8 closed`, `7 in_progress`, `36 open`)
+- Priority mix: `open P0=19`, `open P1=17`, `in_progress P0=5`, `in_progress P1=2`
+- Slip check: no `bd-1f42*` bead is past due as of `2026-02-10`.
+- Near-term risk window: `2026-02-13` to `2026-02-16` (baseline-audit and core-unit milestones).
+
+Top blocker graph pressure (open blockers):
+- `bd-1f42.6.5` blocked by 8 prerequisites
+- `bd-1f42.4` blocked by 7 prerequisites
+- `bd-1f42.6` blocked by 7 prerequisites
+- `bd-1f42.2` blocked by 6 prerequisites
+- `bd-1f42.7.3` blocked by 6 prerequisites
+
+#### Blocker RCA + Unblock Actions
+
+| Blocked target | Root cause analysis | Accountable owner | Unblock action (next checkpoint) |
+|----------------|---------------------|-------------------|----------------------------------|
+| `bd-1f42.3` (E2E harness track) | Critical-path concentration on runner core (`bd-1f42.3.1`) and versioned logging contract (`bd-1f42.3.6`) keeps scenario/replay beads from starting. | `TopazForest` | Close `bd-1f42.3.1`, then land `bd-1f42.3.6` logging contract to unlock downstream scenario/replay work. |
+| `bd-1f42.4` (208-extension matrix track) | Fixture corpus + executor + gate/reporting work is still serial (`bd-1f42.4.2`/`.4.3`/`.4.4`), so downstream compatibility and dossier beads remain blocked. | `OrangeBarn` | Prioritize `bd-1f42.4.3` sharded executor completion, then wire `bd-1f42.4.4` CI must-pass gate immediately after. |
+| `bd-1f42.6.5` (final full-suite gate) | Final release-blocking gate depends on unfinished deliverables across CI, unit, e2e, extension, and reliability tracks. | `PearlRaven` (coordination owner for `bd-1f42.6.*`) | Keep prerequisite checklist explicit and sequence completion `bd-1f42.6.1` -> `bd-1f42.6.8` -> `bd-1f42.6.5` with owner check-ins each burndown cycle. |
+| `bd-1f42.7.3` (final certification) | Certification is evidence-gated: governance cadence (`bd-1f42.7.2`) plus runbook and CI evidence-bundle dependencies are still open. | `BrightValley` | Maintain weekly burndown updates, close `bd-1f42.7.4` runbook, then assemble certification once `bd-1f42.6.8` and `bd-1f42.4.5` are complete. |
+
+Next burndown checkpoint: `2026-02-17` (UTC), with updated blocker counts and owner-level action status.
+
 ### Monthly
 
 | Task | Owner | Verification |

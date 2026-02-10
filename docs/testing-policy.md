@@ -76,6 +76,86 @@ VCR_MODE=playback cargo test --test e2e_provider_streaming --test agent_loop_vcr
 **Identifying tests:** Files listed in `[suite.e2e]` of `tests/suite_classification.toml`, or any
 test file prefixed with `e2e_`.
 
+### Live Provider Credential + Replay Policy (bd-1f42.2.7)
+
+This policy applies to `tests/e2e_live_harness.rs` and shared helpers in
+`tests/common/harness.rs` + `tests/common/logging.rs`.
+
+#### Credential handling and redaction
+
+- API key source precedence is strict: environment (`*_API_KEY`) -> auth store -> `models.json`.
+- Credential **values** must never be written to logs, JSONL artifacts, or contract records.
+- Live harness artifacts only include `credential_source` metadata (for example `env:OPENAI_API_KEY`).
+- Sensitive request header values are force-redacted to `[REDACTED]` before writing run records.
+- Every emitted JSONL artifact (`log`, `artifact index`, raw result, contract result, cost contract)
+  must pass unredacted-key scans (`find_unredacted_keys`) plus header-pair redaction checks.
+
+#### Quota/rate-limit budget and retry policy
+
+- Cost budgets are enforced per provider via `default_cost_thresholds()` and `check_cost_budget()`:
+  warn at soft threshold, fail at hard threshold.
+- Live provider calls use deterministic retry policy:
+  - `LIVE_E2E_MAX_ATTEMPTS=3`
+  - `LIVE_E2E_RETRYABLE_HTTP_STATUS=[408,429,500,502,503,504,529]`
+  - `LIVE_E2E_RETRY_BACKOFF_MS=[500,1500]` (ms, exponential-ish fixed schedule)
+- Retries are only for transient failures (retryable HTTP status or transport timeout/reset class errors).
+- Retry telemetry (`attempts`, `retry_backoff_ms`) is required in live provider result contracts.
+
+#### Deterministic replay boundary and logging guarantees
+
+- Live harness execution mode is always `live_record` (`VcrMode::Record` only).
+- Boundary definition:
+  - Live network call + live streaming events happen first.
+  - Post-call trace extraction reads the latest interaction from the just-recorded cassette.
+  - No VCR playback is allowed for this suite.
+- Result contracts must include:
+  - `execution_mode=live_record`
+  - `replay_boundary=live_request_then_vcr_trace_extract`
+  - `trace_origin=vcr_last_interaction`
+- Normalized JSONL artifacts must still normalize timestamps/paths and preserve redaction.
+
+---
+
+## Test-Double Inventory Baseline (bd-1f42.1.1)
+
+Machine-readable inventory artifact:
+
+- `docs/test_double_inventory.json`
+
+The report tags test-double usage by:
+
+- `file`
+- `suite` (`unit`, `vcr`, `e2e`, `unit-inline`, `unclassified`)
+- `module`
+- nearest `test_case`
+- `double_identifier` and `double_type`
+- `risk` and rationale
+
+Current baseline snapshot (from `report_id=bd-1f42.1.1-test-double-inventory-v1`):
+
+- `entry_count`: 201
+- `module_count`: 16
+- suite distribution:
+  - `unit-inline`: 116
+  - `vcr`: 46
+  - `unit`: 13
+  - `e2e`: 3
+  - `unclassified`: 23 (helper modules under `tests/common`)
+
+Top risk clusters:
+
+- `src/extension_dispatcher` (86 entries, high)
+- `src/extensions` (22 entries, high)
+- `tests/extensions_provider_oauth` (28 entries, high)
+- `tests/mock_spec_validation` (11 entries, high)
+- `tests/common` (23 entries, helper module inventory; unclassified in suite mapping)
+
+Interpretation notes:
+
+- High counts in `unit-inline` represent strict audit hotspots and should be reviewed against no-mock policy intent.
+- `tests/common` is intentionally helper-only and not part of direct `tests/*.rs` suite classification entries.
+- Allowlisted exceptions in this document remain the policy source of truth; the JSON report is the searchable evidence index.
+
 ---
 
 ## Definitions
@@ -108,6 +188,39 @@ Each mock/stub usage outside Suite 1 must be explicitly allowlisted here with ra
 
 **Process for adding new exceptions:** Open a bead with rationale. Get review. Add to this table
 with the bead ID. Update the CI allowlist regex in `.github/workflows/ci.yml`.
+
+### Ratified Non-Mock Standard (bd-1f42.1.3)
+
+This section is the authoritative accepted/rejected matrix for test doubles.
+
+Accepted (with explicit rationale and scope):
+
+- Real local test infrastructure helpers that preserve real protocol behavior (`MockHttpServer` family).
+- Recording doubles used to capture host/session side effects for contract assertions (`RecordingSession`, `RecordingHostActions`).
+- CLI workflow stubs used in E2E to isolate external package managers while preserving end-user flow assertions (`PackageCommandStubs`).
+
+Rejected:
+
+- Any `Mock*`, `Fake*`, `Stub*`, `DummyProvider`, `NullSession`, or `NullUiHandler` in Suite 1 (`unit`) tests.
+- Any new no-op trait implementation in Suite 1 that suppresses real behavior instead of exercising production logic.
+- Any new allowlist entry without explicit owner, expiry, and replacement plan.
+
+Mandatory exception template (required for temporary allowance):
+
+- `bead_id`: tracking issue that justifies the exception.
+- `owner`: single accountable owner.
+- `expires_at`: hard expiration date (UTC).
+- `replacement_plan`: concrete path to remove the double.
+- `scope`: exact files/tests where the exception is permitted.
+- `verification`: CI/tests proving behavior remains covered despite the temporary double.
+
+Review checklist for exception approval:
+
+- Is the double outside Suite 1?
+- Is there a deterministic alternative (VCR/fixture/real local service) that was evaluated?
+- Is owner + expiry + replacement plan documented?
+- Is CI allowlist updated narrowly (no broad wildcard)?
+- Is follow-up bead dependency linked to removal work?
 
 ---
 
@@ -278,6 +391,42 @@ files = [
 
 ---
 
+## Fast Local Smoke Suite (bd-1f42.6.6)
+
+Contributors can run a fast smoke check before pushing to catch common regressions without
+waiting for full CI. The smoke suite targets under 60 seconds on a development machine.
+
+**Command:**
+```bash
+./scripts/smoke.sh                    # lint + unit + VCR smoke targets
+./scripts/smoke.sh --skip-lint        # skip cargo fmt/clippy (faster)
+./scripts/smoke.sh --only unit        # only unit smoke targets
+./scripts/smoke.sh --only vcr         # only VCR smoke targets
+./scripts/smoke.sh --verbose          # show full cargo test output
+./scripts/smoke.sh --json             # emit JSON summary to stdout
+```
+
+**What it covers:**
+
+| Suite | Targets | Coverage Area |
+|-------|---------|---------------|
+| Unit | `model_serialization`, `config_precedence`, `session_conformance`, `error_types`, `compaction`, `security_budgets` | Core data model, config, session, error handling |
+| VCR | `provider_streaming`, `error_handling`, `http_client`, `sse_strict_compliance`, `model_registry`, `provider_factory` | Provider layer, HTTP, SSE, model routing |
+
+**Structured output:**
+- `smoke_log.jsonl`: Per-event JSONL log (schema `pi.smoke.*.v1`)
+- `smoke_summary.json`: Machine-readable pass/fail summary (schema `pi.smoke.summary.v1`)
+- `<target>/output.log`: Per-target verbose output
+
+**Design rationale:**
+- Targets chosen to cover the critical path (model → provider → streaming → tools) with
+  the fastest-running tests from each suite.
+- No E2E targets: those require tmux/real providers and exceed the 60-second budget.
+- `--skip-lint` option for inner-loop iteration where format is already checked.
+- Exit code 0 = all pass, 1 = any failure (compatible with pre-commit hooks).
+
+---
+
 ## Migration Checklist
 
 For tests currently in Suite 2 that should migrate to Suite 1:
@@ -296,3 +445,199 @@ For VCR-heavy tests claiming "live" coverage:
 2. [ ] Add a live E2E variant that runs against real providers (gated on `PI_E2E=1`).
 3. [ ] Ensure VCR cassettes are regenerated periodically to catch API changes.
 4. [ ] Document the cassette regeneration process in the test file header.
+
+---
+
+## Flaky-Test Quarantine and Escalation Policy (bd-1f42.6.3)
+
+Flaky tests undermine CI signal and erode trust in the test suite. This section defines the
+taxonomy, quarantine workflow, escalation rules, and auditable tracking for flaky tests.
+
+### Flake Taxonomy
+
+Every flaky test must be classified into exactly one category. Classification determines the
+quarantine tier, auto-retry budget, and escalation timeline.
+
+| Category | Code | Description | Retry Budget | Quarantine Tier |
+|----------|------|-------------|-------------|-----------------|
+| **Timing-dependent** | `FLAKE-TIMING` | Race conditions, sleep-based assertions, non-deterministic scheduling, CI load sensitivity. | 1 retry | 7-day fix window |
+| **Environment-dependent** | `FLAKE-ENV` | Filesystem state, locale, timezone, OS-specific behavior, missing system deps. | 1 retry | 7-day fix window |
+| **Network-dependent** | `FLAKE-NET` | DNS resolution, port conflicts, firewall rules, VPN state, proxy settings. | 1 retry | 14-day fix window |
+| **Resource-dependent** | `FLAKE-RES` | OOM, disk full, file descriptor exhaustion, thread pool saturation. | 1 retry | 14-day fix window |
+| **External-service** | `FLAKE-EXT` | Live API rate limits, provider downtime, auth token expiry, quota exhaustion. | 1 retry | 14-day fix window |
+| **Non-deterministic logic** | `FLAKE-LOGIC` | Random seeds, hash ordering, floating-point comparison, concurrent data structures. | 1 retry | 7-day fix window |
+
+**Hard limit:** Maximum quarantine window is **14 days** regardless of category. The CI guard
+rejects entries with `expires - quarantined > 14`.
+
+### Quarantine Lifecycle
+
+```
+Detection ──► Classification ──► Quarantine Entry ──► Fix/Workaround ──► Restore ──► Verify
+    │              │                    │                   │                │           │
+    ▼              ▼                    ▼                   ▼                ▼           ▼
+  CI failure   Assign category    Add to TOML        Land fix PR      Remove from    3 clean
+  + flake      + owner + tier     quarantine         or workaround    quarantine     CI runs
+  evidence                        section                             section
+```
+
+#### Step 1: Detection
+
+A test is suspected flaky when:
+- It fails on CI but passes on retry (same commit, same runner OS).
+- It passes locally but fails on CI intermittently.
+- It fails with different error messages across runs on the same commit.
+
+**Evidence requirement:** The detection claim must include:
+- Commit SHA where the flake occurred.
+- CI run URL or log excerpt showing the failure.
+- At least one passing run on the same commit (proving non-determinism).
+- Runner OS and relevant environment variables.
+
+#### Step 2: Classification
+
+Assign a flake category from the taxonomy above. Record:
+- `category`: One of the `FLAKE-*` codes.
+- `evidence_url`: Link to the CI failure log or artifact.
+- `reproduction_command`: Exact command to attempt local reproduction.
+
+#### Step 3: Quarantine Entry
+
+Add the test to the `[quarantine]` section of `tests/suite_classification.toml`:
+
+```toml
+[quarantine]
+# Each entry: test stem, category, owner, quarantine date, expiry date, bead ID.
+# All 9 fields are required. CI rejects entries missing any field.
+
+[quarantine.example_flaky_test]
+category = "FLAKE-TIMING"
+owner = "AgentName"
+quarantined = "2026-02-10"
+expires = "2026-02-17"          # Max 14 days from quarantined
+bead = "bd-XXXX"                # Tracking bead for the fix
+evidence = "https://ci.example.com/run/12345"
+repro = "cargo test example_flaky_test -- --nocapture"
+reason = "Intermittent timeout on CI due to thread scheduling variance"
+remove_when = "Two consecutive green CI runs on Linux/macOS/Windows"
+```
+
+**What quarantine means:**
+- The test is still compiled and run, but failures are **not blocking** in CI.
+- Quarantined test failures are reported in a separate CI summary section.
+- The test remains in its original suite classification (unit/vcr/e2e).
+- Auto-retry up to the category's retry budget before marking as quarantine-fail.
+
+#### Step 4: Fix or Workaround
+
+The assigned owner must fix the root cause or apply a deterministic workaround within the
+quarantine tier's fix window. Acceptable fixes:
+- Eliminate the source of non-determinism (use deterministic seeds, mock time, pin ordering).
+- Add proper synchronization (barriers, channels, condition variables instead of sleeps).
+- Gate on environment availability (skip gracefully if resource is missing).
+- Convert from live to VCR-backed (for `FLAKE-EXT` and `FLAKE-NET`).
+
+#### Step 5: Restore
+
+After the fix lands:
+1. Remove the entry from `[quarantine]` in `tests/suite_classification.toml`.
+2. Verify the test passes on 3 consecutive CI runs (tracked by the bead).
+3. Close the tracking bead with a comment linking the fix commit and CI evidence.
+
+#### Step 6: Expiry Enforcement
+
+If a quarantined test is **not fixed** by its `expires` date:
+- The quarantine entry turns into a CI **hard failure** (test must be fixed or removed).
+- Escalation: the test owner must either extend with justification or disable the test.
+- Extension requires a new bead with updated expiry (maximum one extension per test).
+
+### Auto-Retry Policy
+
+CI applies a uniform retry policy for quarantined tests before reporting failure:
+
+| Setting | Value |
+|---------|-------|
+| Max auto-retries | 1 |
+| Retry delay | 5 seconds |
+| Retry scope | Failed target only |
+| Second failure policy | Treated as deterministic failure |
+
+Non-quarantined tests get **zero retries**. If a non-quarantined test fails, it is a real failure.
+
+### CI Quarantine Guard
+
+The quarantine guard runs as part of CI (`.github/workflows/ci.yml`) and:
+1. Reads `[quarantine.*]` entries from `tests/suite_classification.toml`.
+2. Validates all 9 required fields: `category`, `owner`, `quarantined`, `expires`, `bead`,
+   `evidence`, `repro`, `reason`, `remove_when`.
+3. Validates `category` is one of the 6 allowed `FLAKE-*` codes.
+4. Validates quarantine span does not exceed 14 days (`expires - quarantined <= 14`).
+5. Validates `evidence`, `repro`, and `remove_when` are non-empty.
+6. Fails if any entry has expired (current date > `expires`).
+7. Emits structured artifacts:
+   - `tests/quarantine_report.json` (schema `pi.test.quarantine_report.v2`): active count,
+     expiring-soon count, expired count, category breakdown, escalation actions.
+   - `tests/quarantine_audit.jsonl` (schema `pi.test.quarantine_audit_entry.v1`): one line
+     per quarantine entry for append-only audit trail.
+
+### Escalation Workflow
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Flake Escalation Ladder                       │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  Day 0: Detection + classification + quarantine entry           │
+│         Owner assigned. Tracking bead created.                  │
+│                                                                 │
+│  Day 3 (Tier 1) / Day 7 (Tier 2-3): Mid-point check            │
+│         Owner posts progress in bead thread.                    │
+│         If no progress: escalate to project maintainer.         │
+│                                                                 │
+│  Expiry day: Fix must be landed and verified.                   │
+│         If not fixed: CI hard-fails on the quarantine entry.    │
+│         Owner must extend (1x max) or disable the test.         │
+│                                                                 │
+│  Expiry + 7 days (final deadline): Test is either:              │
+│         (a) Fixed and restored, or                              │
+│         (b) Removed from the suite with a rationale bead.       │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Quarantine Metrics
+
+The quarantine system tracks:
+- **Active quarantine count**: Target is zero. Any non-zero count is a debt signal.
+- **Mean time to fix (MTTF)**: Average days from quarantine entry to restoration.
+- **Escape rate**: Flaky tests that were restored but re-quarantined within 30 days.
+- **Expiry violations**: Tests that hit their expiry deadline without a fix.
+
+These metrics feed into `bd-1f42.6.2` (test health dashboards).
+
+### Quarantine Decision Template
+
+Every quarantine entry must be accompanied by a bead with this information:
+
+```
+Title: [FLAKE] <test_name>: <brief description>
+Type: bug
+Priority: P1 (Tier 1) or P2 (Tier 2-3)
+
+Category: FLAKE-TIMING | FLAKE-ENV | FLAKE-NET | FLAKE-RES | FLAKE-EXT | FLAKE-LOGIC
+Owner: <agent or person name>
+Quarantined: <YYYY-MM-DD>
+Expires: <YYYY-MM-DD> (max 14 days from quarantined)
+Evidence: <CI run URL or artifact path>
+Reproduction: <exact command>
+Remove-when: <objective exit condition for quarantine removal>
+
+Root cause analysis:
+  <What makes this test non-deterministic?>
+
+Proposed fix:
+  <How will determinism be restored?>
+
+Verification plan:
+  <How will we confirm the fix works? (e.g., 3 clean CI runs)>
+```

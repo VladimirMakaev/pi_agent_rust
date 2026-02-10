@@ -20,6 +20,25 @@ Snapshot basis:
 | `alias-only` | Provider ID is a documented synonym of a canonical ID; no distinct runtime implementation. |
 | `missing` | Provider ID is recognized in enums/auth mappings but has no usable runtime dispatch path yet. |
 
+### Machine-Readable Classification (`bd-3uqg.1.4`)
+
+Canonical planning artifact: `docs/provider-implementation-modes.json`
+
+This JSON is the execution source-of-truth for provider onboarding mode selection:
+
+| Mode | Planning Meaning |
+|------|------------------|
+| `native-adapter-required` | Requires dedicated runtime adapter path (protocol/auth/tool semantics not safely covered by generic OAI routing). |
+| `oai-compatible-preset` | Can route through OpenAI-compatible adapter with provider-specific base/auth presets. |
+| `gateway-wrapper-routing` | Acts as gateway/meta-router/alias-routing surface; prioritize routing-policy and diagnostics guarantees. |
+| `deferred` | Explicitly not in current implementation wave; retained for planning completeness. |
+
+Current artifact coverage (`docs/provider-implementation-modes.json`):
+- 93 upstream union IDs classified (no gaps)
+- 6 supplemental Pi alias IDs classified
+- 99 total entries with explicit profile, rationale, and runtime status
+- 20 high-risk providers carry explicit prerequisite beads + required diagnostic artifacts
+
 ## Canonical Provider Matrix (Current Baseline)
 
 | Canonical ID | Aliases | API family | Base URL template | Auth mode | Mode | Runtime status | Required test tiers |

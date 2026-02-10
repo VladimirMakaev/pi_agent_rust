@@ -22,6 +22,10 @@
           "justification": "Core host tools conformance and behavior checks."
         },
         {
+          "path": "tests/tools_hardened.rs",
+          "justification": "Hardened tool execution tests for real filesystem/process edge cases and diagnostics fidelity."
+        },
+        {
           "path": "tests/ext_conformance_scenarios.rs",
           "justification": "Extension runtime scenario verification."
         },
@@ -140,6 +144,10 @@
         {
           "path": "tests/agent_loop_vcr.rs",
           "justification": "Agent-loop behavior verification against recorded VCR fixtures."
+        },
+        {
+          "path": "tests/agent_loop_reliability.rs",
+          "justification": "Agent-loop interruption/retry/resume reliability scenarios with timeline artifact coverage."
         },
         {
           "path": "tests/auth_oauth_refresh_vcr.rs",
@@ -384,6 +392,10 @@
         {
           "path": "tests/repro_edit_encoding.rs",
           "justification": "Edit encoding reproducer regression coverage for text-encoding edge cases."
+        },
+        {
+          "path": "tests/reproduction_truncate.rs",
+          "justification": "Regression placeholder for truncation reproduction coverage tracked in traceability governance."
         },
         {
           "path": "tests/reproduce_bom_bug.rs",

@@ -47,6 +47,34 @@ automatic retry:
 Use `--rerun-from <summary.json>` to re-execute only failed suites from
 a previous run. This uses the same classification logic.
 
+## Quarantine Contract (CI-Enforced)
+
+Quarantine metadata lives in `tests/suite_classification.toml` under
+`[quarantine.<test_stem>]` sections and is validated by CI.
+
+Required fields per entry:
+
+- `category` (`FLAKE-TIMING`, `FLAKE-ENV`, `FLAKE-NET`, `FLAKE-RES`, `FLAKE-EXT`, `FLAKE-LOGIC`)
+- `owner`
+- `quarantined`
+- `expires`
+- `bead`
+- `evidence` (CI run URL or artifact path)
+- `repro` (exact reproduction command)
+- `reason`
+- `remove_when` (objective exit criteria)
+
+Policy bounds:
+
+- Maximum quarantine window: 14 days (`quarantined` → `expires`)
+- Expired entries fail CI immediately
+- Entries expiring within 2 days are surfaced as escalation warnings
+
+Audit outputs produced by CI:
+
+- `tests/quarantine_report.json` (machine-readable summary + escalation status)
+- `tests/quarantine_audit.jsonl` (append-friendly per-entry audit records)
+
 ## Flake Budget
 
 - **Per-target flake budget**: Each test target is allowed a maximum of
@@ -77,6 +105,8 @@ Every conformance run produces:
 | `flake_events.jsonl` | JSONL | Classified flake events |
 | `conformance_summary.json` | JSON | Pass/fail/skip counts |
 | `retry_manifest.json` | JSON | Which targets were retried and outcome |
+| `quarantine_report.json` | JSON | Quarantine policy status and escalations |
+| `quarantine_audit.jsonl` | JSONL | Per-entry owner/expiry/evidence/repro trail |
 
 ## Integration with Quality Pipeline
 
