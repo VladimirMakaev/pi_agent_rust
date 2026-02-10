@@ -11,6 +11,7 @@ use crate::model::{
 };
 use crate::models::ModelEntry;
 use crate::provider::{Context, Provider, StreamEvent, StreamOptions};
+use crate::provider_metadata::{canonical_provider_id, provider_routing_defaults};
 use crate::vcr::{VCR_ENV_MODE, VcrRecorder};
 use async_trait::async_trait;
 use futures::stream;
@@ -59,6 +60,79 @@ impl Drop for ExtensionStreamSimpleState {
                 .provider_stream_simple_cancel_best_effort(stream_id);
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderRouteKind {
+    NativeAnthropic,
+    NativeOpenAICompletions,
+    NativeOpenAIResponses,
+    NativeCohere,
+    NativeGoogle,
+    NativeAzureUnsupported,
+    ApiAnthropicMessages,
+    ApiOpenAICompletions,
+    ApiOpenAIResponses,
+    ApiCohereChat,
+    ApiGoogleGenerativeAi,
+}
+
+impl ProviderRouteKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::NativeAnthropic => "native:anthropic",
+            Self::NativeOpenAICompletions => "native:openai-completions",
+            Self::NativeOpenAIResponses => "native:openai-responses",
+            Self::NativeCohere => "native:cohere",
+            Self::NativeGoogle => "native:google",
+            Self::NativeAzureUnsupported => "native:azure-openai-unsupported",
+            Self::ApiAnthropicMessages => "api:anthropic-messages",
+            Self::ApiOpenAICompletions => "api:openai-completions",
+            Self::ApiOpenAIResponses => "api:openai-responses",
+            Self::ApiCohereChat => "api:cohere-chat",
+            Self::ApiGoogleGenerativeAi => "api:google-generative-ai",
+        }
+    }
+}
+
+fn resolve_provider_route(entry: &ModelEntry) -> Result<(ProviderRouteKind, String, String)> {
+    let canonical_provider =
+        canonical_provider_id(&entry.model.provider).unwrap_or(entry.model.provider.as_str());
+    let schema_api = provider_routing_defaults(&entry.model.provider).map(|defaults| defaults.api);
+    let effective_api = if entry.model.api.is_empty() {
+        schema_api.unwrap_or_default().to_string()
+    } else {
+        entry.model.api.clone()
+    };
+
+    let route = match canonical_provider {
+        "anthropic" => ProviderRouteKind::NativeAnthropic,
+        "openai" => {
+            if effective_api == "openai-completions" {
+                ProviderRouteKind::NativeOpenAICompletions
+            } else {
+                ProviderRouteKind::NativeOpenAIResponses
+            }
+        }
+        "cohere" => ProviderRouteKind::NativeCohere,
+        "google" => ProviderRouteKind::NativeGoogle,
+        "azure-openai" => ProviderRouteKind::NativeAzureUnsupported,
+        _ => match effective_api.as_str() {
+            "anthropic-messages" => ProviderRouteKind::ApiAnthropicMessages,
+            "openai-completions" => ProviderRouteKind::ApiOpenAICompletions,
+            "openai-responses" => ProviderRouteKind::ApiOpenAIResponses,
+            "cohere-chat" => ProviderRouteKind::ApiCohereChat,
+            "google-generative-ai" => ProviderRouteKind::ApiGoogleGenerativeAi,
+            _ => {
+                return Err(Error::provider(
+                    &entry.model.provider,
+                    format!("Provider not implemented (api: {})", effective_api),
+                ));
+            }
+        },
+    };
+
+    Ok((route, canonical_provider.to_string(), effective_api))
 }
 
 impl ExtensionStreamSimpleProvider {
@@ -446,99 +520,55 @@ pub fn create_provider(
 
     let vcr_client = vcr_client_if_enabled()?;
     let client = vcr_client.unwrap_or_else(Client::new);
+    let (route, canonical_provider, effective_api) = resolve_provider_route(entry)?;
     tracing::debug!(
         event = "pi.provider.factory.select",
         provider = %entry.model.provider,
-        api = %entry.model.api,
+        canonical_provider = %canonical_provider,
+        api = %effective_api,
         base_url = %entry.model.base_url,
+        route = %route.as_str(),
         "Selecting provider implementation"
     );
-    // Try matching on known provider name first.
-    match entry.model.provider.as_str() {
-        "anthropic" => {
-            return Ok(Arc::new(
+
+    match route {
+        ProviderRouteKind::NativeAnthropic | ProviderRouteKind::ApiAnthropicMessages => {
+            Ok(Arc::new(
                 anthropic::AnthropicProvider::new(entry.model.id.clone())
                     .with_base_url(entry.model.base_url.clone())
                     .with_client(client),
-            ));
+            ))
         }
-        "openai" => {
-            // Built-in OpenAI provider can speak either chat completions or responses,
-            // based on the configured `api` field.
-            if entry.model.api == "openai-completions" {
-                return Ok(Arc::new(
-                    openai::OpenAIProvider::new(entry.model.id.clone())
-                        .with_provider_name(entry.model.provider.clone())
-                        .with_base_url(normalize_openai_base(&entry.model.base_url))
-                        .with_client(client),
-                ));
-            }
-
-            // Default to the newer Responses API.
-            return Ok(Arc::new(
+        ProviderRouteKind::NativeOpenAICompletions | ProviderRouteKind::ApiOpenAICompletions => {
+            Ok(Arc::new(
+                openai::OpenAIProvider::new(entry.model.id.clone())
+                    .with_provider_name(entry.model.provider.clone())
+                    .with_base_url(normalize_openai_base(&entry.model.base_url))
+                    .with_client(client),
+            ))
+        }
+        ProviderRouteKind::NativeOpenAIResponses | ProviderRouteKind::ApiOpenAIResponses => {
+            Ok(Arc::new(
                 openai_responses::OpenAIResponsesProvider::new(entry.model.id.clone())
                     .with_provider_name(entry.model.provider.clone())
                     .with_base_url(normalize_openai_responses_base(&entry.model.base_url))
                     .with_client(client),
-            ));
+            ))
         }
-        "cohere" => {
-            return Ok(Arc::new(
-                cohere::CohereProvider::new(entry.model.id.clone())
-                    .with_provider_name(entry.model.provider.clone())
-                    .with_base_url(normalize_cohere_base(&entry.model.base_url))
-                    .with_client(client),
-            ));
-        }
-        "google" => {
-            return Ok(Arc::new(
-                gemini::GeminiProvider::new(entry.model.id.clone())
-                    .with_base_url(entry.model.base_url.clone())
-                    .with_client(client),
-            ));
-        }
-        "azure-openai" => {
-            return Err(Error::provider(
-                "azure-openai",
-                "Azure OpenAI provider requires resource+deployment; configure via models.json",
-            ));
-        }
-        _ => {}
-    }
-
-    // Fall back to API type for extension-registered providers.
-    match entry.model.api.as_str() {
-        "anthropic-messages" => Ok(Arc::new(
-            anthropic::AnthropicProvider::new(entry.model.id.clone())
-                .with_base_url(entry.model.base_url.clone())
-                .with_client(client),
-        )),
-        "openai-completions" => Ok(Arc::new(
-            openai::OpenAIProvider::new(entry.model.id.clone())
-                .with_provider_name(entry.model.provider.clone())
-                .with_base_url(normalize_openai_base(&entry.model.base_url))
-                .with_client(client),
-        )),
-        "openai-responses" => Ok(Arc::new(
-            openai_responses::OpenAIResponsesProvider::new(entry.model.id.clone())
-                .with_provider_name(entry.model.provider.clone())
-                .with_base_url(normalize_openai_responses_base(&entry.model.base_url))
-                .with_client(client),
-        )),
-        "cohere-chat" => Ok(Arc::new(
+        ProviderRouteKind::NativeCohere | ProviderRouteKind::ApiCohereChat => Ok(Arc::new(
             cohere::CohereProvider::new(entry.model.id.clone())
                 .with_provider_name(entry.model.provider.clone())
                 .with_base_url(normalize_cohere_base(&entry.model.base_url))
                 .with_client(client),
         )),
-        "google-generative-ai" => Ok(Arc::new(
+        ProviderRouteKind::NativeGoogle | ProviderRouteKind::ApiGoogleGenerativeAi => Ok(Arc::new(
             gemini::GeminiProvider::new(entry.model.id.clone())
                 .with_base_url(entry.model.base_url.clone())
                 .with_client(client),
         )),
-        _ => Err(Error::provider(
-            &entry.model.provider,
-            format!("Provider not implemented (api: {})", entry.model.api),
+        ProviderRouteKind::NativeAzureUnsupported => Err(Error::provider(
+            "azure-openai",
+            "Azure OpenAI provider requires resource+deployment; configure via models.json",
         )),
     }
 }
@@ -1132,6 +1162,31 @@ export default function init(pi) {
             compat: None,
             oauth_config: None,
         }
+    }
+
+    #[test]
+    fn resolve_provider_route_uses_metadata_for_alias_provider() {
+        let entry = model_entry(
+            "kimi",
+            "openai-completions",
+            "kimi-k2-instruct",
+            "https://api.moonshot.ai/v1",
+        );
+        let (route, canonical_provider, effective_api) =
+            resolve_provider_route(&entry).expect("resolve alias route");
+        assert_eq!(route, ProviderRouteKind::ApiOpenAICompletions);
+        assert_eq!(canonical_provider, "moonshotai");
+        assert_eq!(effective_api, "openai-completions");
+    }
+
+    #[test]
+    fn resolve_provider_route_openai_unknown_api_defaults_to_native_responses() {
+        let entry = model_entry("openai", "openai", "gpt-4o", "https://api.openai.com/v1");
+        let (route, canonical_provider, effective_api) =
+            resolve_provider_route(&entry).expect("resolve openai route");
+        assert_eq!(route, ProviderRouteKind::NativeOpenAIResponses);
+        assert_eq!(canonical_provider, "openai");
+        assert_eq!(effective_api, "openai");
     }
 
     // ── create_provider: built-in provider selection ─────────────────

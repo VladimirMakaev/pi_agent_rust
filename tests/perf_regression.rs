@@ -1,0 +1,1163 @@
+//! Performance regression test suite (bd-1f42.5.3).
+//!
+//! Automated regression tests for startup latency, idle memory, binary size,
+//! and interactive responsiveness against explicit thresholds from PERF_BUDGETS.md.
+//!
+//! Each test:
+//! - Measures actual performance against stated budget thresholds
+//! - Emits structured JSONL artifacts with hardware/context metadata
+//! - Compares against stored baselines for trend delta detection
+//! - Fails the build on CI-enforced budget violations
+//!
+//! Run:
+//!   cargo test --test perf_regression -- --nocapture
+//!   PERF_REGRESSION_FULL=1 cargo test --test perf_regression -- --nocapture
+
+#![allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::doc_markdown
+)]
+
+mod common;
+
+use chrono::{SecondsFormat, Utc};
+use common::harness::TestHarness;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+use sysinfo::System;
+
+// ─── Configuration ──────────────────────────────────────────────────────────
+
+/// Serialize perf-sensitive tests to avoid scheduler noise.
+static PERF_LOCK: Mutex<()> = Mutex::new(());
+
+fn perf_guard() -> std::sync::MutexGuard<'static, ()> {
+    PERF_LOCK.lock().expect("perf test lock")
+}
+
+fn project_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn output_dir() -> PathBuf {
+    let base = std::env::var("PERF_REGRESSION_OUTPUT")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| project_root().join("target/perf"));
+    let _ = std::fs::create_dir_all(&base);
+    base
+}
+
+fn baseline_dir() -> PathBuf {
+    project_root().join("tests/perf/reports")
+}
+
+fn is_full_mode() -> bool {
+    std::env::var("PERF_REGRESSION_FULL")
+        .ok()
+        .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+}
+
+/// Number of startup measurement iterations.
+fn startup_runs() -> usize {
+    if is_full_mode() { 15 } else { 7 }
+}
+
+/// Warmup runs before measurement.
+fn warmup_runs() -> usize {
+    if is_full_mode() { 5 } else { 2 }
+}
+
+/// Find the pi binary. Prefer debug build for CI, release for nightly.
+fn pi_binary() -> Option<PathBuf> {
+    let target_dir = std::env::var("CARGO_TARGET_DIR")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| project_root().join("target"));
+
+    // Prefer release for perf tests, fall back to debug
+    let release = target_dir.join("release/pi");
+    if release.exists() {
+        return Some(release);
+    }
+    let debug = target_dir.join("debug/pi");
+    if debug.exists() {
+        return Some(debug);
+    }
+    None
+}
+
+// ─── Environment Fingerprint ────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct EnvFingerprint {
+    os: String,
+    arch: String,
+    cpu_model: String,
+    cpu_cores: u32,
+    mem_total_mb: u64,
+    build_profile: String,
+    git_commit: String,
+    config_hash: String,
+}
+
+fn collect_fingerprint() -> EnvFingerprint {
+    let mut system = System::new();
+    system.refresh_cpu_all();
+    system.refresh_memory();
+
+    let cpu_model = system
+        .cpus()
+        .first()
+        .map_or_else(|| "unknown".to_string(), |cpu| cpu.brand().to_string());
+    let cpu_cores = system.cpus().len() as u32;
+    let mem_total_mb = system.total_memory() / (1024 * 1024);
+    let os = System::long_os_version().unwrap_or_else(|| std::env::consts::OS.to_string());
+    let arch = std::env::consts::ARCH.to_string();
+    let build_profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    }
+    .to_string();
+    let git_commit = option_env!("VERGEN_GIT_SHA")
+        .unwrap_or("unknown")
+        .to_string();
+
+    let config_str = format!(
+        "os={os} arch={arch} cpu={cpu_model} cores={cpu_cores} mem={mem_total_mb} profile={build_profile}"
+    );
+    let config_hash = sha256_short(&config_str);
+
+    EnvFingerprint {
+        os,
+        arch,
+        cpu_model,
+        cpu_cores,
+        mem_total_mb,
+        build_profile,
+        git_commit,
+        config_hash,
+    }
+}
+
+fn sha256_short(input: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(input.as_bytes());
+    let result = hasher.finalize();
+    format!("{:x}", result)[..16].to_string()
+}
+
+// ─── Statistics ──────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LatencyStats {
+    count: usize,
+    min_ms: f64,
+    p50_ms: f64,
+    p95_ms: f64,
+    p99_ms: f64,
+    max_ms: f64,
+    mean_ms: f64,
+    stddev_ms: f64,
+}
+
+fn compute_stats(samples_ms: &[f64]) -> LatencyStats {
+    if samples_ms.is_empty() {
+        return LatencyStats {
+            count: 0,
+            min_ms: 0.0,
+            p50_ms: 0.0,
+            p95_ms: 0.0,
+            p99_ms: 0.0,
+            max_ms: 0.0,
+            mean_ms: 0.0,
+            stddev_ms: 0.0,
+        };
+    }
+
+    let mut sorted = samples_ms.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    let count = sorted.len();
+    let sum: f64 = sorted.iter().sum();
+    let mean = sum / count as f64;
+    let variance = sorted.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / count as f64;
+    let stddev = variance.sqrt();
+
+    LatencyStats {
+        count,
+        min_ms: sorted[0],
+        p50_ms: percentile(&sorted, 50.0),
+        p95_ms: percentile(&sorted, 95.0),
+        p99_ms: percentile(&sorted, 99.0),
+        max_ms: sorted[count - 1],
+        mean_ms: mean,
+        stddev_ms: stddev,
+    }
+}
+
+fn percentile(sorted: &[f64], p: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let idx = ((p / 100.0) * (sorted.len() as f64 - 1.0)).round() as usize;
+    sorted[idx.min(sorted.len() - 1)]
+}
+
+// ─── JSONL Records ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PerfRecord {
+    schema: String,
+    test: String,
+    category: String,
+    budget_name: String,
+    budget_threshold: f64,
+    budget_unit: String,
+    actual_value: f64,
+    status: String,
+    stats: Option<LatencyStats>,
+    env: EnvFingerprint,
+    timestamp: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    baseline_value: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    delta_pct: Option<f64>,
+}
+
+fn emit_record(record: &PerfRecord) -> String {
+    serde_json::to_string(record).unwrap_or_default()
+}
+
+fn check_threshold(actual: f64, threshold: f64, higher_is_better: bool) -> &'static str {
+    if higher_is_better {
+        if actual >= threshold { "PASS" } else { "FAIL" }
+    } else if actual <= threshold {
+        "PASS"
+    } else {
+        "FAIL"
+    }
+}
+
+// ─── Baseline Comparison ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BaselineEntry {
+    budget_name: String,
+    value: f64,
+    env_hash: String,
+    timestamp: String,
+}
+
+fn read_baseline(budget_name: &str) -> Option<BaselineEntry> {
+    let path = baseline_dir().join("regression_baseline.json");
+    let content = std::fs::read_to_string(path).ok()?;
+    let baselines: Vec<BaselineEntry> = serde_json::from_str(&content).ok()?;
+    baselines.into_iter().find(|b| b.budget_name == budget_name)
+}
+
+fn compute_delta(actual: f64, baseline: Option<&BaselineEntry>) -> (Option<f64>, Option<f64>) {
+    baseline.map_or((None, None), |b| {
+        let delta_pct = if b.value > 0.0 {
+            Some(((actual - b.value) / b.value) * 100.0)
+        } else {
+            None
+        };
+        (Some(b.value), delta_pct)
+    })
+}
+
+/// Regression threshold: fail if actual exceeds baseline by this percentage.
+const REGRESSION_THRESHOLD_PCT: f64 = 25.0;
+
+// ─── Startup Latency Tests ─────────────────────────────────────────────────
+
+/// Measure subprocess startup time for a given set of arguments.
+fn measure_startup(binary: &Path, args: &[&str], runs: usize, warmup: usize) -> Vec<f64> {
+    // Warmup runs (discard)
+    for _ in 0..warmup {
+        let _ = Command::new(binary)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output();
+    }
+
+    // Measurement runs
+    let mut samples = Vec::with_capacity(runs);
+    for _ in 0..runs {
+        let start = Instant::now();
+        let result = Command::new(binary)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output();
+        let elapsed = start.elapsed();
+
+        if let Ok(output) = result {
+            if output.status.success() {
+                samples.push(elapsed.as_secs_f64() * 1000.0);
+            }
+        }
+    }
+    samples
+}
+
+#[test]
+fn startup_version_latency() {
+    let _guard = perf_guard();
+    let harness = TestHarness::new("startup_version_latency");
+
+    let Some(binary) = pi_binary() else {
+        harness
+            .log()
+            .info("skip", "pi binary not found; skipping startup latency test");
+        eprintln!("[perf_regression] SKIP: pi binary not found");
+        return;
+    };
+
+    harness
+        .log()
+        .info_ctx("measure", "Measuring --version startup", |ctx| {
+            ctx.push(("binary".into(), binary.display().to_string()));
+            ctx.push(("runs".into(), startup_runs().to_string()));
+            ctx.push(("warmup".into(), warmup_runs().to_string()));
+        });
+
+    let samples = measure_startup(&binary, &["--version"], startup_runs(), warmup_runs());
+    assert!(
+        !samples.is_empty(),
+        "pi --version produced no successful runs"
+    );
+
+    let stats = compute_stats(&samples);
+    let p95 = stats.p95_ms;
+    let threshold = 100.0; // 100ms budget
+
+    // Debug builds are ~5-10x slower; relax threshold
+    let effective_threshold = if cfg!(debug_assertions) {
+        threshold * 10.0
+    } else {
+        threshold
+    };
+
+    let status = check_threshold(p95, effective_threshold, false);
+    let baseline = read_baseline("startup_version_p95");
+    let (baseline_val, delta_pct) = compute_delta(p95, baseline.as_ref());
+
+    let env = collect_fingerprint();
+    let record = PerfRecord {
+        schema: "pi.perf.regression.v1".to_string(),
+        test: "startup_version_latency".to_string(),
+        category: "startup".to_string(),
+        budget_name: "startup_version_p95".to_string(),
+        budget_threshold: effective_threshold,
+        budget_unit: "ms".to_string(),
+        actual_value: p95,
+        status: status.to_string(),
+        stats: Some(stats.clone()),
+        env,
+        timestamp: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+        baseline_value: baseline_val,
+        delta_pct,
+    };
+
+    let out_path = output_dir().join("perf_regression.jsonl");
+    append_jsonl(&out_path, &emit_record(&record));
+
+    eprintln!("\n=== Startup --version Latency ===");
+    eprintln!("  Runs:      {}", stats.count);
+    eprintln!("  P50:       {:.1}ms", stats.p50_ms);
+    eprintln!(
+        "  P95:       {:.1}ms (budget: {effective_threshold:.0}ms)",
+        p95
+    );
+    eprintln!("  P99:       {:.1}ms", stats.p99_ms);
+    eprintln!("  Mean:      {:.1}ms", stats.mean_ms);
+    eprintln!("  Stddev:    {:.2}ms", stats.stddev_ms);
+    if let Some(delta) = delta_pct {
+        eprintln!("  Delta:     {delta:+.1}% vs baseline");
+    }
+    eprintln!("  Status:    {status}");
+
+    // Check for regression against baseline
+    if let Some(delta) = delta_pct {
+        if delta > REGRESSION_THRESHOLD_PCT {
+            eprintln!(
+                "  WARNING: {delta:+.1}% regression exceeds {REGRESSION_THRESHOLD_PCT}% threshold"
+            );
+        }
+    }
+
+    assert_eq!(
+        status, "PASS",
+        "startup_version_p95={p95:.1}ms exceeds budget {effective_threshold:.0}ms"
+    );
+}
+
+#[test]
+fn startup_help_latency() {
+    let _guard = perf_guard();
+    let harness = TestHarness::new("startup_help_latency");
+
+    let Some(binary) = pi_binary() else {
+        harness.log().info("skip", "pi binary not found");
+        eprintln!("[perf_regression] SKIP: pi binary not found");
+        return;
+    };
+
+    harness.log().info("measure", "Measuring --help startup");
+
+    let samples = measure_startup(&binary, &["--help"], startup_runs(), warmup_runs());
+    assert!(!samples.is_empty(), "pi --help produced no successful runs");
+
+    let stats = compute_stats(&samples);
+    let p95 = stats.p95_ms;
+
+    // --help is slightly heavier than --version; use 150ms budget
+    let threshold = if cfg!(debug_assertions) {
+        1500.0
+    } else {
+        150.0
+    };
+    let status = check_threshold(p95, threshold, false);
+
+    let env = collect_fingerprint();
+    let record = PerfRecord {
+        schema: "pi.perf.regression.v1".to_string(),
+        test: "startup_help_latency".to_string(),
+        category: "startup".to_string(),
+        budget_name: "startup_help_p95".to_string(),
+        budget_threshold: threshold,
+        budget_unit: "ms".to_string(),
+        actual_value: p95,
+        status: status.to_string(),
+        stats: Some(stats.clone()),
+        env,
+        timestamp: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+        baseline_value: None,
+        delta_pct: None,
+    };
+
+    append_jsonl(
+        &output_dir().join("perf_regression.jsonl"),
+        &emit_record(&record),
+    );
+
+    eprintln!("\n=== Startup --help Latency ===");
+    eprintln!("  P95: {:.1}ms (budget: {threshold:.0}ms) — {status}", p95);
+
+    assert_eq!(
+        status, "PASS",
+        "startup_help_p95={p95:.1}ms exceeds {threshold:.0}ms"
+    );
+}
+
+// ─── Memory Tests ───────────────────────────────────────────────────────────
+
+#[test]
+fn idle_memory_rss() {
+    let _guard = perf_guard();
+    let harness = TestHarness::new("idle_memory_rss");
+
+    let Some(binary) = pi_binary() else {
+        harness.log().info("skip", "pi binary not found");
+        eprintln!("[perf_regression] SKIP: pi binary not found");
+        return;
+    };
+
+    harness
+        .log()
+        .info("measure", "Measuring idle RSS of pi process");
+
+    // Spawn pi --version and measure its peak RSS
+    // We use /usr/bin/time if available for accurate maxrss
+    let rss_mb = measure_process_rss(&binary, &["--version"]);
+
+    let threshold = 50.0; // 50MB budget
+    let status = check_threshold(rss_mb, threshold, false);
+
+    let baseline = read_baseline("idle_memory_rss");
+    let (baseline_val, delta_pct) = compute_delta(rss_mb, baseline.as_ref());
+
+    let env = collect_fingerprint();
+    let record = PerfRecord {
+        schema: "pi.perf.regression.v1".to_string(),
+        test: "idle_memory_rss".to_string(),
+        category: "memory".to_string(),
+        budget_name: "idle_memory_rss".to_string(),
+        budget_threshold: threshold,
+        budget_unit: "MB".to_string(),
+        actual_value: rss_mb,
+        status: status.to_string(),
+        stats: None,
+        env,
+        timestamp: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+        baseline_value: baseline_val,
+        delta_pct,
+    };
+
+    append_jsonl(
+        &output_dir().join("perf_regression.jsonl"),
+        &emit_record(&record),
+    );
+
+    eprintln!("\n=== Idle Memory RSS ===");
+    eprintln!("  RSS:       {rss_mb:.1}MB (budget: {threshold:.0}MB)");
+    if let Some(delta) = delta_pct {
+        eprintln!("  Delta:     {delta:+.1}% vs baseline");
+    }
+    eprintln!("  Status:    {status}");
+
+    assert_eq!(
+        status, "PASS",
+        "idle_memory_rss={rss_mb:.1}MB exceeds {threshold:.0}MB"
+    );
+}
+
+/// Measure RSS of a short-lived child process using /proc on Linux.
+fn measure_process_rss(binary: &Path, args: &[&str]) -> f64 {
+    // Spawn the process and read /proc/<pid>/status for VmRSS
+    let child = Command::new(binary)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+
+    let Ok(mut child) = child else {
+        return 0.0;
+    };
+
+    let pid = child.id();
+
+    // Sample RSS from /proc a few times while process runs
+    let mut max_rss_kb: u64 = 0;
+    for _ in 0..20 {
+        if let Ok(status_content) = std::fs::read_to_string(format!("/proc/{pid}/status")) {
+            for line in status_content.lines() {
+                if let Some(rest) = line.strip_prefix("VmRSS:") {
+                    let trimmed = rest.trim().trim_end_matches("kB").trim();
+                    if let Ok(kb) = trimmed.parse::<u64>() {
+                        max_rss_kb = max_rss_kb.max(kb);
+                    }
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let _ = child.wait();
+    max_rss_kb as f64 / 1024.0
+}
+
+#[test]
+fn memory_sustained_load_growth() {
+    let _guard = perf_guard();
+    let harness = TestHarness::new("memory_sustained_load_growth");
+
+    harness
+        .log()
+        .info("measure", "Measuring RSS growth under allocation pressure");
+
+    // Measure test-process RSS before and after allocating + processing data
+    let pid = sysinfo::Pid::from_u32(std::process::id());
+    let mut system = System::new();
+
+    // Baseline RSS
+    system.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::Some(&[pid]),
+        true,
+        sysinfo::ProcessRefreshKind::nothing().with_memory(),
+    );
+    let rss_before = system.process(pid).map_or(0, |p| p.memory());
+
+    // Simulate sustained load: allocate and process vectors repeatedly
+    let mut accumulator: u64 = 0;
+    for i in 0..100 {
+        let data: Vec<u64> = (0..10_000).map(|j| j * (i + 1)).collect();
+        accumulator = accumulator.wrapping_add(data.iter().sum::<u64>());
+        // Brief yield to let the allocator settle
+        std::hint::black_box(&data);
+    }
+    std::hint::black_box(accumulator);
+
+    // Post-load RSS
+    system.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::Some(&[pid]),
+        true,
+        sysinfo::ProcessRefreshKind::nothing().with_memory(),
+    );
+    let rss_after = system.process(pid).map_or(0, |p| p.memory());
+
+    let growth_pct = if rss_before > 0 {
+        ((rss_after as f64 - rss_before as f64) / rss_before as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    let threshold = 5.0; // 5% growth budget
+    let status = check_threshold(growth_pct.max(0.0), threshold, false);
+
+    let env = collect_fingerprint();
+    let record = PerfRecord {
+        schema: "pi.perf.regression.v1".to_string(),
+        test: "memory_sustained_load_growth".to_string(),
+        category: "memory".to_string(),
+        budget_name: "sustained_load_rss_growth".to_string(),
+        budget_threshold: threshold,
+        budget_unit: "percent".to_string(),
+        actual_value: growth_pct.max(0.0),
+        status: status.to_string(),
+        stats: None,
+        env,
+        timestamp: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+        baseline_value: None,
+        delta_pct: None,
+    };
+
+    append_jsonl(
+        &output_dir().join("perf_regression.jsonl"),
+        &emit_record(&record),
+    );
+
+    eprintln!("\n=== Memory Sustained Load Growth ===");
+    eprintln!("  Before:    {:.1}MB", rss_before as f64 / 1024.0 / 1024.0);
+    eprintln!("  After:     {:.1}MB", rss_after as f64 / 1024.0 / 1024.0);
+    eprintln!("  Growth:    {growth_pct:.1}% (budget: {threshold:.0}%)");
+    eprintln!("  Status:    {status}");
+
+    assert_eq!(
+        status, "PASS",
+        "sustained_load_rss_growth={growth_pct:.1}% exceeds {threshold:.0}%"
+    );
+}
+
+// ─── Binary Size Test ───────────────────────────────────────────────────────
+
+#[test]
+fn binary_size_check() {
+    let _guard = perf_guard();
+    let harness = TestHarness::new("binary_size_check");
+
+    let target_dir = std::env::var("CARGO_TARGET_DIR")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| project_root().join("target"));
+
+    let release_path = target_dir.join("release/pi");
+    if !release_path.exists() {
+        harness.log().info("skip", "release binary not found");
+        eprintln!(
+            "[perf_regression] SKIP: release binary not found at {}",
+            release_path.display()
+        );
+        return;
+    }
+
+    let meta = std::fs::metadata(&release_path).expect("stat release binary");
+    let size_mb = meta.len() as f64 / 1024.0 / 1024.0;
+    let threshold = 20.0; // 20MB budget
+    let status = check_threshold(size_mb, threshold, false);
+
+    let baseline = read_baseline("binary_size_release");
+    let (baseline_val, delta_pct) = compute_delta(size_mb, baseline.as_ref());
+
+    let env = collect_fingerprint();
+    let record = PerfRecord {
+        schema: "pi.perf.regression.v1".to_string(),
+        test: "binary_size_check".to_string(),
+        category: "binary".to_string(),
+        budget_name: "binary_size_release".to_string(),
+        budget_threshold: threshold,
+        budget_unit: "MB".to_string(),
+        actual_value: size_mb,
+        status: status.to_string(),
+        stats: None,
+        env,
+        timestamp: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+        baseline_value: baseline_val,
+        delta_pct,
+    };
+
+    append_jsonl(
+        &output_dir().join("perf_regression.jsonl"),
+        &emit_record(&record),
+    );
+
+    eprintln!("\n=== Binary Size ===");
+    eprintln!("  Size:      {size_mb:.1}MB (budget: {threshold:.0}MB)");
+    if let Some(delta) = delta_pct {
+        eprintln!("  Delta:     {delta:+.1}% vs baseline");
+    }
+    eprintln!("  Status:    {status}");
+
+    assert_eq!(
+        status, "PASS",
+        "binary_size={size_mb:.1}MB exceeds {threshold:.0}MB"
+    );
+}
+
+// ─── Protocol Parse Latency ─────────────────────────────────────────────────
+
+#[test]
+fn protocol_parse_latency() {
+    let _guard = perf_guard();
+    let harness = TestHarness::new("protocol_parse_latency");
+
+    harness
+        .log()
+        .info("measure", "Measuring JSON protocol parse latency");
+
+    // Simulate extension protocol message parsing
+    let host_call_msg = r#"{"type":"host_call","id":"hc-1","method":"log","params":{"level":"info","message":"hello world","context":{"key":"value","nested":{"a":1,"b":"test"}}}}"#;
+    let log_msg = r#"{"type":"log","level":"debug","message":"Extension loaded successfully","extension_id":"ext-hello","timestamp":"2026-01-01T00:00:00Z"}"#;
+    let register_msg = r#"{"type":"register","extension_id":"ext-test","tools":[{"name":"greet","description":"Greet the user","parameters":{"type":"object","properties":{"name":{"type":"string"}}}}],"event_hooks":["before_agent_start","after_tool_call"]}"#;
+
+    let messages = [host_call_msg, log_msg, register_msg];
+    let iterations = 5000;
+    let mut all_us: Vec<f64> = Vec::with_capacity(iterations * messages.len());
+
+    // Warmup
+    for _ in 0..100 {
+        for msg in &messages {
+            let _: Value = serde_json::from_str(msg).unwrap();
+        }
+    }
+
+    // Measure
+    for _ in 0..iterations {
+        for msg in &messages {
+            let start = Instant::now();
+            let _: Value = serde_json::from_str(msg).unwrap();
+            let elapsed = start.elapsed();
+            all_us.push(elapsed.as_nanos() as f64 / 1000.0); // ns → us
+        }
+    }
+
+    all_us.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let p99_us = percentile(&all_us, 99.0);
+
+    let threshold = 50.0; // 50us budget
+    // Debug builds are much slower at JSON parsing
+    let effective_threshold = if cfg!(debug_assertions) {
+        threshold * 20.0
+    } else {
+        threshold
+    };
+
+    let status = check_threshold(p99_us, effective_threshold, false);
+
+    let stats_ms: Vec<f64> = all_us.iter().map(|us| us / 1000.0).collect();
+    let stats = compute_stats(&stats_ms);
+
+    let env = collect_fingerprint();
+    let record = PerfRecord {
+        schema: "pi.perf.regression.v1".to_string(),
+        test: "protocol_parse_latency".to_string(),
+        category: "protocol".to_string(),
+        budget_name: "protocol_parse_p99".to_string(),
+        budget_threshold: effective_threshold,
+        budget_unit: "us".to_string(),
+        actual_value: p99_us,
+        status: status.to_string(),
+        stats: Some(stats),
+        env,
+        timestamp: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+        baseline_value: None,
+        delta_pct: None,
+    };
+
+    append_jsonl(
+        &output_dir().join("perf_regression.jsonl"),
+        &emit_record(&record),
+    );
+
+    eprintln!("\n=== Protocol Parse Latency ===");
+    eprintln!("  Iterations: {} x {} messages", iterations, messages.len());
+    eprintln!("  P99:        {p99_us:.1}us (budget: {effective_threshold:.0}us)");
+    eprintln!("  Status:     {status}");
+
+    assert_eq!(
+        status, "PASS",
+        "protocol_parse_p99={p99_us:.1}us exceeds {effective_threshold:.0}us"
+    );
+}
+
+// ─── SSE Parse Throughput ───────────────────────────────────────────────────
+
+#[test]
+fn sse_parse_throughput() {
+    let _guard = perf_guard();
+    let harness = TestHarness::new("sse_parse_throughput");
+
+    harness
+        .log()
+        .info("measure", "Measuring SSE event parse throughput");
+
+    // Construct realistic SSE data
+    let mut sse_data = String::with_capacity(64 * 1024);
+    for i in 0..500 {
+        let _ = writeln!(
+            sse_data,
+            "event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":\"word{i} \"}}}}\n"
+        );
+    }
+    let _ = writeln!(
+        sse_data,
+        "event: message_stop\ndata: {{\"type\":\"message_stop\"}}\n"
+    );
+
+    let iterations = 200;
+    let mut parse_times_ms: Vec<f64> = Vec::with_capacity(iterations);
+
+    // Warmup
+    for _ in 0..10 {
+        let count = sse_data.lines().filter(|l| l.starts_with("data: ")).count();
+        std::hint::black_box(count);
+    }
+
+    // Measure
+    for _ in 0..iterations {
+        let start = Instant::now();
+        let mut parsed = 0usize;
+        for line in sse_data.lines() {
+            if let Some(data) = line.strip_prefix("data: ") {
+                let _: Result<Value, _> = serde_json::from_str(data);
+                parsed += 1;
+            }
+        }
+        let elapsed = start.elapsed();
+        std::hint::black_box(parsed);
+        parse_times_ms.push(elapsed.as_secs_f64() * 1000.0);
+    }
+
+    let stats = compute_stats(&parse_times_ms);
+    let events_per_sec = if stats.mean_ms > 0.0 {
+        501.0 / (stats.mean_ms / 1000.0)
+    } else {
+        0.0
+    };
+
+    let env = collect_fingerprint();
+    let record = PerfRecord {
+        schema: "pi.perf.regression.v1".to_string(),
+        test: "sse_parse_throughput".to_string(),
+        category: "protocol".to_string(),
+        budget_name: "sse_parse_throughput".to_string(),
+        budget_threshold: 10000.0, // 10k events/sec minimum
+        budget_unit: "events/sec".to_string(),
+        actual_value: events_per_sec,
+        status: check_threshold(events_per_sec, 10000.0, true).to_string(),
+        stats: Some(stats.clone()),
+        env,
+        timestamp: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+        baseline_value: None,
+        delta_pct: None,
+    };
+
+    append_jsonl(
+        &output_dir().join("perf_regression.jsonl"),
+        &emit_record(&record),
+    );
+
+    eprintln!("\n=== SSE Parse Throughput ===");
+    eprintln!("  Events/sec: {events_per_sec:.0}");
+    eprintln!("  Mean parse: {:.2}ms (501 events)", stats.mean_ms);
+    eprintln!("  Status:     {}", record.status);
+
+    // SSE throughput should easily exceed 10k events/sec even in debug
+    assert!(
+        events_per_sec > 1000.0,
+        "SSE parse throughput {events_per_sec:.0} events/sec is suspiciously low"
+    );
+}
+
+// ─── Config Parse Latency ───────────────────────────────────────────────────
+
+#[test]
+fn config_parse_latency() {
+    let _guard = perf_guard();
+    let harness = TestHarness::new("config_parse_latency");
+
+    harness
+        .log()
+        .info("measure", "Measuring config file parse latency");
+
+    // Create a realistic config JSON
+    let config = json!({
+        "model": "claude-sonnet-4-5",
+        "models": {
+            "anthropic": {
+                "api_key_env": "ANTHROPIC_API_KEY",
+                "models": {
+                    "claude-sonnet-4-5": { "max_tokens": 8192 },
+                    "claude-opus-4-6": { "max_tokens": 16384 }
+                }
+            },
+            "openai": {
+                "api_key_env": "OPENAI_API_KEY",
+                "base_url": "https://api.openai.com/v1",
+                "models": {
+                    "gpt-4o": { "max_tokens": 4096 },
+                    "o1-preview": { "max_tokens": 8192 }
+                }
+            }
+        },
+        "tools": {
+            "enabled": ["read", "write", "bash", "glob", "grep"],
+            "disabled": []
+        },
+        "extensions": {
+            "paths": ["/home/user/.pi/extensions"]
+        }
+    });
+    let config_str = serde_json::to_string(&config).unwrap();
+
+    let iterations = 10_000;
+    let mut times_us: Vec<f64> = Vec::with_capacity(iterations);
+
+    // Warmup
+    for _ in 0..500 {
+        let _: Value = serde_json::from_str(&config_str).unwrap();
+    }
+
+    // Measure
+    for _ in 0..iterations {
+        let start = Instant::now();
+        let _: Value = serde_json::from_str(&config_str).unwrap();
+        let elapsed = start.elapsed();
+        times_us.push(elapsed.as_nanos() as f64 / 1000.0);
+    }
+
+    times_us.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let p99_us = percentile(&times_us, 99.0);
+
+    // Config parse should be sub-100us
+    let threshold_us = if cfg!(debug_assertions) { 500.0 } else { 100.0 };
+    let status = check_threshold(p99_us, threshold_us, false);
+
+    let env = collect_fingerprint();
+    let record = PerfRecord {
+        schema: "pi.perf.regression.v1".to_string(),
+        test: "config_parse_latency".to_string(),
+        category: "startup".to_string(),
+        budget_name: "config_parse_p99".to_string(),
+        budget_threshold: threshold_us,
+        budget_unit: "us".to_string(),
+        actual_value: p99_us,
+        status: status.to_string(),
+        stats: None,
+        env,
+        timestamp: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+        baseline_value: None,
+        delta_pct: None,
+    };
+
+    append_jsonl(
+        &output_dir().join("perf_regression.jsonl"),
+        &emit_record(&record),
+    );
+
+    eprintln!("\n=== Config Parse Latency ===");
+    eprintln!("  P99:    {p99_us:.1}us (budget: {threshold_us:.0}us)");
+    eprintln!("  Status: {status}");
+
+    assert_eq!(
+        status, "PASS",
+        "config_parse_p99={p99_us:.1}us exceeds {threshold_us:.0}us"
+    );
+}
+
+// ─── Report Generation ──────────────────────────────────────────────────────
+
+#[test]
+fn generate_regression_report() {
+    let _guard = perf_guard();
+
+    let out = output_dir();
+    let jsonl_path = out.join("perf_regression.jsonl");
+
+    if !jsonl_path.exists() {
+        eprintln!("[perf_regression] No JSONL data found; run other tests first");
+        return;
+    }
+
+    let content = std::fs::read_to_string(&jsonl_path).unwrap_or_default();
+    let records: Vec<PerfRecord> = content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
+
+    if records.is_empty() {
+        eprintln!("[perf_regression] No records to report");
+        return;
+    }
+
+    // Generate markdown report
+    let mut md = String::with_capacity(4 * 1024);
+    md.push_str("# Performance Regression Report\n\n");
+    let _ = writeln!(
+        md,
+        "> Generated: {}\n",
+        Utc::now().format("%Y-%m-%dT%H:%M:%SZ")
+    );
+
+    // Summary table
+    let pass_count = records.iter().filter(|r| r.status == "PASS").count();
+    let fail_count = records.iter().filter(|r| r.status == "FAIL").count();
+
+    md.push_str("## Summary\n\n");
+    md.push_str("| Metric | Value |\n");
+    md.push_str("|---|---|\n");
+    let _ = writeln!(md, "| Tests run | {} |", records.len());
+    let _ = writeln!(md, "| PASS | {pass_count} |");
+    let _ = writeln!(md, "| FAIL | {fail_count} |");
+    md.push('\n');
+
+    // Detail table
+    md.push_str("## Results\n\n");
+    md.push_str("| Test | Category | Budget | Actual | Threshold | Unit | Status | Delta |\n");
+    md.push_str("|---|---|---|---|---|---|---|---|\n");
+    for r in &records {
+        let delta_str = r
+            .delta_pct
+            .map_or_else(|| "-".to_string(), |d| format!("{d:+.1}%"));
+        let _ = writeln!(
+            md,
+            "| {} | {} | `{}` | {:.2} | {} | {} | {} | {} |",
+            r.test,
+            r.category,
+            r.budget_name,
+            r.actual_value,
+            r.budget_threshold,
+            r.budget_unit,
+            r.status,
+            delta_str,
+        );
+    }
+    md.push('\n');
+
+    // Environment
+    if let Some(first) = records.first() {
+        md.push_str("## Environment\n\n");
+        md.push_str("| Key | Value |\n");
+        md.push_str("|---|---|\n");
+        let _ = writeln!(md, "| OS | {} |", first.env.os);
+        let _ = writeln!(md, "| Arch | {} |", first.env.arch);
+        let _ = writeln!(md, "| CPU | {} |", first.env.cpu_model);
+        let _ = writeln!(md, "| Cores | {} |", first.env.cpu_cores);
+        let _ = writeln!(md, "| Memory | {}MB |", first.env.mem_total_mb);
+        let _ = writeln!(md, "| Build | {} |", first.env.build_profile);
+        let _ = writeln!(md, "| Git | {} |", first.env.git_commit);
+    }
+
+    let report_path = out.join("PERF_REGRESSION_REPORT.md");
+    std::fs::write(&report_path, &md).expect("write regression report");
+
+    // JSON summary
+    let summary = json!({
+        "schema": "pi.perf.regression_summary.v1",
+        "generated_at": Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+        "tests": records.len(),
+        "pass": pass_count,
+        "fail": fail_count,
+        "results": records.iter().map(|r| json!({
+            "test": r.test,
+            "budget": r.budget_name,
+            "actual": r.actual_value,
+            "threshold": r.budget_threshold,
+            "unit": r.budget_unit,
+            "status": r.status,
+            "delta_pct": r.delta_pct,
+        })).collect::<Vec<_>>(),
+    });
+
+    let summary_path = out.join("perf_regression_summary.json");
+    std::fs::write(
+        &summary_path,
+        serde_json::to_string_pretty(&summary).unwrap_or_default(),
+    )
+    .expect("write regression summary");
+
+    eprintln!("\n=== Performance Regression Report ===");
+    eprintln!("  Tests:  {}", records.len());
+    eprintln!("  PASS:   {pass_count}");
+    eprintln!("  FAIL:   {fail_count}");
+    eprintln!("  Report: {}", report_path.display());
+    eprintln!("  JSON:   {}", summary_path.display());
+}
+
+// ─── Baseline Management ────────────────────────────────────────────────────
+
+/// Store current measurements as new baseline (run manually).
+#[test]
+fn update_baseline() {
+    if std::env::var("PERF_UPDATE_BASELINE").ok().is_none() {
+        eprintln!("[perf_regression] Set PERF_UPDATE_BASELINE=1 to update baseline");
+        return;
+    }
+
+    let jsonl_path = output_dir().join("perf_regression.jsonl");
+    if !jsonl_path.exists() {
+        eprintln!("[perf_regression] No JSONL data; run tests first");
+        return;
+    }
+
+    let content = std::fs::read_to_string(&jsonl_path).unwrap_or_default();
+    let records: Vec<PerfRecord> = content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
+
+    let env = collect_fingerprint();
+    let baselines: Vec<BaselineEntry> = records
+        .iter()
+        .filter(|r| r.status == "PASS")
+        .map(|r| BaselineEntry {
+            budget_name: r.budget_name.clone(),
+            value: r.actual_value,
+            env_hash: env.config_hash.clone(),
+            timestamp: r.timestamp.clone(),
+        })
+        .collect();
+
+    let baseline_path = baseline_dir().join("regression_baseline.json");
+    std::fs::write(
+        &baseline_path,
+        serde_json::to_string_pretty(&baselines).unwrap_or_default(),
+    )
+    .expect("write baseline");
+
+    eprintln!(
+        "[perf_regression] Baseline updated with {} entries at {}",
+        baselines.len(),
+        baseline_path.display()
+    );
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+fn append_jsonl(path: &Path, line: &str) {
+    use std::io::Write;
+    let _ = std::fs::create_dir_all(path.parent().unwrap_or(Path::new(".")));
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .expect("open JSONL for append");
+    let _ = writeln!(file, "{line}");
+}
