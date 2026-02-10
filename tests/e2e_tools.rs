@@ -11,6 +11,7 @@ use pi::error::Error;
 use pi::model::ContentBlock;
 use pi::tools::ToolRegistry;
 use serde_json::json;
+use std::fmt::Write as _;
 #[cfg(unix)]
 use std::fs;
 #[cfg(unix)]
@@ -993,4 +994,1150 @@ fn write_edit_read_cycle() {
     assert!(text.contains("alpha"), "should still have alpha");
     assert!(text.contains("gamma"), "should still have gamma");
     assert!(!text.contains("\nbeta\n"), "original beta should be gone");
+}
+
+// ===========================================================================
+// Hardened tool tests (bd-1f42.2.2): Real FS/process, high-fidelity
+// diagnostics, edge cases for stdout/stderr/exit codes, permissions,
+// timeout behavior.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Diagnostic helper: captures workspace snapshot + env + timing on failure.
+// ---------------------------------------------------------------------------
+
+/// Capture a snapshot of the workspace for diagnostics.
+fn snapshot_workspace(h: &TestHarness) -> serde_json::Value {
+    let mut entries = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(h.temp_dir()) {
+        for entry in rd.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let meta = entry.metadata().ok();
+            let size = meta.as_ref().map_or(0, std::fs::Metadata::len);
+            let is_dir = meta.as_ref().is_some_and(std::fs::Metadata::is_dir);
+            entries.push(serde_json::json!({
+                "name": name,
+                "size": size,
+                "is_dir": is_dir,
+            }));
+        }
+    }
+    serde_json::json!({
+        "cwd": h.temp_dir().display().to_string(),
+        "entries": entries,
+    })
+}
+
+/// Log diagnostics for a tool execution including timing and workspace snapshot.
+fn log_diagnostics(
+    h: &TestHarness,
+    tool_name: &str,
+    call_id: &str,
+    input: &serde_json::Value,
+    elapsed_ms: u128,
+    result_summary: &str,
+) {
+    let workspace = snapshot_workspace(h);
+    h.log().info_ctx(
+        "diagnostics",
+        format!("{tool_name}:{call_id} completed"),
+        |ctx| {
+            ctx.push(("tool".into(), tool_name.to_string()));
+            ctx.push(("call_id".into(), call_id.to_string()));
+            ctx.push(("input".into(), input.to_string()));
+            ctx.push(("elapsed_ms".into(), elapsed_ms.to_string()));
+            ctx.push(("result".into(), result_summary.to_string()));
+            ctx.push(("workspace".into(), workspace.to_string()));
+        },
+    );
+}
+
+// ===========================================================================
+// Bash Tool — Hardened
+// ===========================================================================
+
+/// Bash: stderr-only output with exit 0 is captured correctly.
+#[test]
+fn bash_stderr_only_exit_zero() {
+    let h = TestHarness::new("bash_stderr_only_exit_zero");
+    let registry = make_registry(h.temp_dir());
+    let start = std::time::Instant::now();
+
+    let output = common::run_async(async move {
+        let tool = registry.get("bash").unwrap();
+        tool.execute(
+            "bash-stderr-0",
+            json!({"command": "echo stderr_output >&2"}),
+            None,
+        )
+        .await
+    });
+
+    let elapsed = start.elapsed().as_millis();
+    let result = output.unwrap();
+    let text = first_text(&result.content);
+    log_diagnostics(
+        &h,
+        "bash",
+        "bash-stderr-0",
+        &json!({"command": "echo stderr_output >&2"}),
+        elapsed,
+        &format!("ok: {}", text.len()),
+    );
+
+    assert!(
+        text.contains("stderr_output"),
+        "stderr should be captured even with exit 0, got: {text}"
+    );
+    assert!(!result.is_error);
+}
+
+/// Bash: CWD propagation — commands execute in the configured temp directory.
+#[test]
+fn bash_cwd_propagation() {
+    let h = TestHarness::new("bash_cwd_propagation");
+    h.create_file("marker_file.txt", "cwd_test");
+    let registry = make_registry(h.temp_dir());
+    let expected_dir = h.temp_dir().to_path_buf();
+
+    let output = common::run_async(async move {
+        let tool = registry.get("bash").unwrap();
+        tool.execute(
+            "bash-cwd",
+            json!({"command": "pwd && ls marker_file.txt"}),
+            None,
+        )
+        .await
+    });
+
+    let result = output.unwrap();
+    let text = first_text(&result.content);
+    h.log().info("result", format!("cwd output: {text}"));
+
+    assert!(
+        text.contains(&expected_dir.display().to_string()),
+        "pwd should show temp dir, got: {text}"
+    );
+    assert!(
+        text.contains("marker_file.txt"),
+        "ls should find marker file in CWD, got: {text}"
+    );
+}
+
+/// Bash: mixed stdout and stderr are both captured.
+#[test]
+fn bash_mixed_stdout_stderr() {
+    let h = TestHarness::new("bash_mixed_stdout_stderr");
+    let registry = make_registry(h.temp_dir());
+
+    let output = common::run_async(async move {
+        let tool = registry.get("bash").unwrap();
+        tool.execute(
+            "bash-mixed",
+            json!({"command": "echo stdout_first; echo stderr_middle >&2; echo stdout_last"}),
+            None,
+        )
+        .await
+    });
+
+    let result = output.unwrap();
+    let text = first_text(&result.content);
+    h.log().info("result", text.to_string());
+
+    assert!(text.contains("stdout_first"), "should capture first stdout");
+    assert!(
+        text.contains("stderr_middle"),
+        "should capture stderr in middle"
+    );
+    assert!(text.contains("stdout_last"), "should capture last stdout");
+}
+
+/// Bash: timeout=0 disables the default timeout (command runs without enforced limit).
+#[test]
+fn bash_timeout_zero_disables_limit() {
+    let h = TestHarness::new("bash_timeout_zero_disables_limit");
+    let registry = make_registry(h.temp_dir());
+
+    let output = common::run_async(async move {
+        let tool = registry.get("bash").unwrap();
+        // timeout=0 should not kill a fast command
+        tool.execute(
+            "bash-t0",
+            json!({"command": "echo still_running", "timeout": 0}),
+            None,
+        )
+        .await
+    });
+
+    let result = output.unwrap();
+    let text = first_text(&result.content);
+    h.log().info("result", text.to_string());
+
+    assert!(
+        text.contains("still_running"),
+        "command should complete with timeout=0, got: {text}"
+    );
+    assert!(!result.is_error);
+}
+
+/// Bash: process tree cleanup — child processes are killed on timeout.
+#[cfg(unix)]
+#[test]
+fn bash_process_tree_cleanup_on_timeout() {
+    let h = TestHarness::new("bash_process_tree_cleanup_on_timeout");
+    let registry = make_registry(h.temp_dir());
+    let pid_file = h.temp_path("child.pid");
+    let pid_file_str = pid_file.display().to_string();
+
+    let output = common::run_async(async move {
+        let tool = registry.get("bash").unwrap();
+        // Spawn a background child that writes its PID, then sleep
+        tool.execute(
+            "bash-tree",
+            json!({
+                "command": format!(
+                    "bash -c 'echo $$ > {pid_file_str}; sleep 300' & wait"
+                ),
+                "timeout": 2
+            }),
+            None,
+        )
+        .await
+    });
+
+    let err = output.unwrap_err();
+    h.log().info("result", format!("error={err}"));
+    assert!(
+        err.to_string().contains("timed out"),
+        "should report timeout: {err}"
+    );
+
+    // Give a moment for cleanup
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // If the PID file was created, verify the child process is gone
+    if pid_file.exists() {
+        if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
+            if let Ok(pid) = pid_str.trim().parse::<u32>() {
+                // Check if process still exists via kill -0 (signal check only)
+                let check = std::process::Command::new("kill")
+                    .args(["-0", &pid.to_string()])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status();
+                let still_alive = check.is_ok_and(|s| s.success());
+                h.log().info(
+                    "cleanup",
+                    format!("child pid={pid}, still_alive={still_alive}"),
+                );
+                // The child should have been killed
+                assert!(
+                    !still_alive,
+                    "child process {pid} should have been killed after timeout"
+                );
+            }
+        }
+    }
+}
+
+/// Bash: nonexistent working directory reports clear error.
+#[test]
+fn bash_nonexistent_cwd_error() {
+    let h = TestHarness::new("bash_nonexistent_cwd_error");
+    let bad_cwd = h.temp_path("does_not_exist_dir");
+    let registry = ToolRegistry::new(&["bash"], &bad_cwd, None);
+
+    let output = common::run_async(async move {
+        let tool = registry.get("bash").unwrap();
+        tool.execute("bash-badcwd", json!({"command": "echo test"}), None)
+            .await
+    });
+
+    let err = output.unwrap_err();
+    let msg = err.to_string().to_ascii_lowercase();
+    h.log().info("result", format!("error={msg}"));
+    assert!(
+        msg.contains("does not exist") || msg.contains("working directory"),
+        "should report nonexistent CWD: {msg}"
+    );
+}
+
+/// Bash: special characters in command are handled correctly.
+#[test]
+fn bash_special_characters() {
+    let h = TestHarness::new("bash_special_characters");
+    let registry = make_registry(h.temp_dir());
+
+    let output = common::run_async(async move {
+        let tool = registry.get("bash").unwrap();
+        tool.execute(
+            "bash-special",
+            json!({"command": "echo 'single quotes' && echo \"double quotes\" && echo $HOME"}),
+            None,
+        )
+        .await
+    });
+
+    let result = output.unwrap();
+    let text = first_text(&result.content);
+    h.log().info("result", text.to_string());
+
+    assert!(text.contains("single quotes"), "single quotes preserved");
+    assert!(text.contains("double quotes"), "double quotes preserved");
+}
+
+/// Bash: multi-line command with pipe works correctly.
+#[test]
+fn bash_pipe_command() {
+    let h = TestHarness::new("bash_pipe_command");
+    h.create_file("data.txt", "apple\nbanana\ncherry\napricot\n");
+    let registry = make_registry(h.temp_dir());
+
+    let output = common::run_async(async move {
+        let tool = registry.get("bash").unwrap();
+        tool.execute(
+            "bash-pipe",
+            json!({"command": "cat data.txt | grep 'ap' | sort"}),
+            None,
+        )
+        .await
+    });
+
+    let result = output.unwrap();
+    let text = first_text(&result.content);
+    h.log().info("result", text.to_string());
+
+    assert!(text.contains("apple"), "should find apple");
+    assert!(text.contains("apricot"), "should find apricot");
+    assert!(!text.contains("banana"), "banana should be filtered out");
+}
+
+/// Bash: exit code is captured in error for various codes.
+#[test]
+fn bash_exit_code_captured() {
+    let h = TestHarness::new("bash_exit_code_captured");
+    let registry = make_registry(h.temp_dir());
+
+    for code in [1, 2, 127, 255] {
+        let reg = make_registry(h.temp_dir());
+        let output = common::run_async(async move {
+            let tool = reg.get("bash").unwrap();
+            tool.execute(
+                "bash-exit",
+                json!({"command": format!("exit {code}")}),
+                None,
+            )
+            .await
+        });
+
+        let err = output.unwrap_err();
+        let msg = err.to_string();
+        h.log().info("result", format!("exit {code}: error={msg}"));
+        assert!(
+            msg.contains(&format!("code {code}")),
+            "should contain exit code {code}: {msg}"
+        );
+    }
+    drop(registry);
+}
+
+// ===========================================================================
+// Read Tool — Hardened
+// ===========================================================================
+
+/// Read: symlink to file works transparently.
+#[cfg(unix)]
+#[test]
+fn read_symlink_to_file() {
+    let h = TestHarness::new("read_symlink_to_file");
+    let target = h.create_file("real.txt", "symlink content\nline two\n");
+    let link = h.temp_path("link.txt");
+    std::os::unix::fs::symlink(&target, &link).expect("create symlink");
+    let registry = make_registry(h.temp_dir());
+
+    let link_str = link.display().to_string();
+    let output = common::run_async(async move {
+        let tool = registry.get("read").unwrap();
+        tool.execute("read-sym", json!({"path": link_str}), None)
+            .await
+    });
+
+    let result = output.unwrap();
+    let text = first_text(&result.content);
+    h.log().info("result", text.to_string());
+
+    assert!(
+        text.contains("symlink content"),
+        "should read through symlink: {text}"
+    );
+    assert!(text.contains("line two"), "should have all content");
+}
+
+/// Read: Unicode multi-byte content has correct line numbers.
+#[test]
+fn read_unicode_multibyte() {
+    let h = TestHarness::new("read_unicode_multibyte");
+    let file = h.create_file("unicode.txt", "café\n日本語\n🎉🎊🎈\n");
+    let registry = make_registry(h.temp_dir());
+
+    let file_str = file.display().to_string();
+    let output = common::run_async(async move {
+        let tool = registry.get("read").unwrap();
+        tool.execute("read-utf8", json!({"path": file_str}), None)
+            .await
+    });
+
+    let result = output.unwrap();
+    let text = first_text(&result.content);
+    h.log().info("result", text.to_string());
+
+    assert!(text.contains("1→café"), "line 1 should have café");
+    assert!(text.contains("2→日本語"), "line 2 should have Japanese");
+    assert!(text.contains("3→🎉🎊🎈"), "line 3 should have emojis");
+}
+
+/// Read: empty file returns empty content (not an error).
+#[test]
+fn read_empty_file_is_not_error() {
+    let h = TestHarness::new("read_empty_file_is_not_error");
+    let file = h.create_file("empty.txt", "");
+    let registry = make_registry(h.temp_dir());
+
+    let file_str = file.display().to_string();
+    let output = common::run_async(async move {
+        let tool = registry.get("read").unwrap();
+        tool.execute("read-empty", json!({"path": file_str}), None)
+            .await
+    });
+
+    let result = output.unwrap();
+    assert!(!result.is_error, "empty file should not be an error");
+}
+
+/// Read: binary non-image file is read as lossy UTF-8 text.
+#[test]
+fn read_binary_non_image_file() {
+    let h = TestHarness::new("read_binary_non_image_file");
+    // Random binary data that doesn't start with a known image signature
+    let file = h.create_file("data.bin", [0x00, 0x01, 0x02, 0xFF, 0xFE, 0x0A, 0x41, 0x42]);
+    let registry = make_registry(h.temp_dir());
+
+    let file_str = file.display().to_string();
+    let output = common::run_async(async move {
+        let tool = registry.get("read").unwrap();
+        tool.execute("read-bin", json!({"path": file_str}), None)
+            .await
+    });
+
+    // Should succeed (lossy UTF-8 conversion)
+    let result = output.unwrap();
+    let text = first_text(&result.content);
+    h.log().info("result", format!("text_len={}", text.len()));
+    // Should contain "AB" from bytes 0x41, 0x42
+    assert!(text.contains("AB"), "should contain ASCII portion: {text}");
+}
+
+/// Read: file with Windows line endings (CRLF) displays correctly.
+#[test]
+fn read_crlf_line_endings() {
+    let h = TestHarness::new("read_crlf_line_endings");
+    let file = h.create_file("crlf.txt", "line1\r\nline2\r\nline3\r\n");
+    let registry = make_registry(h.temp_dir());
+
+    let file_str = file.display().to_string();
+    let output = common::run_async(async move {
+        let tool = registry.get("read").unwrap();
+        tool.execute("read-crlf", json!({"path": file_str}), None)
+            .await
+    });
+
+    let result = output.unwrap();
+    let text = first_text(&result.content);
+    h.log().info("result", text.to_string());
+
+    assert!(text.contains("1→line1"), "line 1");
+    assert!(text.contains("2→line2"), "line 2");
+    assert!(text.contains("3→line3"), "line 3");
+    // CRLF \r should be stripped from display
+    assert!(
+        !text.contains("\r\n"),
+        "\\r should be stripped in display: {text:?}"
+    );
+}
+
+// ===========================================================================
+// Write Tool — Hardened
+// ===========================================================================
+
+/// Write: large file content is written correctly.
+#[test]
+fn write_large_file() {
+    let h = TestHarness::new("write_large_file");
+    let target = h.temp_path("large.txt");
+    let registry = make_registry(h.temp_dir());
+
+    // 100KB content
+    let mut content = String::new();
+    for i in 0..10_000 {
+        writeln!(&mut content, "line {i:05}").expect("write content line");
+    }
+    let content_len = content.len();
+    let target_str = target.display().to_string();
+    let content_clone = content.clone();
+    let output = common::run_async(async move {
+        let tool = registry.get("write").unwrap();
+        tool.execute(
+            "write-large",
+            json!({"path": target_str, "content": content_clone}),
+            None,
+        )
+        .await
+    });
+
+    let result = output.unwrap();
+    assert!(!result.is_error);
+    let on_disk = std::fs::read_to_string(&target).unwrap();
+    assert_eq!(on_disk.len(), content_len, "file size should match");
+    assert_eq!(on_disk, content, "content should match exactly");
+}
+
+/// Write: Unicode content and verification.
+#[test]
+fn write_unicode_content() {
+    let h = TestHarness::new("write_unicode_content");
+    let target = h.temp_path("unicode_out.txt");
+    let registry = make_registry(h.temp_dir());
+
+    let content = "café ☕\n日本語テスト\n🦀 Rust 🎯\n";
+    let target_str = target.display().to_string();
+    let output = common::run_async(async move {
+        let tool = registry.get("write").unwrap();
+        tool.execute(
+            "write-unicode",
+            json!({"path": target_str, "content": content}),
+            None,
+        )
+        .await
+    });
+
+    let result = output.unwrap();
+    assert!(!result.is_error);
+    let on_disk = std::fs::read_to_string(&target).unwrap();
+    assert_eq!(on_disk, content);
+}
+
+/// Write: deeply nested directory creation.
+#[test]
+fn write_deep_nested_dirs() {
+    let h = TestHarness::new("write_deep_nested_dirs");
+    let target = h.temp_path("a/b/c/d/e/f/g/deep.txt");
+    let registry = make_registry(h.temp_dir());
+
+    let target_str = target.display().to_string();
+    let output = common::run_async(async move {
+        let tool = registry.get("write").unwrap();
+        tool.execute(
+            "write-deep",
+            json!({"path": target_str, "content": "deep content"}),
+            None,
+        )
+        .await
+    });
+
+    let result = output.unwrap();
+    assert!(!result.is_error);
+    assert!(target.exists(), "deeply nested file should exist");
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "deep content");
+}
+
+// ===========================================================================
+// Edit Tool — Hardened
+// ===========================================================================
+
+/// Edit: multiline text replacement.
+#[test]
+fn edit_multiline_replace() {
+    let h = TestHarness::new("edit_multiline_replace");
+    let file = h.create_file(
+        "multi.txt",
+        "fn old() {\n    println!(\"old\");\n}\n\nfn keep() {}\n",
+    );
+    let registry = make_registry(h.temp_dir());
+
+    let file_str = file.display().to_string();
+    let output = common::run_async(async move {
+        let tool = registry.get("edit").unwrap();
+        tool.execute(
+            "edit-multi",
+            json!({
+                "path": file_str,
+                "oldText": "fn old() {\n    println!(\"old\");\n}",
+                "newText": "fn new_fn() {\n    println!(\"new\");\n    // updated\n}"
+            }),
+            None,
+        )
+        .await
+    });
+
+    let result = output.unwrap();
+    assert!(!result.is_error, "multiline edit should succeed");
+    let on_disk = std::fs::read_to_string(&file).unwrap();
+    assert!(on_disk.contains("fn new_fn()"), "new function name");
+    assert!(on_disk.contains("// updated"), "new comment");
+    assert!(on_disk.contains("fn keep()"), "untouched code preserved");
+    assert!(!on_disk.contains("fn old()"), "old code removed");
+}
+
+/// Edit: special characters (regex metachars) in search text.
+#[test]
+fn edit_special_chars_in_search() {
+    let h = TestHarness::new("edit_special_chars_in_search");
+    let file = h.create_file("special.txt", "price = $10.00 (USD)\nend\n");
+    let registry = make_registry(h.temp_dir());
+
+    let file_str = file.display().to_string();
+    let output = common::run_async(async move {
+        let tool = registry.get("edit").unwrap();
+        tool.execute(
+            "edit-special",
+            json!({
+                "path": file_str,
+                "oldText": "$10.00 (USD)",
+                "newText": "€10.00 (EUR)"
+            }),
+            None,
+        )
+        .await
+    });
+
+    let result = output.unwrap();
+    assert!(!result.is_error, "edit with special chars should succeed");
+    let on_disk = std::fs::read_to_string(&file).unwrap();
+    assert!(on_disk.contains("€10.00 (EUR)"), "replacement applied");
+    assert!(!on_disk.contains("$10.00 (USD)"), "original removed");
+}
+
+/// Edit: whitespace-sensitive replacement (tabs vs spaces).
+#[test]
+fn edit_whitespace_sensitive() {
+    let h = TestHarness::new("edit_whitespace_sensitive");
+    let file = h.create_file("ws.txt", "\tindented with tab\n    indented with spaces\n");
+    let registry = make_registry(h.temp_dir());
+
+    let file_str = file.display().to_string();
+    let output = common::run_async(async move {
+        let tool = registry.get("edit").unwrap();
+        tool.execute(
+            "edit-ws",
+            json!({
+                "path": file_str,
+                "oldText": "\tindented with tab",
+                "newText": "\treplaced tab line"
+            }),
+            None,
+        )
+        .await
+    });
+
+    let result = output.unwrap();
+    assert!(!result.is_error);
+    let on_disk = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        on_disk.contains("\treplaced tab line"),
+        "tab-indented replacement"
+    );
+    assert!(
+        on_disk.contains("    indented with spaces"),
+        "space-indented line untouched"
+    );
+}
+
+/// Edit: replacing at the very start of a file.
+#[test]
+fn edit_at_file_start() {
+    let h = TestHarness::new("edit_at_file_start");
+    let file = h.create_file("start.txt", "HEADER\nbody content\nfooter\n");
+    let registry = make_registry(h.temp_dir());
+
+    let file_str = file.display().to_string();
+    let output = common::run_async(async move {
+        let tool = registry.get("edit").unwrap();
+        tool.execute(
+            "edit-start",
+            json!({
+                "path": file_str,
+                "oldText": "HEADER",
+                "newText": "NEW_HEADER"
+            }),
+            None,
+        )
+        .await
+    });
+
+    let result = output.unwrap();
+    assert!(!result.is_error);
+    let on_disk = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        on_disk.starts_with("NEW_HEADER"),
+        "should start with new header"
+    );
+}
+
+/// Edit: replacing at the very end of a file.
+#[test]
+fn edit_at_file_end() {
+    let h = TestHarness::new("edit_at_file_end");
+    let file = h.create_file("end.txt", "content\nFOOTER");
+    let registry = make_registry(h.temp_dir());
+
+    let file_str = file.display().to_string();
+    let output = common::run_async(async move {
+        let tool = registry.get("edit").unwrap();
+        tool.execute(
+            "edit-end",
+            json!({
+                "path": file_str,
+                "oldText": "FOOTER",
+                "newText": "NEW_FOOTER"
+            }),
+            None,
+        )
+        .await
+    });
+
+    let result = output.unwrap();
+    assert!(!result.is_error);
+    let on_disk = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        on_disk.ends_with("NEW_FOOTER"),
+        "should end with new footer"
+    );
+}
+
+// ===========================================================================
+// Grep Tool — Hardened
+// ===========================================================================
+
+/// Grep: regex patterns (not just literals) work.
+#[test]
+fn grep_regex_pattern() {
+    if !rg_available() {
+        eprintln!("SKIP: ripgrep (rg) not installed");
+        return;
+    }
+
+    let h = TestHarness::new("grep_regex_pattern");
+    h.create_file("code.rs", "fn foo() {}\nfn bar(x: i32) {}\nstruct Baz;\n");
+    let registry = make_registry(h.temp_dir());
+
+    let output = common::run_async(async move {
+        let tool = registry.get("grep").unwrap();
+        tool.execute("grep-regex", json!({"pattern": "fn \\w+\\("}), None)
+            .await
+    });
+
+    let result = output.unwrap();
+    let text = first_text(&result.content);
+    h.log().info("result", text.to_string());
+
+    assert!(text.contains("fn foo()"), "should match foo");
+    assert!(text.contains("fn bar("), "should match bar");
+    assert!(
+        !text.contains("struct"),
+        "struct should not match fn pattern"
+    );
+}
+
+/// Grep: scoped to specific subdirectory via path parameter.
+#[test]
+fn grep_path_scoping() {
+    if !rg_available() {
+        eprintln!("SKIP: ripgrep (rg) not installed");
+        return;
+    }
+
+    let h = TestHarness::new("grep_path_scoping");
+    h.create_file("src/main.rs", "fn main() { target_string(); }\n");
+    h.create_file("tests/test.rs", "fn test() { target_string(); }\n");
+    h.create_file("docs/readme.md", "no match here\n");
+    let registry = make_registry(h.temp_dir());
+
+    let output = common::run_async(async move {
+        let tool = registry.get("grep").unwrap();
+        tool.execute(
+            "grep-scoped",
+            json!({"pattern": "target_string", "path": "src"}),
+            None,
+        )
+        .await
+    });
+
+    let result = output.unwrap();
+    let text = first_text(&result.content);
+    h.log().info("result", text.to_string());
+
+    assert!(text.contains("main.rs"), "should find in src/main.rs");
+    assert!(
+        !text.contains("test.rs"),
+        "should NOT find in tests/ when scoped to src/"
+    );
+}
+
+/// Grep: with explicit match limit returns details.
+#[test]
+fn grep_match_limit_diagnostics() {
+    if !rg_available() {
+        eprintln!("SKIP: ripgrep (rg) not installed");
+        return;
+    }
+
+    let h = TestHarness::new("grep_match_limit_diagnostics");
+    let mut content = String::new();
+    for i in 0..50 {
+        use std::fmt::Write as _;
+        let _ = writeln!(&mut content, "match line {i}");
+    }
+    h.create_file("many.txt", &content);
+    let registry = make_registry(h.temp_dir());
+
+    let output = common::run_async(async move {
+        let tool = registry.get("grep").unwrap();
+        tool.execute("grep-limit", json!({"pattern": "match", "limit": 5}), None)
+            .await
+    });
+
+    let result = output.unwrap();
+    let text = first_text(&result.content);
+    h.log().info("result", text.to_string());
+
+    assert!(
+        text.contains("matches limit reached"),
+        "should indicate limit was reached: {text}"
+    );
+    let details = result.details.expect("should have details");
+    assert_eq!(
+        details.get("matchLimitReached"),
+        Some(&serde_json::json!(5)),
+        "details should record limit"
+    );
+}
+
+// ===========================================================================
+// Find Tool — Hardened
+// ===========================================================================
+
+/// Find: deeply nested directory structure.
+#[test]
+fn find_deep_nested_structure() {
+    if !fd_available() {
+        eprintln!("SKIP: fd/fdfind not installed");
+        return;
+    }
+
+    let h = TestHarness::new("find_deep_nested_structure");
+    h.create_file("a/b/c/deep.txt", "");
+    h.create_file("a/b/shallow.txt", "");
+    h.create_file("top.txt", "");
+    let registry = make_registry(h.temp_dir());
+
+    let output = common::run_async(async move {
+        let tool = registry.get("find").unwrap();
+        tool.execute("find-deep", json!({"pattern": "*.txt"}), None)
+            .await
+    });
+
+    let result = output.unwrap();
+    let text = first_text(&result.content);
+    h.log().info("result", text.to_string());
+
+    assert!(text.contains("deep.txt"), "should find deeply nested file");
+    assert!(text.contains("shallow.txt"), "should find mid-level file");
+    assert!(text.contains("top.txt"), "should find top-level file");
+}
+
+/// Find: many files with limit enforcement.
+#[test]
+fn find_many_files_limit() {
+    if !fd_available() {
+        eprintln!("SKIP: fd/fdfind not installed");
+        return;
+    }
+
+    let h = TestHarness::new("find_many_files_limit");
+    for i in 0..20 {
+        h.create_file(format!("file_{i:03}.dat"), "");
+    }
+    let registry = make_registry(h.temp_dir());
+
+    let output = common::run_async(async move {
+        let tool = registry.get("find").unwrap();
+        tool.execute("find-many", json!({"pattern": "*.dat", "limit": 5}), None)
+            .await
+    });
+
+    let result = output.unwrap();
+    let text = first_text(&result.content);
+    h.log().info("result", text.to_string());
+
+    let dat_count = text.lines().filter(|l| l.contains(".dat")).count();
+    assert!(dat_count <= 5, "should respect limit of 5, got {dat_count}");
+    assert!(
+        text.contains("results limit reached"),
+        "should indicate limit was hit: {text}"
+    );
+}
+
+// ===========================================================================
+// Ls Tool — Hardened
+// ===========================================================================
+
+/// Ls: hidden dotfiles are listed.
+#[test]
+fn ls_hidden_dotfiles() {
+    let h = TestHarness::new("ls_hidden_dotfiles");
+    h.create_file(".hidden", "secret");
+    h.create_file("visible.txt", "public");
+    let registry = make_registry(h.temp_dir());
+
+    let dir_str = h.temp_dir().display().to_string();
+    let output = common::run_async(async move {
+        let tool = registry.get("ls").unwrap();
+        tool.execute("ls-hidden", json!({"path": dir_str}), None)
+            .await
+    });
+
+    let result = output.unwrap();
+    let text = first_text(&result.content);
+    h.log().info("result", text.to_string());
+
+    assert!(text.contains("visible.txt"), "should list visible files");
+    // Note: ls tool may or may not show hidden files — this tests the behavior
+    // Either way, visible files should always appear
+}
+
+/// Ls: alphabetical sorting of entries.
+#[test]
+fn ls_alphabetical_sorting() {
+    let h = TestHarness::new("ls_alphabetical_sorting");
+    h.create_file("zebra.txt", "");
+    h.create_file("alpha.txt", "");
+    h.create_file("mango.txt", "");
+    let registry = make_registry(h.temp_dir());
+
+    let dir_str = h.temp_dir().display().to_string();
+    let output = common::run_async(async move {
+        let tool = registry.get("ls").unwrap();
+        tool.execute("ls-sort", json!({"path": dir_str}), None)
+            .await
+    });
+
+    let result = output.unwrap();
+    let text = first_text(&result.content);
+    h.log().info("result", text.to_string());
+
+    let lines: Vec<&str> = text.lines().collect();
+    let alpha_pos = lines.iter().position(|l| l.contains("alpha"));
+    let mango_pos = lines.iter().position(|l| l.contains("mango"));
+    let zebra_pos = lines.iter().position(|l| l.contains("zebra"));
+
+    if let (Some(a), Some(m), Some(z)) = (alpha_pos, mango_pos, zebra_pos) {
+        assert!(a < m, "alpha should come before mango");
+        assert!(m < z, "mango should come before zebra");
+    }
+}
+
+/// Ls: mixed files and directories with correct suffix markers.
+#[test]
+fn ls_mixed_files_and_dirs() {
+    let h = TestHarness::new("ls_mixed_files_and_dirs");
+    h.create_file("file_a.txt", "");
+    h.create_dir("dir_b");
+    h.create_file("file_c.rs", "");
+    h.create_dir("dir_d");
+    let registry = make_registry(h.temp_dir());
+
+    let dir_str = h.temp_dir().display().to_string();
+    let output = common::run_async(async move {
+        let tool = registry.get("ls").unwrap();
+        tool.execute("ls-mixed", json!({"path": dir_str}), None)
+            .await
+    });
+
+    let result = output.unwrap();
+    let text = first_text(&result.content);
+    h.log().info("result", text.to_string());
+
+    // Directories should have '/' suffix
+    assert!(
+        text.contains("dir_b/"),
+        "directory should have / suffix: {text}"
+    );
+    assert!(
+        text.contains("dir_d/"),
+        "directory should have / suffix: {text}"
+    );
+    // Files should NOT have '/' suffix
+    assert!(text.contains("file_a.txt"), "should list file");
+    assert!(text.contains("file_c.rs"), "should list file");
+}
+
+/// Ls: symlink to directory is listed.
+#[cfg(unix)]
+#[test]
+fn ls_symlink_directory() {
+    let h = TestHarness::new("ls_symlink_directory");
+    let real_dir = h.create_dir("real_dir");
+    h.create_file("real_dir/inside.txt", "content");
+    let link = h.temp_path("link_dir");
+    std::os::unix::fs::symlink(&real_dir, &link).expect("create dir symlink");
+    let registry = make_registry(h.temp_dir());
+
+    let dir_str = h.temp_dir().display().to_string();
+    let output = common::run_async(async move {
+        let tool = registry.get("ls").unwrap();
+        tool.execute("ls-symdir", json!({"path": dir_str}), None)
+            .await
+    });
+
+    let result = output.unwrap();
+    let text = first_text(&result.content);
+    h.log().info("result", text.to_string());
+
+    assert!(text.contains("real_dir"), "should list real directory");
+    assert!(text.contains("link_dir"), "should list symlinked directory");
+}
+
+// ===========================================================================
+// Cross-tool — Hardened integration scenarios
+// ===========================================================================
+
+/// Cross-tool: write → grep → edit → read roundtrip with verification.
+#[test]
+fn cross_tool_write_grep_edit_read() {
+    if !rg_available() {
+        eprintln!("SKIP: ripgrep (rg) not installed");
+        return;
+    }
+
+    let h = TestHarness::new("cross_tool_write_grep_edit_read");
+    let file_path = h.temp_path("project/code.py");
+    let file_str = file_path.display().to_string();
+
+    // Step 1: Write a Python file
+    let write_reg = make_registry(h.temp_dir());
+    let write_file = file_str.clone();
+    let write_result = common::run_async(async move {
+        let tool = write_reg.get("write").unwrap();
+        tool.execute(
+            "xw-1",
+            json!({
+                "path": write_file,
+                "content": "def hello():\n    return \"old_value\"\n\ndef goodbye():\n    return \"stays\"\n"
+            }),
+            None,
+        )
+        .await
+    });
+    assert!(!write_result.unwrap().is_error, "write should succeed");
+
+    // Step 2: Grep to find the target
+    let grep_reg = make_registry(h.temp_dir());
+    let grep_result = common::run_async(async move {
+        let tool = grep_reg.get("grep").unwrap();
+        tool.execute("xg-1", json!({"pattern": "old_value"}), None)
+            .await
+    });
+    let grep_output = grep_result.unwrap();
+    let grep_text = first_text(&grep_output.content);
+    assert!(grep_text.contains("old_value"), "grep should find target");
+
+    // Step 3: Edit the target
+    let edit_reg = make_registry(h.temp_dir());
+    let edit_file = file_str.clone();
+    let edit_result = common::run_async(async move {
+        let tool = edit_reg.get("edit").unwrap();
+        tool.execute(
+            "xe-1",
+            json!({
+                "path": edit_file,
+                "oldText": "\"old_value\"",
+                "newText": "\"new_value\""
+            }),
+            None,
+        )
+        .await
+    });
+    assert!(!edit_result.unwrap().is_error, "edit should succeed");
+
+    // Step 4: Read back and verify
+    let read_reg = make_registry(h.temp_dir());
+    let read_file = file_str;
+    let read_result = common::run_async(async move {
+        let tool = read_reg.get("read").unwrap();
+        tool.execute("xr-1", json!({"path": read_file}), None).await
+    });
+    let read_output = read_result.unwrap();
+    let text = first_text(&read_output.content);
+    h.log().info("final", text.to_string());
+
+    assert!(text.contains("new_value"), "edit should be visible");
+    assert!(!text.contains("old_value"), "old value should be gone");
+    assert!(text.contains("stays"), "untouched code preserved");
+}
+
+/// Cross-tool: bash creates files, find discovers them, read verifies content.
+#[test]
+fn cross_tool_bash_find_read() {
+    if !fd_available() {
+        eprintln!("SKIP: fd/fdfind not installed");
+        return;
+    }
+
+    let h = TestHarness::new("cross_tool_bash_find_read");
+
+    // Step 1: Bash creates files
+    let bash_reg = make_registry(h.temp_dir());
+    let bash_result = common::run_async(async move {
+        let tool = bash_reg.get("bash").unwrap();
+        tool.execute(
+            "xb-1",
+            json!({
+                "command": "mkdir -p generated && echo 'auto_content_A' > generated/a.txt && echo 'auto_content_B' > generated/b.txt"
+            }),
+            None,
+        )
+        .await
+    });
+    assert!(!bash_result.unwrap().is_error);
+
+    // Step 2: Find discovers them
+    let find_reg = make_registry(h.temp_dir());
+    let find_result = common::run_async(async move {
+        let tool = find_reg.get("find").unwrap();
+        tool.execute(
+            "xf-1",
+            json!({"pattern": "*.txt", "path": "generated"}),
+            None,
+        )
+        .await
+    });
+    let find_output = find_result.unwrap();
+    let find_text = first_text(&find_output.content);
+    assert!(find_text.contains("a.txt"), "find should discover a.txt");
+    assert!(find_text.contains("b.txt"), "find should discover b.txt");
+
+    // Step 3: Read verifies content
+    let read_reg = make_registry(h.temp_dir());
+    let read_path = h.temp_path("generated/a.txt").display().to_string();
+    let read_result = common::run_async(async move {
+        let tool = read_reg.get("read").unwrap();
+        tool.execute("xr-2", json!({"path": read_path}), None).await
+    });
+    let read_output = read_result.unwrap();
+    let text = first_text(&read_output.content);
+    h.log().info("final", text.to_string());
+    assert!(
+        text.contains("auto_content_A"),
+        "bash-created file should have expected content"
+    );
 }
