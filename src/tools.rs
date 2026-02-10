@@ -2351,6 +2351,40 @@ fn process_rg_json_match_line(
     Ok(())
 }
 
+fn drain_rg_stdout(
+    stdout_rx: &std::sync::mpsc::Receiver<std::io::Result<String>>,
+    matches: &mut Vec<(PathBuf, usize)>,
+    match_count: &mut usize,
+    match_limit_reached: &mut bool,
+    effective_limit: usize,
+) -> Result<()> {
+    while let Ok(line_res) = stdout_rx.try_recv() {
+        process_rg_json_match_line(
+            line_res,
+            matches,
+            match_count,
+            match_limit_reached,
+            effective_limit,
+        )?;
+        if *match_limit_reached {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn drain_rg_stderr(
+    stderr_rx: &std::sync::mpsc::Receiver<std::result::Result<Vec<u8>, String>>,
+    stderr_bytes: &mut Vec<u8>,
+) -> Result<()> {
+    while let Ok(chunk_result) = stderr_rx.try_recv() {
+        let chunk = chunk_result
+            .map_err(|err| Error::tool("grep", format!("Failed to read stderr: {err}")))?;
+        stderr_bytes.extend_from_slice(&chunk);
+    }
+    Ok(())
+}
+
 #[async_trait]
 #[allow(clippy::unnecessary_literal_bound)]
 impl Tool for GrepTool {
@@ -2540,24 +2574,14 @@ impl Tool for GrepTool {
         let tick = Duration::from_millis(10);
 
         loop {
-            while let Ok(line_res) = stdout_rx.try_recv() {
-                process_rg_json_match_line(
-                    line_res,
-                    &mut matches,
-                    &mut match_count,
-                    &mut match_limit_reached,
-                    effective_limit,
-                )?;
-                if match_limit_reached {
-                    break;
-                }
-            }
-
-            while let Ok(chunk_result) = stderr_rx.try_recv() {
-                let chunk = chunk_result
-                    .map_err(|err| Error::tool("grep", format!("Failed to read stderr: {err}")))?;
-                stderr_bytes.extend_from_slice(&chunk);
-            }
+            drain_rg_stdout(
+                &stdout_rx,
+                &mut matches,
+                &mut match_count,
+                &mut match_limit_reached,
+                effective_limit,
+            )?;
+            drain_rg_stderr(&stderr_rx, &mut stderr_bytes)?;
 
             if match_limit_reached {
                 break;
@@ -2576,18 +2600,13 @@ impl Tool for GrepTool {
             }
         }
 
-        while let Ok(line_res) = stdout_rx.try_recv() {
-            process_rg_json_match_line(
-                line_res,
-                &mut matches,
-                &mut match_count,
-                &mut match_limit_reached,
-                effective_limit,
-            )?;
-            if match_limit_reached {
-                break;
-            }
-        }
+        drain_rg_stdout(
+            &stdout_rx,
+            &mut matches,
+            &mut match_count,
+            &mut match_limit_reached,
+            effective_limit,
+        )?;
 
         let code = if match_limit_reached {
             // Avoid buffering unbounded stdout/stderr once we've hit the match limit.
@@ -2607,6 +2626,25 @@ impl Tool for GrepTool {
                 .unwrap_or(0)
         };
 
+        // Keep draining while waiting for reader threads to finish; otherwise a
+        // bounded channel can fill and block the sender thread, causing join()
+        // to hang after ripgrep has already exited.
+        while !stdout_thread.is_finished() || !stderr_thread.is_finished() {
+            if match_limit_reached {
+                while stdout_rx.try_recv().is_ok() {}
+            } else {
+                drain_rg_stdout(
+                    &stdout_rx,
+                    &mut matches,
+                    &mut match_count,
+                    &mut match_limit_reached,
+                    effective_limit,
+                )?;
+            }
+            drain_rg_stderr(&stderr_rx, &mut stderr_bytes)?;
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
         // Ensure stdout/stderr reader threads have fully drained the pipes before
         // we decide whether matches were found. Without this, fast ripgrep runs can
         // exit before the reader thread has delivered JSON match lines, causing
@@ -2619,23 +2657,18 @@ impl Tool for GrepTool {
             .map_err(|_| Error::tool("grep", "ripgrep stderr reader thread panicked"))?;
 
         // Drain any remaining stdout/stderr produced after the last poll.
-        while let Ok(line_res) = stdout_rx.try_recv() {
-            process_rg_json_match_line(
-                line_res,
+        if match_limit_reached {
+            while stdout_rx.try_recv().is_ok() {}
+        } else {
+            drain_rg_stdout(
+                &stdout_rx,
                 &mut matches,
                 &mut match_count,
                 &mut match_limit_reached,
                 effective_limit,
             )?;
-            if match_limit_reached {
-                break;
-            }
         }
-        while let Ok(chunk_result) = stderr_rx.try_recv() {
-            let chunk = chunk_result
-                .map_err(|err| Error::tool("grep", format!("Failed to read stderr: {err}")))?;
-            stderr_bytes.extend_from_slice(&chunk);
-        }
+        drain_rg_stderr(&stderr_rx, &mut stderr_bytes)?;
 
         let stderr_text = String::from_utf8_lossy(&stderr_bytes).trim().to_string();
         if !match_limit_reached && code != 0 && code != 1 {
@@ -4616,6 +4649,44 @@ mod tests {
                     .and_then(serde_json::Value::as_u64),
                 Some(5)
             );
+        });
+    }
+
+    #[test]
+    fn test_grep_large_output_does_not_deadlock_reader_threads() {
+        asupersync::test_utils::run_test(|| async {
+            use std::fmt::Write as _;
+
+            let tmp = tempfile::tempdir().unwrap();
+            let mut content = String::with_capacity(80_000);
+            for i in 0..5000 {
+                let _ = writeln!(&mut content, "needle_line_{i}");
+            }
+            let file = tmp.path().join("large_grep.txt");
+            std::fs::write(&file, content).unwrap();
+
+            let tool = GrepTool::new(tmp.path());
+            let run = tool.execute(
+                "t",
+                serde_json::json!({
+                    "pattern": "needle_line_",
+                    "path": file.to_string_lossy(),
+                    "limit": 6000
+                }),
+                None,
+            );
+
+            let out = asupersync::time::timeout(
+                asupersync::time::wall_now(),
+                Duration::from_secs(15),
+                Box::pin(run),
+            )
+            .await
+            .expect("grep timed out; possible stdout/stderr reader deadlock")
+            .expect("grep should succeed");
+
+            let text = get_text(&out.content);
+            assert!(text.contains("needle_line_0"));
         });
     }
 

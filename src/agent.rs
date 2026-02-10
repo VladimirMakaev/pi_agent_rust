@@ -3395,7 +3395,9 @@ impl AgentSession {
     }
 
     fn apply_session_model_selection(&mut self, provider_id: &str, model_id: &str) {
-        if self.agent.provider().name() == provider_id && self.agent.provider().model_id() == model_id {
+        if self.agent.provider().name() == provider_id
+            && self.agent.provider().model_id() == model_id
+        {
             return;
         }
 
@@ -3800,8 +3802,7 @@ impl AgentSession {
         abort: Option<AbortSignal>,
         on_event: impl Fn(AgentEvent) + Send + Sync + 'static,
     ) -> Result<AssistantMessage> {
-        self.maybe_compact().await?;
-        let (history, session_model) = {
+        let session_model = {
             let cx = crate::agent_cx::AgentCx::for_request();
             let session = self
                 .session
@@ -3809,18 +3810,26 @@ impl AgentSession {
                 .await
                 .map_err(|e| Error::session(e.to_string()))?;
             (
-                session.to_messages_for_current_path(),
-                (
-                    session.header.provider.clone(),
-                    session.header.model_id.clone(),
-                ),
+                session.header.provider.clone(),
+                session.header.model_id.clone(),
             )
         };
-        self.agent.replace_messages(history);
 
         if let (Some(provider_id), Some(model_id)) = session_model {
             self.apply_session_model_selection(provider_id.as_str(), model_id.as_str());
         }
+
+        self.maybe_compact().await?;
+        let history = {
+            let cx = crate::agent_cx::AgentCx::for_request();
+            let session = self
+                .session
+                .lock(cx.cx())
+                .await
+                .map_err(|e| Error::session(e.to_string()))?;
+            session.to_messages_for_current_path()
+        };
+        self.agent.replace_messages(history);
 
         let start_len = self.agent.messages().len();
 
@@ -3861,8 +3870,7 @@ impl AgentSession {
         abort: Option<AbortSignal>,
         on_event: impl Fn(AgentEvent) + Send + Sync + 'static,
     ) -> Result<AssistantMessage> {
-        self.maybe_compact().await?;
-        let (history, session_model) = {
+        let session_model = {
             let cx = crate::agent_cx::AgentCx::for_request();
             let session = self
                 .session
@@ -3870,18 +3878,26 @@ impl AgentSession {
                 .await
                 .map_err(|e| Error::session(e.to_string()))?;
             (
-                session.to_messages_for_current_path(),
-                (
-                    session.header.provider.clone(),
-                    session.header.model_id.clone(),
-                ),
+                session.header.provider.clone(),
+                session.header.model_id.clone(),
             )
         };
-        self.agent.replace_messages(history);
 
         if let (Some(provider_id), Some(model_id)) = session_model {
             self.apply_session_model_selection(provider_id.as_str(), model_id.as_str());
         }
+
+        self.maybe_compact().await?;
+        let history = {
+            let cx = crate::agent_cx::AgentCx::for_request();
+            let session = self
+                .session
+                .lock(cx.cx())
+                .await
+                .map_err(|e| Error::session(e.to_string()))?;
+            session.to_messages_for_current_path()
+        };
+        self.agent.replace_messages(history);
 
         let start_len = self.agent.messages().len();
 
@@ -4020,6 +4036,8 @@ fn extract_tool_calls(content: &[ContentBlock]) -> Vec<ToolCall> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::AuthCredential;
+    use std::path::Path;
 
     fn user_message(text: &str) -> Message {
         Message::User(UserMessage {
@@ -4151,5 +4169,101 @@ mod tests {
         let remaining = queue.pop_steering();
         assert_eq!(remaining.len(), 1);
         assert_user_text(&remaining[0], "s2");
+    }
+
+    fn build_switch_test_session(auth: &AuthStorage) -> AgentSession {
+        let registry = ModelRegistry::load(auth, None);
+        let current_entry = registry
+            .find("anthropic", "claude-sonnet-4-5")
+            .expect("anthropic model in registry");
+        let provider = crate::providers::create_provider(&current_entry, None)
+            .expect("create anthropic provider");
+        let tools = ToolRegistry::new(&[], Path::new("."), None);
+        let mut stream_options = StreamOptions {
+            api_key: Some("stale-key".to_string()),
+            ..Default::default()
+        };
+        let _ = stream_options
+            .headers
+            .insert("x-stale-header".to_string(), "stale-value".to_string());
+        let agent = Agent::new(
+            provider,
+            tools,
+            AgentConfig {
+                system_prompt: None,
+                max_tool_iterations: 50,
+                stream_options,
+            },
+        );
+
+        let mut session = Session::in_memory();
+        session.header.provider = Some("openai".to_string());
+        session.header.model_id = Some("gpt-4o".to_string());
+
+        let mut agent_session = AgentSession::new(
+            agent,
+            Arc::new(Mutex::new(session)),
+            false,
+            ResolvedCompactionSettings::default(),
+        );
+        agent_session.set_model_registry(registry);
+        agent_session.set_auth_storage(auth.clone());
+        agent_session
+    }
+
+    #[test]
+    fn apply_session_model_selection_updates_stream_credentials_and_headers() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let auth_path = dir.path().join("auth.json");
+        let mut auth = AuthStorage::load(auth_path).expect("load auth");
+        auth.set(
+            "anthropic",
+            AuthCredential::ApiKey {
+                key: "anthropic-key".to_string(),
+            },
+        );
+        auth.set(
+            "openai",
+            AuthCredential::ApiKey {
+                key: "openai-key".to_string(),
+            },
+        );
+
+        let mut agent_session = build_switch_test_session(&auth);
+        agent_session.apply_session_model_selection("openai", "gpt-4o");
+
+        assert_eq!(agent_session.agent.provider().name(), "openai");
+        assert_eq!(agent_session.agent.provider().model_id(), "gpt-4o");
+        assert_eq!(
+            agent_session.agent.stream_options().api_key.as_deref(),
+            Some("openai-key")
+        );
+        assert!(
+            agent_session.agent.stream_options().headers.is_empty(),
+            "stream headers should be refreshed from selected model entry"
+        );
+    }
+
+    #[test]
+    fn apply_session_model_selection_clears_stale_key_when_target_has_no_key() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let auth_path = dir.path().join("auth.json");
+        let mut auth = AuthStorage::load(auth_path).expect("load auth");
+        auth.set(
+            "anthropic",
+            AuthCredential::ApiKey {
+                key: "anthropic-key".to_string(),
+            },
+        );
+
+        let mut agent_session = build_switch_test_session(&auth);
+        agent_session.apply_session_model_selection("openai", "gpt-4o");
+
+        assert_eq!(agent_session.agent.provider().name(), "openai");
+        assert_eq!(
+            agent_session.agent.stream_options().api_key,
+            None,
+            "stale key must be cleared when target model has no configured key"
+        );
     }
 }
