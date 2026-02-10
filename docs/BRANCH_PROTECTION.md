@@ -32,14 +32,15 @@ Per-platform (Linux, macOS, Windows):
 3. **Traceability matrix guard** — Validates `docs/traceability_matrix.json` consistency.
 4. **Suite classification guard** — Every `tests/*.rs` must appear in `tests/suite_classification.toml`.
 5. **VCR leak guard** — Unit-suite files must not reference VCR infrastructure.
-6. **`cargo fmt --check`** — Format compliance.
-7. **`cargo clippy -D warnings`** — Zero clippy warnings.
-8. **`cargo doc --no-deps`** — Documentation builds cleanly.
-9. **`cargo test --all-targets`** — All tests pass.
-10. **Unified verification runner** — `scripts/e2e/run_all.sh --profile ci` (Linux only).
-11. **CI gate promotion** — Conformance thresholds enforced (Linux only).
-12. **Conformance regression gate** — No pass-rate regressions (Linux only).
-13. **Coverage gate** — Line coverage >= 50% (Linux only).
+6. **PR Definition-of-Done evidence guard** — For feature-surface PRs, blocks merge unless the PR body includes checked unit/e2e/extension evidence links and reproduction commands (Linux PR lane only).
+7. **`cargo fmt --check`** — Format compliance.
+8. **`cargo clippy -D warnings`** — Zero clippy warnings.
+9. **`cargo doc --no-deps`** — Documentation builds cleanly.
+10. **`cargo test --all-targets`** — All tests pass.
+11. **Unified verification runner** — `scripts/e2e/run_all.sh --profile ci` (Linux only).
+12. **CI gate promotion** — Conformance thresholds enforced (Linux only).
+13. **Conformance regression gate** — No pass-rate regressions (Linux only).
+14. **Coverage gate** — Line coverage >= 50% (Linux only).
 
 ### Conformance Pipeline (`conformance.yml`)
 
@@ -97,6 +98,17 @@ protection is correctly configured. This checks:
 4. Force pushes are disabled.
 5. Deletions are disabled.
 6. Pull request reviews are required.
+
+## Migration Guidance for Existing Feature Branches
+
+When this DoD gate rolls out, open feature branches created before rollout may be missing
+the required PR evidence sections. Migrate those branches before merge:
+
+1. Rebase on the latest `main`.
+2. Replace the PR body with `.github/pull_request_template.md`.
+3. Add direct links to unit, e2e, and extension evidence artifacts.
+4. Add exact reproduction commands used for validation and for the most recent failing path.
+5. Re-run CI and confirm the DoD evidence guard passes.
 
 ## Release Workflow Integration
 

@@ -43,6 +43,7 @@ maintenance cadence for the Pi extension platform.
 | Suite classification guard | All files classified | `.github/workflows/ci.yml` |
 | Traceability matrix guard | All classified tests traced | `.github/workflows/ci.yml` |
 | VCR leak guard | No cassettes in wrong suite | `.github/workflows/ci.yml` |
+| PR Definition-of-Done evidence guard | Required for feature-surface PRs | `.github/workflows/ci.yml` |
 
 ### Conformance Gates (Nightly + Release)
 
@@ -73,6 +74,26 @@ Per [releasing.md](releasing.md):
 - Core CLI modes stable (print + interactive + RPC)
 - Extension runtime surface and security policy stable
 - Conformance gates met at release thresholds
+
+### Definition of Done for Feature Changes
+
+Feature-surface PRs (runtime/provider/tooling behavior changes) are not mergeable until:
+
+1. PR body includes checked evidence for unit, e2e, and extension validation.
+2. PR body links directly to structured artifacts/logs for those runs.
+3. PR body includes reproduction commands for both passing validation and the most recent failing path.
+4. PR body contains no unresolved checklist placeholders.
+
+The canonical checklist source is `.github/pull_request_template.md`, and CI enforces it in
+the Linux PR lane.
+
+#### Migration Guidance for Existing Feature Branches
+
+1. Rebase on latest `main`.
+2. Replace PR body with `.github/pull_request_template.md`.
+3. Backfill evidence links from latest CI/local runs.
+4. Include explicit failing-path artifact links plus exact rerun commands.
+5. Re-run CI and merge only after DoD guard passes.
 
 ---
 

@@ -65,12 +65,31 @@ Use a pre-release tag to exercise CI/publish validation without publishing to cr
 
 This should run the `Publish` workflow planning step and skip the crates publish step.
 
+## Merge-Gate DoD Policy
+Feature-surface pull requests must satisfy the Definition-of-Done evidence checklist before merge:
+- Unit evidence link(s)
+- E2E evidence link(s)
+- Extension evidence link(s)
+- Reproduction commands for pass/fail validation paths
+
+CI enforces this via `.github/workflows/ci.yml` using `.github/pull_request_template.md` as the
+canonical checklist format.
+
+### Migration Guidance for Existing Feature Branches
+For branches opened before this gate was introduced:
+1. Rebase onto latest `main`.
+2. Replace the PR body with `.github/pull_request_template.md`.
+3. Backfill links to current evidence artifacts.
+4. Include exact rerun commands used to validate fixes for the most recent failing path.
+5. Re-run CI and merge only after the DoD evidence guard passes.
+
 ## Pre-release checklist
 - CI is green on `main` (Linux/macOS/Windows).
 - Local gates are green:
   - `cargo fmt --check`
   - `cargo clippy --all-targets -- -D warnings`
   - `cargo test --all-targets`
+- Feature PRs merged since the previous tag satisfy the DoD evidence checklist (unit + e2e + extension + repro commands).
 - `CHANGELOG.md` updated for the version you’re tagging.
 - Benchmarks run if this release is performance-sensitive (see `BENCHMARKS.md`).
 

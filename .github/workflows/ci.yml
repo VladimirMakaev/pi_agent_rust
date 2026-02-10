@@ -49,6 +49,97 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: pi_agent_rust
+          fetch-depth: 0
+
+      - name: PR Definition-of-Done evidence guard [linux]
+        if: runner.os == 'Linux' && github.event_name == 'pull_request'
+        env:
+          PR_BODY: ${{ github.event.pull_request.body || '' }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          import os
+          import re
+          import subprocess
+          import sys
+
+          base_sha = os.environ.get("BASE_SHA", "").strip()
+          head_sha = os.environ.get("HEAD_SHA", "").strip()
+          pr_body = os.environ.get("PR_BODY", "").replace("\r\n", "\n")
+
+          if not base_sha or not head_sha:
+              print("missing pull_request base/head SHA", file=sys.stderr)
+              sys.exit(1)
+
+          diff_proc = subprocess.run(
+              ["git", "diff", "--name-only", f"{base_sha}...{head_sha}"],
+              check=True,
+              capture_output=True,
+              text=True,
+          )
+          changed_files = [line.strip() for line in diff_proc.stdout.splitlines() if line.strip()]
+          if not changed_files:
+              print("No changed files in PR diff; skipping DoD evidence guard.")
+              sys.exit(0)
+
+          feature_path_pattern = re.compile(
+              r"^(src/|Cargo\.toml$|Cargo\.lock$|scripts/e2e/|scripts/release_gate\.sh$|scripts/check_conformance_regression\.py$|scripts/check_traceability_matrix\.py$)"
+          )
+          feature_files = [path for path in changed_files if feature_path_pattern.search(path)]
+          if not feature_files:
+              print("No feature-surface changes detected; skipping DoD evidence guard.")
+              sys.exit(0)
+
+          required_patterns = {
+              "Definition-of-Done header": r"(?mi)^##\s+Definition of Done Evidence\s*$",
+              "Unit evidence checkbox": r"(?mi)^\s*-\s*\[[xX]\]\s+Unit evidence linked\s*$",
+              "E2E evidence checkbox": r"(?mi)^\s*-\s*\[[xX]\]\s+E2E evidence linked\s*$",
+              "Extension evidence checkbox": r"(?mi)^\s*-\s*\[[xX]\]\s+Extension evidence linked\s*$",
+              "Failing-path diagnostics checkbox": r"(?mi)^\s*-\s*\[[xX]\]\s+Failing paths include artifact links and repro commands\s*$",
+              "Reproduction Commands header": r"(?mi)^##\s+Reproduction Commands\s*$",
+          }
+          missing = [label for label, pattern in required_patterns.items() if not re.search(pattern, pr_body)]
+
+          evidence_links = re.findall(r"\[[^\]]+\]\((https?://[^)]+)\)", pr_body)
+          if len(evidence_links) < 3:
+              missing.append("At least three HTTP(S) evidence links")
+
+          command_patterns = {
+              "Unit reproduction command": r"(?mi)`?cargo test --all-targets`?",
+              "E2E reproduction command": r"(?mi)`?\./scripts/e2e/run_all\.sh --profile ci`?",
+              "Extension reproduction command": r"(?mi)`?cargo test (?:--all-targets )?--features ext-conformance`?",
+          }
+          for label, pattern in command_patterns.items():
+              if not re.search(pattern, pr_body):
+                  missing.append(label)
+
+          forbidden_placeholders = (
+              "<link>",
+              "<artifact link>",
+              "<paste command>",
+              "<command>",
+          )
+          if any(token in pr_body for token in forbidden_placeholders):
+              missing.append("Template placeholders removed")
+
+          if missing:
+              print("Definition-of-Done evidence guard failed for feature-surface changes.", file=sys.stderr)
+              print("Changed feature files:", file=sys.stderr)
+              for path in feature_files:
+                  print(f"  - {path}", file=sys.stderr)
+              print("Missing PR body requirements:", file=sys.stderr)
+              for item in missing:
+                  print(f"  - {item}", file=sys.stderr)
+              print(
+                  "Complete .github/pull_request_template.md with evidence links and repro commands before merging.",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+
+          print("Definition-of-Done evidence guard passed.")
+          PY
 
       - name: Install system deps (fd, rg, xcb) [linux]
         if: runner.os == 'Linux'
@@ -211,6 +302,16 @@ jobs:
 
       - name: cargo test
         run: cargo test --all-targets
+
+      - name: Upload inclusion manifest artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: inclusion-manifest-${{ matrix.os }}-${{ github.sha }}
+          path: |
+            pi_agent_rust/docs/extension-inclusion-list.json
+            pi_agent_rust/tests/ext_conformance/reports/inclusion_manifest/**
+          if-no-files-found: warn
 
       - name: Reclaim disk space before wasm-host tests [linux]
         if: runner.os == 'Linux'
