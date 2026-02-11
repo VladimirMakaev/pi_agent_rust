@@ -825,7 +825,14 @@
         "AWS_REGION"
       ],
       "canonical_id": "amazon-bedrock",
-      "onboarding_mode": "native-adapter-required"
+      "onboarding_mode": "native-adapter-required",
+      "routing": {
+        "api": "bedrock-converse-stream",
+        "auth_header": false,
+        "base_url": "",
+        "context_window": 200000,
+        "max_tokens": 8192
+      }
     },
     {
       "aliases": [
