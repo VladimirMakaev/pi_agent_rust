@@ -336,13 +336,13 @@ fn context_window_and_max_tokens_are_positive() {
 // ═══════════════════════════════════════════════════════════════════════
 
 /// Helper: build a `ModelEntry` for an OAI-compatible provider.
-fn oai_entry(provider: &str, base_url: &str) -> pi::models::ModelEntry {
+fn oai_entry(provider: &str, api: &str, base_url: &str) -> pi::models::ModelEntry {
     use pi::provider::{InputType, Model, ModelCost};
     pi::models::ModelEntry {
         model: Model {
             id: "test-model".to_string(),
             name: "Test Model".to_string(),
-            api: "openai-completions".to_string(),
+            api: api.to_string(),
             provider: provider.to_string(),
             base_url: base_url.to_string(),
             reasoning: false,
@@ -376,7 +376,7 @@ fn factory_dispatches_every_oai_compatible_provider() {
         let defaults = meta
             .routing_defaults
             .expect("OAI provider must have defaults");
-        let entry = oai_entry(meta.canonical_id, defaults.base_url);
+        let entry = oai_entry(meta.canonical_id, defaults.api, defaults.base_url);
         let provider = create_provider(&entry, None)
             .unwrap_or_else(|e| panic!("factory failed for '{}': {e}", meta.canonical_id));
         assert_eq!(

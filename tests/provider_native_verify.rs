@@ -2656,7 +2656,7 @@ mod wave_b1_smoke {
             });
     }
 
-    fn run_anthropic_case(provider_id: &str, model: &str, url: &str, tag: &str) {
+    pub fn run_anthropic_case(provider_id: &str, model: &str, url: &str, tag: &str) {
         let scenario = scenario_by_tag(tag);
         ensure_anthropic_fixture(provider_id, model, url, &scenario);
         let provider = build_anthropic_provider(provider_id, model, url, tag);
@@ -2921,6 +2921,339 @@ mod wave_b2_smoke {
             SCALEWAY_PROVIDER,
             SCALEWAY_MODEL,
             SCALEWAY_URL,
+            "error_auth_401",
+        );
+    }
+}
+
+// ============================================================================
+// Wave C Special Routing Smoke Tests (opencode + vercel + zenmux)
+// ============================================================================
+
+mod wave_c_special_smoke {
+    const OPENCODE_PROVIDER: &str = "opencode";
+    const OPENCODE_MODEL: &str = "openai/gpt-5";
+    const OPENCODE_URL: &str = "https://opencode.ai/zen/v1/chat/completions";
+
+    const VERCEL_PROVIDER: &str = "vercel";
+    const VERCEL_MODEL: &str = "openai/gpt-5";
+    const VERCEL_URL: &str = "https://ai-gateway.vercel.sh/v1/chat/completions";
+
+    const ZENMUX_PROVIDER: &str = "zenmux";
+    const ZENMUX_MODEL: &str = "claude-sonnet-4-5";
+    const ZENMUX_URL: &str = "https://zenmux.ai/api/anthropic/v1/messages";
+
+    fn run_openai_case(provider_id: &str, model: &str, url: &str, tag: &str) {
+        super::wave_b1_smoke::run_openai_case(provider_id, model, url, tag);
+    }
+
+    fn run_anthropic_case(provider_id: &str, model: &str, url: &str, tag: &str) {
+        super::wave_b1_smoke::run_anthropic_case(provider_id, model, url, tag);
+    }
+
+    #[test]
+    fn c_special_opencode_simple_text() {
+        run_openai_case(
+            OPENCODE_PROVIDER,
+            OPENCODE_MODEL,
+            OPENCODE_URL,
+            "simple_text",
+        );
+    }
+
+    #[test]
+    fn c_special_opencode_tool_call_single() {
+        run_openai_case(
+            OPENCODE_PROVIDER,
+            OPENCODE_MODEL,
+            OPENCODE_URL,
+            "tool_call_single",
+        );
+    }
+
+    #[test]
+    fn c_special_opencode_error_auth_401() {
+        run_openai_case(
+            OPENCODE_PROVIDER,
+            OPENCODE_MODEL,
+            OPENCODE_URL,
+            "error_auth_401",
+        );
+    }
+
+    #[test]
+    fn c_special_vercel_simple_text() {
+        run_openai_case(VERCEL_PROVIDER, VERCEL_MODEL, VERCEL_URL, "simple_text");
+    }
+
+    #[test]
+    fn c_special_vercel_tool_call_single() {
+        run_openai_case(
+            VERCEL_PROVIDER,
+            VERCEL_MODEL,
+            VERCEL_URL,
+            "tool_call_single",
+        );
+    }
+
+    #[test]
+    fn c_special_vercel_error_auth_401() {
+        run_openai_case(VERCEL_PROVIDER, VERCEL_MODEL, VERCEL_URL, "error_auth_401");
+    }
+
+    #[test]
+    fn c_special_zenmux_simple_text() {
+        run_anthropic_case(ZENMUX_PROVIDER, ZENMUX_MODEL, ZENMUX_URL, "simple_text");
+    }
+
+    #[test]
+    fn c_special_zenmux_tool_call_single() {
+        run_anthropic_case(
+            ZENMUX_PROVIDER,
+            ZENMUX_MODEL,
+            ZENMUX_URL,
+            "tool_call_single",
+        );
+    }
+
+    #[test]
+    fn c_special_zenmux_error_auth_401() {
+        run_anthropic_case(ZENMUX_PROVIDER, ZENMUX_MODEL, ZENMUX_URL, "error_auth_401");
+    }
+}
+
+// ============================================================================
+// Wave B3 Representative Smoke Tests (regional + coding-plan presets)
+// ============================================================================
+
+mod wave_b3_smoke {
+    const SILICONFLOW_PROVIDER: &str = "siliconflow";
+    const SILICONFLOW_MODEL: &str = "Qwen/Qwen3-Coder-480B-A35B-Instruct";
+    const SILICONFLOW_URL: &str = "https://api.siliconflow.com/v1/chat/completions";
+
+    const SILICONFLOW_CN_PROVIDER: &str = "siliconflow-cn";
+    const SILICONFLOW_CN_MODEL: &str = "Qwen/Qwen3-Coder-480B-A35B-Instruct";
+    const SILICONFLOW_CN_URL: &str = "https://api.siliconflow.cn/v1/chat/completions";
+
+    const UPSTAGE_PROVIDER: &str = "upstage";
+    const UPSTAGE_MODEL: &str = "solar-pro2";
+    const UPSTAGE_URL: &str = "https://api.upstage.ai/v1/solar/chat/completions";
+
+    const VENICE_PROVIDER: &str = "venice";
+    const VENICE_MODEL: &str = "venice-uncensored";
+    const VENICE_URL: &str = "https://api.venice.ai/api/v1/chat/completions";
+
+    const ZAI_PROVIDER: &str = "zai";
+    const ZAI_MODEL: &str = "glm-4.5";
+    const ZAI_URL: &str = "https://api.z.ai/api/paas/v4/chat/completions";
+
+    const ZAI_CODING_PROVIDER: &str = "zai-coding-plan";
+    const ZAI_CODING_MODEL: &str = "glm-4.5";
+    const ZAI_CODING_URL: &str = "https://api.z.ai/api/coding/paas/v4/chat/completions";
+
+    const ZHIPU_PROVIDER: &str = "zhipuai";
+    const ZHIPU_MODEL: &str = "glm-4.5";
+    const ZHIPU_URL: &str = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
+
+    const ZHIPU_CODING_PROVIDER: &str = "zhipuai-coding-plan";
+    const ZHIPU_CODING_MODEL: &str = "glm-4.5";
+    const ZHIPU_CODING_URL: &str = "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions";
+
+    fn run_case(provider_id: &str, model: &str, url: &str, tag: &str) {
+        super::wave_b1_smoke::run_openai_case(provider_id, model, url, tag);
+    }
+
+    #[test]
+    fn b3_siliconflow_simple_text() {
+        run_case(
+            SILICONFLOW_PROVIDER,
+            SILICONFLOW_MODEL,
+            SILICONFLOW_URL,
+            "simple_text",
+        );
+    }
+
+    #[test]
+    fn b3_siliconflow_tool_call_single() {
+        run_case(
+            SILICONFLOW_PROVIDER,
+            SILICONFLOW_MODEL,
+            SILICONFLOW_URL,
+            "tool_call_single",
+        );
+    }
+
+    #[test]
+    fn b3_siliconflow_error_auth_401() {
+        run_case(
+            SILICONFLOW_PROVIDER,
+            SILICONFLOW_MODEL,
+            SILICONFLOW_URL,
+            "error_auth_401",
+        );
+    }
+
+    #[test]
+    fn b3_siliconflow_cn_simple_text() {
+        run_case(
+            SILICONFLOW_CN_PROVIDER,
+            SILICONFLOW_CN_MODEL,
+            SILICONFLOW_CN_URL,
+            "simple_text",
+        );
+    }
+
+    #[test]
+    fn b3_siliconflow_cn_tool_call_single() {
+        run_case(
+            SILICONFLOW_CN_PROVIDER,
+            SILICONFLOW_CN_MODEL,
+            SILICONFLOW_CN_URL,
+            "tool_call_single",
+        );
+    }
+
+    #[test]
+    fn b3_siliconflow_cn_error_auth_401() {
+        run_case(
+            SILICONFLOW_CN_PROVIDER,
+            SILICONFLOW_CN_MODEL,
+            SILICONFLOW_CN_URL,
+            "error_auth_401",
+        );
+    }
+
+    #[test]
+    fn b3_upstage_simple_text() {
+        run_case(UPSTAGE_PROVIDER, UPSTAGE_MODEL, UPSTAGE_URL, "simple_text");
+    }
+
+    #[test]
+    fn b3_upstage_tool_call_single() {
+        run_case(
+            UPSTAGE_PROVIDER,
+            UPSTAGE_MODEL,
+            UPSTAGE_URL,
+            "tool_call_single",
+        );
+    }
+
+    #[test]
+    fn b3_upstage_error_auth_401() {
+        run_case(
+            UPSTAGE_PROVIDER,
+            UPSTAGE_MODEL,
+            UPSTAGE_URL,
+            "error_auth_401",
+        );
+    }
+
+    #[test]
+    fn b3_venice_simple_text() {
+        run_case(VENICE_PROVIDER, VENICE_MODEL, VENICE_URL, "simple_text");
+    }
+
+    #[test]
+    fn b3_venice_tool_call_single() {
+        run_case(
+            VENICE_PROVIDER,
+            VENICE_MODEL,
+            VENICE_URL,
+            "tool_call_single",
+        );
+    }
+
+    #[test]
+    fn b3_venice_error_auth_401() {
+        run_case(VENICE_PROVIDER, VENICE_MODEL, VENICE_URL, "error_auth_401");
+    }
+
+    #[test]
+    fn b3_zai_simple_text() {
+        run_case(ZAI_PROVIDER, ZAI_MODEL, ZAI_URL, "simple_text");
+    }
+
+    #[test]
+    fn b3_zai_tool_call_single() {
+        run_case(ZAI_PROVIDER, ZAI_MODEL, ZAI_URL, "tool_call_single");
+    }
+
+    #[test]
+    fn b3_zai_error_auth_401() {
+        run_case(ZAI_PROVIDER, ZAI_MODEL, ZAI_URL, "error_auth_401");
+    }
+
+    #[test]
+    fn b3_zai_coding_simple_text() {
+        run_case(
+            ZAI_CODING_PROVIDER,
+            ZAI_CODING_MODEL,
+            ZAI_CODING_URL,
+            "simple_text",
+        );
+    }
+
+    #[test]
+    fn b3_zai_coding_tool_call_single() {
+        run_case(
+            ZAI_CODING_PROVIDER,
+            ZAI_CODING_MODEL,
+            ZAI_CODING_URL,
+            "tool_call_single",
+        );
+    }
+
+    #[test]
+    fn b3_zai_coding_error_auth_401() {
+        run_case(
+            ZAI_CODING_PROVIDER,
+            ZAI_CODING_MODEL,
+            ZAI_CODING_URL,
+            "error_auth_401",
+        );
+    }
+
+    #[test]
+    fn b3_zhipuai_simple_text() {
+        run_case(ZHIPU_PROVIDER, ZHIPU_MODEL, ZHIPU_URL, "simple_text");
+    }
+
+    #[test]
+    fn b3_zhipuai_tool_call_single() {
+        run_case(ZHIPU_PROVIDER, ZHIPU_MODEL, ZHIPU_URL, "tool_call_single");
+    }
+
+    #[test]
+    fn b3_zhipuai_error_auth_401() {
+        run_case(ZHIPU_PROVIDER, ZHIPU_MODEL, ZHIPU_URL, "error_auth_401");
+    }
+
+    #[test]
+    fn b3_zhipuai_coding_simple_text() {
+        run_case(
+            ZHIPU_CODING_PROVIDER,
+            ZHIPU_CODING_MODEL,
+            ZHIPU_CODING_URL,
+            "simple_text",
+        );
+    }
+
+    #[test]
+    fn b3_zhipuai_coding_tool_call_single() {
+        run_case(
+            ZHIPU_CODING_PROVIDER,
+            ZHIPU_CODING_MODEL,
+            ZHIPU_CODING_URL,
+            "tool_call_single",
+        );
+    }
+
+    #[test]
+    fn b3_zhipuai_coding_error_auth_401() {
+        run_case(
+            ZHIPU_CODING_PROVIDER,
+            ZHIPU_CODING_MODEL,
+            ZHIPU_CODING_URL,
             "error_auth_401",
         );
     }

@@ -233,6 +233,123 @@ Representative `models.json` snippet:
 }
 ```
 
+### 2d) Wave B3 canonical IDs (regional + coding-plan OpenAI-compatible)
+
+Batch B3 lock tests (`bd-3uqg.5.3`):
+- `wave_b3_presets_resolve_metadata_defaults_and_factory_route`
+- `wave_b3_openai_compat_streams_use_chat_completions_path_and_bearer_auth`
+- `wave_b3_family_and_coding_plan_variants_are_distinct`
+- `ad_hoc_batch_b3_defaults_resolve_expected_routes`
+- `ad_hoc_batch_b3_coding_plan_and_regional_variants_remain_distinct`
+
+Representative smoke/e2e checks (`provider_native_verify`):
+- `wave_b3_smoke::b3_siliconflow_{simple_text,tool_call_single,error_auth_401}`
+- `wave_b3_smoke::b3_siliconflow_cn_{simple_text,tool_call_single,error_auth_401}`
+- `wave_b3_smoke::b3_upstage_{simple_text,tool_call_single,error_auth_401}`
+- `wave_b3_smoke::b3_venice_{simple_text,tool_call_single,error_auth_401}`
+- `wave_b3_smoke::b3_zai_{simple_text,tool_call_single,error_auth_401}`
+- `wave_b3_smoke::b3_zai_coding_{simple_text,tool_call_single,error_auth_401}`
+- `wave_b3_smoke::b3_zhipuai_{simple_text,tool_call_single,error_auth_401}`
+- `wave_b3_smoke::b3_zhipuai_coding_{simple_text,tool_call_single,error_auth_401}`
+- Command: `cargo test --test provider_native_verify b3_ -- --nocapture`
+- Generated fixtures:
+  `tests/fixtures/vcr/verify_siliconflow_*.json`,
+  `tests/fixtures/vcr/verify_siliconflow-cn_*.json`,
+  `tests/fixtures/vcr/verify_upstage_*.json`,
+  `tests/fixtures/vcr/verify_venice_*.json`,
+  `tests/fixtures/vcr/verify_zai_*.json`,
+  `tests/fixtures/vcr/verify_zai-coding-plan_*.json`,
+  `tests/fixtures/vcr/verify_zhipuai_*.json`,
+  `tests/fixtures/vcr/verify_zhipuai-coding-plan_*.json`.
+
+Key mapping decisions:
+- `siliconflow` and `siliconflow-cn` are distinct canonical regional IDs with separate auth env keys (`SILICONFLOW_API_KEY`, `SILICONFLOW_CN_API_KEY`).
+- `zai` and `zai-coding-plan` are distinct canonical IDs sharing `ZHIPU_API_KEY` but using different base URLs.
+- `zhipuai` and `zhipuai-coding-plan` are distinct canonical IDs sharing `ZHIPU_API_KEY` but using different base URLs.
+
+Representative `models.json` snippet:
+
+```json
+{
+  "providers": {
+    "siliconflow": {
+      "models": [{ "id": "Qwen/Qwen3-Coder-480B-A35B-Instruct" }]
+    },
+    "upstage": {
+      "models": [{ "id": "solar-pro2" }]
+    },
+    "venice": {
+      "models": [{ "id": "venice-uncensored" }]
+    },
+    "zai-coding-plan": {
+      "models": [{ "id": "glm-4.5" }]
+    },
+    "zhipuai-coding-plan": {
+      "models": [{ "id": "glm-4.5" }]
+    }
+  }
+}
+```
+
+### 2e) Wave C canonical IDs (local/self-hosted/gateway staging)
+
+Source for defaults in this section:
+- `https://models.dev/api.json` (queried on 2026-02-12)
+- Extraction command:
+
+```bash
+curl -s https://models.dev/api.json | jq '{
+  baseten: {api: ."baseten".api, env: ."baseten".env},
+  llama: {api: ."llama".api, env: ."llama".env},
+  lmstudio: {api: ."lmstudio".api, env: ."lmstudio".env},
+  "ollama-cloud": {api: ."ollama-cloud".api, env: ."ollama-cloud".env},
+  opencode: {api: ."opencode".api, env: ."opencode".env},
+  vercel: {api: ."vercel".api, env: ."vercel".env},
+  zenmux: {api: ."zenmux".api, env: ."zenmux".env}
+}'
+```
+
+Current Wave C routing stance:
+- `baseten`, `llama`, `lmstudio`, and `ollama-cloud` are OpenAI-compatible preset candidates.
+- `opencode`, `vercel`, and `zenmux` remain coupled to special-routing decisions in `bd-3uqg.3.9`.
+
+Wave C defaults (from `models.dev`):
+
+| Provider ID | API family target | Default base URL | Auth env |
+|---|---|---|---|
+| `baseten` | `openai-completions` | `https://inference.baseten.co/v1` | `BASETEN_API_KEY` |
+| `llama` | `openai-completions` | `https://api.llama.com/compat/v1/` | `LLAMA_API_KEY` |
+| `lmstudio` | `openai-completions` | `http://127.0.0.1:1234/v1` | `LMSTUDIO_API_KEY` |
+| `ollama-cloud` | `openai-completions` | `https://ollama.com/v1` | `OLLAMA_API_KEY` |
+| `opencode` | `openai-completions` | `https://opencode.ai/zen/v1` | `OPENCODE_API_KEY` |
+| `vercel` | gateway-wrapper (`@ai-sdk/gateway`) | no static API URL in `models.dev` | `AI_GATEWAY_API_KEY` |
+| `zenmux` | `anthropic-messages` target (Anthropic-style gateway) | `https://zenmux.ai/api/anthropic/v1` | `ZENMUX_API_KEY` |
+
+Representative `models.json` for unblocked Wave C presets:
+
+```json
+{
+  "providers": {
+    "baseten": {
+      "models": [{ "id": "moonshotai/Kimi-K2-Instruct-0905" }]
+    },
+    "llama": {
+      "models": [{ "id": "llama-3.3-70b-instruct" }]
+    },
+    "lmstudio": {
+      "models": [{ "id": "openai/gpt-oss-20b" }]
+    },
+    "ollama-cloud": {
+      "models": [{ "id": "glm-4.7" }]
+    }
+  }
+}
+```
+
+Special-routing blockers still open:
+- `bd-3uqg.6.1` is blocked by `bd-3uqg.3.9` for `vercel` classification.
+- `bd-3uqg.6.3` is blocked by `bd-3uqg.3.9` and `bd-3uqg.6.2` for `opencode`/`zenmux` routing semantics.
+
 ### 3) Azure OpenAI (`azure-openai` / aliases `azure`, `azure-cognitive-services`)
 
 ```json

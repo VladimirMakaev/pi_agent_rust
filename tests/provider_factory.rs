@@ -224,6 +224,78 @@ const WAVE_B2_PRESET_CASES: [(&str, &str, &str, bool); 5] = [
     ),
 ];
 
+const WAVE_B3_PRESET_CASES: [(&str, &str, &str, bool); 8] = [
+    (
+        "siliconflow",
+        "openai-completions",
+        "https://api.siliconflow.com/v1",
+        true,
+    ),
+    (
+        "siliconflow-cn",
+        "openai-completions",
+        "https://api.siliconflow.cn/v1",
+        true,
+    ),
+    (
+        "upstage",
+        "openai-completions",
+        "https://api.upstage.ai/v1/solar",
+        true,
+    ),
+    (
+        "venice",
+        "openai-completions",
+        "https://api.venice.ai/api/v1",
+        true,
+    ),
+    (
+        "zai",
+        "openai-completions",
+        "https://api.z.ai/api/paas/v4",
+        true,
+    ),
+    (
+        "zai-coding-plan",
+        "openai-completions",
+        "https://api.z.ai/api/coding/paas/v4",
+        true,
+    ),
+    (
+        "zhipuai",
+        "openai-completions",
+        "https://open.bigmodel.cn/api/paas/v4",
+        true,
+    ),
+    (
+        "zhipuai-coding-plan",
+        "openai-completions",
+        "https://open.bigmodel.cn/api/coding/paas/v4",
+        true,
+    ),
+];
+
+const SPECIAL_ROUTING_CASES: [(&str, &str, &str, bool); 3] = [
+    (
+        "opencode",
+        "openai-completions",
+        "https://opencode.ai/zen/v1",
+        true,
+    ),
+    (
+        "vercel",
+        "openai-completions",
+        "https://ai-gateway.vercel.sh/v1",
+        true,
+    ),
+    (
+        "zenmux",
+        "anthropic-messages",
+        "https://zenmux.ai/api/anthropic/v1/messages",
+        false,
+    ),
+];
+
 #[test]
 fn normalize_openai_base_appends_for_plain_host() {
     let harness = TestHarness::new("normalize_openai_base_appends_for_plain_host");
@@ -1519,6 +1591,427 @@ fn wave_b2_moonshot_cn_and_global_moonshot_mapping_are_distinct() {
     assert_eq!(cn_defaults.api, "openai-completions");
 }
 
+#[test]
+fn wave_b3_presets_resolve_metadata_defaults_and_factory_route() {
+    let harness = TestHarness::new("wave_b3_presets_resolve_metadata_defaults_and_factory_route");
+    for (provider_id, expected_api, expected_base_url, expected_auth_header) in WAVE_B3_PRESET_CASES
+    {
+        let defaults = provider_routing_defaults(provider_id)
+            .unwrap_or_else(|| panic!("missing metadata defaults for {provider_id}"));
+        harness
+            .log()
+            .info_ctx("wave_b3.defaults", "metadata defaults", |ctx| {
+                ctx.push(("provider".to_string(), provider_id.to_string()));
+                ctx.push(("api".to_string(), defaults.api.to_string()));
+                ctx.push(("base_url".to_string(), defaults.base_url.to_string()));
+                ctx.push(("auth_header".to_string(), defaults.auth_header.to_string()));
+            });
+        assert_eq!(defaults.api, expected_api);
+        assert_eq!(defaults.base_url, expected_base_url);
+        assert_eq!(defaults.auth_header, expected_auth_header);
+        assert_eq!(canonical_provider_id(provider_id), Some(provider_id));
+
+        let mut entry = make_model_entry(provider_id, "wave-b3-default-model", expected_base_url);
+        entry.model.api.clear();
+        let provider = create_provider(&entry, None)
+            .unwrap_or_else(|e| panic!("create_provider should route {provider_id}: {e}"));
+        harness
+            .log()
+            .info_ctx("wave_b3.factory", "factory route", |ctx| {
+                ctx.push(("provider".to_string(), provider_id.to_string()));
+                ctx.push(("name".to_string(), provider.name().to_string()));
+                ctx.push(("api".to_string(), provider.api().to_string()));
+            });
+        assert_eq!(provider.name(), provider_id);
+        assert_eq!(provider.api(), expected_api);
+        assert_eq!(provider.model_id(), "wave-b3-default-model");
+    }
+}
+
+#[test]
+fn wave_b3_openai_compat_streams_use_chat_completions_path_and_bearer_auth() {
+    let harness =
+        TestHarness::new("wave_b3_openai_compat_streams_use_chat_completions_path_and_bearer_auth");
+    for (index, (provider_id, expected_api, _, expected_auth_header)) in
+        WAVE_B3_PRESET_CASES.into_iter().enumerate()
+    {
+        let server = harness.start_mock_http_server();
+        let path_prefix = format!("/wave-b3/{index}/{}", provider_id.replace('-', "_"));
+        let expected_path = format!("{path_prefix}/chat/completions");
+        server.add_route(
+            "POST",
+            &expected_path,
+            text_event_stream_response(openai_chat_sse_body()),
+        );
+
+        let mut entry = make_model_entry(
+            provider_id,
+            "wave-b3-openai-model",
+            &format!("{}{}", server.base_url(), path_prefix),
+        );
+        entry.model.api.clear();
+        let provider = create_provider(&entry, None)
+            .unwrap_or_else(|e| panic!("create_provider should route {provider_id}: {e}"));
+        assert_eq!(provider.api(), expected_api);
+
+        let api_key = format!("wave-b3-openai-token-{index}");
+        let context = Context {
+            system_prompt: Some("Be concise.".to_string()),
+            messages: vec![Message::User(UserMessage {
+                content: UserContent::Text("Ping".to_string()),
+                timestamp: 0,
+            })],
+            tools: Vec::new(),
+        };
+        let options = StreamOptions {
+            api_key: Some(api_key.clone()),
+            max_tokens: Some(64),
+            ..Default::default()
+        };
+        drive_provider_stream_to_done(provider, context, options);
+
+        let requests = server.requests();
+        assert_eq!(
+            requests.len(),
+            1,
+            "expected exactly one request for {provider_id}"
+        );
+        let request = &requests[0];
+        assert_eq!(request.path, expected_path);
+        let expected_auth = format!("Bearer {api_key}");
+        assert_eq!(
+            request_header(&request.headers, "authorization").as_deref(),
+            Some(expected_auth.as_str())
+        );
+        assert_eq!(
+            request_header(&request.headers, "content-type").as_deref(),
+            Some("application/json")
+        );
+        assert!(
+            expected_auth_header,
+            "openai-compatible B3 providers should use bearer auth"
+        );
+    }
+}
+
+#[test]
+fn wave_b3_family_and_coding_plan_variants_are_distinct() {
+    let siliconflow = provider_routing_defaults("siliconflow").expect("siliconflow defaults");
+    let siliconflow_cn =
+        provider_routing_defaults("siliconflow-cn").expect("siliconflow-cn defaults");
+    assert_eq!(canonical_provider_id("siliconflow"), Some("siliconflow"));
+    assert_eq!(
+        canonical_provider_id("siliconflow-cn"),
+        Some("siliconflow-cn")
+    );
+    assert_eq!(
+        provider_auth_env_keys("siliconflow"),
+        &["SILICONFLOW_API_KEY"]
+    );
+    assert_eq!(
+        provider_auth_env_keys("siliconflow-cn"),
+        &["SILICONFLOW_CN_API_KEY"]
+    );
+    assert_ne!(siliconflow.base_url, siliconflow_cn.base_url);
+
+    let zai = provider_routing_defaults("zai").expect("zai defaults");
+    let zai_coding = provider_routing_defaults("zai-coding-plan").expect("zai-coding defaults");
+    assert_eq!(canonical_provider_id("zai"), Some("zai"));
+    assert_eq!(
+        canonical_provider_id("zai-coding-plan"),
+        Some("zai-coding-plan")
+    );
+    assert_eq!(provider_auth_env_keys("zai"), &["ZHIPU_API_KEY"]);
+    assert_eq!(
+        provider_auth_env_keys("zai-coding-plan"),
+        &["ZHIPU_API_KEY"]
+    );
+    assert_eq!(zai.api, "openai-completions");
+    assert_eq!(zai_coding.api, "openai-completions");
+    assert_ne!(zai.base_url, zai_coding.base_url);
+
+    let zhipu = provider_routing_defaults("zhipuai").expect("zhipu defaults");
+    let zhipu_coding =
+        provider_routing_defaults("zhipuai-coding-plan").expect("zhipu-coding defaults");
+    assert_eq!(canonical_provider_id("zhipuai"), Some("zhipuai"));
+    assert_eq!(
+        canonical_provider_id("zhipuai-coding-plan"),
+        Some("zhipuai-coding-plan")
+    );
+    assert_eq!(provider_auth_env_keys("zhipuai"), &["ZHIPU_API_KEY"]);
+    assert_eq!(
+        provider_auth_env_keys("zhipuai-coding-plan"),
+        &["ZHIPU_API_KEY"]
+    );
+    assert_eq!(zhipu.api, "openai-completions");
+    assert_eq!(zhipu_coding.api, "openai-completions");
+    assert_ne!(zhipu.base_url, zhipu_coding.base_url);
+}
+
+#[test]
+fn special_routing_presets_resolve_metadata_defaults_and_factory_route() {
+    let harness =
+        TestHarness::new("special_routing_presets_resolve_metadata_defaults_and_factory_route");
+    for (provider_id, expected_api, expected_base_url, expected_auth_header) in
+        SPECIAL_ROUTING_CASES
+    {
+        let defaults = provider_routing_defaults(provider_id)
+            .unwrap_or_else(|| panic!("missing metadata defaults for {provider_id}"));
+        harness
+            .log()
+            .info_ctx("special.defaults", "metadata defaults", |ctx| {
+                ctx.push(("provider".to_string(), provider_id.to_string()));
+                ctx.push(("api".to_string(), defaults.api.to_string()));
+                ctx.push(("base_url".to_string(), defaults.base_url.to_string()));
+                ctx.push(("auth_header".to_string(), defaults.auth_header.to_string()));
+            });
+        assert_eq!(defaults.api, expected_api);
+        assert_eq!(defaults.base_url, expected_base_url);
+        assert_eq!(defaults.auth_header, expected_auth_header);
+        assert_eq!(canonical_provider_id(provider_id), Some(provider_id));
+
+        let mut entry = make_model_entry(
+            provider_id,
+            "special-routing-default-model",
+            expected_base_url,
+        );
+        entry.model.api.clear();
+        let provider = create_provider(&entry, None)
+            .unwrap_or_else(|e| panic!("create_provider should route {provider_id}: {e}"));
+
+        if expected_api == "anthropic-messages" {
+            assert_eq!(provider.name(), "anthropic");
+        } else {
+            assert_eq!(provider.name(), provider_id);
+        }
+        assert_eq!(provider.api(), expected_api);
+        assert_eq!(provider.model_id(), "special-routing-default-model");
+    }
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn special_routing_default_streams_cover_success_paths() {
+    let harness = TestHarness::new("special_routing_default_streams_cover_success_paths");
+
+    for (index, (provider_id, expected_api, _, expected_auth_header)) in
+        SPECIAL_ROUTING_CASES.into_iter().enumerate()
+    {
+        if expected_api != "openai-completions" {
+            continue;
+        }
+
+        let server = harness.start_mock_http_server();
+        let path_prefix = format!("/special/{index}/{}", provider_id.replace('-', "_"));
+        let expected_path = format!("{path_prefix}/chat/completions");
+        server.add_route(
+            "POST",
+            &expected_path,
+            text_event_stream_response(openai_chat_sse_body()),
+        );
+
+        let mut entry = make_model_entry(
+            provider_id,
+            "special-openai-stream-model",
+            &format!("{}{}", server.base_url(), path_prefix),
+        );
+        entry.model.api.clear();
+        let provider = create_provider(&entry, None)
+            .unwrap_or_else(|e| panic!("create_provider should route {provider_id}: {e}"));
+        assert_eq!(provider.api(), expected_api);
+
+        let api_key = format!("special-openai-token-{index}");
+        let context = Context {
+            system_prompt: Some("Be concise.".to_string()),
+            messages: vec![Message::User(UserMessage {
+                content: UserContent::Text("Ping".to_string()),
+                timestamp: 0,
+            })],
+            tools: Vec::new(),
+        };
+        let options = StreamOptions {
+            api_key: Some(api_key.clone()),
+            max_tokens: Some(64),
+            ..Default::default()
+        };
+        drive_provider_stream_to_done(provider, context, options);
+
+        let requests = server.requests();
+        assert_eq!(
+            requests.len(),
+            1,
+            "expected exactly one request for {provider_id}"
+        );
+        let request = &requests[0];
+        assert_eq!(request.path, expected_path);
+        let expected_auth = format!("Bearer {api_key}");
+        assert_eq!(
+            request_header(&request.headers, "authorization").as_deref(),
+            Some(expected_auth.as_str())
+        );
+        assert_eq!(
+            request_header(&request.headers, "content-type").as_deref(),
+            Some("application/json")
+        );
+        assert!(expected_auth_header);
+    }
+
+    let server = harness.start_mock_http_server();
+    let expected_path = "/special/zenmux/messages";
+    server.add_route(
+        "POST",
+        expected_path,
+        text_event_stream_response(anthropic_messages_sse_body()),
+    );
+
+    let mut entry = make_model_entry(
+        "zenmux",
+        "special-anthropic-stream-model",
+        &format!("{}{expected_path}", server.base_url()),
+    );
+    entry.model.api.clear();
+    let provider = create_provider(&entry, None).expect("create_provider should route zenmux");
+    assert_eq!(provider.api(), "anthropic-messages");
+    assert_eq!(provider.name(), "anthropic");
+
+    let api_key = "special-zenmux-token".to_string();
+    let context = Context {
+        system_prompt: Some("Be concise.".to_string()),
+        messages: vec![Message::User(UserMessage {
+            content: UserContent::Text("Ping".to_string()),
+            timestamp: 0,
+        })],
+        tools: Vec::new(),
+    };
+    let options = StreamOptions {
+        api_key: Some(api_key.clone()),
+        max_tokens: Some(64),
+        ..Default::default()
+    };
+    drive_provider_stream_to_done(provider, context, options);
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1, "expected exactly one request for zenmux");
+    let request = &requests[0];
+    assert_eq!(request.path, expected_path);
+    assert_eq!(
+        request_header(&request.headers, "x-api-key").as_deref(),
+        Some(api_key.as_str())
+    );
+    assert!(request_header(&request.headers, "authorization").is_none());
+    assert_eq!(
+        request_header(&request.headers, "anthropic-version").as_deref(),
+        Some("2023-06-01")
+    );
+}
+
+#[test]
+fn special_routing_metadata_api_overrides_change_route_kind() {
+    for provider_id in ["opencode", "vercel"] {
+        let harness = TestHarness::new(format!("special_override_{provider_id}_openai_responses"));
+        let server = harness.start_mock_http_server();
+        let path_prefix = format!("/override/{provider_id}");
+        let expected_path = format!("{path_prefix}/responses");
+        server.add_route(
+            "POST",
+            &expected_path,
+            text_event_stream_response(openai_responses_sse_body()),
+        );
+
+        let mut entry = make_model_entry(
+            provider_id,
+            "special-override-model",
+            &format!("{}{}", server.base_url(), path_prefix),
+        );
+        entry.model.api = "openai-responses".to_string();
+
+        let provider = create_provider(&entry, None)
+            .unwrap_or_else(|e| panic!("override route failed for {provider_id}: {e}"));
+        assert_eq!(provider.api(), "openai-responses");
+
+        let context = Context {
+            system_prompt: Some("Be concise.".to_string()),
+            messages: vec![Message::User(UserMessage {
+                content: UserContent::Text("Ping".to_string()),
+                timestamp: 0,
+            })],
+            tools: Vec::new(),
+        };
+        let options = StreamOptions {
+            api_key: Some("override-token".to_string()),
+            max_tokens: Some(64),
+            ..Default::default()
+        };
+        drive_provider_stream_to_done(provider, context, options);
+
+        let requests = server.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].path, expected_path);
+    }
+
+    let harness = TestHarness::new("special_override_zenmux_openai_completions");
+    let server = harness.start_mock_http_server();
+    let expected_path = "/override/zenmux/chat/completions";
+    server.add_route(
+        "POST",
+        expected_path,
+        text_event_stream_response(openai_chat_sse_body()),
+    );
+
+    let mut entry = make_model_entry(
+        "zenmux",
+        "special-override-model",
+        &format!("{}/override/zenmux", server.base_url()),
+    );
+    entry.model.api = "openai-completions".to_string();
+
+    let provider = create_provider(&entry, None).expect("override route failed for zenmux");
+    assert_eq!(provider.api(), "openai-completions");
+    assert_eq!(provider.name(), "zenmux");
+
+    let context = Context {
+        system_prompt: Some("Be concise.".to_string()),
+        messages: vec![Message::User(UserMessage {
+            content: UserContent::Text("Ping".to_string()),
+            timestamp: 0,
+        })],
+        tools: Vec::new(),
+    };
+    let options = StreamOptions {
+        api_key: Some("override-zenmux-token".to_string()),
+        max_tokens: Some(64),
+        ..Default::default()
+    };
+    drive_provider_stream_to_done(provider, context, options);
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].path, expected_path);
+    assert_eq!(
+        request_header(&requests[0].headers, "authorization").as_deref(),
+        Some("Bearer override-zenmux-token")
+    );
+}
+
+#[test]
+fn special_routing_unsupported_api_reports_provider_mismatch() {
+    for provider_id in ["opencode", "vercel", "zenmux"] {
+        let mut entry = make_model_entry(provider_id, "bad-model", "https://example.invalid/v1");
+        entry.model.api = "unsupported-api-family".to_string();
+        let Err(err) = create_provider(&entry, None) else {
+            panic!("unsupported api override should fail with route diagnostic");
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains(provider_id),
+            "error for {provider_id} should include provider id, got: {msg}"
+        );
+        assert!(
+            msg.contains("unsupported-api-family"),
+            "error for {provider_id} should include api identifier, got: {msg}"
+        );
+    }
+}
 #[test]
 fn fireworks_ai_alias_migration_matches_fireworks_canonical_defaults() {
     let harness =

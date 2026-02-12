@@ -1299,6 +1299,10 @@ mod tests {
             "togetherai",
             "perplexity",
             "xai",
+            "baseten",
+            "llama",
+            "lmstudio",
+            "ollama-cloud",
         ];
         for provider in providers {
             assert!(
@@ -1365,6 +1369,83 @@ mod tests {
                 "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1",
             ),
             ("scaleway", "https://api.scaleway.ai/v1"),
+        ];
+        for (provider, expected_base_url) in &cases {
+            let defaults =
+                ad_hoc_provider_defaults(provider).unwrap_or_else(|| panic!("defaults {provider}"));
+            assert_eq!(defaults.api, "openai-completions");
+            assert!(defaults.auth_header);
+            assert_eq!(defaults.base_url, *expected_base_url);
+        }
+    }
+
+    #[test]
+    fn ad_hoc_batch_b3_defaults_resolve_expected_routes() {
+        let cases = [
+            ("siliconflow", "https://api.siliconflow.com/v1"),
+            ("siliconflow-cn", "https://api.siliconflow.cn/v1"),
+            ("upstage", "https://api.upstage.ai/v1/solar"),
+            ("venice", "https://api.venice.ai/api/v1"),
+            ("zai", "https://api.z.ai/api/paas/v4"),
+            ("zai-coding-plan", "https://api.z.ai/api/coding/paas/v4"),
+            ("zhipuai", "https://open.bigmodel.cn/api/paas/v4"),
+            (
+                "zhipuai-coding-plan",
+                "https://open.bigmodel.cn/api/coding/paas/v4",
+            ),
+        ];
+        for (provider, expected_base_url) in &cases {
+            let defaults =
+                ad_hoc_provider_defaults(provider).unwrap_or_else(|| panic!("defaults {provider}"));
+            assert_eq!(defaults.api, "openai-completions");
+            assert!(defaults.auth_header);
+            assert_eq!(defaults.base_url, *expected_base_url);
+        }
+    }
+
+    #[test]
+    fn ad_hoc_batch_b3_coding_plan_and_regional_variants_remain_distinct() {
+        let siliconflow = ad_hoc_provider_defaults("siliconflow").expect("siliconflow defaults");
+        let siliconflow_cn =
+            ad_hoc_provider_defaults("siliconflow-cn").expect("siliconflow-cn defaults");
+        assert_eq!(canonical_provider_id("siliconflow"), Some("siliconflow"));
+        assert_eq!(
+            canonical_provider_id("siliconflow-cn"),
+            Some("siliconflow-cn")
+        );
+        assert_ne!(siliconflow.base_url, siliconflow_cn.base_url);
+
+        let zai = ad_hoc_provider_defaults("zai").expect("zai defaults");
+        let zai_coding = ad_hoc_provider_defaults("zai-coding-plan").expect("zai-coding defaults");
+        assert_eq!(canonical_provider_id("zai"), Some("zai"));
+        assert_eq!(
+            canonical_provider_id("zai-coding-plan"),
+            Some("zai-coding-plan")
+        );
+        assert_eq!(zai.api, "openai-completions");
+        assert_eq!(zai_coding.api, "openai-completions");
+        assert_ne!(zai.base_url, zai_coding.base_url);
+
+        let zhipu = ad_hoc_provider_defaults("zhipuai").expect("zhipu defaults");
+        let zhipu_coding =
+            ad_hoc_provider_defaults("zhipuai-coding-plan").expect("zhipu-coding defaults");
+        assert_eq!(canonical_provider_id("zhipuai"), Some("zhipuai"));
+        assert_eq!(
+            canonical_provider_id("zhipuai-coding-plan"),
+            Some("zhipuai-coding-plan")
+        );
+        assert_eq!(zhipu.api, "openai-completions");
+        assert_eq!(zhipu_coding.api, "openai-completions");
+        assert_ne!(zhipu.base_url, zhipu_coding.base_url);
+    }
+
+    #[test]
+    fn ad_hoc_batch_c1_defaults_resolve_expected_routes() {
+        let cases = [
+            ("baseten", "https://inference.baseten.co/v1"),
+            ("llama", "https://api.llama.com/compat/v1"),
+            ("lmstudio", "http://127.0.0.1:1234/v1"),
+            ("ollama-cloud", "https://ollama.com/v1"),
         ];
         for (provider, expected_base_url) in &cases {
             let defaults =

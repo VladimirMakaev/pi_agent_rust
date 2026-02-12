@@ -1037,6 +1037,249 @@ pub const PROVIDER_METADATA: &[ProviderMetadata] = &[
         }),
         test_obligations: TEST_REQUIRED,
     },
+    // ── Batch B3: Regional + coding-plan providers ──────────────────────
+    ProviderMetadata {
+        canonical_id: "siliconflow",
+        aliases: &[],
+        auth_env_keys: &["SILICONFLOW_API_KEY"],
+        onboarding: ProviderOnboardingMode::OpenAICompatiblePreset,
+        routing_defaults: Some(ProviderRoutingDefaults {
+            api: "openai-completions",
+            base_url: "https://api.siliconflow.com/v1",
+            auth_header: true,
+            reasoning: true,
+            input: &INPUT_TEXT,
+            context_window: 128_000,
+            max_tokens: 16_384,
+        }),
+        test_obligations: TEST_REQUIRED,
+    },
+    ProviderMetadata {
+        canonical_id: "siliconflow-cn",
+        aliases: &[],
+        auth_env_keys: &["SILICONFLOW_CN_API_KEY"],
+        onboarding: ProviderOnboardingMode::OpenAICompatiblePreset,
+        routing_defaults: Some(ProviderRoutingDefaults {
+            api: "openai-completions",
+            base_url: "https://api.siliconflow.cn/v1",
+            auth_header: true,
+            reasoning: true,
+            input: &INPUT_TEXT,
+            context_window: 128_000,
+            max_tokens: 16_384,
+        }),
+        test_obligations: TEST_REQUIRED,
+    },
+    ProviderMetadata {
+        canonical_id: "upstage",
+        aliases: &[],
+        auth_env_keys: &["UPSTAGE_API_KEY"],
+        onboarding: ProviderOnboardingMode::OpenAICompatiblePreset,
+        routing_defaults: Some(ProviderRoutingDefaults {
+            api: "openai-completions",
+            base_url: "https://api.upstage.ai/v1/solar",
+            auth_header: true,
+            reasoning: true,
+            input: &INPUT_TEXT,
+            context_window: 128_000,
+            max_tokens: 16_384,
+        }),
+        test_obligations: TEST_REQUIRED,
+    },
+    ProviderMetadata {
+        canonical_id: "venice",
+        aliases: &[],
+        auth_env_keys: &["VENICE_API_KEY"],
+        onboarding: ProviderOnboardingMode::OpenAICompatiblePreset,
+        routing_defaults: Some(ProviderRoutingDefaults {
+            api: "openai-completions",
+            base_url: "https://api.venice.ai/api/v1",
+            auth_header: true,
+            reasoning: true,
+            input: &INPUT_TEXT,
+            context_window: 128_000,
+            max_tokens: 16_384,
+        }),
+        test_obligations: TEST_REQUIRED,
+    },
+    ProviderMetadata {
+        canonical_id: "zai",
+        aliases: &[],
+        auth_env_keys: &["ZHIPU_API_KEY"],
+        onboarding: ProviderOnboardingMode::OpenAICompatiblePreset,
+        routing_defaults: Some(ProviderRoutingDefaults {
+            api: "openai-completions",
+            base_url: "https://api.z.ai/api/paas/v4",
+            auth_header: true,
+            reasoning: true,
+            input: &INPUT_TEXT,
+            context_window: 128_000,
+            max_tokens: 16_384,
+        }),
+        test_obligations: TEST_REQUIRED,
+    },
+    ProviderMetadata {
+        canonical_id: "zai-coding-plan",
+        aliases: &[],
+        auth_env_keys: &["ZHIPU_API_KEY"],
+        onboarding: ProviderOnboardingMode::OpenAICompatiblePreset,
+        routing_defaults: Some(ProviderRoutingDefaults {
+            api: "openai-completions",
+            base_url: "https://api.z.ai/api/coding/paas/v4",
+            auth_header: true,
+            reasoning: true,
+            input: &INPUT_TEXT,
+            context_window: 128_000,
+            max_tokens: 16_384,
+        }),
+        test_obligations: TEST_REQUIRED,
+    },
+    ProviderMetadata {
+        canonical_id: "zhipuai",
+        aliases: &[],
+        auth_env_keys: &["ZHIPU_API_KEY"],
+        onboarding: ProviderOnboardingMode::OpenAICompatiblePreset,
+        routing_defaults: Some(ProviderRoutingDefaults {
+            api: "openai-completions",
+            base_url: "https://open.bigmodel.cn/api/paas/v4",
+            auth_header: true,
+            reasoning: true,
+            input: &INPUT_TEXT,
+            context_window: 128_000,
+            max_tokens: 16_384,
+        }),
+        test_obligations: TEST_REQUIRED,
+    },
+    ProviderMetadata {
+        canonical_id: "zhipuai-coding-plan",
+        aliases: &[],
+        auth_env_keys: &["ZHIPU_API_KEY"],
+        onboarding: ProviderOnboardingMode::OpenAICompatiblePreset,
+        routing_defaults: Some(ProviderRoutingDefaults {
+            api: "openai-completions",
+            base_url: "https://open.bigmodel.cn/api/coding/paas/v4",
+            auth_header: true,
+            reasoning: true,
+            input: &INPUT_TEXT,
+            context_window: 128_000,
+            max_tokens: 16_384,
+        }),
+        test_obligations: TEST_REQUIRED,
+    },
+    // ── Batch C1: Local/self-hosted preset providers ──────────────────────
+    ProviderMetadata {
+        canonical_id: "baseten",
+        aliases: &[],
+        auth_env_keys: &["BASETEN_API_KEY"],
+        onboarding: ProviderOnboardingMode::OpenAICompatiblePreset,
+        routing_defaults: Some(ProviderRoutingDefaults {
+            api: "openai-completions",
+            base_url: "https://inference.baseten.co/v1",
+            auth_header: true,
+            reasoning: true,
+            input: &INPUT_TEXT,
+            context_window: 262_144,
+            max_tokens: 65_536,
+        }),
+        test_obligations: TEST_REQUIRED,
+    },
+    ProviderMetadata {
+        canonical_id: "llama",
+        aliases: &[],
+        auth_env_keys: &["LLAMA_API_KEY"],
+        onboarding: ProviderOnboardingMode::OpenAICompatiblePreset,
+        routing_defaults: Some(ProviderRoutingDefaults {
+            api: "openai-completions",
+            base_url: "https://api.llama.com/compat/v1",
+            auth_header: true,
+            reasoning: true,
+            input: &INPUT_TEXT_IMAGE,
+            context_window: 128_000,
+            max_tokens: 4096,
+        }),
+        test_obligations: TEST_REQUIRED,
+    },
+    ProviderMetadata {
+        canonical_id: "lmstudio",
+        aliases: &[],
+        auth_env_keys: &["LMSTUDIO_API_KEY"],
+        onboarding: ProviderOnboardingMode::OpenAICompatiblePreset,
+        routing_defaults: Some(ProviderRoutingDefaults {
+            api: "openai-completions",
+            base_url: "http://127.0.0.1:1234/v1",
+            auth_header: true,
+            reasoning: true,
+            input: &INPUT_TEXT,
+            context_window: 131_072,
+            max_tokens: 32_768,
+        }),
+        test_obligations: TEST_REQUIRED,
+    },
+    ProviderMetadata {
+        canonical_id: "ollama-cloud",
+        aliases: &[],
+        auth_env_keys: &["OLLAMA_API_KEY"],
+        onboarding: ProviderOnboardingMode::OpenAICompatiblePreset,
+        routing_defaults: Some(ProviderRoutingDefaults {
+            api: "openai-completions",
+            base_url: "https://ollama.com/v1",
+            auth_header: true,
+            reasoning: true,
+            input: &INPUT_TEXT_IMAGE,
+            context_window: 262_144,
+            max_tokens: 131_072,
+        }),
+        test_obligations: TEST_REQUIRED,
+    },
+    // ── Special routing providers (bd-3uqg.3.9) ────────────────────────────
+    ProviderMetadata {
+        canonical_id: "opencode",
+        aliases: &[],
+        auth_env_keys: &["OPENCODE_API_KEY"],
+        onboarding: ProviderOnboardingMode::OpenAICompatiblePreset,
+        routing_defaults: Some(ProviderRoutingDefaults {
+            api: "openai-completions",
+            base_url: "https://opencode.ai/zen/v1",
+            auth_header: true,
+            reasoning: true,
+            input: &INPUT_TEXT,
+            context_window: 128_000,
+            max_tokens: 16_384,
+        }),
+        test_obligations: TEST_REQUIRED,
+    },
+    ProviderMetadata {
+        canonical_id: "vercel",
+        aliases: &[],
+        auth_env_keys: &["AI_GATEWAY_API_KEY"],
+        onboarding: ProviderOnboardingMode::OpenAICompatiblePreset,
+        routing_defaults: Some(ProviderRoutingDefaults {
+            api: "openai-completions",
+            base_url: "https://ai-gateway.vercel.sh/v1",
+            auth_header: true,
+            reasoning: true,
+            input: &INPUT_TEXT,
+            context_window: 128_000,
+            max_tokens: 16_384,
+        }),
+        test_obligations: TEST_REQUIRED,
+    },
+    ProviderMetadata {
+        canonical_id: "zenmux",
+        aliases: &[],
+        auth_env_keys: &["ZENMUX_API_KEY"],
+        onboarding: ProviderOnboardingMode::OpenAICompatiblePreset,
+        routing_defaults: Some(ProviderRoutingDefaults {
+            api: "anthropic-messages",
+            base_url: "https://zenmux.ai/api/anthropic/v1/messages",
+            auth_header: false,
+            reasoning: true,
+            input: &INPUT_TEXT,
+            context_window: 200_000,
+            max_tokens: 8192,
+        }),
+        test_obligations: TEST_REQUIRED,
+    },
     // ── Cloudflare provider IDs (gateway + workers-ai) ────────────────────
     ProviderMetadata {
         canonical_id: "cloudflare-ai-gateway",
@@ -1918,6 +2161,204 @@ mod tests {
     }
 
     #[test]
+    fn batch_b3_metadata_resolves_all_eight_providers() {
+        let ids = [
+            "siliconflow",
+            "siliconflow-cn",
+            "upstage",
+            "venice",
+            "zai",
+            "zai-coding-plan",
+            "zhipuai",
+            "zhipuai-coding-plan",
+        ];
+        for id in &ids {
+            let meta = provider_metadata(id).unwrap_or_else(|| panic!("{id} metadata missing"));
+            assert_eq!(meta.canonical_id, *id);
+            assert_eq!(
+                meta.onboarding,
+                ProviderOnboardingMode::OpenAICompatiblePreset
+            );
+        }
+    }
+
+    #[test]
+    fn batch_b3_env_keys_match_expected() {
+        assert_eq!(
+            provider_metadata("siliconflow").unwrap().auth_env_keys,
+            &["SILICONFLOW_API_KEY"]
+        );
+        assert_eq!(
+            provider_metadata("siliconflow-cn").unwrap().auth_env_keys,
+            &["SILICONFLOW_CN_API_KEY"]
+        );
+        assert_eq!(
+            provider_metadata("upstage").unwrap().auth_env_keys,
+            &["UPSTAGE_API_KEY"]
+        );
+        assert_eq!(
+            provider_metadata("venice").unwrap().auth_env_keys,
+            &["VENICE_API_KEY"]
+        );
+        assert_eq!(
+            provider_metadata("zai").unwrap().auth_env_keys,
+            &["ZHIPU_API_KEY"]
+        );
+        assert_eq!(
+            provider_metadata("zai-coding-plan").unwrap().auth_env_keys,
+            &["ZHIPU_API_KEY"]
+        );
+        assert_eq!(
+            provider_metadata("zhipuai").unwrap().auth_env_keys,
+            &["ZHIPU_API_KEY"]
+        );
+        assert_eq!(
+            provider_metadata("zhipuai-coding-plan")
+                .unwrap()
+                .auth_env_keys,
+            &["ZHIPU_API_KEY"]
+        );
+    }
+
+    #[test]
+    fn batch_b3_routing_defaults_use_openai_completions_and_bearer_auth() {
+        let ids = [
+            ("siliconflow", "api.siliconflow.com"),
+            ("siliconflow-cn", "api.siliconflow.cn"),
+            ("upstage", "api.upstage.ai"),
+            ("venice", "api.venice.ai"),
+            ("zai", "api.z.ai"),
+            ("zai-coding-plan", "api.z.ai"),
+            ("zhipuai", "open.bigmodel.cn"),
+            ("zhipuai-coding-plan", "open.bigmodel.cn"),
+        ];
+        for (id, expected_host) in &ids {
+            let defaults =
+                provider_routing_defaults(id).unwrap_or_else(|| panic!("{id} defaults missing"));
+            assert_eq!(defaults.api, "openai-completions");
+            assert!(defaults.auth_header);
+            assert!(defaults.base_url.contains(expected_host));
+        }
+    }
+
+    #[test]
+    fn batch_b3_coding_plan_variants_keep_family_auth_but_distinct_base_urls() {
+        let zai = provider_routing_defaults("zai").expect("zai defaults");
+        let zai_coding = provider_routing_defaults("zai-coding-plan").expect("zai-coding defaults");
+        assert_eq!(zai.api, "openai-completions");
+        assert_eq!(zai_coding.api, "openai-completions");
+        assert_ne!(zai.base_url, zai_coding.base_url);
+
+        let zhipu = provider_routing_defaults("zhipuai").expect("zhipu defaults");
+        let zhipu_coding =
+            provider_routing_defaults("zhipuai-coding-plan").expect("zhipu-coding defaults");
+        assert_eq!(zhipu.api, "openai-completions");
+        assert_eq!(zhipu_coding.api, "openai-completions");
+        assert_ne!(zhipu.base_url, zhipu_coding.base_url);
+
+        assert_eq!(provider_auth_env_keys("zai"), &["ZHIPU_API_KEY"]);
+        assert_eq!(provider_auth_env_keys("zhipuai"), &["ZHIPU_API_KEY"]);
+    }
+
+    #[test]
+    fn batch_c1_metadata_resolves_all_four_providers() {
+        let ids = ["baseten", "llama", "lmstudio", "ollama-cloud"];
+        for id in &ids {
+            let meta = provider_metadata(id).unwrap_or_else(|| panic!("{id} metadata missing"));
+            assert_eq!(meta.canonical_id, *id);
+            assert_eq!(
+                meta.onboarding,
+                ProviderOnboardingMode::OpenAICompatiblePreset
+            );
+        }
+    }
+
+    #[test]
+    fn batch_c1_env_keys_match_expected() {
+        assert_eq!(
+            provider_metadata("baseten").unwrap().auth_env_keys,
+            &["BASETEN_API_KEY"]
+        );
+        assert_eq!(
+            provider_metadata("llama").unwrap().auth_env_keys,
+            &["LLAMA_API_KEY"]
+        );
+        assert_eq!(
+            provider_metadata("lmstudio").unwrap().auth_env_keys,
+            &["LMSTUDIO_API_KEY"]
+        );
+        assert_eq!(
+            provider_metadata("ollama-cloud").unwrap().auth_env_keys,
+            &["OLLAMA_API_KEY"]
+        );
+    }
+
+    #[test]
+    fn batch_c1_routing_defaults_use_openai_completions_with_expected_endpoints() {
+        let ids = [
+            ("baseten", "https://inference.baseten.co/v1"),
+            ("llama", "https://api.llama.com/compat/v1"),
+            ("lmstudio", "http://127.0.0.1:1234/v1"),
+            ("ollama-cloud", "https://ollama.com/v1"),
+        ];
+        for (id, expected_base_url) in &ids {
+            let defaults =
+                provider_routing_defaults(id).unwrap_or_else(|| panic!("{id} defaults missing"));
+            assert_eq!(defaults.api, "openai-completions");
+            assert!(defaults.auth_header);
+            assert_eq!(defaults.base_url, *expected_base_url);
+        }
+    }
+
+    #[test]
+    fn special_routing_metadata_resolves_all_three_providers() {
+        let ids = ["opencode", "vercel", "zenmux"];
+        for id in &ids {
+            let meta = provider_metadata(id).unwrap_or_else(|| panic!("{id} metadata missing"));
+            assert_eq!(meta.canonical_id, *id);
+            assert_eq!(
+                meta.onboarding,
+                ProviderOnboardingMode::OpenAICompatiblePreset
+            );
+        }
+    }
+
+    #[test]
+    fn special_routing_env_keys_match_expected() {
+        assert_eq!(
+            provider_metadata("opencode").unwrap().auth_env_keys,
+            &["OPENCODE_API_KEY"]
+        );
+        assert_eq!(
+            provider_metadata("vercel").unwrap().auth_env_keys,
+            &["AI_GATEWAY_API_KEY"]
+        );
+        assert_eq!(
+            provider_metadata("zenmux").unwrap().auth_env_keys,
+            &["ZENMUX_API_KEY"]
+        );
+    }
+
+    #[test]
+    fn special_routing_defaults_match_expected_api_families() {
+        let opencode = provider_routing_defaults("opencode").expect("opencode defaults");
+        assert_eq!(opencode.api, "openai-completions");
+        assert_eq!(opencode.base_url, "https://opencode.ai/zen/v1");
+        assert!(opencode.auth_header);
+
+        let vercel = provider_routing_defaults("vercel").expect("vercel defaults");
+        assert_eq!(vercel.api, "openai-completions");
+        assert_eq!(vercel.base_url, "https://ai-gateway.vercel.sh/v1");
+        assert!(vercel.auth_header);
+
+        let zenmux = provider_routing_defaults("zenmux").expect("zenmux defaults");
+        assert_eq!(zenmux.api, "anthropic-messages");
+        assert_eq!(
+            zenmux.base_url,
+            "https://zenmux.ai/api/anthropic/v1/messages"
+        );
+        assert!(!zenmux.auth_header);
+    }
     fn v0_not_onboarded_no_api_endpoint() {
         // v0 (Vercel) has no API endpoint in models.dev; deferred until endpoint is published.
         assert!(

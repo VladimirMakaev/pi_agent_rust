@@ -152,6 +152,85 @@ Canonical mapping decisions:
 - `moonshotai-cn` is a distinct canonical regional ID and does not alias to `moonshotai`.
 - `moonshotai` and `moonshotai-cn` intentionally share `MOONSHOT_API_KEY` while retaining distinct base URLs.
 
+## Wave B3 Onboarding Verification (`bd-3uqg.5.3`)
+
+Batch B3 provider IDs integrated and lock-tested:
+`siliconflow`, `siliconflow-cn`, `upstage`, `venice`, `zai`, `zai-coding-plan`, `zhipuai`, `zhipuai-coding-plan`.
+
+Verification artifacts:
+- Metadata + ad-hoc default route lock: [`src/provider_metadata.rs`](../src/provider_metadata.rs) (`batch_b3_*` tests), [`src/models.rs`](../src/models.rs) (`ad_hoc_batch_b3_*`)
+- Factory route lock: [`tests/provider_factory.rs`](../tests/provider_factory.rs) (`wave_b3_presets_resolve_metadata_defaults_and_factory_route`)
+- OpenAI-compatible stream path/auth lock: [`tests/provider_factory.rs`](../tests/provider_factory.rs) (`wave_b3_openai_compat_streams_use_chat_completions_path_and_bearer_auth`)
+- Family/coding-plan distinctness lock: [`tests/provider_factory.rs`](../tests/provider_factory.rs) (`wave_b3_family_and_coding_plan_variants_are_distinct`)
+- Representative smoke/e2e artifacts (offline VCR harness): [`tests/provider_native_verify.rs`](../tests/provider_native_verify.rs) (`wave_b3_smoke::b3_*`) with fixtures under:
+  [`tests/fixtures/vcr/verify_siliconflow_*.json`](../tests/fixtures/vcr/verify_siliconflow_simple_text.json),
+  [`tests/fixtures/vcr/verify_siliconflow-cn_*.json`](../tests/fixtures/vcr/verify_siliconflow-cn_simple_text.json),
+  [`tests/fixtures/vcr/verify_upstage_*.json`](../tests/fixtures/vcr/verify_upstage_simple_text.json),
+  [`tests/fixtures/vcr/verify_venice_*.json`](../tests/fixtures/vcr/verify_venice_simple_text.json),
+  [`tests/fixtures/vcr/verify_zai_*.json`](../tests/fixtures/vcr/verify_zai_simple_text.json),
+  [`tests/fixtures/vcr/verify_zai-coding-plan_*.json`](../tests/fixtures/vcr/verify_zai-coding-plan_simple_text.json),
+  [`tests/fixtures/vcr/verify_zhipuai_*.json`](../tests/fixtures/vcr/verify_zhipuai_simple_text.json),
+  [`tests/fixtures/vcr/verify_zhipuai-coding-plan_*.json`](../tests/fixtures/vcr/verify_zhipuai-coding-plan_simple_text.json)
+
+Provider-by-provider status (local verification via `cargo test --test provider_factory -- --nocapture`):
+
+| Provider ID | API family | Route lock | Stream/auth lock | Status |
+|-------------|------------|------------|------------------|--------|
+| `siliconflow` | `openai-completions` | yes | yes | pass |
+| `siliconflow-cn` | `openai-completions` | yes | yes | pass |
+| `upstage` | `openai-completions` | yes | yes | pass |
+| `venice` | `openai-completions` | yes | yes | pass |
+| `zai` | `openai-completions` | yes | yes | pass |
+| `zai-coding-plan` | `openai-completions` | yes | yes | pass |
+| `zhipuai` | `openai-completions` | yes | yes | pass |
+| `zhipuai-coding-plan` | `openai-completions` | yes | yes | pass |
+
+Representative smoke/e2e verification run:
+- `cargo test --test provider_native_verify b3_ -- --nocapture`
+- Passed: `b3_siliconflow_{simple_text,tool_call_single,error_auth_401}`,
+  `b3_siliconflow_cn_{simple_text,tool_call_single,error_auth_401}`,
+  `b3_upstage_{simple_text,tool_call_single,error_auth_401}`,
+  `b3_venice_{simple_text,tool_call_single,error_auth_401}`,
+  `b3_zai_{simple_text,tool_call_single,error_auth_401}`,
+  `b3_zai_coding_{simple_text,tool_call_single,error_auth_401}`,
+  `b3_zhipuai_{simple_text,tool_call_single,error_auth_401}`,
+  `b3_zhipuai_coding_{simple_text,tool_call_single,error_auth_401}`.
+
+Canonical mapping decisions:
+- `siliconflow` and `siliconflow-cn` are distinct canonical regional IDs with separate auth env keys (`SILICONFLOW_API_KEY`, `SILICONFLOW_CN_API_KEY`).
+- `zai` and `zai-coding-plan` are distinct canonical IDs that intentionally share `ZHIPU_API_KEY` while retaining distinct base URLs.
+- `zhipuai` and `zhipuai-coding-plan` are distinct canonical IDs that intentionally share `ZHIPU_API_KEY` while retaining distinct base URLs.
+
+## Wave C Staging Snapshot (`bd-3uqg.6`)
+
+Source of truth for provisional Wave C defaults:
+- `https://models.dev/api.json` (queried on 2026-02-12)
+- Extraction command:
+
+```bash
+curl -s https://models.dev/api.json | jq '{
+  baseten: {api: ."baseten".api, env: ."baseten".env},
+  llama: {api: ."llama".api, env: ."llama".env},
+  lmstudio: {api: ."lmstudio".api, env: ."lmstudio".env},
+  "ollama-cloud": {api: ."ollama-cloud".api, env: ."ollama-cloud".env},
+  opencode: {api: ."opencode".api, env: ."opencode".env},
+  vercel: {api: ."vercel".api, env: ."vercel".env},
+  zenmux: {api: ."zenmux".api, env: ."zenmux".env}
+}'
+```
+
+Wave C execution status:
+
+| Provider ID | API family target | Default base URL | Auth env | Current tracking status |
+|-------------|-------------------|------------------|----------|-------------------------|
+| `baseten` | `openai-completions` | `https://inference.baseten.co/v1` | `BASETEN_API_KEY` | Wave C preset candidate (`bd-3uqg.6.1`) |
+| `llama` | `openai-completions` | `https://api.llama.com/compat/v1/` | `LLAMA_API_KEY` | Wave C preset candidate (`bd-3uqg.6.2`) |
+| `lmstudio` | `openai-completions` | `http://127.0.0.1:1234/v1` | `LMSTUDIO_API_KEY` | Wave C preset candidate (`bd-3uqg.6.2`) |
+| `ollama-cloud` | `openai-completions` | `https://ollama.com/v1` | `OLLAMA_API_KEY` | Wave C preset candidate (`bd-3uqg.6.2`) |
+| `opencode` | `openai-completions` | `https://opencode.ai/zen/v1` | `OPENCODE_API_KEY` | Special routing pending (`bd-3uqg.3.9`, `bd-3uqg.6.3`) |
+| `vercel` | gateway-wrapper (`@ai-sdk/gateway`) | no static API URL in `models.dev` | `AI_GATEWAY_API_KEY` | Classification/routing pending (`bd-3uqg.3.9`, `bd-3uqg.6.1`) |
+| `zenmux` | `anthropic-messages` target (gateway) | `https://zenmux.ai/api/anthropic/v1` | `ZENMUX_API_KEY` | Special routing pending (`bd-3uqg.3.9`, `bd-3uqg.6.3`) |
+
 ## Canonical Provider Matrix (Current Baseline + Evidence Links)
 
 | Canonical ID | Aliases | Capability flags | API family | Base URL template | Auth mode | Mode | Runtime status | Verification evidence (unit + e2e) |
