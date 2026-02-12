@@ -148,6 +148,91 @@
       "status": "baseline_captured_branch_unavailable"
     }
   ],
+  "risk_ranked_gap_backlog": [
+    {
+      "rank": 1,
+      "gap": "Extensions critical-path function coverage deficit",
+      "severity": "critical",
+      "impact": "Largest uncovered surface in extension runtime increases risk of regressions in policy gating, host-call dispatch, and JS bridge behavior.",
+      "reproducibility": "high",
+      "target_test_type": "extension_fixtures+conformance+integration",
+      "evidence": {
+        "critical_path": "extensions",
+        "uncovered_line_count": 4739,
+        "uncovered_function_count": 607
+      },
+      "mapped_issue_id": "bd-1f42.4.2"
+    },
+    {
+      "rank": 2,
+      "gap": "Provider routing and adapter baseline gaps",
+      "severity": "high",
+      "impact": "Provider regressions can break model routing, auth handling, and tool-call normalization across integrations.",
+      "reproducibility": "high",
+      "target_test_type": "contract+conformance+smoke_e2e",
+      "evidence": {
+        "critical_path": "providers",
+        "uncovered_line_count": 1226,
+        "uncovered_function_count": 127
+      },
+      "mapped_issue_id": "bd-3uqg.8"
+    },
+    {
+      "rank": 3,
+      "gap": "Agent loop orchestration uncovered branches of control flow",
+      "severity": "high",
+      "impact": "Missed abort/retry/interrupt paths can cause incorrect run termination and tool lifecycle inconsistencies.",
+      "reproducibility": "medium",
+      "target_test_type": "scenario_e2e+soak",
+      "evidence": {
+        "critical_path": "agent_loop",
+        "uncovered_line_count": 633,
+        "uncovered_function_count": 80
+      },
+      "mapped_issue_id": "bd-1f42.3.5"
+    },
+    {
+      "rank": 4,
+      "gap": "Tools execution/error-path threshold definition incomplete",
+      "severity": "high",
+      "impact": "Missing explicit non-mock thresholds weakens gate quality for file/shell/search tool reliability.",
+      "reproducibility": "high",
+      "target_test_type": "unit+integration_policy",
+      "evidence": {
+        "critical_path": "tools",
+        "uncovered_line_count": 638,
+        "uncovered_function_count": 95
+      },
+      "mapped_issue_id": "bd-1f42.2.8"
+    },
+    {
+      "rank": 5,
+      "gap": "Session persistence reliability coverage depth",
+      "severity": "medium",
+      "impact": "Uncovered persistence paths can produce replay/index drift under long-running or interrupted sessions.",
+      "reproducibility": "medium",
+      "target_test_type": "soak+recovery_e2e",
+      "evidence": {
+        "critical_path": "session",
+        "uncovered_line_count": 562,
+        "uncovered_function_count": 73
+      },
+      "mapped_issue_id": "bd-1f42.3.5"
+    },
+    {
+      "rank": 6,
+      "gap": "Branch coverage metric unavailable due llvm-cov SIGSEGV",
+      "severity": "medium",
+      "impact": "Branch-risk blind spots remain for release gating until branch summaries can be generated reliably.",
+      "reproducibility": "high",
+      "target_test_type": "coverage_infrastructure",
+      "evidence": {
+        "branch_count": 0,
+        "failure_mode": "llvm-cov export SIGSEGV in branch-summary mode"
+      },
+      "mapped_issue_id": "bd-1f42.1.5"
+    }
+  ],
   "handoff": {
     "owner": "RusticPeak",
     "next_owner": "RusticPeak",
