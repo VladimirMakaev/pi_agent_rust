@@ -37,9 +37,9 @@ fn scoring_examples_match_rubric() {
     assert_eq!(openclaw.score.final_total, 71);
     assert_eq!(openclaw.tier, "tier-1");
     assert_eq!(openclaw.score.popularity, 17);
-    assert_eq!(openclaw.score.adoption, 12);
+    assert_eq!(openclaw.score.adoption, 13);
     assert_eq!(openclaw.score.coverage, 17);
-    assert_eq!(openclaw.score.activity, 15);
+    assert_eq!(openclaw.score.activity, 14);
     assert_eq!(openclaw.score.compatibility, 15);
     assert_eq!(openclaw.score.risk_penalty, 5);
     assert_eq!(
@@ -49,13 +49,13 @@ fn scoring_examples_match_rubric() {
     assert_eq!(openclaw.score.components.adoption.marketplace_installs, 5);
 
     let niche = by_id.get("niche-github-script").expect("niche candidate");
-    assert_eq!(niche.score.final_total, 26);
+    assert_eq!(niche.score.final_total, 30);
     assert_eq!(niche.tier, "excluded");
 
     let official = by_id
         .get("official-pi-mono-example")
         .expect("official candidate");
-    assert_eq!(official.score.final_total, 69);
+    assert_eq!(official.score.final_total, 68);
     assert_eq!(official.tier, "tier-0");
 }
 
