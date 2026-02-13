@@ -2119,7 +2119,7 @@ fn save_provider_credential(
     auth: &mut crate::auth::AuthStorage,
     provider: &str,
     credential: crate::auth::AuthCredential,
-) -> crate::error::Result<()> {
+) {
     let requested = provider.trim().to_ascii_lowercase();
     let canonical = normalize_auth_provider_input(&requested);
     auth.set(canonical.clone(), credential);
@@ -2128,7 +2128,6 @@ fn save_provider_credential(
     } else if requested != canonical {
         let _ = auth.remove(&requested);
     }
-    auth.save()
 }
 
 fn remove_provider_credentials(
@@ -8969,7 +8968,8 @@ impl PiApp {
                 }
             };
 
-            if let Err(e) = save_provider_credential(&mut auth, &provider, credential) {
+            save_provider_credential(&mut auth, &provider, credential);
+            if let Err(e) = auth.save_async().await {
                 let _ = event_tx.try_send(PiMsg::AgentError(e.to_string()));
                 return;
             }
@@ -12510,6 +12510,57 @@ mod tests {
         let help = SlashCommand::help_text();
         assert!(help.contains("/login [provider]  - Login/setup credentials"));
         assert!(help.contains("/logout [provider] - Remove stored credentials"));
+    }
+
+    #[test]
+    fn save_provider_credential_persists_google_under_canonical_key() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let auth_path = dir.path().join("auth.json");
+        let mut auth = crate::auth::AuthStorage::load(auth_path.clone()).expect("load auth");
+
+        save_provider_credential(
+            &mut auth,
+            "gemini",
+            crate::auth::AuthCredential::ApiKey {
+                key: "gemini-test-key".to_string(),
+            },
+        );
+        auth.save().expect("save credential");
+
+        let loaded = crate::auth::AuthStorage::load(auth_path).expect("reload auth");
+        assert_eq!(
+            loaded.api_key("google").as_deref(),
+            Some("gemini-test-key")
+        );
+        assert!(loaded.get("gemini").is_none());
+    }
+
+    #[test]
+    fn remove_provider_credentials_clears_google_and_gemini_aliases() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let auth_path = dir.path().join("auth.json");
+        let mut auth = crate::auth::AuthStorage::load(auth_path.clone()).expect("load auth");
+        auth.set(
+            "google",
+            crate::auth::AuthCredential::ApiKey {
+                key: "google-key".to_string(),
+            },
+        );
+        auth.set(
+            "gemini",
+            crate::auth::AuthCredential::ApiKey {
+                key: "legacy-gemini-key".to_string(),
+            },
+        );
+        auth.save().expect("seed auth");
+
+        let mut auth = crate::auth::AuthStorage::load(auth_path.clone()).expect("reload auth");
+        assert!(remove_provider_credentials(&mut auth, "gemini"));
+        auth.save().expect("persist removals");
+
+        let loaded = crate::auth::AuthStorage::load(auth_path).expect("reload post-remove");
+        assert!(loaded.get("google").is_none());
+        assert!(loaded.get("gemini").is_none());
     }
 
     // --- next_non_whitespace_token tests ---
