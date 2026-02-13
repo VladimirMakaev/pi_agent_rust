@@ -184,15 +184,15 @@ Interpretation notes:
 
 Each mock/stub usage outside Suite 1 must be explicitly allowlisted here with rationale:
 
-| Identifier | Location | Suite | Rationale |
-|------------|----------|-------|-----------|
-| `MockHttpServer` | `tests/common/harness.rs` | 2 | Real local TCP; name is misleading (it's a real server). Used for raw byte injection that VCR cannot represent. |
-| `MockHttpRequest` | `tests/common/harness.rs` | 2 | Request builder for `MockHttpServer`. |
-| `MockHttpResponse` | `tests/common/harness.rs` | 2 | Response builder for `MockHttpServer`. |
-| `PackageCommandStubs` | `tests/e2e_cli.rs` | 3 | Offline npm/git stubs for CLI E2E; logged to JSONL. |
-| `RecordingSession` | `tests/extensions_message_session.rs` | 2 | Session API surface testing. Cleanup tracked by bd-m9rk. |
-| `RecordingHostActions` | `tests/e2e_message_session_control.rs` | 2 | Extension host action recording. Cleanup tracked by bd-m9rk. |
-| `MockHostActions` | `src/extensions.rs` (unit tests) | 2 | In-module stub for sendMessage/sendUserMessage. Cleanup tracked by bd-m9rk. |
+| Identifier | Location | Suite | Rationale | Owner | Replacement Plan |
+|------------|----------|-------|-----------|-------|------------------|
+| `MockHttpServer` | `tests/common/harness.rs` | 2 | Real local TCP; name is misleading (it's a real server). Used for raw byte injection that VCR cannot represent (invalid UTF-8). | infra | Permanent: VCR stores UTF-8 strings and cannot represent raw invalid bytes. |
+| `MockHttpRequest` | `tests/common/harness.rs` | 2 | Request builder for `MockHttpServer`. | infra | Same as `MockHttpServer` — permanent companion type. |
+| `MockHttpResponse` | `tests/common/harness.rs` | 2 | Response builder for `MockHttpServer`. | infra | Same as `MockHttpServer` — permanent companion type. |
+| `PackageCommandStubs` | `tests/e2e_cli.rs` | 3 | Offline npm/git stubs for CLI E2E; logged to JSONL. | infra | Permanent: real npm/git operations are non-deterministic. |
+| `RecordingSession` | `tests/extensions_message_session.rs` | 2 | Session API surface testing. | bd-m9rk | Replace with `SessionHandle` (real session). Most usages already migrated. |
+| `RecordingHostActions` | `tests/e2e_message_session_control.rs` | 2 | Extension host action recording; needed where agent loop provides host actions. | bd-m9rk | Evaluate if agent-loop integration test can replace recording. |
+| `MockHostActions` | `src/extensions.rs` (unit tests) | 2 | In-module stub for `sendMessage`/`sendUserMessage`. | bd-m9rk | Replace with real session-based dispatch once full integration test exists. |
 
 **Process for adding new exceptions:** Open a bead with rationale. Get review. Add to this table
 with the bead ID. Update the CI allowlist regex in `.github/workflows/ci.yml`.
@@ -252,6 +252,41 @@ Review checklist for exception approval:
 
 5. **Mock leak guard:** Enhanced version of guard #2 that also checks Suite 1 `src/` test modules
    for `NullSession`, `NullUiHandler`, `DummyProvider`.
+
+### CI Gate Lanes (bd-1f42.8.8.1)
+
+CI gates are organized into two evaluation lanes:
+
+**Preflight fast-fail lane:** Evaluates only blocking gates, stops at first failure.
+Used for fast PR feedback. Command:
+```bash
+cargo test --test ci_full_suite_gate -- preflight_fast_fail --nocapture --exact
+```
+
+**Full certification lane:** Evaluates all gates (blocking + non-blocking), generates
+waiver audit, and produces a verdict with promotion rules and rerun guidance. Command:
+```bash
+cargo test --test ci_full_suite_gate -- full_certification --nocapture --exact
+```
+
+Artifacts:
+- `tests/full_suite_gate/preflight_verdict.json` (schema `pi.ci.preflight_lane.v1`)
+- `tests/full_suite_gate/certification_verdict.json` (schema `pi.ci.certification_lane.v1`)
+- `tests/full_suite_gate/waiver_audit.json` (schema `pi.ci.waiver_audit.v1`)
+- `tests/full_suite_gate/replay_bundle.json` (schema `pi.e2e.replay_bundle.v1`)
+
+### Waiver Policy (bd-1f42.8.8.1)
+
+CI gates can be temporarily bypassed with auditable waivers in `tests/suite_classification.toml`.
+Each waiver requires: `owner`, `created`, `expires` (max 30 days), `bead`, `reason`, `scope`, `remove_when`.
+
+Rules:
+- Maximum waiver duration: 30 days (must renew or fix).
+- Expired waivers cause CI hard failure via the `waiver_lifecycle` gate.
+- Waivers expiring within 3 days trigger warnings.
+- Each waiver `gate_id` must match a gate defined in `ci_full_suite_gate.rs`.
+
+See `docs/qa-runbook.md` "Waiver Lifecycle" section for the full schema and examples.
 
 ### CI Gate Promotion Runbook (bd-k5q5.5.7)
 

@@ -1,0 +1,293 @@
+# CI Operator Runbook: Failure Signatures to Replay Commands
+
+Maps common CI failure signatures to exact replay commands, key artifact paths,
+and remediation steps.
+
+**Bead:** bd-1f42.8.9
+**Policy:** [docs/testing-policy.md](testing-policy.md)
+**QA Runbook:** [docs/qa-runbook.md](qa-runbook.md)
+
+---
+
+## Quick Reference: Replay from Any Failure
+
+```bash
+# 1. Replay all failed suites from a previous E2E run
+./scripts/e2e/run_all.sh --rerun-from tests/e2e_results/<ts>/summary.json
+
+# 2. Replay a single suite
+cargo test --test <suite_name> -- --nocapture
+
+# 3. Replay a single test function
+cargo test --test <suite_name> <test_name> -- --nocapture
+
+# 4. Replay with debug output
+RUST_LOG=debug RUST_BACKTRACE=1 cargo test --test <suite_name> -- --nocapture
+
+# 5. Replay CI gate failures
+cargo test --test ci_full_suite_gate -- full_suite_gate --nocapture --exact
+```
+
+---
+
+## Failure Signature Map
+
+### Non-mock compliance gate failure
+
+**Signature:** `non_mock_compliance_gate ... FAILED`
+
+**Artifacts:**
+- `docs/non-mock-rubric.json` (rubric thresholds)
+- `docs/test_double_inventory.json` (current inventory)
+
+**Replay:**
+```bash
+cargo test --test non_mock_compliance_gate -- --nocapture
+```
+
+**Remediation:**
+1. Check which module fell below its floor threshold.
+2. Review `docs/non-mock-rubric.json` for the affected module's floor values.
+3. Migrate mock/stub usages to VCR or real implementations.
+4. See `docs/testing-policy.md` "Allowlisted Exceptions" for the approval process.
+
+---
+
+### Extension conformance gate failure
+
+**Signature:** `conformance_must_pass_gate ... FAILED`
+
+**Artifacts:**
+- `tests/ext_conformance/reports/gate/must_pass_gate_verdict.json`
+- `tests/ext_conformance/reports/conformance_summary.json`
+
+**Replay:**
+```bash
+cargo test --test ext_conformance_generated --features ext-conformance \
+  -- conformance_must_pass_gate --nocapture --exact
+```
+
+**Remediation:**
+1. Check `conformance_summary.json` for pass/fail/N/A counts.
+2. Look for newly failing extensions in the summary.
+3. Common causes: missing node shim, new hostcall not dispatched, QuickJS module resolution.
+4. See `docs/conformance-operator-playbook.md` for debugging workflows.
+
+---
+
+### Cross-platform matrix failure
+
+**Signature:** `cross_platform_matrix ... FAILED`
+
+**Artifacts:**
+- `tests/cross_platform_reports/linux/platform_report.json`
+
+**Replay:**
+```bash
+cargo test --test ci_cross_platform_matrix -- cross_platform_matrix --nocapture --exact
+```
+
+**Remediation:**
+1. Read the platform report to identify which checks failed.
+2. Common causes: missing system dependencies, path separator issues, permission differences.
+3. Fix the platform-specific code and re-run.
+
+---
+
+### Evidence bundle validation failure
+
+**Signature:** `build_evidence_bundle ... FAILED`
+
+**Artifacts:**
+- `tests/evidence_bundle/index.json`
+
+**Replay:**
+```bash
+cargo test --test ci_evidence_bundle -- build_evidence_bundle --nocapture --exact
+```
+
+**Remediation:**
+1. Evidence bundle validates that all required artifacts exist and are well-formed.
+2. Check for missing artifact files (summary.json, environment.json, etc.).
+3. Ensure `scripts/e2e/run_all.sh` completed all post-run phases.
+
+---
+
+### Suite classification guard failure
+
+**Signature:** `suite_classification` gate fails
+
+**Artifacts:**
+- `tests/suite_classification.toml`
+
+**Replay:**
+```bash
+cargo test --test ci_full_suite_gate -- full_suite_gate --nocapture --exact
+```
+
+**Remediation:**
+1. A new test file in `tests/` is not listed in `tests/suite_classification.toml`.
+2. Classify the file into `[suite.unit]`, `[suite.vcr]`, or `[suite.e2e]`.
+3. Keep entries sorted alphabetically within each suite.
+
+---
+
+### Waiver lifecycle failure
+
+**Signature:** `waiver_lifecycle_audit ... FAILED` or `waiver_lifecycle` gate fails
+
+**Artifacts:**
+- `tests/full_suite_gate/waiver_audit.json`
+- `tests/suite_classification.toml` (waiver entries)
+
+**Replay:**
+```bash
+cargo test --test ci_full_suite_gate -- waiver_lifecycle_audit --nocapture --exact
+```
+
+**Remediation:**
+1. Check `waiver_audit.json` for expired or invalid waivers.
+2. Expired waivers must be either renewed (new `expires` date, max +30 days) or removed.
+3. Invalid waivers are missing required fields; add all 7 fields.
+4. See `docs/qa-runbook.md` "Waiver Lifecycle" for the full schema.
+
+---
+
+### Provider streaming regression
+
+**Signature:** `provider_streaming` or `e2e_provider_streaming` test failures
+
+**Artifacts:**
+- `tests/fixtures/vcr/` (VCR cassettes)
+
+**Replay:**
+```bash
+# VCR-backed
+VCR_MODE=playback cargo test --test provider_streaming -- --nocapture
+
+# E2E
+cargo test --test e2e_provider_streaming -- --nocapture
+```
+
+**Remediation:**
+1. Check if VCR cassettes are stale (model IDs changed, API format updated).
+2. Verify `api_key: Some("vcr-playback".to_string())` in `StreamOptions`.
+3. For URL mismatches: VCR uses strict URL matching; ensure model ID in test matches cassette.
+
+---
+
+### E2E TUI test failure
+
+**Signature:** `e2e_tui` tests fail
+
+**Artifacts:**
+- E2E results directory
+
+**Replay:**
+```bash
+cargo test --test e2e_tui -- --nocapture
+```
+
+**Remediation:**
+1. TUI tests require tmux. Verify `tmux` is installed and accessible.
+2. Set `PI_TEST_MODE=1` for deterministic rendering.
+3. VCR cassettes provide provider responses; check cassette freshness.
+
+---
+
+### Flaky test (passes locally, fails on CI)
+
+**Signature:** Inconsistent pass/fail across runs on the same commit.
+
+**Replay:**
+```bash
+# Run with same parallelism as CI
+cargo test --test <suite> -- --nocapture --test-threads=1
+
+# Multiple runs to detect flakiness
+for i in $(seq 1 5); do
+    cargo test --test <suite> -- <test_name> --exact --nocapture || echo "FAIL on run $i"
+done
+```
+
+**Remediation:**
+1. Classify the flake per taxonomy (FLAKE-TIMING/ENV/NET/RES/EXT/LOGIC).
+2. Add quarantine entry to `tests/suite_classification.toml`.
+3. See `docs/testing-policy.md` "Flaky-Test Quarantine" for the full lifecycle.
+
+---
+
+## Evidence Artifact Interpretation
+
+### summary.json
+
+The primary run summary. Key fields:
+
+| Field | Meaning |
+|-------|---------|
+| `failed_names` | List of failed E2E suite names |
+| `failed_unit_names` | List of failed unit target names |
+| `passed_suites` / `total_suites` | E2E suite pass rate |
+| `replay_bundle.one_command_replay` | One-command to replay all failures |
+| `triage_diff` | Baseline comparison (if `--diff-from` was used) |
+
+### replay_bundle.json
+
+Consolidated replay commands and environment context:
+
+| Field | Meaning |
+|-------|---------|
+| `one_command_replay` | Single command to reproduce all failures |
+| `environment.profile` | Run profile (quick/focused/ci/full) |
+| `environment.vcr_mode` | VCR mode during the run |
+| `environment.git_sha` | Git commit of the run |
+| `failed_suites[].cargo_replay` | Per-suite cargo test command |
+| `failed_suites[].targeted_replay` | Single-test cargo command |
+| `failed_suites[].digest_path` | Path to per-suite failure digest |
+
+### failure_digest.json
+
+Per-suite failure analysis:
+
+| Field | Meaning |
+|-------|---------|
+| `root_cause_class` | Classification: assertion_failure, timeout, panic, etc. |
+| `impacted_scenario_ids` | List of failed test names |
+| `first_failing_assertion` | Location and message of first failure |
+| `remediation_pointer.replay_command` | Runner-level replay |
+| `remediation_pointer.suite_replay_command` | Suite-level cargo test |
+| `remediation_pointer.targeted_test_replay_command` | Single-test cargo test |
+
+### triage_diff.json
+
+Baseline comparison for regressions:
+
+| Field | Meaning |
+|-------|---------|
+| `status` | `regression`, `stable`, or `known_failures_only` |
+| `summary.regression_count` | New failures vs baseline |
+| `ranked_diagnostics` | Severity-ranked list of changes |
+| `recommended_commands.runner_repro_command` | Replay all problem targets |
+| `recommended_commands.ranked_repro_commands` | Prioritized per-target commands |
+
+---
+
+## Shard Workflow
+
+The CI runner supports sharding for parallel execution:
+
+```bash
+# Run shard 0 of 3 for E2E suites
+./scripts/e2e/run_all.sh --profile ci --shard-kind suite --shard-index 0 --shard-total 3
+
+# Run shard 1 of 4 for unit targets
+./scripts/e2e/run_all.sh --profile ci --shard-kind unit --shard-index 1 --shard-total 4
+```
+
+Shard context is captured in:
+- `environment.json`: `shard.kind`, `shard.index`, `shard.total`
+- `summary.json`: same shard fields
+- `replay_bundle.json`: `environment.shard_kind`, `shard_index`, `shard_total`
+
+To replay a specific shard's failures, use the `--rerun-from` flag with that shard's
+`summary.json`.

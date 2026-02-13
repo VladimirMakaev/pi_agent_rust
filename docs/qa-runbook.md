@@ -70,13 +70,22 @@ Every test file belongs to exactly one suite. See `tests/suite_classification.to
 | Smoke event log | `tests/smoke_results/<ts>/smoke_log.jsonl` | Per-event structured log |
 | E2E summary | `tests/e2e_results/<ts>/summary.json` | Full run summary |
 | E2E evidence | `tests/e2e_results/<ts>/evidence_contract.json` | Evidence contract |
-| E2E scenario matrix | `docs/e2e_scenario_matrix.json` | Canonical workflow->suite->artifact coverage map |
+| E2E replay bundle | `tests/e2e_results/<ts>/replay_bundle.json` | Consolidated replay commands + env context |
+| E2E failure diagnostics | `tests/e2e_results/<ts>/failure_diagnostics_index.json` | Per-suite digest index |
+| Per-suite failure digest | `tests/e2e_results/<ts>/<suite>/failure_digest.json` | Root cause + replay commands |
+| Per-suite failure timeline | `tests/e2e_results/<ts>/<suite>/failure_timeline.jsonl` | Ordered failure events |
+| E2E triage diff | `tests/e2e_results/<ts>/triage_diff.json` | Baseline vs current comparison |
+| E2E scenario matrix | `docs/e2e_scenario_matrix.json` | Canonical workflow-to-suite coverage map |
 | Conformance report | `tests/ext_conformance/reports/conformance_summary.json` | Extension conformance |
-| CI gate verdict | `tests/e2e_results/<ts>/ci_gate_promotion_v1.json` | Promotion gate result |
+| CI gate verdict | `tests/full_suite_gate/full_suite_verdict.json` | Full-suite gate result |
+| CI preflight verdict | `tests/full_suite_gate/preflight_verdict.json` | Preflight fast-fail result |
+| CI certification verdict | `tests/full_suite_gate/certification_verdict.json` | Full certification result |
+| CI waiver audit | `tests/full_suite_gate/waiver_audit.json` | Waiver lifecycle audit |
+| CI replay bundle | `tests/full_suite_gate/replay_bundle.json` | Gate failure replay commands |
 | Compliance report | `target/compliance-report.json` | Module compliance (set `COMPLIANCE_REPORT=1`) |
 | Coverage baseline | `docs/coverage-baseline-map.json` | Line/function coverage per module |
 | VCR cassettes | `tests/fixtures/vcr/` | Recorded HTTP interactions |
-| Test failure log | `target/test-failures.jsonl` | Structured failure diagnostics (schema: `pi.test.failure_log.v1`) |
+| Test failure log | `target/test-failures.jsonl` | Structured failure diagnostics |
 
 ---
 
@@ -157,7 +166,9 @@ with open('docs/coverage-baseline-map.json') as f:
 
 ## Replay Workflow
 
-The E2E harness supports deterministic replay for failure reproduction:
+The E2E harness supports deterministic replay for failure reproduction.
+
+### One-command replay (from summary.json)
 
 ```bash
 # Rerun only failed suites from a previous run
@@ -167,7 +178,134 @@ The E2E harness supports deterministic replay for failure reproduction:
 ./scripts/e2e/run_all.sh --diff-from tests/e2e_results/<baseline>/summary.json
 ```
 
-Replay artifacts include: seed, time-mode, environment snapshot, and per-step transcripts.
+The `--rerun-from` flag reads `failed_names` from the summary, re-runs only those suites, and
+auto-sets `--diff-from` to the source summary for triage diff generation.
+
+### Replay bundle artifact
+
+After a run completes, the harness emits `replay_bundle.json` (schema `pi.e2e.replay_bundle.v1`)
+alongside `summary.json`. The bundle consolidates:
+
+- **`one_command_replay`**: Single command to reproduce all failures.
+- **`environment`**: Profile, shard context, VCR mode, rustc version, git SHA, OS.
+- **`failed_suites`**: Per-suite entries with runner, cargo, and targeted replay commands plus failure digest paths.
+- **`failed_unit_targets`**: Per-target cargo replay commands.
+
+```bash
+# View the one-command replay from a previous run
+python3 -c "
+import json
+with open('tests/e2e_results/<ts>/replay_bundle.json') as f:
+    b = json.load(f)
+    print(b['one_command_replay'])
+    for s in b['failed_suites']:
+        print(f\"  {s['suite']}: {s['cargo_replay']}\")
+"
+```
+
+### Per-suite failure digest
+
+Each failed suite also gets a `failure_digest.json` (schema `pi.e2e.failure_digest.v1`) with:
+
+- `remediation_pointer.replay_command` (runner-level)
+- `remediation_pointer.suite_replay_command` (cargo test)
+- `remediation_pointer.targeted_test_replay_command` (single test)
+- Root cause classification and first failing assertion
+
+### Triage diff
+
+When a baseline is provided (via `--diff-from` or auto-set by `--rerun-from`), the harness
+generates `triage_diff.json` (schema `pi.e2e.triage_diff.v1`) containing:
+
+- Regressions, new failures, fixed tests, and unresolved failures.
+- `recommended_commands.runner_repro_command`: One command to re-run all problem suites.
+- `recommended_commands.ranked_repro_commands`: Prioritized list of per-target commands.
+- `ranked_diagnostics`: Severity-ranked list with recommended replay commands.
+
+---
+
+## CI Gate Lanes
+
+The full-suite CI gate operates in two lanes (bd-1f42.8.8.1):
+
+### Preflight fast-fail lane
+
+Evaluates **blocking gates only** and stops at the first failure. Used for fast feedback
+in PR checks.
+
+```bash
+cargo test --test ci_full_suite_gate -- preflight_fast_fail --nocapture --exact
+```
+
+Artifact: `tests/full_suite_gate/preflight_verdict.json` (schema `pi.ci.preflight_lane.v1`)
+
+### Full certification lane
+
+Evaluates **all gates** (blocking + non-blocking), generates a waiver audit, and produces
+a comprehensive verdict with promotion rules and rerun guidance.
+
+```bash
+cargo test --test ci_full_suite_gate -- full_certification --nocapture --exact
+```
+
+Artifacts:
+- `tests/full_suite_gate/certification_verdict.json`
+- `tests/full_suite_gate/certification_events.jsonl`
+- `tests/full_suite_gate/certification_report.md`
+
+### Gate reproduce commands
+
+Every gate includes a `reproduce_command` field. To replay a specific gate failure:
+
+```bash
+# View all gate reproduce commands
+python3 -c "
+import json
+with open('tests/full_suite_gate/full_suite_verdict.json') as f:
+    v = json.load(f)
+    for g in v['gates']:
+        if g.get('status') == 'fail':
+            print(f\"{g['id']}: {g.get('reproduce_command', 'N/A')}\")
+"
+```
+
+---
+
+## Waiver Lifecycle
+
+CI gates can be temporarily bypassed with auditable waivers (bd-1f42.8.8.1).
+
+### Adding a waiver
+
+Add a `[waiver.<gate_id>]` entry to `tests/suite_classification.toml`:
+
+```toml
+[waiver.ext_must_pass]
+owner = "AgentName"
+created = "2026-02-13"
+expires = "2026-02-27"            # Max 30 days from created
+bead = "bd-XXXX"
+reason = "Blocked by upstream QuickJS bug"
+scope = "both"                    # "full", "preflight", or "both"
+remove_when = "QuickJS fix merged and all 208 extensions pass"
+```
+
+### Waiver rules
+
+- Maximum duration: 30 days (must renew or fix before expiry).
+- Expired waivers cause CI hard failure via the `waiver_lifecycle` gate.
+- Waivers expiring within 3 days trigger warnings.
+- The `gate_id` must match a gate in `ci_full_suite_gate.rs`.
+- All 7 fields are required (owner, created, expires, bead, reason, scope, remove_when).
+
+### Auditing waivers
+
+```bash
+# Run the standalone waiver audit
+cargo test --test ci_full_suite_gate -- waiver_lifecycle_audit --nocapture --exact
+```
+
+Artifact: `tests/full_suite_gate/waiver_audit.json` (schema `pi.ci.waiver_audit.v1`)
 
 ---
 

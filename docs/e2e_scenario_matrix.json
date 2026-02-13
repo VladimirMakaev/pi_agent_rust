@@ -1,5 +1,5 @@
 {
-  "schema": "pi.e2e.scenario_matrix.v1",
+  "schema": "pi.e2e.scenario_matrix.v2",
   "bead_id": "bd-1f42.8.5.1",
   "updated_at": "2026-02-13",
   "source_inputs": [
@@ -10,12 +10,18 @@
   "ci_policy": {
     "consumed_by": [
       "scripts/check_traceability_matrix.py",
-      "tests/ci_full_suite_gate.rs"
+      "tests/ci_full_suite_gate.rs",
+      "tests/vcr_parity_validation.rs"
     ],
     "allowed_statuses": [
       "covered",
       "waived",
       "planned"
+    ],
+    "allowed_vcr_modes": [
+      "vcr-only",
+      "dual-mode",
+      "live-only"
     ],
     "required_suite_artifacts": [
       "output.log",
@@ -28,7 +34,14 @@
       "environment.json",
       "evidence_contract.json"
     ],
-    "min_e2e_suite_matrix_coverage_pct": 100
+    "min_e2e_suite_matrix_coverage_pct": 100,
+    "live_budget_policy": {
+      "max_live_api_calls_per_suite": 50,
+      "max_live_cost_usd_per_suite": 1.00,
+      "rate_limit_delay_ms": 500,
+      "credential_env_prefix": "PI_E2E_",
+      "skip_env_var": "PI_SKIP_LIVE_E2E"
+    }
   },
   "rows": [
     {
@@ -36,6 +49,8 @@
       "workflow_class": "success_path",
       "workflow_title": "First-run CLI onboarding and slash-command control flow",
       "status": "covered",
+      "vcr_mode": "vcr-only",
+      "vcr_mode_rationale": "All CLI onboarding flows use VCR playback for deterministic provider responses. No live API calls needed.",
       "owner": "bd-1f42.8.5.2",
       "provider_families": [
         "core-runtime",
@@ -65,6 +80,8 @@
       "workflow_class": "success_path",
       "workflow_title": "Core agent orchestration and built-in tool execution round trips",
       "status": "covered",
+      "vcr_mode": "vcr-only",
+      "vcr_mode_rationale": "Agent loop and tool execution are fully deterministic via VCR cassettes. Tool side-effects (file I/O, bash) use temp directories.",
       "owner": "bd-1f42.8.5.2",
       "provider_families": [
         "core-runtime",
@@ -94,6 +111,8 @@
       "workflow_class": "success_path",
       "workflow_title": "Deterministic multi-provider streaming/event-ordering and parity checks",
       "status": "covered",
+      "vcr_mode": "vcr-only",
+      "vcr_mode_rationale": "Provider streaming scenarios use VCR cassettes for each provider family. SSE chunk ordering is preserved in cassette body_chunks.",
       "owner": "bd-1f42.8.5.2",
       "provider_families": [
         "provider-native",
@@ -123,6 +142,8 @@
       "workflow_class": "success_path",
       "workflow_title": "Extension registration lifecycle and TypeScript extension loading",
       "status": "covered",
+      "vcr_mode": "vcr-only",
+      "vcr_mode_rationale": "Extension registration and TS loading are local QuickJS operations with no network calls. VCR used only for provider interactions within extension tests.",
       "owner": "bd-1f42.8.5.2",
       "provider_families": [
         "extensions",
@@ -152,6 +173,8 @@
       "workflow_class": "recovery_path",
       "workflow_title": "Message/session control operations and persistence/replay resilience",
       "status": "covered",
+      "vcr_mode": "vcr-only",
+      "vcr_mode_rationale": "Session persistence and recovery tests use local file I/O with VCR for any provider roundtrips. No live credentials required.",
       "owner": "bd-1f42.8.5.2",
       "provider_families": [
         "session",
@@ -181,6 +204,8 @@
       "workflow_class": "success_path",
       "workflow_title": "End-to-end RPC command/protocol coverage",
       "status": "covered",
+      "vcr_mode": "vcr-only",
+      "vcr_mode_rationale": "RPC endpoint tests use VCR cassettes for provider responses. The RPC protocol itself is tested locally via JSON-RPC message exchange.",
       "owner": "bd-1f42.8.5.2",
       "provider_families": [
         "rpc",
@@ -208,6 +233,8 @@
       "workflow_class": "success_path",
       "workflow_title": "Interactive TUI journey scripts via tmux capture",
       "status": "covered",
+      "vcr_mode": "vcr-only",
+      "vcr_mode_rationale": "TUI tests use tmux scripting with VCR playback for provider responses. UI rendering is deterministic with PI_TEST_MODE=1.",
       "owner": "bd-1f42.8.5.2",
       "provider_families": [
         "tui",
@@ -235,6 +262,8 @@
       "workflow_class": "success_path",
       "workflow_title": "Library integration checks for markdown/render/runtime wiring",
       "status": "covered",
+      "vcr_mode": "vcr-only",
+      "vcr_mode_rationale": "Library integration tests are local-only (markdown rendering, bubbletea runtime wiring). No network calls.",
       "owner": "bd-1f42.8.5.2",
       "provider_families": [
         "tui",
@@ -262,6 +291,8 @@
       "workflow_class": "recovery_path",
       "workflow_title": "Workflow preflight/policy escalation plus extension auto-repair diagnostics",
       "status": "covered",
+      "vcr_mode": "vcr-only",
+      "vcr_mode_rationale": "Preflight checks and auto-repair are local policy-engine operations. VCR used for any diagnostic round-trips to providers.",
       "owner": "bd-1f42.8.5.2",
       "provider_families": [
         "extensions",
@@ -291,6 +322,23 @@
       "workflow_class": "live_boundary",
       "workflow_title": "Live-provider parity/auth smoke workflows (credential and network gated)",
       "status": "waived",
+      "vcr_mode": "live-only",
+      "vcr_mode_rationale": "These suites exercise real provider APIs to validate parity between VCR-recorded and live behavior. By definition they cannot use VCR playback.",
+      "live_skip_policy": {
+        "skip_reason": "Requires live provider credentials and network access; non-blocking in default CI.",
+        "skip_env_var": "PI_SKIP_LIVE_E2E",
+        "required_credentials": [
+          "ANTHROPIC_API_KEY",
+          "OPENAI_API_KEY"
+        ],
+        "budget_controls": {
+          "max_api_calls": 50,
+          "max_cost_usd": 1.00,
+          "rate_limit_delay_ms": 500,
+          "timeout_per_test_secs": 60
+        },
+        "ci_gate_behavior": "skip_with_warning"
+      },
       "owner": "bd-1f42.8.5.3",
       "provider_families": [
         "provider-native",
@@ -325,13 +373,20 @@
       "workflow_id": "wf-failure-injection-and-recovery-pack",
       "workflow_class": "failure_recovery",
       "workflow_title": "Failure injection scenarios for retry/backoff/recovery guarantees",
-      "status": "planned",
+      "status": "covered",
+      "vcr_mode": "vcr-only",
+      "vcr_mode_rationale": "Failure injection uses crafted VCR cassettes with error status codes (401, 429, 500) and malformed responses. No live APIs needed for error-path validation.",
       "owner": "bd-1f42.8.5.4",
       "provider_families": [
         "all"
       ],
-      "planned_suite_ids": [
-        "e2e_failure_injection_recovery"
+      "suite_ids": [
+        "e2e_failure_injection_recovery",
+        "e2e_high_risk_workflows"
+      ],
+      "test_paths": [
+        "tests/e2e_failure_injection_recovery.rs",
+        "tests/e2e_high_risk_workflows.rs"
       ],
       "expected_artifacts": [
         "output.log",
@@ -342,20 +397,30 @@
         "environment.json",
         "evidence_contract.json"
       ],
-      "planned_issue_id": "bd-1f42.8.5.4",
-      "replay_command": "./scripts/e2e/run_all.sh --profile ci --suite e2e_failure_injection_recovery"
+      "replay_command": "./scripts/e2e/run_all.sh --profile ci --suite e2e_failure_injection_recovery --suite e2e_high_risk_workflows"
     },
     {
       "workflow_id": "wf-interruption-resume-replay-pack",
       "workflow_class": "interruption_resume",
       "workflow_title": "Interrupt/resume/replay continuity scenarios with deterministic rerun pointers",
-      "status": "planned",
+      "status": "covered",
+      "vcr_mode": "dual-mode",
+      "vcr_mode_rationale": "Interruption/resume tests use in-process deterministic providers for CI. Dual-mode allows periodic live validation of signal handling and session recovery.",
+      "dual_mode_policy": {
+        "default_ci_mode": "vcr",
+        "live_trigger_env": "PI_E2E_LIVE_INTERRUPTION=1",
+        "live_frequency": "weekly-scheduled",
+        "parity_check": "VCR replay must produce identical session state as live interrupted+resumed session"
+      },
       "owner": "bd-1f42.8.5.5",
       "provider_families": [
         "all"
       ],
-      "planned_suite_ids": [
+      "suite_ids": [
         "e2e_interruption_resume_replay"
+      ],
+      "test_paths": [
+        "tests/e2e_interruption_resume_replay.rs"
       ],
       "expected_artifacts": [
         "output.log",
@@ -366,7 +431,6 @@
         "environment.json",
         "evidence_contract.json"
       ],
-      "planned_issue_id": "bd-1f42.8.5.5",
       "replay_command": "./scripts/e2e/run_all.sh --profile ci --suite e2e_interruption_resume_replay"
     }
   ]
