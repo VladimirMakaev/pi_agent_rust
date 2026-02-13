@@ -33,10 +33,16 @@ tests/ext_conformance/reports/*
 .codex_space_probe
 .tmp-*/
 .tmp-*
+.tmp_*/
 .white_deer_target/
+tmp_*/
 
 # Per-agent cargo target directories
 .target-*/
+.target_*/
+
+# Session export snapshots
+pi-session-*.html
 
 # Patch/merge artifacts
 *.orig
