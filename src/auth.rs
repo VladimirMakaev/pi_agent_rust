@@ -2713,6 +2713,26 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_api_key_groq_env_beats_stored() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let auth_path = dir.path().join("auth.json");
+        let mut auth = AuthStorage {
+            path: auth_path,
+            entries: HashMap::new(),
+        };
+        auth.set(
+            "groq",
+            AuthCredential::ApiKey {
+                key: "stored-groq-key".to_string(),
+            },
+        );
+
+        let resolved =
+            auth.resolve_api_key_with_env_lookup("groq", None, |_| Some("env-groq-key".into()));
+        assert_eq!(resolved.as_deref(), Some("env-groq-key"));
+    }
+
+    #[test]
     fn test_resolve_api_key_empty_env_falls_through_to_stored() {
         let dir = tempfile::tempdir().expect("tmpdir");
         let auth_path = dir.path().join("auth.json");
@@ -2778,6 +2798,72 @@ mod tests {
         });
 
         assert_eq!(resolved.as_deref(), Some("gemini-fallback-key"));
+    }
+
+    #[test]
+    fn test_resolve_api_key_qwen_uses_qwen_env_fallback() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let auth_path = dir.path().join("auth.json");
+        let mut auth = AuthStorage {
+            path: auth_path,
+            entries: HashMap::new(),
+        };
+        auth.set(
+            "alibaba",
+            AuthCredential::ApiKey {
+                key: "stored-dashscope-key".to_string(),
+            },
+        );
+
+        let resolved = auth.resolve_api_key_with_env_lookup("qwen", None, |var| match var {
+            "DASHSCOPE_API_KEY" => Some(String::new()),
+            "QWEN_API_KEY" => Some("qwen-fallback-key".to_string()),
+            _ => None,
+        });
+
+        assert_eq!(resolved.as_deref(), Some("qwen-fallback-key"));
+    }
+
+    #[test]
+    fn test_resolve_api_key_kimi_uses_kimi_env_fallback() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let auth_path = dir.path().join("auth.json");
+        let mut auth = AuthStorage {
+            path: auth_path,
+            entries: HashMap::new(),
+        };
+        auth.set(
+            "moonshotai",
+            AuthCredential::ApiKey {
+                key: "stored-moonshot-key".to_string(),
+            },
+        );
+
+        let resolved = auth.resolve_api_key_with_env_lookup("kimi", None, |var| match var {
+            "MOONSHOT_API_KEY" => Some(String::new()),
+            "KIMI_API_KEY" => Some("kimi-fallback-key".to_string()),
+            _ => None,
+        });
+
+        assert_eq!(resolved.as_deref(), Some("kimi-fallback-key"));
+    }
+
+    #[test]
+    fn test_resolve_api_key_primary_env_wins_over_alias_fallback() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let auth_path = dir.path().join("auth.json");
+        let auth = AuthStorage {
+            path: auth_path,
+            entries: HashMap::new(),
+        };
+
+        let resolved = auth.resolve_api_key_with_env_lookup("alibaba", None, |var| match var {
+            "DASHSCOPE_API_KEY" => Some("dashscope-primary".to_string()),
+            "QWEN_API_KEY" => Some("qwen-secondary".to_string()),
+            _ => None,
+        });
+
+        assert_eq!(resolved.as_deref(), Some("dashscope-primary"));
     }
 
     // ── API key storage and persistence ───────────────────────────────
@@ -2967,8 +3053,8 @@ mod tests {
             let keys = env_keys_for_provider(alias);
             assert_eq!(
                 keys,
-                &["MOONSHOT_API_KEY"],
-                "alias {alias} should map to MOONSHOT_API_KEY"
+                &["MOONSHOT_API_KEY", "KIMI_API_KEY"],
+                "alias {alias} should map to moonshot auth fallback key chain"
             );
         }
     }
@@ -2979,8 +3065,8 @@ mod tests {
             let keys = env_keys_for_provider(alias);
             assert_eq!(
                 keys,
-                &["DASHSCOPE_API_KEY"],
-                "alias {alias} should map to DASHSCOPE_API_KEY"
+                &["DASHSCOPE_API_KEY", "QWEN_API_KEY"],
+                "alias {alias} should map to dashscope auth fallback key chain"
             );
         }
     }

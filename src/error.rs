@@ -1181,10 +1181,26 @@ mod tests {
     }
 
     #[test]
+    fn hints_provider_key_hint_groq() {
+        let err = Error::provider("groq", "401 unauthorized");
+        let h = err.hints();
+        assert!(h.hints.iter().any(|s| s.contains("GROQ_API_KEY")));
+    }
+
+    #[test]
     fn hints_provider_key_hint_alias_dashscope() {
         let err = Error::provider("dashscope", "401 invalid api key");
         let h = err.hints();
         assert!(h.hints.iter().any(|s| s.contains("DASHSCOPE_API_KEY")));
+        assert!(h.hints.iter().any(|s| s.contains("QWEN_API_KEY")));
+    }
+
+    #[test]
+    fn hints_provider_key_hint_alias_kimi() {
+        let err = Error::provider("kimi", "401 invalid api key");
+        let h = err.hints();
+        assert!(h.hints.iter().any(|s| s.contains("MOONSHOT_API_KEY")));
+        assert!(h.hints.iter().any(|s| s.contains("KIMI_API_KEY")));
     }
 
     #[test]
@@ -1938,6 +1954,10 @@ mod tests {
             ("cerebras", "CEREBRAS_API_KEY"),
             ("openrouter", "OPENROUTER_API_KEY"),
             ("mistral", "MISTRAL_API_KEY"),
+            ("moonshotai", "MOONSHOT_API_KEY"),
+            ("moonshotai", "KIMI_API_KEY"),
+            ("alibaba", "DASHSCOPE_API_KEY"),
+            ("alibaba", "QWEN_API_KEY"),
             ("deepseek", "DEEPSEEK_API_KEY"),
             ("perplexity", "PERPLEXITY_API_KEY"),
             ("xai", "XAI_API_KEY"),

@@ -201,7 +201,7 @@ pub const PROVIDER_METADATA: &[ProviderMetadata] = &[
     ProviderMetadata {
         canonical_id: "moonshotai",
         aliases: &["moonshot", "kimi"],
-        auth_env_keys: &["MOONSHOT_API_KEY"],
+        auth_env_keys: &["MOONSHOT_API_KEY", "KIMI_API_KEY"],
         onboarding: ProviderOnboardingMode::OpenAICompatiblePreset,
         routing_defaults: Some(ProviderRoutingDefaults {
             api: "openai-completions",
@@ -217,7 +217,7 @@ pub const PROVIDER_METADATA: &[ProviderMetadata] = &[
     ProviderMetadata {
         canonical_id: "alibaba",
         aliases: &["dashscope", "qwen"],
-        auth_env_keys: &["DASHSCOPE_API_KEY"],
+        auth_env_keys: &["DASHSCOPE_API_KEY", "QWEN_API_KEY"],
         onboarding: ProviderOnboardingMode::OpenAICompatiblePreset,
         routing_defaults: Some(ProviderRoutingDefaults {
             api: "openai-completions",
@@ -1037,6 +1037,22 @@ pub const PROVIDER_METADATA: &[ProviderMetadata] = &[
         }),
         test_obligations: TEST_REQUIRED,
     },
+    ProviderMetadata {
+        canonical_id: "stackit",
+        aliases: &[],
+        auth_env_keys: &["STACKIT_API_KEY"],
+        onboarding: ProviderOnboardingMode::OpenAICompatiblePreset,
+        routing_defaults: Some(ProviderRoutingDefaults {
+            api: "openai-completions",
+            base_url: "https://api.openai-compat.model-serving.eu01.onstackit.cloud/v1",
+            auth_header: true,
+            reasoning: true,
+            input: &INPUT_TEXT,
+            context_window: 128_000,
+            max_tokens: 8192,
+        }),
+        test_obligations: TEST_REQUIRED,
+    },
     // ── Batch B3: Regional + coding-plan providers ──────────────────────
     ProviderMetadata {
         canonical_id: "siliconflow",
@@ -1216,6 +1232,22 @@ pub const PROVIDER_METADATA: &[ProviderMetadata] = &[
         test_obligations: TEST_REQUIRED,
     },
     ProviderMetadata {
+        canonical_id: "ollama",
+        aliases: &[],
+        auth_env_keys: &[],
+        onboarding: ProviderOnboardingMode::OpenAICompatiblePreset,
+        routing_defaults: Some(ProviderRoutingDefaults {
+            api: "openai-completions",
+            base_url: "http://127.0.0.1:11434/v1",
+            auth_header: false,
+            reasoning: true,
+            input: &INPUT_TEXT,
+            context_window: 131_072,
+            max_tokens: 32_768,
+        }),
+        test_obligations: TEST_REQUIRED,
+    },
+    ProviderMetadata {
         canonical_id: "ollama-cloud",
         aliases: &[],
         auth_env_keys: &["OLLAMA_API_KEY"],
@@ -1316,7 +1348,7 @@ pub const PROVIDER_METADATA: &[ProviderMetadata] = &[
     // ── Native adapter required providers ────────────────────────────────
     ProviderMetadata {
         canonical_id: "google-vertex",
-        aliases: &["vertexai"],
+        aliases: &["vertexai", "google-vertex-anthropic"],
         auth_env_keys: &["GOOGLE_CLOUD_API_KEY", "VERTEX_API_KEY"],
         onboarding: ProviderOnboardingMode::BuiltInNative,
         routing_defaults: Some(ProviderRoutingDefaults {
@@ -1368,6 +1400,14 @@ pub const PROVIDER_METADATA: &[ProviderMetadata] = &[
         test_obligations: TEST_REQUIRED,
     },
     ProviderMetadata {
+        canonical_id: "v0",
+        aliases: &[],
+        auth_env_keys: &["V0_API_KEY"],
+        onboarding: ProviderOnboardingMode::NativeAdapterRequired,
+        routing_defaults: None,
+        test_obligations: TEST_REQUIRED,
+    },
+    ProviderMetadata {
         canonical_id: "azure-openai",
         aliases: &["azure", "azure-cognitive-services"],
         auth_env_keys: &["AZURE_OPENAI_API_KEY"],
@@ -1377,7 +1417,7 @@ pub const PROVIDER_METADATA: &[ProviderMetadata] = &[
     },
     ProviderMetadata {
         canonical_id: "github-copilot",
-        aliases: &["copilot"],
+        aliases: &["copilot", "github-copilot-enterprise"],
         auth_env_keys: &["GITHUB_COPILOT_API_KEY", "GITHUB_TOKEN"],
         onboarding: ProviderOnboardingMode::NativeAdapterRequired,
         routing_defaults: None,
@@ -1436,11 +1476,28 @@ mod tests {
         let azure_cognitive_alias =
             provider_metadata("azure-cognitive-services").expect("azure-cognitive alias metadata");
         assert_eq!(azure_cognitive_alias.canonical_id, "azure-openai");
+        let vertex_anthropic_alias = provider_metadata("google-vertex-anthropic")
+            .expect("google-vertex-anthropic alias metadata");
+        assert_eq!(vertex_anthropic_alias.canonical_id, "google-vertex");
+        let copilot_enterprise_alias = provider_metadata("github-copilot-enterprise")
+            .expect("github-copilot-enterprise alias metadata");
+        assert_eq!(copilot_enterprise_alias.canonical_id, "github-copilot");
     }
 
     #[test]
     fn provider_auth_env_keys_support_aliases() {
-        assert_eq!(provider_auth_env_keys("dashscope"), &["DASHSCOPE_API_KEY"]);
+        assert_eq!(
+            provider_auth_env_keys("dashscope"),
+            &["DASHSCOPE_API_KEY", "QWEN_API_KEY"]
+        );
+        assert_eq!(
+            provider_auth_env_keys("qwen"),
+            &["DASHSCOPE_API_KEY", "QWEN_API_KEY"]
+        );
+        assert_eq!(
+            provider_auth_env_keys("kimi"),
+            &["MOONSHOT_API_KEY", "KIMI_API_KEY"]
+        );
         assert_eq!(
             provider_auth_env_keys("togetherai"),
             &["TOGETHER_API_KEY", "TOGETHER_AI_API_KEY"]
@@ -1473,6 +1530,14 @@ mod tests {
             provider_auth_env_keys("copilot"),
             &["GITHUB_COPILOT_API_KEY", "GITHUB_TOKEN"]
         );
+        assert_eq!(
+            provider_auth_env_keys("github-copilot-enterprise"),
+            &["GITHUB_COPILOT_API_KEY", "GITHUB_TOKEN"]
+        );
+        assert_eq!(
+            provider_auth_env_keys("google-vertex-anthropic"),
+            &["GOOGLE_CLOUD_API_KEY", "VERTEX_API_KEY"]
+        );
     }
 
     #[test]
@@ -1480,6 +1545,14 @@ mod tests {
         assert_eq!(
             provider_auth_env_keys("google"),
             &["GOOGLE_API_KEY", "GEMINI_API_KEY"]
+        );
+        assert_eq!(
+            provider_auth_env_keys("moonshotai"),
+            &["MOONSHOT_API_KEY", "KIMI_API_KEY"]
+        );
+        assert_eq!(
+            provider_auth_env_keys("alibaba"),
+            &["DASHSCOPE_API_KEY", "QWEN_API_KEY"]
         );
     }
 
@@ -2078,13 +2151,14 @@ mod tests {
     }
 
     #[test]
-    fn batch_b2_metadata_resolves_all_five_providers() {
+    fn batch_b2_metadata_resolves_all_six_providers() {
         let ids = [
             "modelscope",
             "moonshotai-cn",
             "nebius",
             "ovhcloud",
             "scaleway",
+            "stackit",
         ];
         for id in &ids {
             let meta = provider_metadata(id).unwrap_or_else(|| panic!("{id} metadata missing"));
@@ -2118,6 +2192,10 @@ mod tests {
             provider_metadata("scaleway").unwrap().auth_env_keys,
             &["SCALEWAY_API_KEY"]
         );
+        assert_eq!(
+            provider_metadata("stackit").unwrap().auth_env_keys,
+            &["STACKIT_API_KEY"]
+        );
     }
 
     #[test]
@@ -2128,6 +2206,10 @@ mod tests {
             ("nebius", "api.tokenfactory.nebius.com"),
             ("ovhcloud", "oai.endpoints.kepler.ai.cloud.ovh.net"),
             ("scaleway", "api.scaleway.ai"),
+            (
+                "stackit",
+                "api.openai-compat.model-serving.eu01.onstackit.cloud",
+            ),
         ];
         for (id, expected_host) in &ids {
             let defaults =
@@ -2150,7 +2232,10 @@ mod tests {
             canonical_provider_id("moonshotai-cn"),
             Some("moonshotai-cn")
         );
-        assert_eq!(provider_auth_env_keys("moonshotai"), &["MOONSHOT_API_KEY"]);
+        assert_eq!(
+            provider_auth_env_keys("moonshotai"),
+            &["MOONSHOT_API_KEY", "KIMI_API_KEY"]
+        );
         assert_eq!(
             provider_auth_env_keys("moonshotai-cn"),
             &["MOONSHOT_API_KEY"]
@@ -2261,8 +2346,8 @@ mod tests {
     }
 
     #[test]
-    fn batch_c1_metadata_resolves_all_four_providers() {
-        let ids = ["baseten", "llama", "lmstudio", "ollama-cloud"];
+    fn batch_c1_metadata_resolves_all_five_providers() {
+        let ids = ["baseten", "llama", "lmstudio", "ollama", "ollama-cloud"];
         for id in &ids {
             let meta = provider_metadata(id).unwrap_or_else(|| panic!("{id} metadata missing"));
             assert_eq!(meta.canonical_id, *id);
@@ -2287,6 +2372,12 @@ mod tests {
             provider_metadata("lmstudio").unwrap().auth_env_keys,
             &["LMSTUDIO_API_KEY"]
         );
+        assert!(
+            provider_metadata("ollama")
+                .unwrap()
+                .auth_env_keys
+                .is_empty()
+        );
         assert_eq!(
             provider_metadata("ollama-cloud").unwrap().auth_env_keys,
             &["OLLAMA_API_KEY"]
@@ -2296,16 +2387,17 @@ mod tests {
     #[test]
     fn batch_c1_routing_defaults_use_openai_completions_with_expected_endpoints() {
         let ids = [
-            ("baseten", "https://inference.baseten.co/v1"),
-            ("llama", "https://api.llama.com/compat/v1"),
-            ("lmstudio", "http://127.0.0.1:1234/v1"),
-            ("ollama-cloud", "https://ollama.com/v1"),
+            ("baseten", "https://inference.baseten.co/v1", true),
+            ("llama", "https://api.llama.com/compat/v1", true),
+            ("lmstudio", "http://127.0.0.1:1234/v1", true),
+            ("ollama", "http://127.0.0.1:11434/v1", false),
+            ("ollama-cloud", "https://ollama.com/v1", true),
         ];
-        for (id, expected_base_url) in &ids {
+        for (id, expected_base_url, expected_auth_header) in &ids {
             let defaults =
                 provider_routing_defaults(id).unwrap_or_else(|| panic!("{id} defaults missing"));
             assert_eq!(defaults.api, "openai-completions");
-            assert!(defaults.auth_header);
+            assert_eq!(defaults.auth_header, *expected_auth_header);
             assert_eq!(defaults.base_url, *expected_base_url);
         }
     }
@@ -2359,11 +2451,15 @@ mod tests {
         );
         assert!(!zenmux.auth_header);
     }
-    fn v0_not_onboarded_no_api_endpoint() {
-        // v0 (Vercel) has no API endpoint in models.dev; deferred until endpoint is published.
-        assert!(
-            provider_metadata("v0").is_none(),
-            "v0 should not be onboarded yet"
+    #[test]
+    fn v0_registered_as_native_adapter_required_without_routing_defaults() {
+        let meta = provider_metadata("v0").expect("v0 metadata");
+        assert_eq!(meta.canonical_id, "v0");
+        assert_eq!(
+            meta.onboarding,
+            ProviderOnboardingMode::NativeAdapterRequired
         );
+        assert_eq!(meta.auth_env_keys, &["V0_API_KEY"]);
+        assert!(provider_routing_defaults("v0").is_none());
     }
 }
