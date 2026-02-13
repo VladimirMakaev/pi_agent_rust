@@ -4854,3 +4854,238 @@ mod gemini_smoke {
             });
     }
 }
+
+// ============================================================================
+// Gap Provider Conformance Tests (bd-3uqg.11.11.3)
+//
+// Canonical-scenario conformance for the 5 gap providers:
+//   groq, cerebras, openrouter, moonshotai (kimi), alibaba (qwen/dashscope)
+//
+// All are OpenAI-compatible presets. Each module runs the full 7-scenario
+// canonical set via VCR fixture playback.
+// ============================================================================
+
+mod groq_conformance {
+    const PROVIDER: &str = "groq";
+    const MODEL: &str = "llama-3.3-70b-versatile";
+    const URL: &str = "https://api.groq.com/openai/v1/chat/completions";
+
+    fn run(tag: &str) {
+        super::wave_b1_smoke::run_openai_case(PROVIDER, MODEL, URL, tag);
+    }
+
+    #[test]
+    fn simple_text() {
+        run("simple_text");
+    }
+
+    #[test]
+    fn unicode_text() {
+        run("unicode_text");
+    }
+
+    #[test]
+    fn tool_call_single() {
+        run("tool_call_single");
+    }
+
+    #[test]
+    fn tool_call_multiple() {
+        run("tool_call_multiple");
+    }
+
+    #[test]
+    fn error_auth_401() {
+        run("error_auth_401");
+    }
+
+    #[test]
+    fn error_bad_request_400() {
+        run("error_bad_request_400");
+    }
+
+    #[test]
+    fn error_rate_limit_429() {
+        run("error_rate_limit_429");
+    }
+}
+
+mod cerebras_conformance {
+    const PROVIDER: &str = "cerebras";
+    const MODEL: &str = "llama-3.3-70b";
+    const URL: &str = "https://api.cerebras.ai/v1/chat/completions";
+
+    fn run(tag: &str) {
+        super::wave_b1_smoke::run_openai_case(PROVIDER, MODEL, URL, tag);
+    }
+
+    #[test]
+    fn simple_text() {
+        run("simple_text");
+    }
+
+    #[test]
+    fn unicode_text() {
+        run("unicode_text");
+    }
+
+    #[test]
+    fn tool_call_single() {
+        run("tool_call_single");
+    }
+
+    #[test]
+    fn tool_call_multiple() {
+        run("tool_call_multiple");
+    }
+
+    #[test]
+    fn error_auth_401() {
+        run("error_auth_401");
+    }
+
+    #[test]
+    fn error_bad_request_400() {
+        run("error_bad_request_400");
+    }
+
+    #[test]
+    fn error_rate_limit_429() {
+        run("error_rate_limit_429");
+    }
+}
+
+mod openrouter_conformance {
+    const PROVIDER: &str = "openrouter";
+    const MODEL: &str = "anthropic/claude-3.5-sonnet";
+    const URL: &str = "https://openrouter.ai/api/v1/chat/completions";
+
+    fn run(tag: &str) {
+        super::wave_b1_smoke::run_openai_case(PROVIDER, MODEL, URL, tag);
+    }
+
+    #[test]
+    fn simple_text() {
+        run("simple_text");
+    }
+
+    #[test]
+    fn unicode_text() {
+        run("unicode_text");
+    }
+
+    #[test]
+    fn tool_call_single() {
+        run("tool_call_single");
+    }
+
+    #[test]
+    fn tool_call_multiple() {
+        run("tool_call_multiple");
+    }
+
+    #[test]
+    fn error_auth_401() {
+        run("error_auth_401");
+    }
+
+    #[test]
+    fn error_bad_request_400() {
+        run("error_bad_request_400");
+    }
+
+    #[test]
+    fn error_rate_limit_429() {
+        run("error_rate_limit_429");
+    }
+}
+
+mod moonshotai_conformance {
+    const PROVIDER: &str = "moonshotai";
+    const MODEL: &str = "moonshot-v1-8k";
+    const URL: &str = "https://api.moonshot.cn/v1/chat/completions";
+
+    fn run(tag: &str) {
+        super::wave_b1_smoke::run_openai_case(PROVIDER, MODEL, URL, tag);
+    }
+
+    #[test]
+    fn simple_text() {
+        run("simple_text");
+    }
+
+    #[test]
+    fn unicode_text() {
+        run("unicode_text");
+    }
+
+    #[test]
+    fn tool_call_single() {
+        run("tool_call_single");
+    }
+
+    #[test]
+    fn tool_call_multiple() {
+        run("tool_call_multiple");
+    }
+
+    #[test]
+    fn error_auth_401() {
+        run("error_auth_401");
+    }
+
+    #[test]
+    fn error_bad_request_400() {
+        run("error_bad_request_400");
+    }
+
+    #[test]
+    fn error_rate_limit_429() {
+        run("error_rate_limit_429");
+    }
+}
+
+mod alibaba_conformance {
+    const PROVIDER: &str = "alibaba";
+    const MODEL: &str = "qwen-plus";
+    const URL: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
+
+    fn run(tag: &str) {
+        super::wave_b1_smoke::run_openai_case(PROVIDER, MODEL, URL, tag);
+    }
+
+    #[test]
+    fn simple_text() {
+        run("simple_text");
+    }
+
+    #[test]
+    fn unicode_text() {
+        run("unicode_text");
+    }
+
+    #[test]
+    fn tool_call_single() {
+        run("tool_call_single");
+    }
+
+    #[test]
+    fn tool_call_multiple() {
+        run("tool_call_multiple");
+    }
+
+    #[test]
+    fn error_auth_401() {
+        run("error_auth_401");
+    }
+
+    #[test]
+    fn error_bad_request_400() {
+        run("error_bad_request_400");
+    }
+
+    #[test]
+    fn error_rate_limit_429() {
+        run("error_rate_limit_429");
+    }
+}
