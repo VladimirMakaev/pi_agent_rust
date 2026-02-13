@@ -1,8 +1,9 @@
 {
-  "schema": "pi.ci.full_suite_gate.v1",
-  "generated_at": "2026-02-13T20:14:25.906Z",
+  "schema": "pi.ci.certification_lane.v1",
+  "lane": "full",
+  "generated_at": "2026-02-13T19:53:36.127Z",
   "verdict": "fail",
-  "policy": "Full-suite gate: all blocking gates must pass for release. Non-blocking gates produce warnings but do not block.",
+  "policy": "Full certification: all blocking gates must pass for release. Waived gates are tracked but do not block. Expired waivers fail the waiver_lifecycle gate.",
   "gates": [
     {
       "id": "non_mock_unit",
@@ -123,14 +124,42 @@
       "reproduce_command": "cargo test --test ci_full_suite_gate -- waiver_lifecycle_audit --nocapture --exact"
     }
   ],
+  "waiver_audit": {
+    "schema": "pi.ci.waiver_audit.v1",
+    "generated_at": "2026-02-13T19:53:36.126Z",
+    "total_waivers": 0,
+    "active": 0,
+    "expired": 0,
+    "expiring_soon": 0,
+    "invalid": 0,
+    "waivers": [],
+    "raw_waivers": []
+  },
+  "waivers_applied": [],
   "summary": {
     "total_gates": 13,
     "passed": 9,
     "failed": 1,
     "warned": 0,
     "skipped": 3,
+    "waived": 0,
     "blocking_pass": 5,
     "blocking_total": 7,
     "all_blocking_pass": false
+  },
+  "promotion_rules": {
+    "can_promote": false,
+    "blocker_gates": [
+      "cross_platform"
+    ],
+    "waiver_gates": [],
+    "conditions": [
+      "Blocking gates still failing: cross_platform"
+    ]
+  },
+  "rerun_guidance": {
+    "preflight_command": "cargo test --test ci_full_suite_gate -- preflight_fast_fail --nocapture --exact",
+    "full_command": "cargo test --test ci_full_suite_gate -- full_certification --nocapture --exact",
+    "single_gate_template": "See reproduce_command field on each gate"
   }
 }

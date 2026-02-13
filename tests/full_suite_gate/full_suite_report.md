@@ -1,18 +1,18 @@
 # Full-Suite CI Gate Report
 
-> Generated: 2026-02-13T10:07:31Z
+> Generated: 2026-02-13T20:14:25Z
 > Verdict: **FAIL**
 
 ## Summary
 
 | Metric | Value |
 |--------|-------|
-| Total gates | 12 |
-| Passed | 8 |
+| Total gates | 13 |
+| Passed | 9 |
 | Failed | 1 |
 | Warned | 0 |
 | Skipped | 3 |
-| Blocking pass | 4/6 |
+| Blocking pass | 5/7 |
 
 ## Gate Results
 
@@ -30,6 +30,7 @@
 | Requirement traceability matrix | bd-1f42.6.4 | no | PASS | `docs/traceability_matrix.json` |
 | Canonical E2E scenario matrix | bd-1f42.8.5.1 | no | PASS | `docs/e2e_scenario_matrix.json` |
 | Provider gap test matrix coverage | bd-3uqg.11.11.5 | no | PASS | `docs/provider-gaps-test-matrix.json` |
+| Waiver lifecycle compliance | bd-1f42.8.8.1 | YES | PASS | `tests/full_suite_gate/waiver_audit.json` |
 
 ## Issues Requiring Attention
 
