@@ -20,6 +20,7 @@
 //! 9. Suite classification guard
 //! 10. Requirement traceability matrix
 //! 11. Canonical E2E scenario matrix
+//! 12. Provider gap test matrix (bd-3uqg.11.11.5)
 //!
 //! Run:
 //!   cargo test --test `ci_full_suite_gate` -- --nocapture
@@ -382,6 +383,55 @@ fn collect_gates(root: &Path) -> Vec<SubGate> {
         artifact_path: Some("docs/e2e_scenario_matrix.json".to_string()),
         detail,
         reproduce_command: Some("python3 scripts/check_traceability_matrix.py".to_string()),
+    });
+
+    // Gate 12: Provider gap test matrix (bd-3uqg.11.11.5).
+    // Validates that the provider test matrix artifact exists and all focus
+    // providers are listed.
+    let (status, detail) = {
+        let artifact = "docs/provider-gaps-test-matrix.json";
+        let full = root.join(artifact);
+        load_json(&full).map_or_else(
+            || {
+                (
+                    "skip".to_string(),
+                    Some(format!("Artifact not found: {artifact}")),
+                )
+            },
+            |val| {
+                let focus = val
+                    .get("focus_provider_ids")
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len);
+                let providers = val
+                    .get("providers")
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len);
+                if focus >= 5 && providers >= 5 {
+                    ("pass".to_string(), None)
+                } else {
+                    (
+                        "fail".to_string(),
+                        Some(format!(
+                            "Expected >= 5 focus providers; found {focus} focus, {providers} detailed"
+                        )),
+                    )
+                }
+            },
+        )
+    };
+    gates.push(SubGate {
+        id: "provider_gap_matrix".to_string(),
+        name: "Provider gap test matrix coverage".to_string(),
+        bead: "bd-3uqg.11.11.5".to_string(),
+        status,
+        blocking: false,
+        artifact_path: Some("docs/provider-gaps-test-matrix.json".to_string()),
+        detail,
+        reproduce_command: Some(
+            "cargo test --test provider_native_contract --test e2e_provider_scenarios -- --nocapture"
+                .to_string(),
+        ),
     });
 
     gates

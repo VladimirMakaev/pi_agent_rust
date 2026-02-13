@@ -19,7 +19,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::time::Instant;
 
-const PARITY_TARGETS: [LiveProviderTarget; 6] = [
+const PARITY_TARGETS: [LiveProviderTarget; 10] = [
     LiveProviderTarget::new(
         "anthropic",
         "ANTHROPIC_TEST_MODEL",
@@ -50,6 +50,16 @@ const PARITY_TARGETS: [LiveProviderTarget; 6] = [
     ),
     LiveProviderTarget::new("xai", "XAI_TEST_MODEL", &[], LIVE_SHORT_PROMPT),
     LiveProviderTarget::new("deepseek", "DEEPSEEK_TEST_MODEL", &[], LIVE_SHORT_PROMPT),
+    // Gap providers (bd-3uqg.11.11.4)
+    LiveProviderTarget::new("groq", "GROQ_TEST_MODEL", &[], LIVE_SHORT_PROMPT),
+    LiveProviderTarget::new("cerebras", "CEREBRAS_TEST_MODEL", &[], LIVE_SHORT_PROMPT),
+    LiveProviderTarget::new(
+        "moonshotai",
+        "MOONSHOTAI_TEST_MODEL",
+        &[],
+        LIVE_SHORT_PROMPT,
+    ),
+    LiveProviderTarget::new("alibaba", "ALIBABA_TEST_MODEL", &[], LIVE_SHORT_PROMPT),
 ];
 
 const TOOL_SCHEMA_TARGETS: [&str; 3] = ["anthropic", "openai", "google"];

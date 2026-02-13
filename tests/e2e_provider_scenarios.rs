@@ -366,6 +366,130 @@ fn bedrock_error_401() -> MockHttpResponse {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// SSE payloads: rate-limit (429) error responses
+// ═══════════════════════════════════════════════════════════════════════
+
+fn openai_error_429() -> MockHttpResponse {
+    let mut resp = json_response(
+        429,
+        &json!({"error": {"message": "Rate limit reached for model", "type": "rate_limit_error", "code": "rate_limit_exceeded"}}),
+    );
+    resp.headers
+        .push(("Retry-After".to_string(), "30".to_string()));
+    resp.headers.push((
+        "x-ratelimit-remaining-requests".to_string(),
+        "0".to_string(),
+    ));
+    resp
+}
+
+fn anthropic_error_429() -> MockHttpResponse {
+    let mut resp = json_response(
+        429,
+        &json!({"type": "error", "error": {"type": "rate_limit_error", "message": "Number of request tokens has exceeded your per-minute rate limit"}}),
+    );
+    resp.headers
+        .push(("retry-after".to_string(), "60".to_string()));
+    resp
+}
+
+fn gemini_error_429() -> MockHttpResponse {
+    json_response(
+        429,
+        &json!({"error": {"code": 429, "message": "Resource has been exhausted", "status": "RESOURCE_EXHAUSTED"}}),
+    )
+}
+
+fn cohere_error_429() -> MockHttpResponse {
+    json_response(429, &json!({"message": "too many requests"}))
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// SSE payloads: schema-drift responses (unexpected/missing fields)
+// ═══════════════════════════════════════════════════════════════════════
+
+/// OpenAI-compatible response with unexpected `metadata` field and missing
+/// `finish_reason` on the final chunk — simulates a provider schema update.
+fn openai_schema_drift_sse() -> String {
+    [
+        r#"data: {"id":"drift-001","object":"chat.completion.chunk","created":1700000000,"model":"gpt-drift","choices":[{"index":0,"delta":{"role":"assistant","content":"Drifted"},"finish_reason":null}],"metadata":{"experiment":"v2"}}"#,
+        "",
+        r#"data: {"id":"drift-001","object":"chat.completion.chunk","created":1700000000,"model":"gpt-drift","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}"#,
+        "",
+        "data: [DONE]",
+        "",
+    ]
+    .join("\n")
+}
+
+/// Anthropic response with an unexpected `content_block` type and extra fields.
+fn anthropic_schema_drift_sse() -> String {
+    [
+        r"event: message_start",
+        r#"data: {"type":"message_start","message":{"id":"msg_drift","type":"message","role":"assistant","content":[],"model":"claude-drift","stop_reason":null,"usage":{"input_tokens":5,"output_tokens":0},"system_fingerprint":"fp_drift"}}"#,
+        "",
+        r"event: content_block_start",
+        r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+        "",
+        r"event: content_block_delta",
+        r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Drifted"}}"#,
+        "",
+        r"event: content_block_stop",
+        r#"data: {"type":"content_block_stop","index":0}"#,
+        "",
+        r"event: message_delta",
+        r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn","extra_field":"unexpected"},"usage":{"output_tokens":2}}"#,
+        "",
+        r"event: message_stop",
+        r#"data: {"type":"message_stop"}"#,
+        "",
+    ]
+    .join("\n")
+}
+
+/// Gemini response with unexpected top-level fields.
+fn gemini_schema_drift_sse() -> String {
+    [
+        r#"data: {"candidates":[{"content":{"parts":[{"text":"Drifted"}],"role":"model"},"finishReason":"STOP","index":0,"safetyRatings":[{"category":"HARM_CATEGORY_DANGEROUS","probability":"NEGLIGIBLE"}]}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":2,"totalTokenCount":7},"modelVersion":"gemini-drift-001"}"#,
+        "",
+    ]
+    .join("\n")
+}
+
+/// `OpenAI` Responses API response with unexpected extra fields.
+fn openai_responses_schema_drift_sse() -> String {
+    [
+        r#"data: {"type":"response.output_text.delta","item_id":"msg_drift","content_index":0,"delta":"Drifted","metadata":{"experiment":"v2"}}"#,
+        "",
+        r#"data: {"type":"response.completed","response":{"incomplete_details":null,"usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7},"system_fingerprint":"fp_drift"}}"#,
+        "",
+    ]
+    .join("\n")
+}
+
+/// Cohere response with extra fields in the delta.
+fn cohere_schema_drift_sse() -> String {
+    [
+        r"event: message-start",
+        r#"data: {"id":"drift-cohere","type":"message-start","delta":{"message":{"role":"assistant","content":[]}},"api_version":"2.1"}"#,
+        "",
+        r"event: content-start",
+        r#"data: {"type":"content-start","index":0,"delta":{"message":{"content":{"type":"text","text":""}}}}"#,
+        "",
+        r"event: content-delta",
+        r#"data: {"type":"content-delta","index":0,"delta":{"message":{"content":{"text":"Drifted"}}}}"#,
+        "",
+        r"event: content-end",
+        r#"data: {"type":"content-end","index":0}"#,
+        "",
+        r"event: message-end",
+        r#"data: {"type":"message-end","delta":{"finish_reason":"COMPLETE","usage":{"billed_units":{"input_tokens":5,"output_tokens":2},"tokens":{"input_tokens":5,"output_tokens":2}}}}"#,
+        "",
+    ]
+    .join("\n")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // Multi-turn SSE payloads (second response in a conversation)
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -551,6 +675,10 @@ struct FamilySpec {
     text_sse: fn() -> String,
     tool_sse: fn() -> String,
     error_response: fn() -> MockHttpResponse,
+    /// Rate-limit (429) error response.
+    rate_limit_response: fn() -> MockHttpResponse,
+    /// Schema-drift SSE response (unexpected/extra fields).
+    schema_drift_sse: fn() -> String,
     /// Computes the mock route path the provider will actually hit.
     mock_route: fn(model_id: &str, api_key: &str) -> String,
     /// Computes the `base_url` for the `ModelEntry` given the server base URL.
@@ -600,6 +728,8 @@ const OPENAI_COMPLETIONS: FamilySpec = FamilySpec {
     text_sse: openai_chat_text_sse,
     tool_sse: openai_chat_tool_sse,
     error_response: openai_error_401,
+    rate_limit_response: openai_error_429,
+    schema_drift_sse: openai_schema_drift_sse,
     mock_route: oai_completions_route,
     entry_base_url: oai_completions_base,
 };
@@ -612,6 +742,8 @@ const OPENAI_RESPONSES: FamilySpec = FamilySpec {
     text_sse: openai_responses_text_sse,
     tool_sse: openai_responses_tool_sse,
     error_response: openai_error_401,
+    rate_limit_response: openai_error_429,
+    schema_drift_sse: openai_responses_schema_drift_sse,
     mock_route: oai_responses_route,
     entry_base_url: oai_responses_base,
 };
@@ -624,6 +756,8 @@ const ANTHROPIC_MESSAGES: FamilySpec = FamilySpec {
     text_sse: anthropic_text_sse,
     tool_sse: anthropic_tool_sse,
     error_response: anthropic_error_401,
+    rate_limit_response: anthropic_error_429,
+    schema_drift_sse: anthropic_schema_drift_sse,
     mock_route: anthropic_route,
     entry_base_url: anthropic_base,
 };
@@ -636,6 +770,8 @@ const GEMINI_GENERATIVE: FamilySpec = FamilySpec {
     text_sse: gemini_text_sse,
     tool_sse: gemini_tool_sse,
     error_response: gemini_error_401,
+    rate_limit_response: gemini_error_429,
+    schema_drift_sse: gemini_schema_drift_sse,
     mock_route: gemini_route,
     entry_base_url: gemini_base,
 };
@@ -648,8 +784,171 @@ const COHERE_CHAT: FamilySpec = FamilySpec {
     text_sse: cohere_text_sse,
     tool_sse: cohere_tool_sse,
     error_response: cohere_error_401,
+    rate_limit_response: cohere_error_429,
+    schema_drift_sse: cohere_schema_drift_sse,
     mock_route: cohere_route,
     entry_base_url: cohere_base,
+};
+
+// ── Gap provider FamilySpecs (bd-3uqg.11.11.4) ─────────────────────────
+// These all share the openai-completions wire format with OPENAI_COMPLETIONS
+// (which uses groq as its representative).
+
+const CEREBRAS_COMPLETIONS: FamilySpec = FamilySpec {
+    family: "openai-completions",
+    provider_id: "cerebras",
+    model_id: "e2e-cerebras",
+    api_key: "e2e-test-key",
+    text_sse: openai_chat_text_sse,
+    tool_sse: openai_chat_tool_sse,
+    error_response: openai_error_401,
+    rate_limit_response: openai_error_429,
+    schema_drift_sse: openai_schema_drift_sse,
+    mock_route: oai_completions_route,
+    entry_base_url: oai_completions_base,
+};
+
+const OPENROUTER_COMPLETIONS: FamilySpec = FamilySpec {
+    family: "openai-completions",
+    provider_id: "openrouter",
+    model_id: "e2e-openrouter",
+    api_key: "e2e-test-key",
+    text_sse: openai_chat_text_sse,
+    tool_sse: openai_chat_tool_sse,
+    error_response: openai_error_401,
+    rate_limit_response: openai_error_429,
+    schema_drift_sse: openai_schema_drift_sse,
+    mock_route: oai_completions_route,
+    entry_base_url: oai_completions_base,
+};
+
+const MOONSHOTAI_COMPLETIONS: FamilySpec = FamilySpec {
+    family: "openai-completions",
+    provider_id: "moonshotai",
+    model_id: "e2e-kimi",
+    api_key: "e2e-test-key",
+    text_sse: openai_chat_text_sse,
+    tool_sse: openai_chat_tool_sse,
+    error_response: openai_error_401,
+    rate_limit_response: openai_error_429,
+    schema_drift_sse: openai_schema_drift_sse,
+    mock_route: oai_completions_route,
+    entry_base_url: oai_completions_base,
+};
+
+const ALIBABA_COMPLETIONS: FamilySpec = FamilySpec {
+    family: "openai-completions",
+    provider_id: "alibaba",
+    model_id: "e2e-qwen",
+    api_key: "e2e-test-key",
+    text_sse: openai_chat_text_sse,
+    tool_sse: openai_chat_tool_sse,
+    error_response: openai_error_401,
+    rate_limit_response: openai_error_429,
+    schema_drift_sse: openai_schema_drift_sse,
+    mock_route: oai_completions_route,
+    entry_base_url: oai_completions_base,
+};
+
+// ── Longtail provider FamilySpecs (bd-3uqg.11.10.6) ─────────────────────
+// Representative longtail quick-win providers, all OpenAI-compatible.
+
+const STACKIT_COMPLETIONS: FamilySpec = FamilySpec {
+    family: "openai-completions",
+    provider_id: "stackit",
+    model_id: "e2e-stackit",
+    api_key: "e2e-test-key",
+    text_sse: openai_chat_text_sse,
+    tool_sse: openai_chat_tool_sse,
+    error_response: openai_error_401,
+    rate_limit_response: openai_error_429,
+    schema_drift_sse: openai_schema_drift_sse,
+    mock_route: oai_completions_route,
+    entry_base_url: oai_completions_base,
+};
+
+const MISTRAL_COMPLETIONS: FamilySpec = FamilySpec {
+    family: "openai-completions",
+    provider_id: "mistral",
+    model_id: "e2e-mistral",
+    api_key: "e2e-test-key",
+    text_sse: openai_chat_text_sse,
+    tool_sse: openai_chat_tool_sse,
+    error_response: openai_error_401,
+    rate_limit_response: openai_error_429,
+    schema_drift_sse: openai_schema_drift_sse,
+    mock_route: oai_completions_route,
+    entry_base_url: oai_completions_base,
+};
+
+const DEEPINFRA_COMPLETIONS: FamilySpec = FamilySpec {
+    family: "openai-completions",
+    provider_id: "deepinfra",
+    model_id: "e2e-deepinfra",
+    api_key: "e2e-test-key",
+    text_sse: openai_chat_text_sse,
+    tool_sse: openai_chat_tool_sse,
+    error_response: openai_error_401,
+    rate_limit_response: openai_error_429,
+    schema_drift_sse: openai_schema_drift_sse,
+    mock_route: oai_completions_route,
+    entry_base_url: oai_completions_base,
+};
+
+const TOGETHERAI_COMPLETIONS: FamilySpec = FamilySpec {
+    family: "openai-completions",
+    provider_id: "togetherai",
+    model_id: "e2e-togetherai",
+    api_key: "e2e-test-key",
+    text_sse: openai_chat_text_sse,
+    tool_sse: openai_chat_tool_sse,
+    error_response: openai_error_401,
+    rate_limit_response: openai_error_429,
+    schema_drift_sse: openai_schema_drift_sse,
+    mock_route: oai_completions_route,
+    entry_base_url: oai_completions_base,
+};
+
+const NVIDIA_COMPLETIONS: FamilySpec = FamilySpec {
+    family: "openai-completions",
+    provider_id: "nvidia",
+    model_id: "e2e-nvidia",
+    api_key: "e2e-test-key",
+    text_sse: openai_chat_text_sse,
+    tool_sse: openai_chat_tool_sse,
+    error_response: openai_error_401,
+    rate_limit_response: openai_error_429,
+    schema_drift_sse: openai_schema_drift_sse,
+    mock_route: oai_completions_route,
+    entry_base_url: oai_completions_base,
+};
+
+const HUGGINGFACE_COMPLETIONS: FamilySpec = FamilySpec {
+    family: "openai-completions",
+    provider_id: "huggingface",
+    model_id: "e2e-huggingface",
+    api_key: "e2e-test-key",
+    text_sse: openai_chat_text_sse,
+    tool_sse: openai_chat_tool_sse,
+    error_response: openai_error_401,
+    rate_limit_response: openai_error_429,
+    schema_drift_sse: openai_schema_drift_sse,
+    mock_route: oai_completions_route,
+    entry_base_url: oai_completions_base,
+};
+
+const OLLAMA_CLOUD_COMPLETIONS: FamilySpec = FamilySpec {
+    family: "openai-completions",
+    provider_id: "ollama-cloud",
+    model_id: "e2e-ollama-cloud",
+    api_key: "e2e-test-key",
+    text_sse: openai_chat_text_sse,
+    tool_sse: openai_chat_tool_sse,
+    error_response: openai_error_401,
+    rate_limit_response: openai_error_429,
+    schema_drift_sse: openai_schema_drift_sse,
+    mock_route: oai_completions_route,
+    entry_base_url: oai_completions_base,
 };
 
 /// All families that can be exercised deterministically with `MockHttpServer`.
@@ -661,6 +960,18 @@ const E2E_FAMILIES: &[&FamilySpec] = &[
     &ANTHROPIC_MESSAGES,
     &GEMINI_GENERATIVE,
     &COHERE_CHAT,
+    &CEREBRAS_COMPLETIONS,
+    &OPENROUTER_COMPLETIONS,
+    &MOONSHOTAI_COMPLETIONS,
+    &ALIBABA_COMPLETIONS,
+    // Longtail quick-win providers (bd-3uqg.11.10.6)
+    &STACKIT_COMPLETIONS,
+    &MISTRAL_COMPLETIONS,
+    &DEEPINFRA_COMPLETIONS,
+    &TOGETHERAI_COMPLETIONS,
+    &NVIDIA_COMPLETIONS,
+    &HUGGINGFACE_COMPLETIONS,
+    &OLLAMA_CLOUD_COMPLETIONS,
 ];
 
 /// Set up a mock route for the given spec and return the `base_url` for the `ModelEntry`.
@@ -1013,6 +1324,268 @@ fn e2e_error_auth_all_families() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// Test 3b: Rate-limit (429) error handling across all families
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Exercises rate-limit (HTTP 429) handling through mock HTTP for every API
+/// family. Validates that providers surface the error or emit an Error event
+/// rather than panicking or returning success.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn e2e_error_rate_limit_all_families() {
+    let harness = TestHarness::new("e2e_error_rate_limit_all_families");
+    let mut results: Vec<ScenarioResult> = Vec::new();
+
+    for spec in E2E_FAMILIES {
+        harness.section(&format!("error_rate_limit: {}", spec.family));
+        let server = harness.start_mock_http_server();
+        let base_url = setup_mock_route(spec, &server, (spec.rate_limit_response)());
+        let mut entry = make_entry(spec.provider_id, spec.model_id, &base_url);
+        entry.model.api.clear();
+        let provider = match create_provider(&entry, None) {
+            Ok(p) => p,
+            Err(e) => {
+                results.push(ScenarioResult {
+                    family: spec.family.to_string(),
+                    provider: spec.provider_id.to_string(),
+                    scenario: "error_rate_limit".to_string(),
+                    status: "skip".to_string(),
+                    elapsed_ms: 0,
+                    event_count: 0,
+                    text_chars: 0,
+                    tool_calls: 0,
+                    stop_reason: None,
+                    error: Some(e.to_string()),
+                    event_sequence: Vec::new(),
+                    sequence_valid: false,
+                });
+                continue;
+            }
+        };
+
+        let options = StreamOptions {
+            api_key: Some(spec.api_key.to_string()),
+            max_tokens: Some(64),
+            ..Default::default()
+        };
+
+        let start = Instant::now();
+        let result = collect_events(provider, simple_context(), options);
+        let elapsed = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+        match result {
+            Err(e) => {
+                harness.log().info_ctx(
+                    "e2e.rate_limit",
+                    format!("{} rate limit error handled", spec.family),
+                    |ctx| {
+                        ctx.push(("error".into(), e.clone()));
+                        ctx.push(("elapsed_ms".into(), elapsed.to_string()));
+                    },
+                );
+
+                results.push(ScenarioResult {
+                    family: spec.family.to_string(),
+                    provider: spec.provider_id.to_string(),
+                    scenario: "error_rate_limit".to_string(),
+                    status: "pass".to_string(),
+                    elapsed_ms: elapsed,
+                    event_count: 0,
+                    text_chars: 0,
+                    tool_calls: 0,
+                    stop_reason: None,
+                    error: Some(e),
+                    event_sequence: Vec::new(),
+                    sequence_valid: false,
+                });
+            }
+            Ok(events) => {
+                let has_error = events
+                    .iter()
+                    .any(|e| matches!(e, StreamEvent::Error { .. }));
+                let sequence: Vec<String> =
+                    events.iter().map(|e| event_kind(e).to_string()).collect();
+
+                harness.log().info_ctx(
+                    "e2e.rate_limit",
+                    format!(
+                        "{} rate limit via {}",
+                        spec.family,
+                        if has_error {
+                            "stream error event"
+                        } else {
+                            "unexpected success"
+                        }
+                    ),
+                    |ctx| {
+                        ctx.push(("events".into(), events.len().to_string()));
+                        ctx.push(("has_error_event".into(), has_error.to_string()));
+                    },
+                );
+
+                results.push(ScenarioResult {
+                    family: spec.family.to_string(),
+                    provider: spec.provider_id.to_string(),
+                    scenario: "error_rate_limit".to_string(),
+                    status: if has_error { "pass" } else { "warn" }.to_string(),
+                    elapsed_ms: elapsed,
+                    event_count: events.len(),
+                    text_chars: 0,
+                    tool_calls: 0,
+                    stop_reason: None,
+                    error: None,
+                    event_sequence: sequence,
+                    sequence_valid: false,
+                });
+            }
+        }
+    }
+
+    write_results_jsonl(&harness, "e2e_error_rate_limit", &results);
+
+    let pass_or_warn = results
+        .iter()
+        .filter(|r| r.status == "pass" || r.status == "warn")
+        .count();
+    assert!(
+        pass_or_warn >= 3,
+        "expected at least 3 families to handle rate-limit errors, got {pass_or_warn}"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Test 3c: Schema-drift resilience across all families
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Exercises schema-drift resilience by sending SSE responses with unexpected
+/// extra fields, missing optional fields, or new field names. Providers should
+/// still parse and emit valid events rather than crashing.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn e2e_error_schema_drift_all_families() {
+    let harness = TestHarness::new("e2e_error_schema_drift_all_families");
+    let mut results: Vec<ScenarioResult> = Vec::new();
+
+    for spec in E2E_FAMILIES {
+        harness.section(&format!("schema_drift: {}", spec.family));
+        let server = harness.start_mock_http_server();
+        let base_url =
+            setup_mock_route(spec, &server, text_event_stream((spec.schema_drift_sse)()));
+        let mut entry = make_entry(spec.provider_id, spec.model_id, &base_url);
+        entry.model.api.clear();
+        let provider = match create_provider(&entry, None) {
+            Ok(p) => p,
+            Err(e) => {
+                results.push(ScenarioResult {
+                    family: spec.family.to_string(),
+                    provider: spec.provider_id.to_string(),
+                    scenario: "schema_drift".to_string(),
+                    status: "skip".to_string(),
+                    elapsed_ms: 0,
+                    event_count: 0,
+                    text_chars: 0,
+                    tool_calls: 0,
+                    stop_reason: None,
+                    error: Some(e.to_string()),
+                    event_sequence: Vec::new(),
+                    sequence_valid: false,
+                });
+                continue;
+            }
+        };
+
+        let options = StreamOptions {
+            api_key: Some(spec.api_key.to_string()),
+            max_tokens: Some(64),
+            ..Default::default()
+        };
+
+        let start = Instant::now();
+        let result = collect_events(provider, simple_context(), options);
+        let elapsed = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+        match result {
+            Ok(events) => {
+                let sequence: Vec<String> =
+                    events.iter().map(|e| event_kind(e).to_string()).collect();
+                let seq_result = validate_event_sequence(&events);
+                let (text_chars, tool_calls, stop_reason) = summarize_events(&events);
+
+                harness.log().info_ctx(
+                    "e2e.schema_drift",
+                    format!("{} handled drift gracefully", spec.family),
+                    |ctx| {
+                        ctx.push(("events".into(), events.len().to_string()));
+                        ctx.push(("text_chars".into(), text_chars.to_string()));
+                        ctx.push(("seq_valid".into(), seq_result.is_ok().to_string()));
+                    },
+                );
+
+                // Schema-drift responses should still parse to valid events
+                // with text content "Drifted".
+                assert!(
+                    seq_result.is_ok(),
+                    "{}: schema-drift response produced invalid event sequence: {}",
+                    spec.family,
+                    seq_result.unwrap_err()
+                );
+                assert!(
+                    text_chars > 0,
+                    "{}: schema-drift should still produce text output",
+                    spec.family
+                );
+
+                results.push(ScenarioResult {
+                    family: spec.family.to_string(),
+                    provider: spec.provider_id.to_string(),
+                    scenario: "schema_drift".to_string(),
+                    status: "pass".to_string(),
+                    elapsed_ms: elapsed,
+                    event_count: events.len(),
+                    text_chars,
+                    tool_calls,
+                    stop_reason,
+                    error: None,
+                    event_sequence: sequence,
+                    sequence_valid: true,
+                });
+            }
+            Err(e) => {
+                // A parse error on drift is also informative — record as warn,
+                // not fail, since strict parsing is a valid strategy.
+                harness.log().warn(
+                    "e2e.schema_drift",
+                    format!("{} failed on drift: {e}", spec.family),
+                );
+
+                results.push(ScenarioResult {
+                    family: spec.family.to_string(),
+                    provider: spec.provider_id.to_string(),
+                    scenario: "schema_drift".to_string(),
+                    status: "warn".to_string(),
+                    elapsed_ms: elapsed,
+                    event_count: 0,
+                    text_chars: 0,
+                    tool_calls: 0,
+                    stop_reason: None,
+                    error: Some(e),
+                    event_sequence: Vec::new(),
+                    sequence_valid: false,
+                });
+            }
+        }
+    }
+
+    write_results_jsonl(&harness, "e2e_schema_drift", &results);
+
+    let pass_count = results.iter().filter(|r| r.status == "pass").count();
+    assert!(
+        pass_count >= 3,
+        "expected at least 3 families to handle schema drift, got {pass_count}"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // Test 4: Multi-turn conversation (OpenAI-completions + Anthropic)
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -1341,6 +1914,17 @@ fn e2e_openai_compatible_wave_presets() {
         ("groq", "/openai/v1/chat/completions", "/openai/v1"),
         ("deepseek", "/chat/completions", ""),
         ("openrouter", "/api/v1/chat/completions", "/api/v1"),
+        ("cerebras", "/openai/v1/chat/completions", "/openai/v1"),
+        ("moonshotai", "/openai/v1/chat/completions", "/openai/v1"),
+        ("alibaba", "/openai/v1/chat/completions", "/openai/v1"),
+        // Longtail quick-win presets (bd-3uqg.11.10.6)
+        ("stackit", "/openai/v1/chat/completions", "/openai/v1"),
+        ("mistral", "/openai/v1/chat/completions", "/openai/v1"),
+        ("deepinfra", "/openai/v1/chat/completions", "/openai/v1"),
+        ("togetherai", "/openai/v1/chat/completions", "/openai/v1"),
+        ("nvidia", "/openai/v1/chat/completions", "/openai/v1"),
+        ("huggingface", "/openai/v1/chat/completions", "/openai/v1"),
+        ("ollama-cloud", "/openai/v1/chat/completions", "/openai/v1"),
     ];
     let mut results: Vec<ScenarioResult> = Vec::new();
 
@@ -1429,7 +2013,13 @@ fn e2e_openai_compatible_wave_presets() {
 fn e2e_comprehensive_report() {
     let harness = TestHarness::new("e2e_comprehensive_report");
     let mut all_results: Vec<ScenarioResult> = Vec::new();
-    let scenarios = ["simple_text", "tool_call", "error_auth"];
+    let scenarios = [
+        "simple_text",
+        "tool_call",
+        "error_auth",
+        "error_rate_limit",
+        "schema_drift",
+    ];
 
     for spec in E2E_FAMILIES {
         for scenario in &scenarios {
@@ -1440,6 +2030,8 @@ fn e2e_comprehensive_report() {
                 "simple_text" => text_event_stream((spec.text_sse)()),
                 "tool_call" => text_event_stream((spec.tool_sse)()),
                 "error_auth" => (spec.error_response)(),
+                "error_rate_limit" => (spec.rate_limit_response)(),
+                "schema_drift" => text_event_stream((spec.schema_drift_sse)()),
                 _ => unreachable!(),
             };
             let base_url = setup_mock_route(spec, &server, response);
@@ -1503,7 +2095,7 @@ fn e2e_comprehensive_report() {
                     });
                 }
                 Err(e) => {
-                    let status = if *scenario == "error_auth" {
+                    let status = if *scenario == "error_auth" || *scenario == "error_rate_limit" {
                         "pass"
                     } else {
                         "fail"

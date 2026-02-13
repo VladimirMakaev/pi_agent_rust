@@ -1057,7 +1057,7 @@ mod cohere_contract {
 mod openai_compat_preset_contract {
     use super::*;
 
-    const PRESET_PROVIDERS: [&str; 9] = [
+    const PRESET_PROVIDERS: [&str; 16] = [
         "groq",
         "deepseek",
         "xai",
@@ -1067,6 +1067,14 @@ mod openai_compat_preset_contract {
         "openrouter",
         "moonshotai",
         "alibaba",
+        // Longtail quick-win providers (bd-3uqg.11.10.5)
+        "stackit",
+        "mistral",
+        "deepinfra",
+        "togetherai",
+        "nvidia",
+        "huggingface",
+        "ollama-cloud",
     ];
 
     #[test]
@@ -1943,6 +1951,899 @@ mod gap_provider_metadata {
             assert!(
                 meta.test_obligations.contract,
                 "{id} must have contract test obligation"
+            );
+        }
+    }
+}
+
+// ============================================================================
+// LONGTAIL PROVIDER CONTRACT TESTS (bd-3uqg.11.10.5)
+//
+// Unit/contract verification for longtail quick-win providers that route
+// through existing OpenAI-compatible adapter paths. Representative coverage
+// for: stackit, mistral, deepinfra, togetherai, nvidia, huggingface,
+// ollama-cloud.
+// ============================================================================
+
+mod longtail_contract {
+    use super::*;
+
+    mod stackit_contract {
+        use super::*;
+
+        #[test]
+        fn factory_routes_and_api() {
+            gap_provider_helpers::assert_factory_routes_and_api("stackit");
+        }
+        #[test]
+        fn bearer_auth() {
+            gap_provider_helpers::assert_bearer_auth("stackit");
+        }
+        #[test]
+        fn text_response_decoding() {
+            gap_provider_helpers::assert_text_response_decoding("stackit");
+        }
+        #[test]
+        fn tool_call_response_decoding() {
+            gap_provider_helpers::assert_tool_call_response_decoding("stackit");
+        }
+        #[test]
+        fn tool_schema_translation() {
+            gap_provider_helpers::assert_tool_schema_translation("stackit");
+        }
+        #[test]
+        fn request_shape() {
+            gap_provider_helpers::assert_request_body_shape("stackit");
+        }
+        #[test]
+        fn error_401() {
+            gap_provider_helpers::assert_http_401_error("stackit");
+        }
+        #[test]
+        fn error_429() {
+            gap_provider_helpers::assert_http_429_error("stackit");
+        }
+    }
+
+    mod mistral_contract {
+        use super::*;
+
+        #[test]
+        fn factory_routes_and_api() {
+            gap_provider_helpers::assert_factory_routes_and_api("mistral");
+        }
+        #[test]
+        fn bearer_auth() {
+            gap_provider_helpers::assert_bearer_auth("mistral");
+        }
+        #[test]
+        fn text_response_decoding() {
+            gap_provider_helpers::assert_text_response_decoding("mistral");
+        }
+        #[test]
+        fn tool_call_response_decoding() {
+            gap_provider_helpers::assert_tool_call_response_decoding("mistral");
+        }
+        #[test]
+        fn tool_schema_translation() {
+            gap_provider_helpers::assert_tool_schema_translation("mistral");
+        }
+        #[test]
+        fn request_shape() {
+            gap_provider_helpers::assert_request_body_shape("mistral");
+        }
+        #[test]
+        fn error_401() {
+            gap_provider_helpers::assert_http_401_error("mistral");
+        }
+        #[test]
+        fn error_429() {
+            gap_provider_helpers::assert_http_429_error("mistral");
+        }
+    }
+
+    mod deepinfra_contract {
+        use super::*;
+
+        #[test]
+        fn factory_routes_and_api() {
+            gap_provider_helpers::assert_factory_routes_and_api("deepinfra");
+        }
+        #[test]
+        fn bearer_auth() {
+            gap_provider_helpers::assert_bearer_auth("deepinfra");
+        }
+        #[test]
+        fn text_response_decoding() {
+            gap_provider_helpers::assert_text_response_decoding("deepinfra");
+        }
+        #[test]
+        fn tool_call_response_decoding() {
+            gap_provider_helpers::assert_tool_call_response_decoding("deepinfra");
+        }
+        #[test]
+        fn tool_schema_translation() {
+            gap_provider_helpers::assert_tool_schema_translation("deepinfra");
+        }
+        #[test]
+        fn request_shape() {
+            gap_provider_helpers::assert_request_body_shape("deepinfra");
+        }
+        #[test]
+        fn error_401() {
+            gap_provider_helpers::assert_http_401_error("deepinfra");
+        }
+        #[test]
+        fn error_429() {
+            gap_provider_helpers::assert_http_429_error("deepinfra");
+        }
+    }
+
+    mod togetherai_contract {
+        use super::*;
+
+        #[test]
+        fn factory_routes_and_api() {
+            gap_provider_helpers::assert_factory_routes_and_api("togetherai");
+        }
+        #[test]
+        fn bearer_auth() {
+            gap_provider_helpers::assert_bearer_auth("togetherai");
+        }
+        #[test]
+        fn text_response_decoding() {
+            gap_provider_helpers::assert_text_response_decoding("togetherai");
+        }
+        #[test]
+        fn tool_call_response_decoding() {
+            gap_provider_helpers::assert_tool_call_response_decoding("togetherai");
+        }
+        #[test]
+        fn tool_schema_translation() {
+            gap_provider_helpers::assert_tool_schema_translation("togetherai");
+        }
+        #[test]
+        fn request_shape() {
+            gap_provider_helpers::assert_request_body_shape("togetherai");
+        }
+        #[test]
+        fn error_401() {
+            gap_provider_helpers::assert_http_401_error("togetherai");
+        }
+        #[test]
+        fn error_429() {
+            gap_provider_helpers::assert_http_429_error("togetherai");
+        }
+    }
+
+    mod nvidia_contract {
+        use super::*;
+
+        #[test]
+        fn factory_routes_and_api() {
+            gap_provider_helpers::assert_factory_routes_and_api("nvidia");
+        }
+        #[test]
+        fn bearer_auth() {
+            gap_provider_helpers::assert_bearer_auth("nvidia");
+        }
+        #[test]
+        fn text_response_decoding() {
+            gap_provider_helpers::assert_text_response_decoding("nvidia");
+        }
+        #[test]
+        fn tool_call_response_decoding() {
+            gap_provider_helpers::assert_tool_call_response_decoding("nvidia");
+        }
+        #[test]
+        fn tool_schema_translation() {
+            gap_provider_helpers::assert_tool_schema_translation("nvidia");
+        }
+        #[test]
+        fn request_shape() {
+            gap_provider_helpers::assert_request_body_shape("nvidia");
+        }
+        #[test]
+        fn error_401() {
+            gap_provider_helpers::assert_http_401_error("nvidia");
+        }
+        #[test]
+        fn error_429() {
+            gap_provider_helpers::assert_http_429_error("nvidia");
+        }
+    }
+
+    mod huggingface_contract {
+        use super::*;
+
+        #[test]
+        fn factory_routes_and_api() {
+            gap_provider_helpers::assert_factory_routes_and_api("huggingface");
+        }
+        #[test]
+        fn bearer_auth() {
+            gap_provider_helpers::assert_bearer_auth("huggingface");
+        }
+        #[test]
+        fn text_response_decoding() {
+            gap_provider_helpers::assert_text_response_decoding("huggingface");
+        }
+        #[test]
+        fn tool_call_response_decoding() {
+            gap_provider_helpers::assert_tool_call_response_decoding("huggingface");
+        }
+        #[test]
+        fn tool_schema_translation() {
+            gap_provider_helpers::assert_tool_schema_translation("huggingface");
+        }
+        #[test]
+        fn request_shape() {
+            gap_provider_helpers::assert_request_body_shape("huggingface");
+        }
+        #[test]
+        fn error_401() {
+            gap_provider_helpers::assert_http_401_error("huggingface");
+        }
+        #[test]
+        fn error_429() {
+            gap_provider_helpers::assert_http_429_error("huggingface");
+        }
+    }
+
+    mod ollama_cloud_contract {
+        use super::*;
+
+        #[test]
+        fn factory_routes_and_api() {
+            gap_provider_helpers::assert_factory_routes_and_api("ollama-cloud");
+        }
+        #[test]
+        fn bearer_auth() {
+            gap_provider_helpers::assert_bearer_auth("ollama-cloud");
+        }
+        #[test]
+        fn text_response_decoding() {
+            gap_provider_helpers::assert_text_response_decoding("ollama-cloud");
+        }
+        #[test]
+        fn tool_call_response_decoding() {
+            gap_provider_helpers::assert_tool_call_response_decoding("ollama-cloud");
+        }
+        #[test]
+        fn tool_schema_translation() {
+            gap_provider_helpers::assert_tool_schema_translation("ollama-cloud");
+        }
+        #[test]
+        fn request_shape() {
+            gap_provider_helpers::assert_request_body_shape("ollama-cloud");
+        }
+        #[test]
+        fn error_401() {
+            gap_provider_helpers::assert_http_401_error("ollama-cloud");
+        }
+        #[test]
+        fn error_429() {
+            gap_provider_helpers::assert_http_429_error("ollama-cloud");
+        }
+    }
+}
+
+mod longtail_provider_metadata {
+    use pi::provider_metadata::{
+        PROVIDER_METADATA, provider_auth_env_keys, provider_routing_defaults,
+    };
+
+    const LONGTAIL_PROVIDERS: [(&str, &str, &[&str]); 7] = [
+        ("stackit", "openai-completions", &["STACKIT_API_KEY"]),
+        ("mistral", "openai-completions", &["MISTRAL_API_KEY"]),
+        ("deepinfra", "openai-completions", &["DEEPINFRA_API_KEY"]),
+        ("togetherai", "openai-completions", &["TOGETHER_API_KEY"]),
+        ("nvidia", "openai-completions", &["NVIDIA_API_KEY"]),
+        ("huggingface", "openai-completions", &["HF_TOKEN"]),
+        ("ollama-cloud", "openai-completions", &["OLLAMA_API_KEY"]),
+    ];
+
+    #[test]
+    fn all_longtail_providers_exist_in_metadata() {
+        for (id, _, _) in &LONGTAIL_PROVIDERS {
+            let meta = PROVIDER_METADATA.iter().find(|m| m.canonical_id == *id);
+            assert!(
+                meta.is_some(),
+                "{id} must be a canonical provider ID in metadata"
+            );
+        }
+    }
+
+    #[test]
+    fn all_longtail_providers_have_routing_defaults() {
+        for (id, expected_api, _) in &LONGTAIL_PROVIDERS {
+            let defaults = provider_routing_defaults(id);
+            assert!(
+                defaults.is_some(),
+                "{id} must have routing defaults in metadata"
+            );
+            let defaults = defaults.unwrap();
+            assert_eq!(
+                defaults.api, *expected_api,
+                "{id} routing default API mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn all_longtail_providers_have_auth_env_keys() {
+        for (id, _, expected_keys) in &LONGTAIL_PROVIDERS {
+            let keys = provider_auth_env_keys(id);
+            assert!(
+                !keys.is_empty(),
+                "{id} must have at least one auth env key in metadata"
+            );
+            assert_eq!(
+                keys[0], expected_keys[0],
+                "{id} primary auth env key mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn all_longtail_providers_require_tests() {
+        for (id, _, _) in &LONGTAIL_PROVIDERS {
+            let meta = PROVIDER_METADATA.iter().find(|m| m.canonical_id == *id);
+            assert!(meta.is_some(), "{id} must exist in PROVIDER_METADATA");
+            let meta = meta.unwrap();
+            assert!(
+                meta.test_obligations.unit,
+                "{id} must have unit test obligation"
+            );
+            assert!(
+                meta.test_obligations.contract,
+                "{id} must have contract test obligation"
+            );
+        }
+    }
+
+    #[test]
+    fn longtail_auth_header_defaults_are_correct() {
+        for (id, _, _) in &LONGTAIL_PROVIDERS {
+            let defaults = provider_routing_defaults(id).unwrap();
+            assert!(
+                defaults.auth_header,
+                "{id} must use auth_header=true for Bearer auth"
+            );
+        }
+    }
+}
+
+// ============================================================================
+// FAILURE TAXONOMY VALIDATION (bd-3uqg.11.11.6)
+//
+// Validates that failures from provider suites are categorized consistently
+// and mapped to deterministic remediation paths via the error hint system.
+// ============================================================================
+
+mod failure_taxonomy {
+    use pi::error::Error;
+    use pi::provider_metadata::{PROVIDER_METADATA, provider_auth_env_keys};
+
+    /// All gap + longtail providers that must have complete error hint coverage.
+    const TAXONOMY_PROVIDERS: [&str; 12] = [
+        "groq",
+        "cerebras",
+        "openrouter",
+        "moonshotai",
+        "alibaba",
+        "stackit",
+        "mistral",
+        "deepinfra",
+        "togetherai",
+        "nvidia",
+        "huggingface",
+        "ollama-cloud",
+    ];
+
+    /// Canonical failure categories that every provider must handle.
+    const FAILURE_CATEGORIES: [(&str, &str); 7] = [
+        ("missing_api_key", "missing api key"),
+        ("auth_401", "401 unauthorized"),
+        ("forbidden_403", "403 forbidden"),
+        ("rate_limit_429", "429 too many requests"),
+        ("quota_exceeded", "insufficient_quota"),
+        ("overloaded_529", "529 overloaded"),
+        ("timeout", "request timed out"),
+    ];
+
+    #[test]
+    fn all_providers_produce_hint_summary_for_missing_key() {
+        for provider in &TAXONOMY_PROVIDERS {
+            let err = Error::Provider {
+                provider: provider.to_string(),
+                message: "Missing API key".to_string(),
+            };
+            let hints = err.hints();
+            assert!(
+                !hints.summary.is_empty(),
+                "{provider}: missing-key error must produce a non-empty hint summary"
+            );
+            assert!(
+                !hints.hints.is_empty(),
+                "{provider}: missing-key error must produce at least one remediation hint"
+            );
+        }
+    }
+
+    #[test]
+    fn all_providers_produce_hint_for_auth_failure() {
+        for provider in &TAXONOMY_PROVIDERS {
+            let err = Error::Provider {
+                provider: provider.to_string(),
+                message: "401 Unauthorized - Invalid API key".to_string(),
+            };
+            let hints = err.hints();
+            assert!(
+                !hints.summary.is_empty(),
+                "{provider}: 401 error must produce a hint summary"
+            );
+            assert!(
+                hints.summary.to_lowercase().contains("auth"),
+                "{provider}: 401 hint summary should mention auth: got '{}'",
+                hints.summary
+            );
+        }
+    }
+
+    #[test]
+    fn all_providers_produce_hint_for_rate_limit() {
+        for provider in &TAXONOMY_PROVIDERS {
+            let err = Error::Provider {
+                provider: provider.to_string(),
+                message: "429 Too Many Requests - Rate limit exceeded".to_string(),
+            };
+            let hints = err.hints();
+            assert!(
+                !hints.summary.is_empty(),
+                "{provider}: 429 error must produce a hint summary"
+            );
+            assert!(
+                hints.summary.to_lowercase().contains("rate"),
+                "{provider}: 429 hint should mention rate limiting: got '{}'",
+                hints.summary
+            );
+        }
+    }
+
+    #[test]
+    fn provider_key_hints_reference_correct_env_var() {
+        for provider in &TAXONOMY_PROVIDERS {
+            let env_keys = provider_auth_env_keys(provider);
+            if env_keys.is_empty() {
+                continue;
+            }
+            let err = Error::Provider {
+                provider: provider.to_string(),
+                message: "Missing API key".to_string(),
+            };
+            let hints = err.hints();
+            let all_hints = hints.hints.join(" ");
+            assert!(
+                env_keys.iter().any(|key| all_hints.contains(key)),
+                "{provider}: remediation hints must reference the auth env var ({env_keys:?}), got: {all_hints}"
+            );
+        }
+    }
+
+    #[test]
+    fn all_failure_categories_produce_distinct_summaries() {
+        // Validate ALL taxonomy providers, not just a subset.
+        for provider in &TAXONOMY_PROVIDERS {
+            let mut summaries = std::collections::HashSet::new();
+            for (category, message) in &FAILURE_CATEGORIES {
+                let err = Error::Provider {
+                    provider: provider.to_string(),
+                    message: message.to_string(),
+                };
+                let hints = err.hints();
+                assert!(
+                    !hints.summary.is_empty(),
+                    "{provider}/{category}: must produce a hint summary"
+                );
+                summaries.insert(hints.summary.clone());
+            }
+            assert!(
+                summaries.len() >= 4,
+                "{provider}: expected at least 4 distinct failure summaries across 7 categories, got {}",
+                summaries.len()
+            );
+        }
+    }
+
+    #[test]
+    fn auth_diagnostic_codes_all_have_remediation() {
+        use pi::error::AuthDiagnosticCode;
+        let codes = [
+            AuthDiagnosticCode::MissingApiKey,
+            AuthDiagnosticCode::InvalidApiKey,
+            AuthDiagnosticCode::QuotaExceeded,
+            AuthDiagnosticCode::MissingOAuthAuthorizationCode,
+            AuthDiagnosticCode::OAuthTokenExchangeFailed,
+            AuthDiagnosticCode::OAuthTokenRefreshFailed,
+            AuthDiagnosticCode::MissingAzureDeployment,
+            AuthDiagnosticCode::MissingRegion,
+            AuthDiagnosticCode::MissingProject,
+            AuthDiagnosticCode::MissingProfile,
+            AuthDiagnosticCode::MissingEndpoint,
+            AuthDiagnosticCode::MissingCredentialChain,
+            AuthDiagnosticCode::UnknownAuthFailure,
+        ];
+        for code in &codes {
+            let stable_str = code.as_str();
+            assert!(
+                !stable_str.is_empty(),
+                "{code:?}: stable string code must not be empty"
+            );
+            let remediation = code.remediation();
+            assert!(
+                !remediation.is_empty(),
+                "{code:?}: remediation text must not be empty"
+            );
+            let policy = code.redaction_policy();
+            assert!(
+                !policy.is_empty(),
+                "{code:?}: redaction policy must not be empty"
+            );
+            // All auth errors should have a remediation hint, not just a code.
+            assert!(
+                remediation.len() > 10,
+                "{code:?}: remediation should be actionable (got {remediation})"
+            );
+        }
+    }
+
+    #[test]
+    fn flake_classifier_covers_all_categories() {
+        use pi::flake_classifier::{FlakeCategory, classify_failure};
+        // Each FlakeCategory must be reachable via classify_failure.
+        let cases: Vec<(FlakeCategory, &str)> = vec![
+            (
+                FlakeCategory::OracleTimeout,
+                "error: TS oracle process timed out after 30s",
+            ),
+            (
+                FlakeCategory::ResourceExhaustion,
+                "fatal: out of memory (allocator returned null)",
+            ),
+            (
+                FlakeCategory::FsContention,
+                "error: EBUSY: resource busy or locked",
+            ),
+            (
+                FlakeCategory::PortConflict,
+                "listen EADDRINUSE: address already in use :::3000",
+            ),
+            (
+                FlakeCategory::TmpdirRace,
+                "error: No such file or directory (os error 2), path: /tmp/pi-test-xyz",
+            ),
+            (
+                FlakeCategory::JsGcPressure,
+                "quickjs runtime: allocation failed, out of memory",
+            ),
+        ];
+        let mut covered = std::collections::HashSet::new();
+        for (expected_cat, output) in &cases {
+            let result = classify_failure(output);
+            match result {
+                pi::flake_classifier::FlakeClassification::Transient { category, .. } => {
+                    assert_eq!(
+                        &category, expected_cat,
+                        "Expected {expected_cat:?} for output: {output}"
+                    );
+                    covered.insert(category);
+                }
+                pi::flake_classifier::FlakeClassification::Deterministic => {
+                    panic!(
+                        "Expected Transient({expected_cat:?}) but got Deterministic for: {output}"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            covered.len(),
+            FlakeCategory::all().len(),
+            "All FlakeCategory variants must be covered by classify_failure"
+        );
+    }
+
+    #[test]
+    fn provider_error_messages_map_to_correct_hint_category() {
+        // Provider-specific error messages should map to the correct
+        // hint category (summary). This validates the triage runbook's
+        // failure-to-remediation mapping is deterministic.
+        let cases: Vec<(&str, &str, &str)> = vec![
+            // (provider, error message, expected summary substring)
+            ("groq", "401 Unauthorized - Invalid API key", "auth"),
+            ("cerebras", "429 Too Many Requests", "rate"),
+            ("moonshotai", "Missing API key", "missing"),
+            (
+                "alibaba",
+                "429 Too Many Requests - Rate limit exceeded",
+                "rate",
+            ),
+            ("alibaba", "insufficient_quota - payment overdue", "quota"),
+            ("groq", "529 overloaded - please retry", "overloaded"),
+            ("cerebras", "request timed out after 30s", "timed out"),
+            ("openrouter", "400 Bad Request - invalid model", "rejected"),
+            ("moonshotai", "500 Internal Server Error", "server error"),
+            ("stackit", "403 Forbidden", "forbidden"),
+        ];
+        for (provider, message, expected_substr) in &cases {
+            let err = Error::Provider {
+                provider: provider.to_string(),
+                message: message.to_string(),
+            };
+            let hints = err.hints();
+            assert!(
+                hints.summary.to_lowercase().contains(expected_substr),
+                "{provider}/{message}: expected summary to contain '{expected_substr}', got '{}'",
+                hints.summary
+            );
+        }
+    }
+
+    #[test]
+    fn deterministic_failures_produce_non_retriable_classification() {
+        use pi::flake_classifier::classify_failure;
+        // Real assertion failures (not flakes) must be classified as Deterministic.
+        let deterministic_outputs = [
+            "assertion failed: expected 200 but got 401",
+            "test provider_factory::groq_routing ... FAILED",
+            "thread 'main' panicked at 'explicit panic'",
+            "error[E0277]: the trait bound is not satisfied",
+            "missing field `content` in stream event",
+        ];
+        for output in &deterministic_outputs {
+            let result = classify_failure(output);
+            assert!(
+                !result.is_retriable(),
+                "Output should be Deterministic (not retriable): {output}"
+            );
+        }
+    }
+
+    #[test]
+    fn all_taxonomy_providers_exist_in_metadata() {
+        for provider in &TAXONOMY_PROVIDERS {
+            let meta = PROVIDER_METADATA
+                .iter()
+                .find(|m| m.canonical_id == *provider);
+            assert!(
+                meta.is_some(),
+                "{provider} must exist in PROVIDER_METADATA for taxonomy validation"
+            );
+        }
+    }
+
+    #[test]
+    fn error_hints_include_provider_context() {
+        for provider in &TAXONOMY_PROVIDERS {
+            let err = Error::Provider {
+                provider: provider.to_string(),
+                message: "401 Unauthorized".to_string(),
+            };
+            let hints = err.hints();
+            let has_provider_ctx = hints
+                .context
+                .iter()
+                .any(|(k, v)| k == "provider" && v == *provider);
+            assert!(
+                has_provider_ctx,
+                "{provider}: error hints must include provider context"
+            );
+        }
+    }
+}
+
+// ============================================================================
+// DOCS/RUNTIME CONSISTENCY CHECKS (bd-3uqg.11.12.5)
+//
+// Validates that published documentation (setup guides, config examples)
+// cannot silently diverge from the implementation truth in provider_metadata
+// and auth resolution logic.
+// ============================================================================
+
+mod docs_runtime_consistency {
+    use pi::provider_metadata::{PROVIDER_METADATA, provider_auth_env_keys};
+
+    /// Gap providers whose setup docs we validate.
+    const DOC_PROVIDERS: [(&str, &str); 5] = [
+        ("groq", "docs/provider-groq-setup.json"),
+        ("cerebras", "docs/provider-cerebras-setup.json"),
+        ("openrouter", "docs/provider-openrouter-setup.json"),
+        ("moonshotai", "docs/provider-kimi-setup.json"),
+        ("alibaba", "docs/provider-qwen-setup.json"),
+    ];
+
+    fn load_doc(path: &str) -> serde_json::Value {
+        let full = format!("{}/{}", env!("CARGO_MANIFEST_DIR"), path,);
+        let content =
+            std::fs::read_to_string(&full).unwrap_or_else(|e| panic!("Failed to read {full}: {e}"));
+        serde_json::from_str(&content).unwrap_or_else(|e| panic!("Failed to parse {full}: {e}"))
+    }
+
+    #[test]
+    fn setup_docs_exist_and_parse_as_valid_json() {
+        for (provider, path) in &DOC_PROVIDERS {
+            let doc = load_doc(path);
+            assert!(
+                doc.is_object(),
+                "{provider}: setup doc must be a JSON object"
+            );
+            assert!(
+                doc.get("schema").is_some(),
+                "{provider}: setup doc must have a schema field"
+            );
+        }
+    }
+
+    #[test]
+    fn setup_doc_provider_ids_match_metadata() {
+        for (provider, path) in &DOC_PROVIDERS {
+            let doc = load_doc(path);
+            let doc_provider = doc
+                .get("provider_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let meta = PROVIDER_METADATA
+                .iter()
+                .find(|m| m.canonical_id == *provider);
+            assert!(
+                meta.is_some(),
+                "{provider}: must exist in PROVIDER_METADATA"
+            );
+            // Doc provider_id should match canonical or be a valid alias.
+            let meta = meta.unwrap();
+            let is_canonical = doc_provider == meta.canonical_id;
+            let is_alias = meta.aliases.contains(&doc_provider);
+            assert!(
+                is_canonical || is_alias,
+                "{provider}: doc provider_id '{doc_provider}' must match canonical '{}' or aliases {:?}",
+                meta.canonical_id,
+                meta.aliases
+            );
+        }
+    }
+
+    #[test]
+    fn setup_doc_auth_env_matches_runtime() {
+        for (provider, path) in &DOC_PROVIDERS {
+            let doc = load_doc(path);
+            let runtime_keys = provider_auth_env_keys(provider);
+            if runtime_keys.is_empty() {
+                continue;
+            }
+            // Check quick_start.auth_env
+            if let Some(auth_env) = doc
+                .pointer("/quick_start/auth_env")
+                .and_then(|v| v.as_str())
+            {
+                assert!(
+                    runtime_keys.contains(&auth_env),
+                    "{provider}: doc auth_env '{auth_env}' not in runtime keys {runtime_keys:?}"
+                );
+            }
+            // Check quick_start.minimal_config.example_env keys
+            if let Some(example_env) = doc
+                .pointer("/quick_start/minimal_config/example_env")
+                .and_then(|v| v.as_object())
+            {
+                for key in example_env.keys() {
+                    assert!(
+                        runtime_keys.contains(&key.as_str()),
+                        "{provider}: doc example_env key '{key}' not in runtime keys {runtime_keys:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn setup_doc_base_url_matches_runtime_default() {
+        for (provider, path) in &DOC_PROVIDERS {
+            let doc = load_doc(path);
+            let meta = PROVIDER_METADATA
+                .iter()
+                .find(|m| m.canonical_id == *provider);
+            let Some(meta) = meta else { continue };
+            let Some(defaults) = meta.routing_defaults.as_ref() else {
+                continue;
+            };
+            // Check quick_start.base_url
+            if let Some(doc_url) = doc
+                .pointer("/quick_start/base_url")
+                .and_then(|v| v.as_str())
+            {
+                assert_eq!(
+                    doc_url, defaults.base_url,
+                    "{provider}: doc base_url '{doc_url}' must match runtime default '{}'",
+                    defaults.base_url
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn config_examples_doc_covers_all_gap_providers() {
+        let doc = load_doc("docs/provider-config-examples.json");
+        let providers = doc
+            .get("providers")
+            .and_then(|v| v.as_array())
+            .expect("config-examples must have providers array");
+        let ids: Vec<&str> = providers
+            .iter()
+            .filter_map(|p| p.get("provider_id").and_then(|v| v.as_str()))
+            .collect();
+        for (provider, _) in &DOC_PROVIDERS {
+            assert!(
+                ids.iter().any(|id| {
+                    PROVIDER_METADATA
+                        .iter()
+                        .find(|m| m.canonical_id == *provider)
+                        .is_some_and(|m| *id == m.canonical_id || m.aliases.contains(id))
+                }),
+                "{provider}: must be covered in config-examples.json providers array"
+            );
+        }
+    }
+
+    #[test]
+    fn config_examples_env_vars_match_runtime() {
+        let doc = load_doc("docs/provider-config-examples.json");
+        let env_refs = doc
+            .pointer("/env_quick_reference/vars")
+            .and_then(|v| v.as_array())
+            .expect("config-examples must have env_quick_reference.vars");
+        for entry in env_refs {
+            let var_name = entry.get("var").and_then(|v| v.as_str()).unwrap_or("");
+            let provider_str = entry.get("provider").and_then(|v| v.as_str()).unwrap_or("");
+            // Extract first provider from comma-separated list
+            let first_provider = provider_str.split(',').next().unwrap_or("").trim();
+            if first_provider.is_empty() {
+                continue;
+            }
+            let runtime_keys = provider_auth_env_keys(first_provider);
+            if !runtime_keys.is_empty() {
+                assert!(
+                    runtime_keys.contains(&var_name),
+                    "env_quick_reference var '{var_name}' for '{first_provider}' not in runtime keys {runtime_keys:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn migration_guide_references_correct_env_vars() {
+        let path = format!(
+            "{}/docs/provider-migration-guide.md",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let content = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("Failed to read migration guide: {e}"));
+        // Verify all documented env vars exist in runtime
+        let env_vars = [
+            ("GROQ_API_KEY", "groq"),
+            ("CEREBRAS_API_KEY", "cerebras"),
+            ("OPENROUTER_API_KEY", "openrouter"),
+            ("MOONSHOT_API_KEY", "moonshotai"),
+            ("DASHSCOPE_API_KEY", "alibaba"),
+        ];
+        for (var, provider) in &env_vars {
+            assert!(
+                content.contains(var),
+                "Migration guide must reference {var} for {provider}"
+            );
+            let runtime_keys = provider_auth_env_keys(provider);
+            assert!(
+                runtime_keys.contains(var),
+                "{var} referenced in migration guide but not in runtime keys for {provider}: {runtime_keys:?}"
             );
         }
     }

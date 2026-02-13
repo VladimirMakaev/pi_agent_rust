@@ -5089,3 +5089,283 @@ mod alibaba_conformance {
         run("error_rate_limit_429");
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// LONGTAIL PROVIDER CONFORMANCE (bd-3uqg.11.10.5)
+//
+// VCR-based conformance tests for representative longtail quick-win providers.
+// ═══════════════════════════════════════════════════════════════════════
+
+mod stackit_conformance {
+    const PROVIDER: &str = "stackit";
+    const MODEL: &str = "stackit-test-model";
+    const URL: &str =
+        "https://api.openai-compat.model-serving.eu01.onstackit.cloud/v1/chat/completions";
+
+    fn run(tag: &str) {
+        super::wave_b1_smoke::run_openai_case(PROVIDER, MODEL, URL, tag);
+    }
+
+    #[test]
+    fn simple_text() {
+        run("simple_text");
+    }
+    #[test]
+    fn unicode_text() {
+        run("unicode_text");
+    }
+    #[test]
+    fn tool_call_single() {
+        run("tool_call_single");
+    }
+    #[test]
+    fn tool_call_multiple() {
+        run("tool_call_multiple");
+    }
+    #[test]
+    fn error_auth_401() {
+        run("error_auth_401");
+    }
+    #[test]
+    fn error_bad_request_400() {
+        run("error_bad_request_400");
+    }
+    #[test]
+    fn error_rate_limit_429() {
+        run("error_rate_limit_429");
+    }
+}
+
+mod mistral_conformance {
+    const PROVIDER: &str = "mistral";
+    const MODEL: &str = "mistral-large-latest";
+    const URL: &str = "https://api.mistral.ai/v1/chat/completions";
+
+    fn run(tag: &str) {
+        super::wave_b1_smoke::run_openai_case(PROVIDER, MODEL, URL, tag);
+    }
+
+    #[test]
+    fn simple_text() {
+        run("simple_text");
+    }
+    #[test]
+    fn unicode_text() {
+        run("unicode_text");
+    }
+    #[test]
+    fn tool_call_single() {
+        run("tool_call_single");
+    }
+    #[test]
+    fn tool_call_multiple() {
+        run("tool_call_multiple");
+    }
+    #[test]
+    fn error_auth_401() {
+        run("error_auth_401");
+    }
+    #[test]
+    fn error_bad_request_400() {
+        run("error_bad_request_400");
+    }
+    #[test]
+    fn error_rate_limit_429() {
+        run("error_rate_limit_429");
+    }
+}
+
+mod deepinfra_conformance {
+    const PROVIDER: &str = "deepinfra";
+    const MODEL: &str = "meta-llama/Meta-Llama-3.1-70B-Instruct";
+    const URL: &str = "https://api.deepinfra.com/v1/openai/chat/completions";
+
+    fn run(tag: &str) {
+        super::wave_b1_smoke::run_openai_case(PROVIDER, MODEL, URL, tag);
+    }
+
+    #[test]
+    fn simple_text() {
+        run("simple_text");
+    }
+    #[test]
+    fn unicode_text() {
+        run("unicode_text");
+    }
+    #[test]
+    fn tool_call_single() {
+        run("tool_call_single");
+    }
+    #[test]
+    fn tool_call_multiple() {
+        run("tool_call_multiple");
+    }
+    #[test]
+    fn error_auth_401() {
+        run("error_auth_401");
+    }
+    #[test]
+    fn error_bad_request_400() {
+        run("error_bad_request_400");
+    }
+    #[test]
+    fn error_rate_limit_429() {
+        run("error_rate_limit_429");
+    }
+}
+
+mod togetherai_conformance {
+    const PROVIDER: &str = "togetherai";
+    const MODEL: &str = "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo";
+    const URL: &str = "https://api.together.xyz/v1/chat/completions";
+
+    fn run(tag: &str) {
+        super::wave_b1_smoke::run_openai_case(PROVIDER, MODEL, URL, tag);
+    }
+
+    #[test]
+    fn simple_text() {
+        run("simple_text");
+    }
+    #[test]
+    fn unicode_text() {
+        run("unicode_text");
+    }
+    #[test]
+    fn tool_call_single() {
+        run("tool_call_single");
+    }
+    #[test]
+    fn tool_call_multiple() {
+        run("tool_call_multiple");
+    }
+    #[test]
+    fn error_auth_401() {
+        run("error_auth_401");
+    }
+    #[test]
+    fn error_bad_request_400() {
+        run("error_bad_request_400");
+    }
+    #[test]
+    fn error_rate_limit_429() {
+        run("error_rate_limit_429");
+    }
+}
+
+mod nvidia_conformance {
+    const PROVIDER: &str = "nvidia";
+    const MODEL: &str = "meta/llama-3.1-70b-instruct";
+    const URL: &str = "https://integrate.api.nvidia.com/v1/chat/completions";
+
+    fn run(tag: &str) {
+        super::wave_b1_smoke::run_openai_case(PROVIDER, MODEL, URL, tag);
+    }
+
+    #[test]
+    fn simple_text() {
+        run("simple_text");
+    }
+    #[test]
+    fn unicode_text() {
+        run("unicode_text");
+    }
+    #[test]
+    fn tool_call_single() {
+        run("tool_call_single");
+    }
+    #[test]
+    fn tool_call_multiple() {
+        run("tool_call_multiple");
+    }
+    #[test]
+    fn error_auth_401() {
+        run("error_auth_401");
+    }
+    #[test]
+    fn error_bad_request_400() {
+        run("error_bad_request_400");
+    }
+    #[test]
+    fn error_rate_limit_429() {
+        run("error_rate_limit_429");
+    }
+}
+
+mod huggingface_conformance {
+    const PROVIDER: &str = "huggingface";
+    const MODEL: &str = "meta-llama/Meta-Llama-3.1-70B-Instruct";
+    const URL: &str = "https://router.huggingface.co/v1/chat/completions";
+
+    fn run(tag: &str) {
+        super::wave_b1_smoke::run_openai_case(PROVIDER, MODEL, URL, tag);
+    }
+
+    #[test]
+    fn simple_text() {
+        run("simple_text");
+    }
+    #[test]
+    fn unicode_text() {
+        run("unicode_text");
+    }
+    #[test]
+    fn tool_call_single() {
+        run("tool_call_single");
+    }
+    #[test]
+    fn tool_call_multiple() {
+        run("tool_call_multiple");
+    }
+    #[test]
+    fn error_auth_401() {
+        run("error_auth_401");
+    }
+    #[test]
+    fn error_bad_request_400() {
+        run("error_bad_request_400");
+    }
+    #[test]
+    fn error_rate_limit_429() {
+        run("error_rate_limit_429");
+    }
+}
+
+mod ollama_cloud_conformance {
+    const PROVIDER: &str = "ollama-cloud";
+    const MODEL: &str = "llama3.1:70b";
+    const URL: &str = "https://ollama.com/v1/chat/completions";
+
+    fn run(tag: &str) {
+        super::wave_b1_smoke::run_openai_case(PROVIDER, MODEL, URL, tag);
+    }
+
+    #[test]
+    fn simple_text() {
+        run("simple_text");
+    }
+    #[test]
+    fn unicode_text() {
+        run("unicode_text");
+    }
+    #[test]
+    fn tool_call_single() {
+        run("tool_call_single");
+    }
+    #[test]
+    fn tool_call_multiple() {
+        run("tool_call_multiple");
+    }
+    #[test]
+    fn error_auth_401() {
+        run("error_auth_401");
+    }
+    #[test]
+    fn error_bad_request_400() {
+        run("error_bad_request_400");
+    }
+    #[test]
+    fn error_rate_limit_429() {
+        run("error_rate_limit_429");
+    }
+}

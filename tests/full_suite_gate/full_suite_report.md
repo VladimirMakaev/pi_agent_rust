@@ -1,14 +1,14 @@
 # Full-Suite CI Gate Report
 
-> Generated: 2026-02-13T04:38:24Z
+> Generated: 2026-02-13T10:07:31Z
 > Verdict: **FAIL**
 
 ## Summary
 
 | Metric | Value |
 |--------|-------|
-| Total gates | 11 |
-| Passed | 7 |
+| Total gates | 12 |
+| Passed | 8 |
 | Failed | 1 |
 | Warned | 0 |
 | Skipped | 3 |
@@ -29,6 +29,7 @@
 | Suite classification guard | bd-1f42.6.1 | YES | PASS | `tests/suite_classification.toml` |
 | Requirement traceability matrix | bd-1f42.6.4 | no | PASS | `docs/traceability_matrix.json` |
 | Canonical E2E scenario matrix | bd-1f42.8.5.1 | no | PASS | `docs/e2e_scenario_matrix.json` |
+| Provider gap test matrix coverage | bd-3uqg.11.11.5 | no | PASS | `docs/provider-gaps-test-matrix.json` |
 
 ## Issues Requiring Attention
 
