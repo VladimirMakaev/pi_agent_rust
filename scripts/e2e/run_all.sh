@@ -546,6 +546,7 @@ capture_env() {
 
     cat > "$env_file" <<ENVJSON
 {
+  "schema": "pi.e2e.environment.v1",
   "timestamp": "$TIMESTAMP",
   "profile": "$PROFILE",
   "rerun_from": $RERUN_JSON_VALUE,
@@ -668,6 +669,9 @@ run_lib_tests() {
 
     cat > "$result_file" <<RESULTJSON
 {
+  "schema": "pi.e2e.result.v1",
+  "result_kind": "lib",
+  "correlation_id": "$CORRELATION_ID",
   "target": "lib",
   "exit_code": $exit_code,
   "duration_ms": $duration_ms,
@@ -777,6 +781,9 @@ run_unit_target() {
 
     cat > "$result_file" <<RESULTJSON
 {
+  "schema": "pi.e2e.result.v1",
+  "result_kind": "unit",
+  "correlation_id": "$CORRELATION_ID",
   "target": "$target",
   "exit_code": $exit_code,
   "duration_ms": $duration_ms,
@@ -785,6 +792,8 @@ run_unit_target() {
   "ignored": $ignored,
   "total": $total,
   "log_file": "$log_file",
+  "test_log_jsonl": "$target_dir/test-log.jsonl",
+  "artifact_index_jsonl": "$target_dir/artifact-index.jsonl",
   "timestamp": "$TIMESTAMP"
 }
 RESULTJSON
@@ -849,6 +858,9 @@ run_suite() {
 
     cat > "$result_file" <<RESULTJSON
 {
+  "schema": "pi.e2e.result.v1",
+  "result_kind": "suite",
+  "correlation_id": "$CORRELATION_ID",
   "suite": "$suite",
   "exit_code": $exit_code,
   "duration_ms": $duration_ms,
@@ -857,6 +869,8 @@ run_suite() {
   "ignored": $ignored,
   "total": $total,
   "log_file": "$log_file",
+  "test_log_jsonl": "$suite_dir/test-log.jsonl",
+  "artifact_index_jsonl": "$suite_dir/artifact-index.jsonl",
   "timestamp": "$TIMESTAMP"
 }
 RESULTJSON
@@ -950,6 +964,7 @@ write_summary() {
 
     cat > "$summary_file" <<SUMMARYJSON
 {
+  "schema": "pi.e2e.summary.v1",
   "timestamp": "$TIMESTAMP",
   "profile": "$PROFILE",
   "rerun_from": $RERUN_JSON_VALUE,
@@ -1013,6 +1028,486 @@ SUMMARYJSON
     fi
     echo " Artifacts: $ARTIFACT_DIR"
     echo "═══════════════════════════════════════════════════════════════"
+}
+
+# ─── Structured Failure Diagnostics (bd-1f42.8.6.4) ─────────────────────────
+
+generate_failure_diagnostics() {
+    local diagnostics_index="$ARTIFACT_DIR/failure_diagnostics_index.json"
+    local run_timeline="$ARTIFACT_DIR/failure_timeline.jsonl"
+    local summary_file="$ARTIFACT_DIR/summary.json"
+
+    if ARTIFACT_DIR="$ARTIFACT_DIR" \
+        SUMMARY_FILE="$summary_file" \
+        DIAGNOSTICS_INDEX="$diagnostics_index" \
+        RUN_TIMELINE="$run_timeline" \
+        python3 - <<'PY'
+import json
+import os
+import re
+from datetime import datetime, timezone
+from pathlib import Path
+
+artifact_dir = Path(os.environ["ARTIFACT_DIR"])
+summary_file = Path(os.environ["SUMMARY_FILE"])
+diagnostics_index = Path(os.environ["DIAGNOSTICS_INDEX"])
+run_timeline_path = Path(os.environ["RUN_TIMELINE"])
+
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+TEST_RESULT_RE = re.compile(r"^test\s+([A-Za-z0-9_:\-./]+)\s+\.\.\.\s+(ok|FAILED|ignored)$")
+FAILURE_HEADER_RE = re.compile(r"^----\s+(.+?)\s+stdout\s+----$")
+PANIC_RE = re.compile(r"^thread '([^']+)'(?: \([^)]*\))? panicked at (.+?):(\d+):(\d+):$")
+
+
+def read_json(path: Path):
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def strip_ansi(text: str) -> str:
+    return ANSI_RE.sub("", text)
+
+
+def dedupe_preserve(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    output: list[str] = []
+    for item in items:
+        value = str(item).strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        output.append(value)
+    return output
+
+
+def as_int(value: object, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def classify_root_cause(message: str, raw_log: str) -> str:
+    haystack = f"{message}\n{raw_log}".lower()
+    if "timed out" in haystack or "timeout" in haystack:
+        return "timeout"
+    if "assertion" in haystack or "assert_eq!" in haystack or "assert_ne!" in haystack:
+        return "assertion_failure"
+    if "permission denied" in haystack:
+        return "permission_denied"
+    if "connection refused" in haystack or "connection reset" in haystack:
+        return "network_io"
+    if "not found" in haystack and ("file" in haystack or "path" in haystack):
+        return "missing_file"
+    if "panicked at" in haystack or "panic" in haystack:
+        return "panic"
+    return "unknown"
+
+
+def remediation_summary(root_cause_class: str) -> str:
+    if root_cause_class == "timeout":
+        return "Inspect stalled operations and timeout thresholds; use timeline gaps to isolate hung steps."
+    if root_cause_class == "assertion_failure":
+        return "Inspect assertion preconditions and fixture state for the first failing scenario."
+    if root_cause_class == "permission_denied":
+        return "Verify executable permissions, filesystem ACLs, and sandbox constraints in the failing path."
+    if root_cause_class == "network_io":
+        return "Inspect network mocks/endpoints and retry/error handling around the failing scenario."
+    if root_cause_class == "missing_file":
+        return "Verify fixture/materialization steps and path wiring before test execution."
+    if root_cause_class == "panic":
+        return "Inspect panic location and guard assumptions at the reported source location."
+    return "Inspect the first failing assertion and timeline to determine root cause."
+
+
+def parse_failures_from_output(lines: list[str]) -> tuple[list[str], dict | None, list[dict], str | None]:
+    impacted: list[str] = []
+    first_assertion: dict | None = None
+    events: list[dict] = []
+    rerun_hint: str | None = None
+
+    in_failure_list = False
+    for index, raw in enumerate(lines):
+        line_no = index + 1
+        clean = strip_ansi(raw).rstrip()
+
+        test_match = TEST_RESULT_RE.match(clean)
+        if test_match:
+            test_name, status = test_match.groups()
+            events.append(
+                {
+                    "source": "cargo_output",
+                    "event_type": "test_result",
+                    "line_no": line_no,
+                    "test": test_name,
+                    "message": f"{test_name} -> {status}",
+                    "context": {"status": status},
+                }
+            )
+            if status != "ok":
+                impacted.append(test_name)
+
+        if clean.strip() == "failures:":
+            in_failure_list = True
+            events.append(
+                {
+                    "source": "cargo_output",
+                    "event_type": "failure_list_start",
+                    "line_no": line_no,
+                    "message": "failures:",
+                }
+            )
+            continue
+
+        if in_failure_list:
+            stripped = clean.strip()
+            if not stripped:
+                continue
+            if clean.startswith("    ") and " " not in stripped and "failures" not in stripped.lower():
+                impacted.append(stripped)
+                events.append(
+                    {
+                        "source": "cargo_output",
+                        "event_type": "failure_list_item",
+                        "line_no": line_no,
+                        "test": stripped,
+                        "message": stripped,
+                    }
+                )
+                continue
+            in_failure_list = False
+
+        header_match = FAILURE_HEADER_RE.match(clean)
+        if header_match:
+            test_name = header_match.group(1).strip()
+            if test_name:
+                impacted.append(test_name)
+            events.append(
+                {
+                    "source": "cargo_output",
+                    "event_type": "failure_section",
+                    "line_no": line_no,
+                    "test": test_name if test_name else None,
+                    "message": clean,
+                }
+            )
+
+        panic_match = PANIC_RE.match(clean)
+        if panic_match:
+            test_name, file_path, src_line, src_column = panic_match.groups()
+            impacted.append(test_name)
+            panic_message = ""
+            for look_ahead in range(index + 1, min(index + 4, len(lines))):
+                candidate = strip_ansi(lines[look_ahead]).strip()
+                if candidate:
+                    panic_message = candidate
+                    break
+            assertion_payload = {
+                "test": test_name,
+                "location": {
+                    "file": file_path,
+                    "line": int(src_line),
+                    "column": int(src_column),
+                },
+                "message": panic_message,
+                "raw_header": clean,
+            }
+            if first_assertion is None:
+                first_assertion = assertion_payload
+            events.append(
+                {
+                    "source": "cargo_output",
+                    "event_type": "panic_assertion",
+                    "line_no": line_no,
+                    "test": test_name,
+                    "message": panic_message,
+                    "context": assertion_payload["location"],
+                }
+            )
+
+        if "error: test failed, to rerun pass `--test " in clean:
+            rerun_hint = clean
+            events.append(
+                {
+                    "source": "cargo_output",
+                    "event_type": "rerun_hint",
+                    "line_no": line_no,
+                    "message": clean,
+                }
+            )
+
+    impacted = dedupe_preserve(impacted)
+    return impacted, first_assertion, events, rerun_hint
+
+
+summary = read_json(summary_file)
+if not isinstance(summary, dict):
+    raise SystemExit(f"[failure] summary.json missing or invalid: {summary_file}")
+
+correlation_id = str(summary.get("correlation_id", "")).strip()
+suite_entries = summary.get("suites", [])
+if not isinstance(suite_entries, list):
+    suite_entries = []
+
+run_events: list[dict] = [
+    {
+        "schema": "pi.e2e.failure_timeline_event.v1",
+        "correlation_id": correlation_id,
+        "suite": "__run__",
+        "ordinal": 1,
+        "source": "runner",
+        "event_type": "run_summary",
+        "message": "Generating failure diagnostics from summary.json",
+        "context": {
+            "summary_path": str(summary_file),
+            "failed_suites": int(summary.get("failed_suites") or 0),
+        },
+    }
+]
+
+diagnostic_entries: list[dict] = []
+failed_suites = [
+    entry
+    for entry in suite_entries
+    if isinstance(entry, dict) and as_int(entry.get("exit_code"), default=1) != 0
+]
+
+for suite_entry in failed_suites:
+    suite_name = str(suite_entry.get("suite", "")).strip()
+    if not suite_name:
+        continue
+    suite_dir = artifact_dir / suite_name
+    suite_dir.mkdir(parents=True, exist_ok=True)
+
+    result_path = suite_dir / "result.json"
+    output_log_path = Path(str(suite_entry.get("log_file", suite_dir / "output.log")))
+    test_log_jsonl_path = suite_dir / "test-log.jsonl"
+    artifact_index_jsonl_path = suite_dir / "artifact-index.jsonl"
+    digest_path = suite_dir / "failure_digest.json"
+    timeline_path = suite_dir / "failure_timeline.jsonl"
+
+    try:
+        output_lines = output_log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except Exception:
+        output_lines = []
+
+    impacted_scenarios, first_assertion, cargo_events, rerun_hint = parse_failures_from_output(output_lines)
+    if first_assertion is None:
+        fallback_test = impacted_scenarios[0] if impacted_scenarios else suite_name
+        first_assertion = {
+            "test": fallback_test,
+            "location": {
+                "file": "",
+                "line": 0,
+                "column": 0,
+            },
+            "message": "No explicit panic assertion found in output.log",
+            "raw_header": "",
+        }
+    if not impacted_scenarios:
+        impacted_scenarios = [str(first_assertion.get("test", suite_name))]
+
+    first_assertion_message = str(first_assertion.get("message", "")).strip()
+    root_cause_class = classify_root_cause(first_assertion_message, "\n".join(output_lines))
+    targeted_test = str(first_assertion.get("test", "")).strip()
+    runner_replay = f"./scripts/e2e/run_all.sh --profile focused --skip-lint --suite {suite_name}"
+    suite_replay = f"cargo test --test {suite_name} -- --nocapture"
+    targeted_replay = (
+        f"cargo test --test {suite_name} {targeted_test} -- --nocapture"
+        if targeted_test
+        else ""
+    )
+
+    timeline_events: list[dict] = []
+    timeline_events.append(
+        {
+            "source": "result",
+            "event_type": "suite_failure_summary",
+            "message": f"suite {suite_name} failed with exit_code={suite_entry.get('exit_code')}",
+            "context": {
+                "result_path": str(result_path),
+                "output_log": str(output_log_path),
+                "test_log_jsonl": str(test_log_jsonl_path),
+                "artifact_index_jsonl": str(artifact_index_jsonl_path),
+                "failed": int(suite_entry.get("failed") or 0),
+                "passed": int(suite_entry.get("passed") or 0),
+                "duration_ms": int(suite_entry.get("duration_ms") or 0),
+            },
+        }
+    )
+    timeline_events.extend(cargo_events)
+
+    if test_log_jsonl_path.exists():
+        for line_no, raw_line in enumerate(
+            test_log_jsonl_path.read_text(encoding="utf-8", errors="replace").splitlines(),
+            start=1,
+        ):
+            stripped = raw_line.strip()
+            if not stripped:
+                continue
+            try:
+                payload = json.loads(stripped)
+            except Exception:
+                timeline_events.append(
+                    {
+                        "source": "test_log_jsonl",
+                        "event_type": "invalid_json",
+                        "line_no": line_no,
+                        "message": "Invalid JSON record in test-log.jsonl",
+                    }
+                )
+                continue
+            if not isinstance(payload, dict):
+                continue
+            timeline_events.append(
+                {
+                    "source": "test_log_jsonl",
+                    "event_type": str(payload.get("type") or "log"),
+                    "line_no": line_no,
+                    "test": payload.get("test"),
+                    "ts": payload.get("ts"),
+                    "t_ms": payload.get("t_ms"),
+                    "message": payload.get("message"),
+                    "context": {
+                        "trace_id": payload.get("trace_id"),
+                        "level": payload.get("level"),
+                        "category": payload.get("category"),
+                    },
+                }
+            )
+
+    formatted_timeline: list[dict] = []
+    for ordinal, event in enumerate(timeline_events, start=1):
+        rendered = {
+            "schema": "pi.e2e.failure_timeline_event.v1",
+            "correlation_id": correlation_id,
+            "suite": suite_name,
+            "ordinal": ordinal,
+            "source": event.get("source", "unknown"),
+            "event_type": event.get("event_type", "unknown"),
+        }
+        for key in ("line_no", "test", "ts", "t_ms", "message", "context"):
+            if key in event and event.get(key) not in (None, ""):
+                rendered[key] = event.get(key)
+        formatted_timeline.append(rendered)
+
+    with timeline_path.open("w", encoding="utf-8") as handle:
+        for event in formatted_timeline:
+            handle.write(json.dumps(event, separators=(",", ":")) + "\n")
+
+    digest_payload = {
+        "schema": "pi.e2e.failure_digest.v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "correlation_id": correlation_id,
+        "suite": suite_name,
+        "exit_code": as_int(suite_entry.get("exit_code"), default=1),
+        "root_cause_class": root_cause_class,
+        "impacted_scenario_ids": impacted_scenarios,
+        "first_failing_assertion": first_assertion,
+        "remediation_pointer": {
+            "class": root_cause_class,
+            "summary": remediation_summary(root_cause_class),
+            "replay_command": runner_replay,
+            "suite_replay_command": suite_replay,
+            "targeted_test_replay_command": targeted_replay,
+            "cargo_rerun_hint": rerun_hint or "",
+        },
+        "artifact_paths": {
+            "result_json": str(result_path),
+            "output_log": str(output_log_path),
+            "test_log_jsonl": str(test_log_jsonl_path),
+            "artifact_index_jsonl": str(artifact_index_jsonl_path),
+            "timeline_jsonl": str(timeline_path),
+            "runner_summary_json": str(summary_file),
+        },
+        "timeline": {
+            "schema": "pi.e2e.failure_timeline_event.v1",
+            "path": str(timeline_path),
+            "event_count": len(formatted_timeline),
+        },
+    }
+    digest_path.write_text(json.dumps(digest_payload, indent=2) + "\n", encoding="utf-8")
+
+    diagnostic_entry = {
+        "suite": suite_name,
+        "digest_path": str(digest_path),
+        "timeline_path": str(timeline_path),
+        "root_cause_class": root_cause_class,
+        "impacted_scenario_ids": impacted_scenarios,
+        "first_failing_assertion": first_assertion,
+    }
+    diagnostic_entries.append(diagnostic_entry)
+
+    for event in formatted_timeline:
+        run_events.append(event)
+
+run_events.append(
+    {
+        "schema": "pi.e2e.failure_timeline_event.v1",
+        "correlation_id": correlation_id,
+        "suite": "__run__",
+        "ordinal": len(run_events) + 1,
+        "source": "runner",
+        "event_type": "diagnostics_complete",
+        "message": "Failure diagnostics generation complete",
+        "context": {
+            "failed_suite_count": len(diagnostic_entries),
+            "diagnostics_index": str(diagnostics_index),
+        },
+    }
+)
+
+for ordinal, event in enumerate(run_events, start=1):
+    event["ordinal"] = ordinal
+
+run_timeline_path.parent.mkdir(parents=True, exist_ok=True)
+with run_timeline_path.open("w", encoding="utf-8") as handle:
+    for event in run_events:
+        handle.write(json.dumps(event, separators=(",", ":")) + "\n")
+
+index_payload = {
+    "schema": "pi.e2e.failure_diagnostics_index.v1",
+    "generated_at": datetime.now(timezone.utc).isoformat(),
+    "correlation_id": correlation_id,
+    "artifact_dir": str(artifact_dir),
+    "failed_suite_count": len(diagnostic_entries),
+    "suites": diagnostic_entries,
+    "run_timeline_path": str(run_timeline_path),
+}
+diagnostics_index.parent.mkdir(parents=True, exist_ok=True)
+diagnostics_index.write_text(json.dumps(index_payload, indent=2) + "\n", encoding="utf-8")
+
+summary["failure_diagnostics"] = {
+    "schema": "pi.e2e.failure_diagnostics.v1",
+    "correlation_id": correlation_id,
+    "index_path": str(diagnostics_index),
+    "run_timeline_path": str(run_timeline_path),
+    "failed_suite_count": len(diagnostic_entries),
+    "suites": diagnostic_entries,
+}
+summary_file.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+
+print("STRUCTURED FAILURE DIAGNOSTICS GENERATED")
+print(f"- Index: {diagnostics_index}")
+print(f"- Run timeline: {run_timeline_path}")
+print(f"- Failed suites covered: {len(diagnostic_entries)}")
+for entry in diagnostic_entries:
+    suite_name = entry.get("suite")
+    digest_path = entry.get("digest_path")
+    timeline_path = entry.get("timeline_path")
+    print(f"- {suite_name}: digest={digest_path} timeline={timeline_path}")
+PY
+    then
+        echo "[failure] Structured failure diagnostics generated ($diagnostics_index)"
+        return 0
+    else
+        echo "[failure] Failed to generate structured failure diagnostics" >&2
+        return 1
+    fi
 }
 
 # ─── Capability Profile Matrix (bd-k5q5.7.5) ────────────────────────────────
@@ -1956,6 +2451,9 @@ profile_matrix = read_json(profile_matrix_file) or {}
 soak_report = read_json(soak_file) or {}
 conformance_summary = read_json(conformance_summary_file) or {}
 contract_payload = read_json(contract_file)
+summary_correlation_id = ""
+if isinstance(summary, dict):
+    summary_correlation_id = str(summary.get("correlation_id", "")).strip()
 
 counts = conformance_summary.get("counts", {}) if isinstance(conformance_summary, dict) else {}
 conformance_total = as_int(counts.get("total"))
@@ -2200,6 +2698,7 @@ status = "ready" if overall_ready else "not_ready"
 payload = {
     "schema": "pi.e2e.release_readiness.v1",
     "generated_at": datetime.now(timezone.utc).isoformat(),
+    "correlation_id": summary_correlation_id,
     "status": status,
     "overall_ready": overall_ready,
     "summary": {
@@ -2327,6 +2826,7 @@ readiness_markdown.write_text("\n".join(lines) + "\n", encoding="utf-8")
 if isinstance(summary, dict):
     summary["release_readiness"] = {
         "schema": "pi.e2e.release_readiness.v1",
+        "correlation_id": summary_correlation_id,
         "path": str(readiness_file),
         "markdown_path": str(readiness_markdown),
         "status": status,
@@ -2796,6 +3296,7 @@ except json.JSONDecodeError:
 checks = []
 errors = []
 warnings = []
+remediation_hints: set[str] = set()
 
 
 def add_check(check_id: str, path: Path, ok: bool, diagnostics: str) -> None:
@@ -2809,14 +3310,69 @@ def add_check(check_id: str, path: Path, ok: bool, diagnostics: str) -> None:
     )
 
 
-def require_file(check_id: str, path: Path, *, strict: bool, description: str) -> bool:
+def record_issue(check_id: str, message: str, *, strict: bool, remediation: str | None = None) -> None:
+    rendered = f"{check_id}: {message}"
+    if remediation:
+        remediation_hints.add(remediation)
+        rendered = f"{rendered} | remediation: {remediation}"
+    if strict:
+        errors.append(rendered)
+    else:
+        warnings.append(rendered)
+
+
+def remediation_for_missing_keys(check_id: str, path: Path, missing: list[str]) -> str:
+    missing_list = ", ".join(missing)
+    if check_id.startswith("environment"):
+        return f"Update capture_env() to emit key(s): {missing_list}."
+    if check_id.startswith("summary"):
+        return f"Update write_summary() to emit key(s): {missing_list}."
+    if check_id.startswith("failure_diagnostics"):
+        return (
+            "Update generate_failure_diagnostics() payloads in scripts/e2e/run_all.sh "
+            f"to include key(s): {missing_list}."
+        )
+    if check_id.startswith("unit:") or check_id.startswith("suite:"):
+        return (
+            "Update run_unit_target()/run_suite() result.json emitters to include "
+            f"key(s): {missing_list}."
+        )
+    if check_id.startswith("conformance.release_readiness"):
+        return (
+            "Update generate_release_readiness_report() payload in scripts/e2e/run_all.sh "
+            f"to include key(s): {missing_list}."
+        )
+    if check_id.startswith("conformance.profile_matrix"):
+        return (
+            "Update generate_extension_profile_matrix() output to include "
+            f"key(s): {missing_list}."
+        )
+    return (
+        "Update scripts/e2e/run_all.sh artifact generation so "
+        f"{path.name} includes key(s): {missing_list}."
+    )
+
+
+def require_file(
+    check_id: str,
+    path: Path,
+    *,
+    strict: bool,
+    description: str,
+    remediation: str | None = None,
+) -> bool:
     ok = path.exists()
     add_check(check_id, path, ok, description if ok else f"missing required file: {path}")
     if not ok:
-        if strict:
-            errors.append(f"{check_id}: missing {path}")
-        else:
-            warnings.append(f"{check_id}: missing {path}")
+        record_issue(
+            check_id,
+            f"missing {path}",
+            strict=strict,
+            remediation=(
+                remediation
+                or f"Ensure the producer step writes {path.name} before validation."
+            ),
+        )
     return ok
 
 
@@ -2827,10 +3383,12 @@ def load_json(check_id: str, path: Path, *, strict: bool) -> dict | None:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:  # pragma: no cover - defensive
         add_check(check_id + ".json_parse", path, False, f"invalid JSON: {exc}")
-        if strict:
-            errors.append(f"{check_id}: invalid JSON ({exc})")
-        else:
-            warnings.append(f"{check_id}: invalid JSON ({exc})")
+        record_issue(
+            check_id,
+            f"invalid JSON ({exc})",
+            strict=strict,
+            remediation=f"Rewrite {path.name} as valid JSON and rerun ./scripts/e2e/run_all.sh.",
+        )
         return None
     add_check(check_id + ".json_parse", path, True, "valid JSON")
     return payload
@@ -2855,11 +3413,12 @@ def require_keys(
         "all required keys present" if ok else f"missing keys: {', '.join(missing)}",
     )
     if not ok:
-        msg = f"{check_id}: missing keys in {path}: {', '.join(missing)}"
-        if strict:
-            errors.append(msg)
-        else:
-            warnings.append(msg)
+        record_issue(
+            check_id,
+            f"missing keys in {path}: {', '.join(missing)}",
+            strict=strict,
+            remediation=remediation_for_missing_keys(check_id, path, missing),
+        )
 
 
 def require_condition(
@@ -2870,14 +3429,12 @@ def require_condition(
     ok_msg: str,
     fail_msg: str,
     strict: bool,
+    remediation: str | None = None,
 ) -> None:
     add_check(check_id, path, ok, ok_msg if ok else fail_msg)
     if ok:
         return
-    if strict:
-        errors.append(f"{check_id}: {fail_msg}")
-    else:
-        warnings.append(f"{check_id}: {fail_msg}")
+    record_issue(check_id, fail_msg, strict=strict, remediation=remediation)
 
 
 # 1) Core run artifacts (always required)
@@ -2888,8 +3445,11 @@ require_keys(
     environment,
     environment_path,
     [
+        "schema",
         "timestamp",
         "profile",
+        "rerun_from",
+        "diff_from",
         "rustc",
         "cargo",
         "os",
@@ -2898,6 +3458,10 @@ require_keys(
         "parallelism",
         "log_level",
         "artifact_dir",
+        "correlation_id",
+        "shard",
+        "unit_targets",
+        "e2e_suites",
     ],
     strict=True,
 )
@@ -2909,9 +3473,14 @@ require_keys(
     summary,
     summary_path,
     [
+        "schema",
         "timestamp",
         "profile",
+        "rerun_from",
+        "diff_from",
         "artifact_dir",
+        "correlation_id",
+        "shard",
         "total_units",
         "passed_units",
         "failed_units",
@@ -2920,9 +3489,70 @@ require_keys(
         "failed_suites",
         "unit_targets",
         "suites",
+        "failure_diagnostics",
     ],
     strict=True,
 )
+
+environment_correlation_id = ""
+if isinstance(environment, dict):
+    require_condition(
+        "environment.schema",
+        path=environment_path,
+        ok=environment.get("schema") == "pi.e2e.environment.v1",
+        ok_msg="environment schema matches",
+        fail_msg=f"expected schema 'pi.e2e.environment.v1', got {environment.get('schema')!r}",
+        strict=True,
+        remediation="Update capture_env() schema to pi.e2e.environment.v1.",
+    )
+    environment_correlation_id = str(environment.get("correlation_id", "")).strip()
+    require_condition(
+        "environment.correlation_id_nonempty",
+        path=environment_path,
+        ok=bool(environment_correlation_id),
+        ok_msg="environment correlation_id is set",
+        fail_msg="environment correlation_id is empty",
+        strict=True,
+        remediation="Set CORRELATION_ID before capture_env() and emit it in environment.json.",
+    )
+
+summary_correlation_id = ""
+if isinstance(summary, dict):
+    require_condition(
+        "summary.schema",
+        path=summary_path,
+        ok=summary.get("schema") == "pi.e2e.summary.v1",
+        ok_msg="summary schema matches",
+        fail_msg=f"expected schema 'pi.e2e.summary.v1', got {summary.get('schema')!r}",
+        strict=True,
+        remediation="Update write_summary() schema to pi.e2e.summary.v1.",
+    )
+    summary_correlation_id = str(summary.get("correlation_id", "")).strip()
+    require_condition(
+        "summary.correlation_id_nonempty",
+        path=summary_path,
+        ok=bool(summary_correlation_id),
+        ok_msg="summary correlation_id is set",
+        fail_msg="summary correlation_id is empty",
+        strict=True,
+        remediation="Emit CORRELATION_ID in write_summary() output.",
+    )
+
+if summary_correlation_id and environment_correlation_id:
+    require_condition(
+        "run.correlation_id_matches_environment",
+        path=summary_path,
+        ok=summary_correlation_id == environment_correlation_id,
+        ok_msg="summary/environment correlation_id values match",
+        fail_msg=(
+            "summary/environment correlation_id mismatch: "
+            f"{summary_correlation_id!r} vs {environment_correlation_id!r}"
+        ),
+        strict=True,
+        remediation=(
+            "Propagate the same CORRELATION_ID through capture_env() and write_summary()."
+        ),
+    )
 
 # Full-profile baseline runs must cover every configured target and suite.
 strict_conformance = profile == "full" and rerun_from is None
@@ -2965,49 +3595,1256 @@ if profile == "full":
         strict=strict_conformance,
     )
 
-for target in selected_units:
-    result_path = artifact_dir / "unit" / target / "result.json"
-    result = load_json(f"unit:{target}:result", result_path, strict=True)
+LOG_REQUIRED_FIELDS = {
+    "pi.test.log.v1": [
+        "schema",
+        "type",
+        "seq",
+        "ts",
+        "t_ms",
+        "level",
+        "category",
+        "message",
+    ],
+    "pi.test.log.v2": [
+        "schema",
+        "type",
+        "trace_id",
+        "seq",
+        "ts",
+        "t_ms",
+        "level",
+        "category",
+        "message",
+    ],
+}
+ARTIFACT_REQUIRED_FIELDS = ["schema", "type", "seq", "ts", "t_ms", "name", "path"]
+
+
+def path_matches(value: object, expected: Path) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    candidate = Path(text)
+    if candidate == expected:
+        return True
+    try:
+        return candidate.resolve() == expected.resolve()
+    except Exception:  # pragma: no cover - defensive
+        return False
+
+
+def read_jsonl_lines(check_id: str, path: Path, *, strict: bool) -> list[tuple[int, str]]:
+    if not require_file(
+        check_id,
+        path,
+        strict=strict,
+        description="jsonl file exists",
+        remediation=f"Ensure test harness writes {path.name} for every selected suite/target.",
+    ):
+        return []
+    try:
+        lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    except Exception as exc:  # pragma: no cover - defensive
+        add_check(f"{check_id}.readable", path, False, f"read failed: {exc}")
+        record_issue(
+            check_id,
+            f"failed reading {path}: {exc}",
+            strict=strict,
+            remediation=f"Fix file permissions/content for {path} and rerun verification.",
+        )
+        return []
+    add_check(f"{check_id}.readable", path, True, f"loaded {len(lines)} non-empty JSONL lines")
+    return list(enumerate(lines, start=1))
+
+
+def validate_jsonl_record_keys(
+    *,
+    check_id: str,
+    path: Path,
+    record: dict,
+    required_keys: list[str],
+    line_no: int,
+    strict: bool,
+    remediation: str,
+) -> None:
+    missing = [key for key in required_keys if key not in record]
+    require_condition(
+        f"{check_id}.line_{line_no}.required_keys",
+        path=path,
+        ok=not missing,
+        ok_msg="all required keys present",
+        fail_msg=f"line {line_no} missing keys: {missing}",
+        strict=strict,
+        remediation=remediation,
+    )
+
+
+def parse_test_log_jsonl(check_prefix: str, path: Path) -> dict[str, set[str]]:
+    trace_ids_by_test: dict[str, set[str]] = {}
+    lines = read_jsonl_lines(f"{check_prefix}.test_log_jsonl", path, strict=True)
+    require_condition(
+        f"{check_prefix}.test_log_jsonl.non_empty",
+        path=path,
+        ok=len(lines) > 0,
+        ok_msg=f"test-log contains {len(lines)} records",
+        fail_msg="test-log.jsonl is empty",
+        strict=True,
+        remediation="Ensure tests/common/logging writes at least one log record per target/suite.",
+    )
+    for line_no, line in lines:
+        record_id = f"{check_prefix}.test_log_jsonl.line_{line_no}"
+        try:
+            payload = json.loads(line)
+        except Exception as exc:  # pragma: no cover - defensive
+            add_check(record_id, path, False, f"invalid JSON: {exc}")
+            record_issue(
+                record_id,
+                f"invalid JSON: {exc}",
+                strict=True,
+                remediation="Emit valid JSONL records in test-log.jsonl.",
+            )
+            continue
+        if not isinstance(payload, dict):
+            add_check(record_id, path, False, "record must be a JSON object")
+            record_issue(
+                record_id,
+                "record must be a JSON object",
+                strict=True,
+                remediation="Write object records (not arrays/scalars) to test-log.jsonl.",
+            )
+            continue
+        schema = payload.get("schema")
+        required = LOG_REQUIRED_FIELDS.get(str(schema))
+        require_condition(
+            f"{record_id}.schema_supported",
+            path=path,
+            ok=required is not None,
+            ok_msg=f"supported schema {schema!r}",
+            fail_msg=f"unsupported test-log schema {schema!r}",
+            strict=True,
+            remediation="Use pi.test.log.v2 (or v1 where legacy is explicitly required).",
+        )
+        if required is None:
+            continue
+        validate_jsonl_record_keys(
+            check_id=record_id,
+            path=path,
+            record=payload,
+            required_keys=required,
+            line_no=line_no,
+            strict=True,
+            remediation="Ensure tests/common/logging emits required test-log schema fields.",
+        )
+        test_name = payload.get("test")
+        if isinstance(test_name, str) and test_name.strip():
+            trace_id = payload.get("trace_id")
+            if isinstance(trace_id, str) and trace_id.strip():
+                trace_ids_by_test.setdefault(test_name, set()).add(trace_id)
+        else:
+            require_condition(
+                f"{record_id}.test_field_present",
+                path=path,
+                ok=False,
+                ok_msg="test field present",
+                fail_msg=f"line {line_no} missing non-empty test field",
+                strict=strict_conformance,
+                remediation="Populate the `test` field in every test-log JSONL record.",
+            )
+    multi_trace_tests = sorted(
+        [name for name, trace_ids in trace_ids_by_test.items() if len(trace_ids) > 1]
+    )
+    require_condition(
+        f"{check_prefix}.test_log_jsonl.trace_ids_consistent",
+        path=path,
+        ok=not multi_trace_tests,
+        ok_msg="trace_id values are consistent per test",
+        fail_msg=f"multiple trace_id values detected for tests: {multi_trace_tests}",
+        strict=strict_conformance,
+        remediation="Use a stable trace_id per test invocation.",
+    )
+    return trace_ids_by_test
+
+
+def parse_artifact_index_jsonl(
+    check_prefix: str,
+    path: Path,
+    trace_ids_by_test: dict[str, set[str]],
+) -> None:
+    lines = read_jsonl_lines(f"{check_prefix}.artifact_index_jsonl", path, strict=True)
+    if not lines:
+        add_check(
+            f"{check_prefix}.artifact_index_jsonl.empty_ok",
+            path,
+            True,
+            "artifact-index has no records (allowed when no artifacts were emitted)",
+        )
+        return
+    for line_no, line in lines:
+        record_id = f"{check_prefix}.artifact_index_jsonl.line_{line_no}"
+        try:
+            payload = json.loads(line)
+        except Exception as exc:  # pragma: no cover - defensive
+            add_check(record_id, path, False, f"invalid JSON: {exc}")
+            record_issue(
+                record_id,
+                f"invalid JSON: {exc}",
+                strict=True,
+                remediation="Emit valid JSONL records in artifact-index.jsonl.",
+            )
+            continue
+        if not isinstance(payload, dict):
+            add_check(record_id, path, False, "record must be a JSON object")
+            record_issue(
+                record_id,
+                "record must be a JSON object",
+                strict=True,
+                remediation="Write object records (not arrays/scalars) to artifact-index.jsonl.",
+            )
+            continue
+        require_condition(
+            f"{record_id}.schema",
+            path=path,
+            ok=payload.get("schema") == "pi.test.artifact.v1",
+            ok_msg="artifact-index schema matches",
+            fail_msg=f"unexpected artifact schema {payload.get('schema')!r}",
+            strict=True,
+            remediation="Emit artifact-index records with schema pi.test.artifact.v1.",
+        )
+        validate_jsonl_record_keys(
+            check_id=record_id,
+            path=path,
+            record=payload,
+            required_keys=ARTIFACT_REQUIRED_FIELDS,
+            line_no=line_no,
+            strict=True,
+            remediation="Ensure tests/common/logging emits required artifact-index schema fields.",
+        )
+        test_name = payload.get("test")
+        has_test = isinstance(test_name, str) and bool(test_name.strip())
+        require_condition(
+            f"{record_id}.test_field_present",
+            path=path,
+            ok=has_test,
+            ok_msg="artifact record includes test name",
+            fail_msg=f"line {line_no} missing non-empty test field",
+            strict=strict_conformance,
+            remediation="Emit `test` in artifact-index records to support trace linkage.",
+        )
+        if has_test and strict_conformance:
+            linked_trace_ids = trace_ids_by_test.get(str(test_name), set())
+            require_condition(
+                f"{record_id}.trace_linked_to_test_log",
+                path=path,
+                ok=bool(linked_trace_ids),
+                ok_msg=f"artifact test {test_name!r} links to trace_id set {sorted(linked_trace_ids)}",
+                fail_msg=(
+                    f"artifact test {test_name!r} has no matching test-log trace_id context"
+                ),
+                strict=True,
+                remediation=(
+                    "Ensure artifact-index `test` names match test-log records emitted by the same suite/target."
+                ),
+            )
+
+
+def validate_result_contract(
+    *,
+    kind: str,
+    name: str,
+    result_path: Path,
+    expected_log_path: Path,
+    expected_test_log_path: Path,
+    expected_artifact_index_path: Path,
+) -> None:
+    check_prefix = f"{kind}:{name}"
+    result = load_json(f"{check_prefix}:result", result_path, strict=True)
+    key_name = "target" if kind == "unit" else "suite"
     require_keys(
-        f"unit:{target}:result",
+        f"{check_prefix}:result",
         result,
         result_path,
-        ["target", "exit_code", "duration_ms", "passed", "failed", "ignored", "total", "log_file"],
+        [
+            "schema",
+            "result_kind",
+            "correlation_id",
+            key_name,
+            "exit_code",
+            "duration_ms",
+            "passed",
+            "failed",
+            "ignored",
+            "total",
+            "log_file",
+            "test_log_jsonl",
+            "artifact_index_jsonl",
+            "timestamp",
+        ],
         strict=True,
     )
-    if isinstance(result, dict):
-        log_file = Path(str(result.get("log_file", "")))
-        ok = log_file.exists()
-        add_check(
-            f"unit:{target}:log_file",
-            log_file,
-            ok,
-            "referenced log file exists" if ok else f"result.json references missing log: {log_file}",
+    if not isinstance(result, dict):
+        return
+
+    require_condition(
+        f"{check_prefix}:result.schema",
+        path=result_path,
+        ok=result.get("schema") == "pi.e2e.result.v1",
+        ok_msg="result schema matches",
+        fail_msg=f"expected schema 'pi.e2e.result.v1', got {result.get('schema')!r}",
+        strict=True,
+        remediation="Emit schema pi.e2e.result.v1 in result.json.",
+    )
+    require_condition(
+        f"{check_prefix}:result.kind",
+        path=result_path,
+        ok=result.get("result_kind") == kind,
+        ok_msg=f"result_kind is {kind!r}",
+        fail_msg=f"expected result_kind {kind!r}, got {result.get('result_kind')!r}",
+        strict=True,
+        remediation="Set result_kind to unit/suite in the corresponding result emitter.",
+    )
+    require_condition(
+        f"{check_prefix}:result.name",
+        path=result_path,
+        ok=str(result.get(key_name, "")) == name,
+        ok_msg=f"{key_name} matches selected item",
+        fail_msg=(
+            f"{key_name} mismatch: expected {name!r}, got {result.get(key_name)!r}"
+        ),
+        strict=True,
+        remediation="Emit the exact suite/target identifier in result.json.",
+    )
+    require_condition(
+        f"{check_prefix}:result.correlation_id_matches_summary",
+        path=result_path,
+        ok=bool(summary_correlation_id)
+        and str(result.get("correlation_id", "")).strip() == summary_correlation_id,
+        ok_msg="result correlation_id matches summary correlation_id",
+        fail_msg=(
+            "result correlation_id mismatch: "
+            f"expected {summary_correlation_id!r}, got {result.get('correlation_id')!r}"
+        ),
+        strict=True,
+        remediation="Propagate CORRELATION_ID into every result.json emitter.",
+    )
+
+    def resolve_required_path_field(
+        field: str,
+        *,
+        expected: Path,
+        remediation_hint: str,
+    ) -> Path | None:
+        raw_value = result.get(field)
+        raw_text = str(raw_value).strip() if raw_value is not None else ""
+        require_condition(
+            f"{check_prefix}:result.{field}_nonempty",
+            path=result_path,
+            ok=bool(raw_text),
+            ok_msg=f"{field} is non-empty",
+            fail_msg=f"{field} is missing or empty",
+            strict=True,
+            remediation=remediation_hint,
         )
-        if not ok:
-            errors.append(f"unit:{target}: missing log file {log_file}")
+        if not raw_text:
+            return None
+        resolved = Path(raw_text)
+        require_condition(
+            f"{check_prefix}:result.{field}_path_matches",
+            path=result_path,
+            ok=path_matches(raw_text, expected),
+            ok_msg=f"{field} path matches expected artifact path",
+            fail_msg=(
+                f"{field} path mismatch; expected {expected}, got {raw_value!r}"
+            ),
+            strict=True,
+            remediation=remediation_hint,
+        )
+        return resolved
+
+    log_file = resolve_required_path_field(
+        "log_file",
+        expected=expected_log_path,
+        remediation_hint="Write log_file path directly from the per-suite/per-target log path variable.",
+    )
+    if log_file is not None:
+        require_condition(
+            f"{check_prefix}:result.log_file_exists",
+            path=log_file,
+            ok=log_file.exists(),
+            ok_msg="referenced log file exists",
+            fail_msg=f"missing log file {log_file}",
+            strict=True,
+            remediation="Ensure cargo test output is tee'd into the declared log_file path.",
+        )
+
+    test_log_jsonl_path = resolve_required_path_field(
+        "test_log_jsonl",
+        expected=expected_test_log_path,
+        remediation_hint=(
+            "Set TEST_LOG_JSONL_PATH to the suite/target-local path before running cargo test."
+        ),
+    )
+    artifact_index_jsonl_path = resolve_required_path_field(
+        "artifact_index_jsonl",
+        expected=expected_artifact_index_path,
+        remediation_hint=(
+            "Set TEST_ARTIFACT_INDEX_PATH to the suite/target-local path before running cargo test."
+        ),
+    )
+
+    if test_log_jsonl_path is None:
+        return
+    if artifact_index_jsonl_path is None:
+        return
+
+    trace_ids_by_test = parse_test_log_jsonl(check_prefix, test_log_jsonl_path)
+    parse_artifact_index_jsonl(check_prefix, artifact_index_jsonl_path, trace_ids_by_test)
+
+
+def validate_failure_timeline_file(
+    *,
+    check_prefix: str,
+    timeline_path: Path,
+    suite_name: str,
+    require_non_empty: bool,
+) -> list[dict]:
+    lines = read_jsonl_lines(f"{check_prefix}.timeline_jsonl", timeline_path, strict=True)
+    require_condition(
+        f"{check_prefix}.timeline_jsonl.non_empty",
+        path=timeline_path,
+        ok=(len(lines) > 0) if require_non_empty else True,
+        ok_msg=f"timeline has {len(lines)} entries",
+        fail_msg="timeline JSONL is empty",
+        strict=True,
+        remediation="Emit structured failure timeline events into failure_timeline.jsonl.",
+    )
+    records: list[dict] = []
+    for line_no, line in lines:
+        record_id = f"{check_prefix}.timeline_jsonl.line_{line_no}"
+        try:
+            payload = json.loads(line)
+        except Exception as exc:  # pragma: no cover - defensive
+            add_check(record_id, timeline_path, False, f"invalid JSON: {exc}")
+            record_issue(
+                record_id,
+                f"invalid JSON: {exc}",
+                strict=True,
+                remediation="Write valid JSON objects per line in failure_timeline.jsonl.",
+            )
+            continue
+        if not isinstance(payload, dict):
+            add_check(record_id, timeline_path, False, "record must be an object")
+            record_issue(
+                record_id,
+                "record must be an object",
+                strict=True,
+                remediation="Write object records (not arrays/scalars) in failure_timeline.jsonl.",
+            )
+            continue
+        require_condition(
+            f"{record_id}.schema",
+            path=timeline_path,
+            ok=payload.get("schema") == "pi.e2e.failure_timeline_event.v1",
+            ok_msg="timeline schema matches",
+            fail_msg=f"unexpected timeline schema {payload.get('schema')!r}",
+            strict=True,
+            remediation="Emit schema pi.e2e.failure_timeline_event.v1 for timeline events.",
+        )
+        require_condition(
+            f"{record_id}.correlation_matches_summary",
+            path=timeline_path,
+            ok=str(payload.get("correlation_id", "")).strip() == summary_correlation_id,
+            ok_msg="timeline correlation_id matches summary",
+            fail_msg=(
+                "timeline correlation_id mismatch: "
+                f"expected {summary_correlation_id!r}, got {payload.get('correlation_id')!r}"
+            ),
+            strict=True,
+            remediation="Propagate summary correlation_id into every timeline event.",
+        )
+        require_condition(
+            f"{record_id}.suite_matches",
+            path=timeline_path,
+            ok=str(payload.get("suite", "")).strip() == suite_name,
+            ok_msg="timeline suite matches expected suite",
+            fail_msg=(
+                f"timeline suite mismatch: expected {suite_name!r}, got {payload.get('suite')!r}"
+            ),
+            strict=True,
+            remediation="Emit the suite identifier on every timeline event.",
+        )
+        require_condition(
+            f"{record_id}.event_type_present",
+            path=timeline_path,
+            ok=bool(str(payload.get("event_type", "")).strip()),
+            ok_msg="event_type present",
+            fail_msg="timeline event missing event_type",
+            strict=True,
+            remediation="Set event_type for every timeline record.",
+        )
+        records.append(payload)
+    return records
+
+for target in selected_units:
+    validate_result_contract(
+        kind="unit",
+        name=target,
+        result_path=artifact_dir / "unit" / target / "result.json",
+        expected_log_path=artifact_dir / "unit" / target / "output.log",
+        expected_test_log_path=artifact_dir / "unit" / target / "test-log.jsonl",
+        expected_artifact_index_path=artifact_dir / "unit" / target / "artifact-index.jsonl",
+    )
 
 for suite in selected_suites:
-    result_path = artifact_dir / suite / "result.json"
-    result = load_json(f"suite:{suite}:result", result_path, strict=True)
+    validate_result_contract(
+        kind="suite",
+        name=suite,
+        result_path=artifact_dir / suite / "result.json",
+        expected_log_path=artifact_dir / suite / "output.log",
+        expected_test_log_path=artifact_dir / suite / "test-log.jsonl",
+        expected_artifact_index_path=artifact_dir / suite / "artifact-index.jsonl",
+    )
+
+
+# 1b) Failure diagnostics artifacts (bd-1f42.8.6.4)
+failed_suite_names: list[str] = []
+if isinstance(summary, dict):
+    suites_payload = summary.get("suites")
+    if isinstance(suites_payload, list):
+        for suite_payload in suites_payload:
+            if not isinstance(suite_payload, dict):
+                continue
+            suite_name = str(suite_payload.get("suite", "")).strip()
+            if not suite_name:
+                continue
+            try:
+                suite_exit_code = int(suite_payload.get("exit_code"))
+            except (TypeError, ValueError):
+                suite_exit_code = 1
+            if suite_exit_code != 0:
+                failed_suite_names.append(suite_name)
+failed_suite_names = sorted(set(failed_suite_names))
+
+if isinstance(summary, dict):
+    require_condition(
+        "summary.failed_suites_matches_suite_results",
+        path=summary_path,
+        ok=int(summary.get("failed_suites") or 0) == len(failed_suite_names),
+        ok_msg="summary.failed_suites matches suite result entries",
+        fail_msg=(
+            "summary.failed_suites mismatch: "
+            f"expected {len(failed_suite_names)}, got {summary.get('failed_suites')!r}"
+        ),
+        strict=True,
+        remediation="Compute failed_suites directly from suite result exit_code values in write_summary().",
+    )
+
+failure_meta = summary.get("failure_diagnostics") if isinstance(summary, dict) else None
+require_condition(
+    "summary.failure_diagnostics_object",
+    path=summary_path,
+    ok=isinstance(failure_meta, dict),
+    ok_msg="summary includes failure_diagnostics metadata",
+    fail_msg="summary missing failure_diagnostics metadata",
+    strict=True,
+    remediation="Run generate_failure_diagnostics() after write_summary().",
+)
+
+failure_meta_suites_by_name: dict[str, dict] = {}
+expected_failure_index_path = artifact_dir / "failure_diagnostics_index.json"
+expected_run_timeline_path = artifact_dir / "failure_timeline.jsonl"
+if isinstance(failure_meta, dict):
     require_keys(
-        f"suite:{suite}:result",
-        result,
-        result_path,
-        ["suite", "exit_code", "duration_ms", "passed", "failed", "ignored", "total", "log_file"],
+        "failure_diagnostics.summary_meta",
+        failure_meta,
+        summary_path,
+        [
+            "schema",
+            "correlation_id",
+            "index_path",
+            "run_timeline_path",
+            "failed_suite_count",
+            "suites",
+        ],
         strict=True,
     )
-    if isinstance(result, dict):
-        log_file = Path(str(result.get("log_file", "")))
-        ok = log_file.exists()
-        add_check(
-            f"suite:{suite}:log_file",
-            log_file,
-            ok,
-            "referenced log file exists" if ok else f"result.json references missing log: {log_file}",
+    require_condition(
+        "failure_diagnostics.summary_meta.schema",
+        path=summary_path,
+        ok=failure_meta.get("schema") == "pi.e2e.failure_diagnostics.v1",
+        ok_msg="failure diagnostics summary schema matches",
+        fail_msg=(
+            "expected summary.failure_diagnostics.schema 'pi.e2e.failure_diagnostics.v1', got "
+            f"{failure_meta.get('schema')!r}"
+        ),
+        strict=True,
+        remediation="Emit schema pi.e2e.failure_diagnostics.v1 in summary failure_diagnostics metadata.",
+    )
+    require_condition(
+        "failure_diagnostics.summary_meta.correlation_id_matches",
+        path=summary_path,
+        ok=str(failure_meta.get("correlation_id", "")).strip() == summary_correlation_id,
+        ok_msg="failure diagnostics summary correlation_id matches run correlation",
+        fail_msg=(
+            "summary.failure_diagnostics correlation_id mismatch: "
+            f"expected {summary_correlation_id!r}, got {failure_meta.get('correlation_id')!r}"
+        ),
+        strict=True,
+        remediation="Propagate summary correlation_id into summary.failure_diagnostics metadata.",
+    )
+    require_condition(
+        "failure_diagnostics.summary_meta.index_path_matches",
+        path=summary_path,
+        ok=path_matches(failure_meta.get("index_path"), expected_failure_index_path),
+        ok_msg="failure diagnostics index path matches expected artifact path",
+        fail_msg=(
+            "summary.failure_diagnostics.index_path does not match "
+            f"{expected_failure_index_path}"
+        ),
+        strict=True,
+        remediation="Set summary.failure_diagnostics.index_path from failure_diagnostics_index.json artifact path.",
+    )
+    require_condition(
+        "failure_diagnostics.summary_meta.run_timeline_path_matches",
+        path=summary_path,
+        ok=path_matches(failure_meta.get("run_timeline_path"), expected_run_timeline_path),
+        ok_msg="failure diagnostics run timeline path matches expected artifact path",
+        fail_msg=(
+            "summary.failure_diagnostics.run_timeline_path does not match "
+            f"{expected_run_timeline_path}"
+        ),
+        strict=True,
+        remediation="Set summary.failure_diagnostics.run_timeline_path from failure_timeline.jsonl path.",
+    )
+    require_condition(
+        "failure_diagnostics.summary_meta.failed_suite_count",
+        path=summary_path,
+        ok=int(failure_meta.get("failed_suite_count") or 0) == len(failed_suite_names),
+        ok_msg="failure diagnostics failed_suite_count matches failed suites",
+        fail_msg=(
+            "summary.failure_diagnostics.failed_suite_count mismatch: "
+            f"expected {len(failed_suite_names)}, got {failure_meta.get('failed_suite_count')!r}"
+        ),
+        strict=True,
+        remediation="Set failure_diagnostics.failed_suite_count from failed suite result count.",
+    )
+    suites_meta_payload = failure_meta.get("suites")
+    require_condition(
+        "failure_diagnostics.summary_meta.suites_array",
+        path=summary_path,
+        ok=isinstance(suites_meta_payload, list),
+        ok_msg="summary failure diagnostics suites is an array",
+        fail_msg="summary failure diagnostics suites must be an array",
+        strict=True,
+        remediation="Emit summary.failure_diagnostics.suites as a list of suite entries.",
+    )
+    if isinstance(suites_meta_payload, list):
+        seen_suite_meta: set[str] = set()
+        for index, suite_payload in enumerate(suites_meta_payload):
+            check_prefix = f"failure_diagnostics.summary_meta.suites[{index}]"
+            require_condition(
+                f"{check_prefix}.object",
+                path=summary_path,
+                ok=isinstance(suite_payload, dict),
+                ok_msg="suite diagnostics entry is object",
+                fail_msg="suite diagnostics entry must be an object",
+                strict=True,
+            )
+            if not isinstance(suite_payload, dict):
+                continue
+            require_keys(
+                check_prefix,
+                suite_payload,
+                summary_path,
+                [
+                    "suite",
+                    "digest_path",
+                    "timeline_path",
+                    "root_cause_class",
+                    "impacted_scenario_ids",
+                    "first_failing_assertion",
+                ],
+                strict=True,
+            )
+            suite_name = str(suite_payload.get("suite", "")).strip()
+            require_condition(
+                f"{check_prefix}.suite_nonempty",
+                path=summary_path,
+                ok=bool(suite_name),
+                ok_msg="suite identifier is non-empty",
+                fail_msg="suite identifier is missing/empty",
+                strict=True,
+            )
+            if not suite_name:
+                continue
+            require_condition(
+                f"{check_prefix}.suite_unique",
+                path=summary_path,
+                ok=suite_name not in seen_suite_meta,
+                ok_msg=f"suite {suite_name} appears once",
+                fail_msg=f"duplicate suite diagnostics entry for {suite_name}",
+                strict=True,
+            )
+            seen_suite_meta.add(suite_name)
+            failure_meta_suites_by_name[suite_name] = suite_payload
+            expected_digest_path = artifact_dir / suite_name / "failure_digest.json"
+            expected_timeline_path = artifact_dir / suite_name / "failure_timeline.jsonl"
+            require_condition(
+                f"{check_prefix}.digest_path_matches",
+                path=summary_path,
+                ok=path_matches(suite_payload.get("digest_path"), expected_digest_path),
+                ok_msg="digest_path matches expected suite digest artifact",
+                fail_msg=(
+                    f"digest_path mismatch for suite {suite_name}: expected {expected_digest_path}"
+                ),
+                strict=True,
+                remediation="Emit digest_path as <artifact_dir>/<suite>/failure_digest.json.",
+            )
+            require_condition(
+                f"{check_prefix}.timeline_path_matches",
+                path=summary_path,
+                ok=path_matches(suite_payload.get("timeline_path"), expected_timeline_path),
+                ok_msg="timeline_path matches expected suite timeline artifact",
+                fail_msg=(
+                    f"timeline_path mismatch for suite {suite_name}: expected {expected_timeline_path}"
+                ),
+                strict=True,
+                remediation="Emit timeline_path as <artifact_dir>/<suite>/failure_timeline.jsonl.",
+            )
+            impacted = suite_payload.get("impacted_scenario_ids")
+            require_condition(
+                f"{check_prefix}.impacted_scenario_ids_non_empty",
+                path=summary_path,
+                ok=isinstance(impacted, list) and len(impacted) > 0,
+                ok_msg="impacted_scenario_ids present with at least one scenario id",
+                fail_msg=f"impacted_scenario_ids missing/empty for suite {suite_name}",
+                strict=suite_name in failed_suite_names,
+                remediation="Populate impacted_scenario_ids with failing test/scenario identifiers.",
+            )
+
+require_condition(
+    "failure_diagnostics.summary_meta.covers_failed_suites",
+    path=summary_path,
+    ok=sorted(failure_meta_suites_by_name.keys()) == failed_suite_names,
+    ok_msg="summary failure diagnostics entries cover all failed suites",
+    fail_msg=(
+        "summary failure diagnostics entries do not match failed suites: "
+        f"expected {failed_suite_names}, got {sorted(failure_meta_suites_by_name.keys())}"
+    ),
+    strict=True,
+    remediation="Emit one summary.failure_diagnostics.suites entry per failed suite.",
+)
+
+failure_index_payload = load_json(
+    "failure_diagnostics.index_json",
+    expected_failure_index_path,
+    strict=True,
+)
+require_keys(
+    "failure_diagnostics.index_json",
+    failure_index_payload,
+    expected_failure_index_path,
+    [
+        "schema",
+        "generated_at",
+        "correlation_id",
+        "artifact_dir",
+        "failed_suite_count",
+        "suites",
+        "run_timeline_path",
+    ],
+    strict=True,
+)
+
+index_suites_by_name: dict[str, dict] = {}
+if isinstance(failure_index_payload, dict):
+    require_condition(
+        "failure_diagnostics.index_json.schema",
+        path=expected_failure_index_path,
+        ok=failure_index_payload.get("schema") == "pi.e2e.failure_diagnostics_index.v1",
+        ok_msg="failure diagnostics index schema matches",
+        fail_msg=(
+            "expected failure diagnostics index schema 'pi.e2e.failure_diagnostics_index.v1', got "
+            f"{failure_index_payload.get('schema')!r}"
+        ),
+        strict=True,
+        remediation="Emit schema pi.e2e.failure_diagnostics_index.v1 in failure_diagnostics_index.json.",
+    )
+    require_condition(
+        "failure_diagnostics.index_json.correlation_matches_summary",
+        path=expected_failure_index_path,
+        ok=str(failure_index_payload.get("correlation_id", "")).strip() == summary_correlation_id,
+        ok_msg="failure diagnostics index correlation_id matches summary",
+        fail_msg=(
+            "failure diagnostics index correlation_id mismatch: "
+            f"expected {summary_correlation_id!r}, got {failure_index_payload.get('correlation_id')!r}"
+        ),
+        strict=True,
+        remediation="Propagate summary correlation_id into failure_diagnostics_index.json.",
+    )
+    require_condition(
+        "failure_diagnostics.index_json.artifact_dir_matches",
+        path=expected_failure_index_path,
+        ok=path_matches(failure_index_payload.get("artifact_dir"), artifact_dir),
+        ok_msg="failure diagnostics index artifact_dir matches run artifact directory",
+        fail_msg=(
+            "failure diagnostics index artifact_dir mismatch: "
+            f"expected {artifact_dir}, got {failure_index_payload.get('artifact_dir')!r}"
+        ),
+        strict=True,
+        remediation="Write artifact_dir in failure_diagnostics_index.json from ARTIFACT_DIR.",
+    )
+    require_condition(
+        "failure_diagnostics.index_json.failed_suite_count",
+        path=expected_failure_index_path,
+        ok=int(failure_index_payload.get("failed_suite_count") or 0) == len(failed_suite_names),
+        ok_msg="failure diagnostics index failed_suite_count matches failed suites",
+        fail_msg=(
+            "failure diagnostics index failed_suite_count mismatch: "
+            f"expected {len(failed_suite_names)}, got {failure_index_payload.get('failed_suite_count')!r}"
+        ),
+        strict=True,
+        remediation="Set failed_suite_count in failure_diagnostics_index.json from failed suite result count.",
+    )
+    require_condition(
+        "failure_diagnostics.index_json.run_timeline_path_matches",
+        path=expected_failure_index_path,
+        ok=path_matches(failure_index_payload.get("run_timeline_path"), expected_run_timeline_path),
+        ok_msg="failure diagnostics index run_timeline_path matches expected path",
+        fail_msg=(
+            "failure diagnostics index run_timeline_path mismatch: "
+            f"expected {expected_run_timeline_path}, got {failure_index_payload.get('run_timeline_path')!r}"
+        ),
+        strict=True,
+        remediation="Set run_timeline_path in failure_diagnostics_index.json from failure_timeline.jsonl.",
+    )
+    index_suites_payload = failure_index_payload.get("suites")
+    require_condition(
+        "failure_diagnostics.index_json.suites_array",
+        path=expected_failure_index_path,
+        ok=isinstance(index_suites_payload, list),
+        ok_msg="failure diagnostics index suites is an array",
+        fail_msg="failure diagnostics index suites must be an array",
+        strict=True,
+    )
+    if isinstance(index_suites_payload, list):
+        seen_index_suites: set[str] = set()
+        for index, suite_payload in enumerate(index_suites_payload):
+            check_prefix = f"failure_diagnostics.index_json.suites[{index}]"
+            require_condition(
+                f"{check_prefix}.object",
+                path=expected_failure_index_path,
+                ok=isinstance(suite_payload, dict),
+                ok_msg="index suite entry is object",
+                fail_msg="index suite entry must be an object",
+                strict=True,
+            )
+            if not isinstance(suite_payload, dict):
+                continue
+            require_keys(
+                check_prefix,
+                suite_payload,
+                expected_failure_index_path,
+                [
+                    "suite",
+                    "digest_path",
+                    "timeline_path",
+                    "root_cause_class",
+                    "impacted_scenario_ids",
+                    "first_failing_assertion",
+                ],
+                strict=True,
+            )
+            suite_name = str(suite_payload.get("suite", "")).strip()
+            require_condition(
+                f"{check_prefix}.suite_nonempty",
+                path=expected_failure_index_path,
+                ok=bool(suite_name),
+                ok_msg="suite identifier is non-empty",
+                fail_msg="suite identifier missing/empty",
+                strict=True,
+            )
+            if not suite_name:
+                continue
+            require_condition(
+                f"{check_prefix}.suite_unique",
+                path=expected_failure_index_path,
+                ok=suite_name not in seen_index_suites,
+                ok_msg=f"suite {suite_name} appears once in index",
+                fail_msg=f"duplicate suite entry in index for {suite_name}",
+                strict=True,
+            )
+            seen_index_suites.add(suite_name)
+            index_suites_by_name[suite_name] = suite_payload
+
+require_condition(
+    "failure_diagnostics.index_json.covers_failed_suites",
+    path=expected_failure_index_path,
+    ok=sorted(index_suites_by_name.keys()) == failed_suite_names,
+    ok_msg="failure diagnostics index covers all failed suites",
+    fail_msg=(
+        "failure diagnostics index suites do not match failed suites: "
+        f"expected {failed_suite_names}, got {sorted(index_suites_by_name.keys())}"
+    ),
+    strict=True,
+)
+
+run_timeline_lines = read_jsonl_lines(
+    "failure_diagnostics.run.timeline_jsonl",
+    expected_run_timeline_path,
+    strict=True,
+)
+require_condition(
+    "failure_diagnostics.run.timeline_jsonl.non_empty",
+    path=expected_run_timeline_path,
+    ok=len(run_timeline_lines) > 0,
+    ok_msg=f"run timeline has {len(run_timeline_lines)} entries",
+    fail_msg="run timeline JSONL is empty",
+    strict=True,
+    remediation="Emit run-level failure timeline events in failure_timeline.jsonl.",
+)
+for line_no, line in run_timeline_lines:
+    record_id = f"failure_diagnostics.run.timeline_jsonl.line_{line_no}"
+    try:
+        payload = json.loads(line)
+    except Exception as exc:  # pragma: no cover - defensive
+        add_check(record_id, expected_run_timeline_path, False, f"invalid JSON: {exc}")
+        record_issue(
+            record_id,
+            f"invalid JSON: {exc}",
+            strict=True,
+            remediation="Write valid JSON records in run failure_timeline.jsonl.",
         )
-        if not ok:
-            errors.append(f"suite:{suite}: missing log file {log_file}")
+        continue
+    if not isinstance(payload, dict):
+        add_check(record_id, expected_run_timeline_path, False, "record must be an object")
+        record_issue(
+            record_id,
+            "record must be an object",
+            strict=True,
+            remediation="Write object records in run failure_timeline.jsonl.",
+        )
+        continue
+    require_condition(
+        f"{record_id}.schema",
+        path=expected_run_timeline_path,
+        ok=payload.get("schema") == "pi.e2e.failure_timeline_event.v1",
+        ok_msg="run timeline schema matches",
+        fail_msg=f"unexpected run timeline schema {payload.get('schema')!r}",
+        strict=True,
+    )
+    require_condition(
+        f"{record_id}.correlation_matches_summary",
+        path=expected_run_timeline_path,
+        ok=str(payload.get("correlation_id", "")).strip() == summary_correlation_id,
+        ok_msg="run timeline correlation_id matches summary",
+        fail_msg=(
+            "run timeline correlation_id mismatch: "
+            f"expected {summary_correlation_id!r}, got {payload.get('correlation_id')!r}"
+        ),
+        strict=True,
+    )
+    require_condition(
+        f"{record_id}.suite_present",
+        path=expected_run_timeline_path,
+        ok=bool(str(payload.get("suite", "")).strip()),
+        ok_msg="run timeline event has suite field",
+        fail_msg="run timeline event missing suite field",
+        strict=True,
+    )
+
+for suite_name in failed_suite_names:
+    suite_prefix = f"failure_diagnostics.{suite_name}"
+    expected_digest_path = artifact_dir / suite_name / "failure_digest.json"
+    expected_timeline_path = artifact_dir / suite_name / "failure_timeline.jsonl"
+
+    meta_entry = failure_meta_suites_by_name.get(suite_name)
+    require_condition(
+        f"{suite_prefix}.summary_meta_present",
+        path=summary_path,
+        ok=isinstance(meta_entry, dict),
+        ok_msg=f"summary metadata entry exists for {suite_name}",
+        fail_msg=f"summary missing failure diagnostics entry for suite {suite_name}",
+        strict=True,
+    )
+    if isinstance(meta_entry, dict):
+        require_condition(
+            f"{suite_prefix}.summary_meta.digest_path_matches",
+            path=summary_path,
+            ok=path_matches(meta_entry.get("digest_path"), expected_digest_path),
+            ok_msg="summary metadata digest_path matches expected suite digest path",
+            fail_msg=f"summary metadata digest_path mismatch for suite {suite_name}",
+            strict=True,
+        )
+        require_condition(
+            f"{suite_prefix}.summary_meta.timeline_path_matches",
+            path=summary_path,
+            ok=path_matches(meta_entry.get("timeline_path"), expected_timeline_path),
+            ok_msg="summary metadata timeline_path matches expected suite timeline path",
+            fail_msg=f"summary metadata timeline_path mismatch for suite {suite_name}",
+            strict=True,
+        )
+
+    index_entry = index_suites_by_name.get(suite_name)
+    require_condition(
+        f"{suite_prefix}.index_entry_present",
+        path=expected_failure_index_path,
+        ok=isinstance(index_entry, dict),
+        ok_msg=f"index entry exists for {suite_name}",
+        fail_msg=f"failure diagnostics index missing suite entry for {suite_name}",
+        strict=True,
+    )
+    if isinstance(index_entry, dict):
+        require_condition(
+            f"{suite_prefix}.index_entry.digest_path_matches",
+            path=expected_failure_index_path,
+            ok=path_matches(index_entry.get("digest_path"), expected_digest_path),
+            ok_msg="index digest_path matches expected suite digest path",
+            fail_msg=f"index digest_path mismatch for suite {suite_name}",
+            strict=True,
+        )
+        require_condition(
+            f"{suite_prefix}.index_entry.timeline_path_matches",
+            path=expected_failure_index_path,
+            ok=path_matches(index_entry.get("timeline_path"), expected_timeline_path),
+            ok_msg="index timeline_path matches expected suite timeline path",
+            fail_msg=f"index timeline_path mismatch for suite {suite_name}",
+            strict=True,
+        )
+
+    digest_payload = load_json(
+        f"{suite_prefix}.digest_json",
+        expected_digest_path,
+        strict=True,
+    )
+    require_keys(
+        f"{suite_prefix}.digest_json",
+        digest_payload,
+        expected_digest_path,
+        [
+            "schema",
+            "generated_at",
+            "correlation_id",
+            "suite",
+            "exit_code",
+            "root_cause_class",
+            "impacted_scenario_ids",
+            "first_failing_assertion",
+            "remediation_pointer",
+            "artifact_paths",
+            "timeline",
+        ],
+        strict=True,
+    )
+    if isinstance(digest_payload, dict):
+        require_condition(
+            f"{suite_prefix}.digest_json.schema",
+            path=expected_digest_path,
+            ok=digest_payload.get("schema") == "pi.e2e.failure_digest.v1",
+            ok_msg="failure digest schema matches",
+            fail_msg=f"unexpected failure digest schema {digest_payload.get('schema')!r}",
+            strict=True,
+            remediation="Emit schema pi.e2e.failure_digest.v1 in failure_digest.json.",
+        )
+        require_condition(
+            f"{suite_prefix}.digest_json.correlation_matches_summary",
+            path=expected_digest_path,
+            ok=str(digest_payload.get("correlation_id", "")).strip() == summary_correlation_id,
+            ok_msg="failure digest correlation_id matches summary",
+            fail_msg=(
+                "failure digest correlation_id mismatch: "
+                f"expected {summary_correlation_id!r}, got {digest_payload.get('correlation_id')!r}"
+            ),
+            strict=True,
+            remediation="Propagate summary correlation_id into failure_digest.json.",
+        )
+        require_condition(
+            f"{suite_prefix}.digest_json.suite_matches",
+            path=expected_digest_path,
+            ok=str(digest_payload.get("suite", "")).strip() == suite_name,
+            ok_msg="failure digest suite matches expected suite",
+            fail_msg=(
+                f"failure digest suite mismatch: expected {suite_name!r}, got {digest_payload.get('suite')!r}"
+            ),
+            strict=True,
+            remediation="Emit suite identifier in failure_digest.json from failing suite name.",
+        )
+        impacted = digest_payload.get("impacted_scenario_ids")
+        require_condition(
+            f"{suite_prefix}.digest_json.impacted_scenario_ids_non_empty",
+            path=expected_digest_path,
+            ok=isinstance(impacted, list) and len(impacted) > 0,
+            ok_msg="impacted_scenario_ids contains at least one scenario id",
+            fail_msg="failure digest impacted_scenario_ids missing/empty",
+            strict=True,
+            remediation="Populate impacted_scenario_ids from failing tests listed in output.log.",
+        )
+        first_assertion = digest_payload.get("first_failing_assertion")
+        require_condition(
+            f"{suite_prefix}.digest_json.first_failing_assertion_object",
+            path=expected_digest_path,
+            ok=isinstance(first_assertion, dict),
+            ok_msg="first_failing_assertion is an object",
+            fail_msg="first_failing_assertion missing or invalid",
+            strict=True,
+            remediation="Emit first_failing_assertion object with test, location, and message.",
+        )
+        if isinstance(first_assertion, dict):
+            require_condition(
+                f"{suite_prefix}.digest_json.first_failing_assertion.test",
+                path=expected_digest_path,
+                ok=bool(str(first_assertion.get("test", "")).strip()),
+                ok_msg="first_failing_assertion.test is present",
+                fail_msg="first_failing_assertion.test missing/empty",
+                strict=True,
+                remediation="Set first_failing_assertion.test from first failing test id.",
+            )
+            require_condition(
+                f"{suite_prefix}.digest_json.first_failing_assertion.message",
+                path=expected_digest_path,
+                ok=bool(str(first_assertion.get("message", "")).strip()),
+                ok_msg="first_failing_assertion.message is present",
+                fail_msg="first_failing_assertion.message missing/empty",
+                strict=True,
+                remediation="Set first_failing_assertion.message from first panic/assertion message.",
+            )
+            location_payload = first_assertion.get("location")
+            require_condition(
+                f"{suite_prefix}.digest_json.first_failing_assertion.location_object",
+                path=expected_digest_path,
+                ok=isinstance(location_payload, dict),
+                ok_msg="first_failing_assertion.location is an object",
+                fail_msg="first_failing_assertion.location missing/invalid",
+                strict=True,
+                remediation="Emit location object with file/line/column for first failing assertion.",
+            )
+            if isinstance(location_payload, dict):
+                for field in ("file", "line", "column"):
+                    require_condition(
+                        f"{suite_prefix}.digest_json.first_failing_assertion.location.{field}",
+                        path=expected_digest_path,
+                        ok=field in location_payload,
+                        ok_msg=f"location.{field} present",
+                        fail_msg=f"missing location.{field}",
+                        strict=True,
+                    )
+
+        remediation_pointer = digest_payload.get("remediation_pointer")
+        require_condition(
+            f"{suite_prefix}.digest_json.remediation_pointer_object",
+            path=expected_digest_path,
+            ok=isinstance(remediation_pointer, dict),
+            ok_msg="remediation_pointer is an object",
+            fail_msg="remediation_pointer missing or invalid",
+            strict=True,
+            remediation="Emit remediation_pointer with replay command pointers.",
+        )
+        if isinstance(remediation_pointer, dict):
+            for field in (
+                "class",
+                "summary",
+                "replay_command",
+                "suite_replay_command",
+                "targeted_test_replay_command",
+            ):
+                require_condition(
+                    f"{suite_prefix}.digest_json.remediation_pointer.{field}",
+                    path=expected_digest_path,
+                    ok=field in remediation_pointer,
+                    ok_msg=f"remediation_pointer.{field} present",
+                    fail_msg=f"missing remediation_pointer.{field}",
+                    strict=True,
+                )
+
+        artifact_paths = digest_payload.get("artifact_paths")
+        require_condition(
+            f"{suite_prefix}.digest_json.artifact_paths_object",
+            path=expected_digest_path,
+            ok=isinstance(artifact_paths, dict),
+            ok_msg="artifact_paths is an object",
+            fail_msg="artifact_paths missing or invalid",
+            strict=True,
+            remediation="Emit artifact_paths object in failure_digest.json.",
+        )
+        if isinstance(artifact_paths, dict):
+            for field in (
+                "result_json",
+                "output_log",
+                "test_log_jsonl",
+                "artifact_index_jsonl",
+                "timeline_jsonl",
+                "runner_summary_json",
+            ):
+                require_condition(
+                    f"{suite_prefix}.digest_json.artifact_paths.{field}",
+                    path=expected_digest_path,
+                    ok=field in artifact_paths,
+                    ok_msg=f"artifact_paths.{field} present",
+                    fail_msg=f"missing artifact_paths.{field}",
+                    strict=True,
+                )
+            require_condition(
+                f"{suite_prefix}.digest_json.artifact_paths.timeline_path_matches",
+                path=expected_digest_path,
+                ok=path_matches(artifact_paths.get("timeline_jsonl"), expected_timeline_path),
+                ok_msg="artifact_paths.timeline_jsonl matches suite timeline path",
+                fail_msg="artifact_paths.timeline_jsonl does not match expected suite timeline path",
+                strict=True,
+                remediation="Set artifact_paths.timeline_jsonl to <artifact_dir>/<suite>/failure_timeline.jsonl.",
+            )
+
+        timeline_meta = digest_payload.get("timeline")
+        require_condition(
+            f"{suite_prefix}.digest_json.timeline_object",
+            path=expected_digest_path,
+            ok=isinstance(timeline_meta, dict),
+            ok_msg="timeline metadata object exists",
+            fail_msg="timeline metadata missing or invalid",
+            strict=True,
+            remediation="Emit timeline metadata with schema/path/event_count in failure_digest.json.",
+        )
+        if isinstance(timeline_meta, dict):
+            require_condition(
+                f"{suite_prefix}.digest_json.timeline.schema",
+                path=expected_digest_path,
+                ok=timeline_meta.get("schema") == "pi.e2e.failure_timeline_event.v1",
+                ok_msg="timeline metadata schema matches",
+                fail_msg=(
+                    "timeline metadata schema mismatch: expected "
+                    "'pi.e2e.failure_timeline_event.v1'"
+                ),
+                strict=True,
+            )
+            require_condition(
+                f"{suite_prefix}.digest_json.timeline.path_matches",
+                path=expected_digest_path,
+                ok=path_matches(timeline_meta.get("path"), expected_timeline_path),
+                ok_msg="timeline metadata path matches suite timeline path",
+                fail_msg="timeline metadata path does not match expected suite timeline path",
+                strict=True,
+                remediation="Set timeline.path in failure_digest.json from suite timeline artifact path.",
+            )
+
+        timeline_records = validate_failure_timeline_file(
+            check_prefix=suite_prefix,
+            timeline_path=expected_timeline_path,
+            suite_name=suite_name,
+            require_non_empty=True,
+        )
+        if isinstance(timeline_meta, dict):
+            event_count_value = timeline_meta.get("event_count")
+            require_condition(
+                f"{suite_prefix}.digest_json.timeline.event_count_matches",
+                path=expected_digest_path,
+                ok=isinstance(event_count_value, int) and event_count_value == len(timeline_records),
+                ok_msg="timeline metadata event_count matches timeline record count",
+                fail_msg=(
+                    "timeline metadata event_count mismatch: "
+                    f"expected {len(timeline_records)}, got {event_count_value!r}"
+                ),
+                strict=True,
+                remediation="Set timeline.event_count to the number of emitted timeline JSONL records.",
+            )
 
 
 # 2) Conformance evidence artifacts (strict for full baseline profile)
@@ -3401,6 +5238,7 @@ require_keys(
     [
         "schema",
         "generated_at",
+        "correlation_id",
         "status",
         "overall_ready",
         "summary",
@@ -3424,6 +5262,28 @@ if isinstance(release_readiness, dict):
             f"{release_readiness.get('schema')!r}"
         ),
         strict=True,
+    )
+    readiness_correlation_id = str(release_readiness.get("correlation_id", "")).strip()
+    require_condition(
+        "conformance.release_readiness_correlation_id_nonempty",
+        path=release_readiness_path,
+        ok=bool(readiness_correlation_id),
+        ok_msg="release-readiness correlation_id is set",
+        fail_msg="release-readiness correlation_id is empty",
+        strict=True,
+        remediation="Set correlation_id from summary.json when generating release_readiness_summary.json.",
+    )
+    require_condition(
+        "conformance.release_readiness_correlation_id_matches_summary",
+        path=release_readiness_path,
+        ok=bool(summary_correlation_id) and readiness_correlation_id == summary_correlation_id,
+        ok_msg="release-readiness correlation_id matches summary correlation_id",
+        fail_msg=(
+            "release-readiness correlation_id mismatch: "
+            f"expected {summary_correlation_id!r}, got {readiness_correlation_id!r}"
+        ),
+        strict=True,
+        remediation="Propagate summary correlation_id into release_readiness_summary.json.",
     )
 
     profiles = release_readiness.get("profiles")
@@ -3525,6 +5385,48 @@ if isinstance(release_readiness, dict):
             strict=True,
         )
 
+    evidence_links = release_readiness.get("evidence")
+    require_condition(
+        "conformance.release_readiness.evidence_object",
+        path=release_readiness_path,
+        ok=isinstance(evidence_links, dict),
+        ok_msg="evidence object exists",
+        fail_msg="evidence must be an object",
+        strict=True,
+    )
+    if isinstance(evidence_links, dict):
+        for field in ("summary_json", "evidence_contract_json"):
+            require_condition(
+                f"conformance.release_readiness.evidence.{field}",
+                path=release_readiness_path,
+                ok=field in evidence_links,
+                ok_msg=f"{field} present",
+                fail_msg=f"missing evidence.{field}",
+                strict=True,
+            )
+        require_condition(
+            "conformance.release_readiness.evidence.summary_json_path_matches",
+            path=release_readiness_path,
+            ok=path_matches(evidence_links.get("summary_json"), summary_path),
+            ok_msg="evidence.summary_json path matches summary.json",
+            fail_msg=(
+                "evidence.summary_json does not match summary artifact path "
+                f"{summary_path}"
+            ),
+            strict=True,
+        )
+        require_condition(
+            "conformance.release_readiness.evidence.evidence_contract_json_path_matches",
+            path=release_readiness_path,
+            ok=path_matches(evidence_links.get("evidence_contract_json"), contract_file),
+            ok_msg="evidence.evidence_contract_json path matches evidence_contract.json",
+            fail_msg=(
+                "evidence.evidence_contract_json does not match contract artifact path "
+                f"{contract_file}"
+            ),
+            strict=True,
+        )
+
 release_readiness_md_path = artifact_dir / "release_readiness_summary.md"
 readiness_md_exists = require_file(
     "conformance.release_readiness_markdown",
@@ -3572,6 +5474,18 @@ if isinstance(summary, dict):
                 f"{release_readiness_path}"
             ),
             strict=True,
+        )
+        require_condition(
+            "summary.release_readiness.correlation_id_matches",
+            path=summary_path,
+            ok=str(release_meta.get("correlation_id", "")).strip() == summary_correlation_id,
+            ok_msg="summary.release_readiness.correlation_id matches run correlation_id",
+            fail_msg=(
+                "summary.release_readiness.correlation_id mismatch: expected "
+                f"{summary_correlation_id!r}, got {release_meta.get('correlation_id')!r}"
+            ),
+            strict=True,
+            remediation="Write correlation_id into summary.release_readiness metadata.",
         )
 
 
@@ -3791,17 +5705,20 @@ if isinstance(full_conformance_report, dict):
         )
 
 
+contract_correlation_id = summary_correlation_id or environment_correlation_id
 status = "pass" if not errors else "fail"
 contract_payload = {
     "schema": "pi.evidence.contract.v1",
     "generated_at": datetime.now(timezone.utc).isoformat(),
     "profile": profile,
     "artifact_dir": str(artifact_dir),
+    "correlation_id": contract_correlation_id,
     "status": status,
     "strict_conformance": strict_conformance,
     "checks": checks,
     "errors": errors,
     "warnings": warnings,
+    "remediation_hints": sorted(remediation_hints),
 }
 contract_file.parent.mkdir(parents=True, exist_ok=True)
 contract_file.write_text(json.dumps(contract_payload, indent=2) + "\n", encoding="utf-8")
@@ -3809,6 +5726,7 @@ contract_file.write_text(json.dumps(contract_payload, indent=2) + "\n", encoding
 if isinstance(summary, dict):
     summary["evidence_contract"] = {
         "schema": "pi.evidence.contract.v1",
+        "correlation_id": contract_correlation_id,
         "path": str(contract_file),
         "status": status,
         "strict_conformance": strict_conformance,
@@ -3821,6 +5739,10 @@ if errors:
     print("EVIDENCE CONTRACT FAILED")
     for error in errors:
         print(f"- {error}")
+    if remediation_hints:
+        print("\nREMEDIATION HINTS")
+        for hint in sorted(remediation_hints):
+            print(f"  - {hint}")
     if warnings:
         print("\nEVIDENCE CONTRACT WARNINGS")
         for warning in warnings:
@@ -3910,6 +5832,10 @@ main() {
     done
 
     write_summary
+
+    if ! generate_failure_diagnostics; then
+        overall_exit=1
+    fi
 
     if ! generate_extension_profile_matrix; then
         overall_exit=1
