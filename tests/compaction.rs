@@ -451,6 +451,7 @@ fn log_result(harness: &TestHarness, result: &CompactionResult) {
 const fn make_settings(keep_recent_tokens: u32) -> pi::compaction::ResolvedCompactionSettings {
     pi::compaction::ResolvedCompactionSettings {
         enabled: true,
+        context_window_tokens: 200_000,
         reserve_tokens: 1024,
         keep_recent_tokens,
     }
