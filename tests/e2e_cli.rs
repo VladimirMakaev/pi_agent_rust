@@ -16,6 +16,7 @@ use pi::extensions::{ExtensionManager, JsExtensionLoadSpec, JsExtensionRuntimeHa
 use pi::extensions_js::PiJsRuntimeConfig;
 #[cfg(unix)]
 use pi::package_manager::{PackageManager, PackageScope, ResolveRoots};
+use pi::session::encode_cwd;
 use pi::tools::ToolRegistry;
 use serde_json::json;
 use std::cell::Cell;
@@ -3980,6 +3981,210 @@ fn e2e_cli_session_explicit_path_loads_session() {
     assert!(
         !html_b.contains(id_a),
         "session B export should not contain session A ID"
+    );
+}
+
+#[test]
+fn e2e_cli_startup_migrations_run_by_default() {
+    let harness = CliTestHarness::new("e2e_cli_startup_migrations_run_by_default");
+
+    let agent_dir = PathBuf::from(
+        harness
+            .env
+            .get("PI_CODING_AGENT_DIR")
+            .expect("PI_CODING_AGENT_DIR set"),
+    );
+    fs::create_dir_all(&agent_dir).expect("create isolated agent dir");
+
+    let cwd = harness.harness.temp_dir().to_path_buf();
+    let legacy_session = agent_dir.join("legacy-session.jsonl");
+    let legacy_session_header = json!({
+        "type": "session",
+        "version": 3,
+        "id": "legacy-session",
+        "timestamp": "2026-02-14T00:00:00.000Z",
+        "cwd": cwd.display().to_string()
+    });
+    fs::write(&legacy_session, format!("{legacy_session_header}\n")).expect("write legacy session");
+    fs::write(
+        agent_dir.join("oauth.json"),
+        r#"{"anthropic":{"access_token":"a","refresh_token":"r","expires":1}}"#,
+    )
+    .expect("write oauth.json");
+    fs::write(
+        agent_dir.join("settings.json"),
+        r#"{"apiKeys":{"openai":"sk-openai"}}"#,
+    )
+    .expect("write settings.json");
+    fs::create_dir_all(agent_dir.join("commands")).expect("create commands dir");
+    fs::write(agent_dir.join("commands/migrate.md"), "# migrate").expect("write legacy command");
+    fs::create_dir_all(agent_dir.join("tools")).expect("create tools dir");
+    fs::write(agent_dir.join("tools/fd"), "fd-binary").expect("write legacy managed binary");
+
+    let export_source = harness.harness.temp_path("export-source.jsonl");
+    let export_header = json!({
+        "type": "session",
+        "version": 3,
+        "id": "export-source",
+        "timestamp": "2026-02-14T00:05:00.000Z",
+        "cwd": cwd.display().to_string()
+    });
+    let export_entry = json!({
+        "type": "message",
+        "id": "m1",
+        "parentId": "root",
+        "timestamp": "2026-02-14T00:05:01.000Z",
+        "message": {
+            "type": "user",
+            "content": "migration smoke"
+        }
+    });
+    fs::write(&export_source, format!("{export_header}\n{export_entry}\n"))
+        .expect("write export source");
+
+    let export_out = harness.harness.temp_path("export-out.html");
+    let result = harness.run(&[
+        "--export",
+        &export_source.display().to_string(),
+        &export_out.display().to_string(),
+    ]);
+    assert_exit_code(&harness.harness, &result, 0);
+    assert!(
+        export_out.exists(),
+        "export output should exist: {}",
+        export_out.display()
+    );
+
+    let migrated_session = agent_dir
+        .join("sessions")
+        .join(encode_cwd(&cwd))
+        .join("legacy-session.jsonl");
+    assert!(
+        agent_dir.join("auth.json").exists(),
+        "auth.json should be created"
+    );
+    assert!(
+        agent_dir.join("oauth.json.migrated").exists(),
+        "oauth.json should be renamed after migration"
+    );
+    assert!(
+        agent_dir.join("prompts/migrate.md").exists(),
+        "commands/ should be migrated to prompts/"
+    );
+    assert!(
+        agent_dir.join("bin/fd").exists(),
+        "managed binary should be migrated to bin/"
+    );
+    assert!(
+        migrated_session.exists(),
+        "legacy session should be migrated to encoded project dir"
+    );
+    assert!(
+        result
+            .stderr
+            .contains("Migrated legacy credentials into auth.json"),
+        "stderr should report auth migration, got:\n{}",
+        result.stderr
+    );
+}
+
+#[test]
+fn e2e_cli_no_migrations_skips_startup_migrations() {
+    let harness = CliTestHarness::new("e2e_cli_no_migrations_skips_startup_migrations");
+
+    let agent_dir = PathBuf::from(
+        harness
+            .env
+            .get("PI_CODING_AGENT_DIR")
+            .expect("PI_CODING_AGENT_DIR set"),
+    );
+    fs::create_dir_all(&agent_dir).expect("create isolated agent dir");
+
+    let cwd = harness.harness.temp_dir().to_path_buf();
+    let legacy_session = agent_dir.join("legacy-session.jsonl");
+    let legacy_session_header = json!({
+        "type": "session",
+        "version": 3,
+        "id": "legacy-session",
+        "timestamp": "2026-02-14T00:00:00.000Z",
+        "cwd": cwd.display().to_string()
+    });
+    fs::write(&legacy_session, format!("{legacy_session_header}\n")).expect("write legacy session");
+    fs::write(
+        agent_dir.join("oauth.json"),
+        r#"{"anthropic":{"access_token":"a","refresh_token":"r","expires":1}}"#,
+    )
+    .expect("write oauth.json");
+    fs::create_dir_all(agent_dir.join("commands")).expect("create commands dir");
+    fs::write(agent_dir.join("commands/migrate.md"), "# migrate").expect("write legacy command");
+    fs::create_dir_all(agent_dir.join("tools")).expect("create tools dir");
+    fs::write(agent_dir.join("tools/fd"), "fd-binary").expect("write legacy managed binary");
+
+    let export_source = harness.harness.temp_path("export-source.jsonl");
+    let export_header = json!({
+        "type": "session",
+        "version": 3,
+        "id": "export-source",
+        "timestamp": "2026-02-14T00:05:00.000Z",
+        "cwd": cwd.display().to_string()
+    });
+    let export_entry = json!({
+        "type": "message",
+        "id": "m1",
+        "parentId": "root",
+        "timestamp": "2026-02-14T00:05:01.000Z",
+        "message": {
+            "type": "user",
+            "content": "migration skip smoke"
+        }
+    });
+    fs::write(&export_source, format!("{export_header}\n{export_entry}\n"))
+        .expect("write export source");
+
+    let export_out = harness.harness.temp_path("export-out.html");
+    let result = harness.run(&[
+        "--no-migrations",
+        "--export",
+        &export_source.display().to_string(),
+        &export_out.display().to_string(),
+    ]);
+    assert_exit_code(&harness.harness, &result, 0);
+    assert!(
+        export_out.exists(),
+        "export output should exist: {}",
+        export_out.display()
+    );
+
+    assert!(
+        agent_dir.join("oauth.json").exists(),
+        "oauth.json should remain when --no-migrations is used"
+    );
+    assert!(
+        !agent_dir.join("auth.json").exists(),
+        "auth.json should not be created when --no-migrations is used"
+    );
+    assert!(
+        agent_dir.join("commands/migrate.md").exists(),
+        "commands/ should not be migrated when --no-migrations is used"
+    );
+    assert!(
+        !agent_dir.join("prompts/migrate.md").exists(),
+        "prompts/ should not be created when --no-migrations is used"
+    );
+    assert!(
+        agent_dir.join("tools/fd").exists(),
+        "managed binaries should not be moved when --no-migrations is used"
+    );
+    assert!(
+        legacy_session.exists(),
+        "legacy session should remain in root when --no-migrations is used"
+    );
+    assert!(
+        !result
+            .stderr
+            .contains("Migrated legacy credentials into auth.json"),
+        "stderr should not include migration report when migrations are skipped; got:\n{}",
+        result.stderr
     );
 }
 
