@@ -454,15 +454,19 @@ impl PiApp {
 
         let input = self.total_usage.input;
         let output_tokens = self.total_usage.output;
+        let branch_str = self
+            .git_branch
+            .as_ref()
+            .map_or_else(String::new, |b| format!("  |  {b}"));
         let mode_hint = match self.input_mode {
             InputMode::SingleLine => "Shift+Enter: newline  |  Alt+Enter: multi-line",
             InputMode::MultiLine => "Enter: newline  |  Alt+Enter: send  |  Esc: single-line",
         };
         let footer_long = format!(
-            "Tokens: {input} in / {output_tokens} out{cost_str}  |  {mode_hint}  |  /help  |  Ctrl+C: quit"
+            "Tokens: {input} in / {output_tokens} out{cost_str}{branch_str}  |  {mode_hint}  |  /help  |  Ctrl+C: quit"
         );
         let footer_short = format!(
-            "Tokens: {input} in / {output_tokens} out{cost_str}  |  /help  |  Ctrl+C: quit"
+            "Tokens: {input} in / {output_tokens} out{cost_str}{branch_str}  |  /help  |  Ctrl+C: quit"
         );
         let max_width = self.term_width.saturating_sub(2);
         let mut footer = if footer_long.chars().count() <= max_width {

@@ -207,6 +207,14 @@ impl PiApp {
         self.theme = theme;
         self.styles = self.theme.tui_styles();
         self.markdown_style = self.theme.glamour_style_config();
+        if let Some(indent) = self
+            .config
+            .markdown
+            .as_ref()
+            .and_then(|m| m.code_block_indent)
+        {
+            self.markdown_style.code_block.block.margin = Some(indent as usize);
+        }
         self.spinner =
             SpinnerModel::with_spinner(spinners::dot()).style(self.styles.accent.clone());
 
@@ -1153,6 +1161,25 @@ pub enum PiMsg {
     },
 }
 
+/// Read the current git branch from `.git/HEAD` in the given directory.
+///
+/// Returns `Some("branch-name")` for a normal branch,
+/// `Some("abc1234")` (7-char short SHA) for detached HEAD,
+/// or `None` if not in a git repo or `.git/HEAD` is unreadable.
+fn read_git_branch(cwd: &Path) -> Option<String> {
+    let git_head = cwd.join(".git/HEAD");
+    let content = std::fs::read_to_string(&git_head).ok()?;
+    let content = content.trim();
+    content.strip_prefix("ref: refs/heads/").map_or_else(
+        || {
+            // Detached HEAD — show short SHA
+            (content.len() >= 7 && content.chars().all(|c| c.is_ascii_hexdigit()))
+                .then(|| content[..7].to_string())
+        },
+        |ref_path| Some(ref_path.to_string()),
+    )
+}
+
 /// The main interactive TUI application model.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(bubbletea::Model)]
@@ -1272,6 +1299,9 @@ pub struct PiApp {
 
     // Pre-allocated reusable buffers for view() hot path (PERF-7)
     render_buffers: RenderBuffers,
+
+    // Current git branch name (refreshed on startup + after each agent turn)
+    git_branch: Option<String>,
 }
 
 impl PiApp {
@@ -1303,7 +1333,10 @@ impl PiApp {
 
         let theme = Theme::resolve(&config, &cwd);
         let styles = theme.tui_styles();
-        let markdown_style = theme.glamour_style_config();
+        let mut markdown_style = theme.glamour_style_config();
+        if let Some(indent) = config.markdown.as_ref().and_then(|m| m.code_block_indent) {
+            markdown_style.code_block.block.margin = Some(indent as usize);
+        }
         let editor_padding_x = config.editor_padding_x.unwrap_or(0).min(3) as usize;
         let autocomplete_max_visible =
             config.autocomplete_max_visible.unwrap_or(5).clamp(3, 20) as usize;
@@ -1411,6 +1444,8 @@ impl PiApp {
         let mut autocomplete = AutocompleteState::new(cwd.clone(), autocomplete_catalog);
         autocomplete.max_visible = autocomplete_max_visible;
 
+        let git_branch = read_git_branch(&cwd);
+
         let mut app = Self {
             input,
             history: HistoryList::new(),
@@ -1474,6 +1509,7 @@ impl PiApp {
             memory_monitor: MemoryMonitor::new_default(),
             message_render_cache: MessageRenderCache::new(),
             render_buffers: RenderBuffers::new(),
+            git_branch,
         };
 
         if let Some(manager) = app.extensions.clone() {

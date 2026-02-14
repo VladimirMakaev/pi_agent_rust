@@ -1567,3 +1567,67 @@ mod render_tool_message_tests {
         assert!(rendered.contains(&styles.success_bold.render("+")));
     }
 }
+
+// ── Git branch reading tests ──────────────────────────────────────────
+
+#[test]
+fn git_branch_normal_ref() {
+    let dir = tempfile::tempdir().unwrap();
+    let git_dir = dir.path().join(".git");
+    std::fs::create_dir(&git_dir).unwrap();
+    std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    assert_eq!(super::read_git_branch(dir.path()), Some("main".to_string()));
+}
+
+#[test]
+fn git_branch_feature_branch() {
+    let dir = tempfile::tempdir().unwrap();
+    let git_dir = dir.path().join(".git");
+    std::fs::create_dir(&git_dir).unwrap();
+    std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/feature/add-auth\n").unwrap();
+    assert_eq!(
+        super::read_git_branch(dir.path()),
+        Some("feature/add-auth".to_string())
+    );
+}
+
+#[test]
+fn git_branch_detached_head() {
+    let dir = tempfile::tempdir().unwrap();
+    let git_dir = dir.path().join(".git");
+    std::fs::create_dir(&git_dir).unwrap();
+    std::fs::write(
+        git_dir.join("HEAD"),
+        "abc1234def5678901234567890abcdef12345678\n",
+    )
+    .unwrap();
+    assert_eq!(
+        super::read_git_branch(dir.path()),
+        Some("abc1234".to_string())
+    );
+}
+
+#[test]
+fn git_branch_not_a_repo() {
+    let dir = tempfile::tempdir().unwrap();
+    // No .git directory
+    assert_eq!(super::read_git_branch(dir.path()), None);
+}
+
+#[test]
+fn git_branch_malformed_head() {
+    let dir = tempfile::tempdir().unwrap();
+    let git_dir = dir.path().join(".git");
+    std::fs::create_dir(&git_dir).unwrap();
+    std::fs::write(git_dir.join("HEAD"), "garbage content\n").unwrap();
+    assert_eq!(super::read_git_branch(dir.path()), None);
+}
+
+#[test]
+fn git_branch_empty_head() {
+    let dir = tempfile::tempdir().unwrap();
+    let git_dir = dir.path().join(".git");
+    std::fs::create_dir(&git_dir).unwrap();
+    std::fs::write(git_dir.join("HEAD"), "").unwrap();
+    assert_eq!(super::read_git_branch(dir.path()), None);
+}

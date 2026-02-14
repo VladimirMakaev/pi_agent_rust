@@ -162,6 +162,9 @@ impl PiApp {
                 self.extension_streaming.store(false, Ordering::SeqCst);
                 self.extension_compacting.store(false, Ordering::SeqCst);
 
+                // Refresh git branch (may have changed during tool execution)
+                self.git_branch = super::read_git_branch(&self.cwd);
+
                 if stop_reason == StopReason::Aborted {
                     self.status_message = Some("Request aborted".to_string());
                 } else if stop_reason == StopReason::Error {
