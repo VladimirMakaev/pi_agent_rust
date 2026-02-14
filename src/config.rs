@@ -766,7 +766,7 @@ impl Config {
             std::env::var(name).ok().and_then(|v| v.trim().parse().ok())
         }
 
-        fn sanitize_alpha(alpha: f64) -> Option<f64> {
+        const fn sanitize_alpha(alpha: f64) -> Option<f64> {
             if alpha.is_finite() {
                 Some(alpha.clamp(1.0e-6, 0.5))
             } else {
@@ -1159,8 +1159,8 @@ fn patch_settings_file(path: &Path, patch: Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Config, ExtensionRiskConfig, SettingsScope, extension_index_path_from_env,
-        global_dir_from_env, package_dir_from_env, sessions_dir_from_env,
+        extension_index_path_from_env, global_dir_from_env, package_dir_from_env,
+        sessions_dir_from_env, Config, ExtensionRiskConfig, SettingsScope,
     };
     use crate::agent::QueueMode;
     use proptest::prelude::*;

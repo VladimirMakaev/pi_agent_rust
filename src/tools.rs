@@ -1228,7 +1228,7 @@ impl Tool for ReadTool {
         // still report the full file line count so consumers can reason about "how much is left".
         truncation.total_lines = total_file_lines;
 
-        let mut output_text = truncation.content;
+        let mut output_text = truncation.content.clone();
         let mut details: Option<serde_json::Value> = None;
 
         if truncation.first_line_exceeds_limit {
@@ -5469,8 +5469,7 @@ mod tests {
     }
 
     fn safe_relative_path() -> impl Strategy<Value = String> {
-        prop::collection::vec(safe_relative_segment(), 1..6)
-            .prop_map(|segments| segments.join("/"))
+        prop::collection::vec(safe_relative_segment(), 1..6).prop_map(|segments| segments.join("/"))
     }
 
     fn pathish_input() -> impl Strategy<Value = String> {
@@ -5564,27 +5563,30 @@ mod tests {
             let normalized = normalize_for_match(&input);
             let renormalized = normalize_for_match(&normalized);
 
-            prop_assert_eq!(renormalized, normalized);
+            prop_assert_eq!(&renormalized, &normalized);
             prop_assert!(normalized.len() <= input.len());
-            prop_assert!(normalized.chars().all(|c| {
-                !is_special_unicode_space(c)
-                    && !matches!(
-                        c,
-                        '\u{2018}'
-                            | '\u{2019}'
-                            | '\u{201C}'
-                            | '\u{201D}'
-                            | '\u{201E}'
-                            | '\u{201F}'
-                            | '\u{2010}'
-                            | '\u{2011}'
-                            | '\u{2012}'
-                            | '\u{2013}'
-                            | '\u{2014}'
-                            | '\u{2015}'
-                            | '\u{2212}'
-                    )
-            }));
+            prop_assert!(
+                normalized.chars().all(|c| {
+                    !is_special_unicode_space(c)
+                        && !matches!(
+                            c,
+                            '\u{2018}'
+                                | '\u{2019}'
+                                | '\u{201C}'
+                                | '\u{201D}'
+                                | '\u{201E}'
+                                | '\u{201F}'
+                                | '\u{2010}'
+                                | '\u{2011}'
+                                | '\u{2012}'
+                                | '\u{2013}'
+                                | '\u{2014}'
+                                | '\u{2015}'
+                                | '\u{2212}'
+                        )
+                }),
+                "normalize_for_match should remove target punctuation/space variants"
+            );
         }
 
         #[test]
@@ -5602,7 +5604,8 @@ mod tests {
                 prop_assert!(result.was_truncated);
                 prop_assert!(result.text.ends_with(TRUNCATION_SUFFIX));
                 let expected_prefix: String = line.chars().take(GREP_MAX_LINE_LENGTH).collect();
-                prop_assert_eq!(result.text, format!("{expected_prefix}{TRUNCATION_SUFFIX}"));
+                let expected = format!("{expected_prefix}{TRUNCATION_SUFFIX}");
+                prop_assert_eq!(&result.text, &expected);
                 prop_assert!(result.text.chars().count() <= GREP_MAX_LINE_LENGTH + suffix_chars);
             }
         }
@@ -5613,7 +5616,7 @@ mod tests {
             let resolved = resolve_path(&relative_path, &cwd);
             let normalized = normalize_dot_segments(&resolved);
 
-            prop_assert_eq!(resolved, cwd.join(&relative_path));
+            prop_assert_eq!(&resolved, &cwd.join(&relative_path));
             prop_assert!(resolved.starts_with(&cwd));
             prop_assert!(normalized.starts_with(&cwd));
             prop_assert_eq!(normalize_dot_segments(&normalized), normalized);
@@ -5626,7 +5629,7 @@ mod tests {
             let normalized_once = normalize_dot_segments(&resolved);
             let normalized_twice = normalize_dot_segments(&normalized_once);
 
-            prop_assert_eq!(normalized_once, normalized_twice);
+            prop_assert_eq!(&normalized_once, &normalized_twice);
             prop_assert!(
                 normalized_once
                     .components()
