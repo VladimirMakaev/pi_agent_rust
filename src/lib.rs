@@ -112,7 +112,9 @@ pub mod fuzz_exports {
 
     pub use crate::config::Config;
     pub use crate::model::{
-        AssistantMessage, ContentBlock, Message, TextContent, UserContent, UserMessage,
+        AssistantMessage, ContentBlock, Message, StreamEvent, TextContent, ThinkingContent,
+        ToolCall, ToolResultMessage, Usage, UserContent, UserMessage,
     };
+    pub use crate::session::{Session, SessionEntry, SessionHeader, SessionMessage};
     pub use crate::sse::{SseEvent, SseParser};
 }

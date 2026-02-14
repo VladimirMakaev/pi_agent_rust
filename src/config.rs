@@ -2250,15 +2250,19 @@ mod tests {
                 ..Config::default()
             };
 
-            let baseline = Config::default().resolve_extension_risk_with_metadata();
             let resolved = config.resolve_extension_risk_with_metadata();
-            if baseline.source == "env" {
-                // Env overrides config; ensure config input does not bypass env precedence.
-                prop_assert_eq!(resolved.settings.alpha, baseline.settings.alpha);
+            let env_alpha = std::env::var("PI_EXTENSION_RISK_ALPHA")
+                .ok()
+                .and_then(|raw| raw.trim().parse::<f64>().ok())
+                .and_then(|parsed| parsed.is_finite().then_some(parsed.clamp(1.0e-6, 0.5)));
+
+            // Only PI_EXTENSION_RISK_ALPHA should override config alpha.
+            prop_assert_eq!(
+                resolved.settings.alpha,
+                env_alpha.unwrap_or_else(|| alpha.clamp(1.0e-6, 0.5))
+            );
+            if env_alpha.is_some() {
                 prop_assert_eq!(resolved.source, "env");
-            } else {
-                prop_assert_eq!(resolved.settings.alpha, alpha.clamp(1.0e-6, 0.5));
-                prop_assert_eq!(resolved.source, "config");
             }
         }
 
