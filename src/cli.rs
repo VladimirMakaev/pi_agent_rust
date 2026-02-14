@@ -508,6 +508,20 @@ mod tests {
         }
     }
 
+    // ── 5b. --list-providers (bool) ────────────────────────────────────
+
+    #[test]
+    fn list_providers_not_set() {
+        let cli = Cli::parse_from(["pi"]);
+        assert!(!cli.list_providers);
+    }
+
+    #[test]
+    fn list_providers_set() {
+        let cli = Cli::parse_from(["pi", "--list-providers"]);
+        assert!(cli.list_providers);
+    }
+
     // ── 6. enabled_tools() method ────────────────────────────────────
 
     #[test]
