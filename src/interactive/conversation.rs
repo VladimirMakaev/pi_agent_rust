@@ -249,8 +249,8 @@ pub(super) fn add_usage(total: &mut Usage, delta: &Usage) {
 mod tests {
     use super::*;
     use crate::model::{
-        AssistantMessage, ContentBlock, ImageContent, TextContent, ThinkingContent, ToolCallContent,
-        UserContent,
+        AssistantMessage, ContentBlock, ImageContent, StopReason, TextContent, ThinkingContent,
+        ToolCall, UserContent, UserMessage,
     };
     use std::collections::HashMap;
 
@@ -290,7 +290,7 @@ mod tests {
         let blocks = vec![
             ContentBlock::Thinking(ThinkingContent {
                 thinking: "hmm let me think".to_string(),
-                signature: None,
+                thinking_signature: None,
             }),
             ContentBlock::Text(TextContent::new("answer".to_string())),
         ];
@@ -304,7 +304,7 @@ mod tests {
         let blocks = vec![
             ContentBlock::Thinking(ThinkingContent {
                 thinking: "  ".to_string(),
-                signature: None,
+                thinking_signature: None,
             }),
             ContentBlock::Text(TextContent::new("text".to_string())),
         ];
@@ -315,10 +315,11 @@ mod tests {
     #[test]
     fn assistant_content_tool_call_ignored() {
         let blocks = vec![
-            ContentBlock::ToolCall(ToolCallContent {
+            ContentBlock::ToolCall(ToolCall {
                 id: "tc_1".to_string(),
                 name: "bash".to_string(),
-                input: serde_json::json!({"cmd": "ls"}),
+                arguments: serde_json::json!({"cmd": "ls"}),
+                thought_signature: None,
             }),
             ContentBlock::Text(TextContent::new("done".to_string())),
         ];
@@ -348,12 +349,13 @@ mod tests {
         let blocks = vec![
             ContentBlock::Thinking(ThinkingContent {
                 thinking: "ignored".to_string(),
-                signature: None,
+                thinking_signature: None,
             }),
-            ContentBlock::ToolCall(ToolCallContent {
+            ContentBlock::ToolCall(ToolCall {
                 id: "tc_1".to_string(),
                 name: "bash".to_string(),
-                input: serde_json::json!({}),
+                arguments: serde_json::json!({}),
+                thought_signature: None,
             }),
         ];
         let (text, images) = split_content_blocks_for_input(&blocks);
@@ -415,10 +417,11 @@ mod tests {
 
     #[test]
     fn tool_content_tool_call_rendered() {
-        let blocks = vec![ContentBlock::ToolCall(ToolCallContent {
+        let blocks = vec![ContentBlock::ToolCall(ToolCall {
             id: "tc_1".to_string(),
             name: "read".to_string(),
-            input: serde_json::json!({}),
+            arguments: serde_json::json!({}),
+            thought_signature: None,
         })];
         let result = tool_content_blocks_to_text(&blocks, true);
         assert!(result.contains("[tool call: read]"));
@@ -446,7 +449,7 @@ mod tests {
     #[test]
     fn add_usage_saturating() {
         let mut total = Usage {
-            input: u32::MAX - 10,
+            input: u64::MAX - 10,
             ..Usage::default()
         };
         let delta = Usage {
@@ -454,15 +457,15 @@ mod tests {
             ..Usage::default()
         };
         add_usage(&mut total, &delta);
-        assert_eq!(total.input, u32::MAX);
+        assert_eq!(total.input, u64::MAX);
     }
 
     // ── extension_model_from_entry ──────────────────────────────────────
 
     #[test]
     fn extension_model_json_structure() {
-        use crate::models::{Model, ModelCost, ModelEntry};
-        use crate::model::InputType;
+        use crate::models::ModelEntry;
+        use crate::provider::{InputType, Model, ModelCost};
 
         let entry = ModelEntry {
             model: Model {
@@ -502,16 +505,19 @@ mod tests {
     #[test]
     fn last_assistant_message_found() {
         let messages = vec![
-            ModelMessage::user("hello"),
+            ModelMessage::User(UserMessage {
+                content: UserContent::Text("hello".to_string()),
+                timestamp: 0,
+            }),
             ModelMessage::Assistant(AssistantMessage {
                 content: vec![ContentBlock::Text(TextContent::new("hi".to_string()))],
-                api: None,
-                provider: None,
-                model: None,
+                api: "openai-completions".to_string(),
+                provider: "openai".to_string(),
+                model: "gpt-4o-mini".to_string(),
                 usage: Usage::default(),
-                stop_reason: None,
+                stop_reason: StopReason::Stop,
                 error_message: None,
-                timestamp: None,
+                timestamp: 0,
             }),
         ];
         let result = last_assistant_message(&messages);
@@ -526,7 +532,10 @@ mod tests {
 
     #[test]
     fn last_assistant_message_none_when_no_assistant() {
-        let messages = vec![ModelMessage::user("hello")];
+        let messages = vec![ModelMessage::User(UserMessage {
+                content: UserContent::Text("hello".to_string()),
+                timestamp: 0,
+            })];
         assert!(last_assistant_message(&messages).is_none());
     }
 }

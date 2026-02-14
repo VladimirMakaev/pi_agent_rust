@@ -577,6 +577,28 @@ where
             return;
         }
 
+        // Emit TextEnd for all open text blocks
+        for idx in self.text_blocks.values() {
+            if let Some(ContentBlock::Text(t)) = self.partial.content.get(*idx) {
+                self.pending_events.push_back(StreamEvent::TextEnd {
+                    content_index: *idx,
+                    content: t.text.clone(),
+                    partial: self.partial.clone(),
+                });
+            }
+        }
+
+        // Emit ThinkingEnd for all open reasoning blocks
+        for idx in self.reasoning_blocks.values() {
+            if let Some(ContentBlock::Thinking(t)) = self.partial.content.get(*idx) {
+                self.pending_events.push_back(StreamEvent::ThinkingEnd {
+                    content_index: *idx,
+                    content: t.thinking.clone(),
+                    partial: self.partial.clone(),
+                });
+            }
+        }
+
         // Best-effort: close any tool calls we didn't see "done" for.
         let ids: Vec<String> = self.tool_calls_by_item_id.keys().cloned().collect();
         for id in ids {
