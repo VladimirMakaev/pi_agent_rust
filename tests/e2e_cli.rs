@@ -1011,6 +1011,22 @@ fn e2e_cli_config_subcommand_prints_paths() {
 }
 
 #[test]
+fn e2e_cli_config_subcommand_json_output() {
+    let harness = CliTestHarness::new("e2e_cli_config_subcommand_json_output");
+    let result = harness.run(&["config", "--json"]);
+
+    assert_exit_code(&harness.harness, &result, 0);
+    let payload: serde_json::Value =
+        serde_json::from_str(&result.stdout).expect("config --json should be valid JSON");
+    assert!(payload.get("paths").is_some(), "missing paths object");
+    assert!(payload.get("precedence").is_some(), "missing precedence");
+    assert!(
+        payload.get("configValid").is_some(),
+        "missing configValid flag"
+    );
+}
+
+#[test]
 fn e2e_cli_export_html_creates_file_and_contains_metadata() {
     let harness = CliTestHarness::new("e2e_cli_export_html_creates_file_and_contains_metadata");
     let session_path = harness.harness.temp_path("session.jsonl");

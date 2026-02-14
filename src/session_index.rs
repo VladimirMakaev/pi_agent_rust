@@ -1560,13 +1560,13 @@ mod tests {
 
             let meta = &listed[0];
             let expected_count = i64::try_from(message_count).unwrap_or(i64::MAX) as u64;
-            prop_assert_eq!(meta.id, id);
-            prop_assert_eq!(meta.cwd, cwd);
-            prop_assert_eq!(meta.timestamp, timestamp);
-            prop_assert_eq!(meta.path, path.display().to_string());
+            prop_assert_eq!(&meta.id, &id);
+            prop_assert_eq!(&meta.cwd, &cwd);
+            prop_assert_eq!(&meta.timestamp, &timestamp);
+            prop_assert_eq!(&meta.path, &path.display().to_string());
             prop_assert_eq!(meta.message_count, expected_count);
             prop_assert_eq!(meta.size_bytes, content.len() as u64);
-            prop_assert_eq!(meta.name, name);
+            prop_assert_eq!(&meta.name, &name);
             prop_assert!(meta.last_modified_ms >= 0);
 
             let other_cwd = index
