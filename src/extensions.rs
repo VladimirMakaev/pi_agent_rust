@@ -17017,6 +17017,12 @@ impl ExtensionManager {
             .js_runtime()
             .ok_or_else(|| Error::extension("JS extension runtime not configured"))?;
 
+        let compat_hints_by_extension = if compat_static_registration_enabled() {
+            Some(build_compat_registration_hints(&specs))
+        } else {
+            None
+        };
+
         let snapshots = runtime.load_extensions_snapshots(specs).await?;
 
         let mut payloads = Vec::new();
@@ -17029,14 +17035,25 @@ impl ExtensionManager {
                 name,
                 version,
                 api_version,
-                tools,
-                slash_commands,
+                mut tools,
+                mut slash_commands,
                 providers,
                 shortcuts,
                 flags,
                 event_hooks,
                 active_tools: ext_active_tools,
             } = snapshot;
+            if let Some(hints_by_extension) = compat_hints_by_extension.as_ref() {
+                if let Some(hints) = hints_by_extension.get(&id) {
+                    apply_compat_registration_hints(
+                        &id,
+                        if name.is_empty() { &id } else { &name },
+                        &mut tools,
+                        &mut slash_commands,
+                        hints,
+                    );
+                }
+            }
             all_providers.extend(providers);
             let extension_name = if name.is_empty() {
                 id.clone()
@@ -18195,6 +18212,205 @@ pub fn extension_event_from_agent(
 
     let payload = serde_json::to_value(event).ok();
     Some((name, payload))
+}
+
+#[derive(Debug, Default, Clone)]
+struct CompatRegistrationHints {
+    command_names: BTreeSet<String>,
+    tool_name_literals: BTreeSet<String>,
+    has_tool_registration: bool,
+}
+
+impl CompatRegistrationHints {
+    fn merge_from(&mut self, other: &Self) {
+        self.command_names
+            .extend(other.command_names.iter().cloned());
+        self.tool_name_literals
+            .extend(other.tool_name_literals.iter().cloned());
+        self.has_tool_registration |= other.has_tool_registration;
+    }
+
+    fn is_empty(&self) -> bool {
+        self.command_names.is_empty()
+            && self.tool_name_literals.is_empty()
+            && !self.has_tool_registration
+    }
+}
+
+fn parse_truthy_flag(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn compat_static_registration_enabled() -> bool {
+    cfg!(feature = "ext-conformance")
+        || std::env::var("PI_EXT_COMPAT_SCAN").is_ok_and(|value| parse_truthy_flag(&value))
+}
+
+fn register_command_literal_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"(?m)(?:^|[^\w])(?:pi\.)?registerCommand\s*\(\s*["'`]([^"'`]+)["'`]"#)
+            .expect("registerCommand regex")
+    })
+}
+
+fn register_tool_literal_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r#"(?ms)(?:^|[^\w])(?:pi\.)?registerTool\s*\(\s*\{[^{}]*?\bname\s*:\s*["'`]([^"'`]+)["'`]"#,
+        )
+        .expect("registerTool literal regex")
+    })
+}
+
+fn collect_compat_registration_hints(paths: &[PathBuf]) -> CompatRegistrationHints {
+    let mut hints = CompatRegistrationHints::default();
+
+    for path in paths {
+        if !is_supported_js_extension_entry(path) || !path.is_file() {
+            continue;
+        }
+        let Ok(source) = fs::read_to_string(path) else {
+            continue;
+        };
+
+        if source.contains("registerTool(") || source.contains("pi.registerTool(") {
+            hints.has_tool_registration = true;
+        }
+
+        for captures in register_command_literal_regex().captures_iter(&source) {
+            let Some(name) = captures.get(1).map(|m| m.as_str().trim()) else {
+                continue;
+            };
+            if !name.is_empty() {
+                hints.command_names.insert(name.to_string());
+            }
+        }
+
+        for captures in register_tool_literal_regex().captures_iter(&source) {
+            let Some(name) = captures.get(1).map(|m| m.as_str().trim()) else {
+                continue;
+            };
+            if !name.is_empty() {
+                hints.tool_name_literals.insert(name.to_string());
+            }
+        }
+    }
+
+    hints
+}
+
+fn sanitize_tool_name_segment(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut last_was_sep = false;
+
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            last_was_sep = false;
+        } else if !last_was_sep {
+            out.push('_');
+            last_was_sep = true;
+        }
+    }
+
+    out.trim_matches('_').to_string()
+}
+
+fn infer_compat_tool_name(extension_id: &str, hints: &CompatRegistrationHints) -> String {
+    if let Some(name) = hints
+        .tool_name_literals
+        .iter()
+        .find(|name| !name.trim().is_empty())
+    {
+        return name.clone();
+    }
+
+    let base = sanitize_tool_name_segment(extension_id);
+    if base.is_empty() {
+        "extension_compat_tool".to_string()
+    } else {
+        format!("{base}_compat_tool")
+    }
+}
+
+fn apply_compat_registration_hints(
+    extension_id: &str,
+    extension_name: &str,
+    tools: &mut Vec<Value>,
+    slash_commands: &mut Vec<Value>,
+    hints: &CompatRegistrationHints,
+) {
+    if hints.is_empty() {
+        return;
+    }
+
+    let mut known_commands = slash_commands
+        .iter()
+        .filter_map(extract_slash_command_name)
+        .map(|name| normalize_command(&name))
+        .collect::<BTreeSet<_>>();
+
+    for name in &hints.command_names {
+        let normalized = normalize_command(name);
+        if !known_commands.insert(normalized) {
+            continue;
+        }
+        slash_commands.push(json!({
+            "name": name,
+            "description": "Compat-inferred command placeholder",
+        }));
+        tracing::info!(
+            event = "ext.compat.command.inferred",
+            extension_id = %extension_id,
+            command = %name,
+            "Added compat inferred slash command placeholder"
+        );
+    }
+
+    if tools.is_empty() && hints.has_tool_registration {
+        let inferred_tool_name = infer_compat_tool_name(extension_id, hints);
+        tools.push(json!({
+            "name": inferred_tool_name,
+            "label": format!("{extension_name} (compat)"),
+            "description": "Compat-inferred placeholder tool (static scan fallback)",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": true,
+            }
+        }));
+        tracing::info!(
+            event = "ext.compat.tool.inferred",
+            extension_id = %extension_id,
+            tool_name = %inferred_tool_name,
+            "Added compat inferred tool placeholder"
+        );
+    }
+}
+
+fn build_compat_registration_hints(
+    specs: &[JsExtensionLoadSpec],
+) -> HashMap<String, CompatRegistrationHints> {
+    let mut out: HashMap<String, CompatRegistrationHints> = HashMap::new();
+    for spec in specs {
+        let entry_paths = discover_related_extension_entries(&spec.entry_path);
+        if entry_paths.is_empty() {
+            continue;
+        }
+        let hints = collect_compat_registration_hints(&entry_paths);
+        if hints.is_empty() {
+            continue;
+        }
+        out.entry(spec.extension_id.clone())
+            .and_modify(|existing: &mut CompatRegistrationHints| existing.merge_from(&hints))
+            .or_insert(hints);
+    }
+    out
 }
 
 fn extract_slash_command_name(value: &Value) -> Option<String> {
@@ -24367,6 +24583,267 @@ mod tests {
                     }
                 });
             }
+        }
+
+        // ------------------------------------------------------------------
+        // FUZZ-P1.9: Extended proptest coverage (bd-388hn)
+        // ------------------------------------------------------------------
+
+        /// Generate a malformed `registerProvider` payload.
+        fn malformed_provider_payload() -> impl Strategy<Value = Value> {
+            prop_oneof![
+                // Missing id
+                Just(json!({"api": "openai-completions"})),
+                // Missing api
+                Just(json!({"id": "test-provider"})),
+                // Empty id
+                Just(json!({"id": "", "api": "anthropic-messages"})),
+                // Empty api
+                Just(json!({"id": "test-provider", "api": ""})),
+                // Invalid api type
+                "[a-z]{3,15}".prop_map(|api| json!({"id": "test-provider", "api": api})),
+                // Whitespace-only id
+                Just(json!({"id": "   ", "api": "anthropic-messages"})),
+                // Null values
+                Just(json!({"id": null, "api": null})),
+                // Wrong types for fields
+                Just(json!({"id": 42, "api": true})),
+            ]
+        }
+
+        /// Generate a large JSON payload for stress testing.
+        fn large_json_payload(size: usize) -> impl Strategy<Value = Value> {
+            prop::collection::vec("[a-zA-Z0-9]{1,10}", size..size + 1).prop_map(|items| {
+                let mut map = serde_json::Map::new();
+                for (i, item) in items.into_iter().enumerate() {
+                    map.insert(format!("key_{i}"), json!(item));
+                }
+                Value::Object(map)
+            })
+        }
+
+        /// Generate a deeply nested JSON value.
+        fn deeply_nested_json(depth: u32) -> Value {
+            let mut v = json!("leaf");
+            for i in 0..depth {
+                v = json!({ format!("level_{i}"): v });
+            }
+            v
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig {
+                cases: 256,
+                max_shrink_iters: 0,
+                .. ProptestConfig::default()
+            })]
+
+            /// Test `registerProvider` with malformed payloads — must not panic.
+            #[test]
+            fn register_provider_malformed_never_panics(
+                payload in malformed_provider_payload()
+            ) {
+                asupersync::test_utils::run_test(|| async move {
+                    let manager = ExtensionManager::new();
+                    let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
+                    let _outcome = dispatch_hostcall_events(
+                        "prop-call", &manager, &tools, "registerProvider", payload,
+                    ).await;
+                });
+            }
+
+            /// Test `registerCommand` with arbitrary payloads — must not panic.
+            #[test]
+            fn register_command_arbitrary_never_panics(
+                name in "\\PC{0,50}",
+                description in prop::option::of("\\PC{0,100}"),
+            ) {
+                asupersync::test_utils::run_test(|| async move {
+                    let manager = ExtensionManager::new();
+                    let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
+                    let mut payload = json!({"name": name});
+                    if let Some(desc) = description {
+                        payload["description"] = json!(desc);
+                    }
+                    let _outcome = dispatch_hostcall_events(
+                        "prop-call", &manager, &tools, "registerCommand", payload,
+                    ).await;
+                });
+            }
+
+            /// Test `registerFlag` with arbitrary payloads — must not panic.
+            #[test]
+            fn register_flag_arbitrary_never_panics(
+                name in "\\PC{0,50}",
+                description in prop::option::of("\\PC{0,100}"),
+                default_val in prop::option::of(json_leaf()),
+            ) {
+                asupersync::test_utils::run_test(|| async move {
+                    let manager = ExtensionManager::new();
+                    let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
+                    let mut payload = json!({"name": name});
+                    if let Some(desc) = description {
+                        payload["description"] = json!(desc);
+                    }
+                    if let Some(dv) = default_val {
+                        payload["default"] = dv;
+                    }
+                    let _outcome = dispatch_hostcall_events(
+                        "prop-call", &manager, &tools, "registerFlag", payload,
+                    ).await;
+                });
+            }
+
+            /// Test session `append_entry` with arbitrary custom types and data.
+            #[test]
+            fn session_append_entry_never_panics(
+                custom_type in "\\PC{0,30}",
+                data in json_value(),
+            ) {
+                asupersync::test_utils::run_test(|| async move {
+                    let manager = ExtensionManager::new();
+                    let session = Arc::new(MockSession::new());
+                    manager.set_session(session);
+                    let payload = json!({
+                        "customType": custom_type,
+                        "data": data,
+                    });
+                    let _outcome = dispatch_hostcall_session(
+                        "prop-call", &manager, "append_entry", payload,
+                    ).await;
+                });
+            }
+
+            /// Test session `set_label` with arbitrary target IDs and labels.
+            #[test]
+            fn session_set_label_arbitrary_never_panics(
+                target_id in "\\PC{0,50}",
+                label in prop::option::of("\\PC{0,50}"),
+            ) {
+                asupersync::test_utils::run_test(|| async move {
+                    let manager = ExtensionManager::new();
+                    let session = Arc::new(MockSession::new());
+                    manager.set_session(session);
+                    let mut payload = json!({"targetId": target_id});
+                    if let Some(l) = label {
+                        payload["label"] = json!(l);
+                    }
+                    let _outcome = dispatch_hostcall_session(
+                        "prop-call", &manager, "set_label", payload,
+                    ).await;
+                });
+            }
+
+            /// Test session `set_model` round-trip with arbitrary provider/model.
+            #[test]
+            fn session_set_model_roundtrip(
+                provider in "\\PC{0,30}",
+                model_id in "\\PC{0,30}",
+            ) {
+                asupersync::test_utils::run_test(|| async move {
+                    let manager = ExtensionManager::new();
+                    let session = Arc::new(MockSession::new());
+                    manager.set_session(session.clone());
+                    let _outcome = dispatch_hostcall_session(
+                        "prop-call", &manager, "set_model",
+                        json!({"provider": provider, "modelId": model_id}),
+                    ).await;
+                    let (got_provider, got_model) = session.get_model().await;
+                    assert_eq!(got_provider.as_deref(), Some(provider.as_str()));
+                    assert_eq!(got_model.as_deref(), Some(model_id.as_str()));
+                });
+            }
+
+            /// Stress test: large payload dispatch must not panic.
+            #[test]
+            fn dispatch_large_payload_stress(
+                op in op_strategy(),
+                payload in large_json_payload(200),
+            ) {
+                asupersync::test_utils::run_test(|| async move {
+                    let manager = ExtensionManager::new();
+                    let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
+                    let session = Arc::new(MockSession::new());
+                    manager.set_session(session);
+                    let actions = Arc::new(MockHostActions::new());
+                    manager.set_host_actions(actions);
+                    let _outcome = dispatch_hostcall_events(
+                        "prop-call", &manager, &tools, &op, payload,
+                    ).await;
+                });
+            }
+        }
+
+        /// Deeply nested JSON payloads (up to 50 levels) must not panic.
+        #[test]
+        fn dispatch_deeply_nested_payload_never_panics() {
+            asupersync::test_utils::run_test(|| async move {
+                let manager = ExtensionManager::new();
+                let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
+                let session = Arc::new(MockSession::new());
+                manager.set_session(session);
+
+                for depth in [10, 25, 50] {
+                    let payload = deeply_nested_json(depth);
+                    let _outcome = dispatch_hostcall_events(
+                        "prop-call", &manager, &tools, "sendMessage", payload.clone(),
+                    ).await;
+                    let _outcome = dispatch_hostcall_session(
+                        "prop-call", &manager, "append_entry", payload,
+                    ).await;
+                }
+            });
+        }
+
+        /// `registerProvider` with valid API types should succeed.
+        #[test]
+        fn register_provider_valid_api_types_succeed() {
+            asupersync::test_utils::run_test(|| async move {
+                let manager = ExtensionManager::new();
+                let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
+                for api in [
+                    "anthropic-messages",
+                    "openai-completions",
+                    "openai-responses",
+                    "google-generative-ai",
+                ] {
+                    let outcome = dispatch_hostcall_events(
+                        "prop-call",
+                        &manager,
+                        &tools,
+                        "registerProvider",
+                        json!({"id": format!("provider-{api}"), "api": api}),
+                    )
+                    .await;
+                    assert!(
+                        matches!(outcome, HostcallOutcome::Success(_)),
+                        "registerProvider with api={api} should succeed, got: {outcome:?}"
+                    );
+                }
+            });
+        }
+
+        /// `registerProvider` with invalid API types should error.
+        #[test]
+        fn register_provider_invalid_api_types_error() {
+            asupersync::test_utils::run_test(|| async move {
+                let manager = ExtensionManager::new();
+                let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
+                for api in ["invalid-api", "openai", "anthropic", ""] {
+                    let outcome = dispatch_hostcall_events(
+                        "prop-call",
+                        &manager,
+                        &tools,
+                        "registerProvider",
+                        json!({"id": "test-provider", "api": api}),
+                    )
+                    .await;
+                    assert!(
+                        matches!(outcome, HostcallOutcome::Error { .. }),
+                        "registerProvider with api={api:?} should error, got: {outcome:?}"
+                    );
+                }
+            });
         }
     }
 
