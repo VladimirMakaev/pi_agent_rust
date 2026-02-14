@@ -13,6 +13,7 @@ use pi::model::{
     UserMessage,
 };
 use serde_json::{Value, json};
+use std::sync::Arc;
 
 // ============================================================================
 // Helper Functions
@@ -145,7 +146,7 @@ fn test_user_message_blocks_round_trip() {
 fn test_assistant_message_round_trip() {
     let harness = TestHarness::new("assistant_message_round_trip");
 
-    let msg = Message::Assistant(AssistantMessage {
+    let msg = Message::assistant(AssistantMessage {
         content: vec![
             ContentBlock::Text(TextContent::new("Hello")),
             ContentBlock::Thinking(ThinkingContent {
@@ -199,7 +200,7 @@ fn test_assistant_message_round_trip() {
 fn test_assistant_message_with_error() {
     let harness = TestHarness::new("assistant_message_with_error");
 
-    let msg = Message::Assistant(AssistantMessage {
+    let msg = Message::assistant(AssistantMessage {
         content: vec![],
         api: "anthropic-messages".to_string(),
         provider: "anthropic".to_string(),
@@ -788,7 +789,7 @@ fn test_assistant_message_event_start() {
     let harness = TestHarness::new("assistant_message_event_start");
 
     let event = AssistantMessageEvent::Start {
-        partial: make_assistant_message(vec![]),
+        partial: Arc::new(make_assistant_message(vec![])),
     };
 
     let json = serde_json::to_string(&event).unwrap();
@@ -804,7 +805,9 @@ fn test_assistant_message_event_text_delta() {
     let event = AssistantMessageEvent::TextDelta {
         content_index: 0,
         delta: "Hello".to_string(),
-        partial: make_assistant_message(vec![ContentBlock::Text(TextContent::new("Hello"))]),
+        partial: Arc::new(make_assistant_message(vec![ContentBlock::Text(
+            TextContent::new("Hello"),
+        )])),
     };
 
     let json = serde_json::to_string(&event).unwrap();
@@ -821,7 +824,9 @@ fn test_assistant_message_event_done() {
 
     let event = AssistantMessageEvent::Done {
         reason: StopReason::Stop,
-        message: make_assistant_message(vec![ContentBlock::Text(TextContent::new("Complete"))]),
+        message: Arc::new(make_assistant_message(vec![ContentBlock::Text(
+            TextContent::new("Complete"),
+        )])),
     };
 
     let json = serde_json::to_string(&event).unwrap();
@@ -845,7 +850,7 @@ fn test_assistant_message_event_tool_call_end() {
     let event = AssistantMessageEvent::ToolCallEnd {
         content_index: 0,
         tool_call: tool_call.clone(),
-        partial: make_assistant_message(vec![ContentBlock::ToolCall(tool_call)]),
+        partial: Arc::new(make_assistant_message(vec![ContentBlock::ToolCall(tool_call)])),
     };
 
     let json = serde_json::to_string(&event).unwrap();
@@ -864,7 +869,9 @@ fn test_assistant_message_event_tool_call_end() {
 fn test_assistant_message_event_all_variants_round_trip() {
     let harness = TestHarness::new("assistant_message_event_all_variants_round_trip");
 
-    let base = make_assistant_message(vec![ContentBlock::Text(TextContent::new("partial"))]);
+    let base = Arc::new(make_assistant_message(vec![ContentBlock::Text(
+        TextContent::new("partial"),
+    )]));
     let tool_call = ToolCall {
         id: "call_roundtrip".to_string(),
         name: "read".to_string(),
@@ -874,53 +881,53 @@ fn test_assistant_message_event_all_variants_round_trip() {
 
     let events = vec![
         AssistantMessageEvent::Start {
-            partial: base.clone(),
+            partial: Arc::clone(&base),
         },
         AssistantMessageEvent::TextStart {
             content_index: 0,
-            partial: base.clone(),
+            partial: Arc::clone(&base),
         },
         AssistantMessageEvent::TextDelta {
             content_index: 0,
             delta: "hello".to_string(),
-            partial: base.clone(),
+            partial: Arc::clone(&base),
         },
         AssistantMessageEvent::TextEnd {
             content_index: 0,
             content: "hello".to_string(),
-            partial: base.clone(),
+            partial: Arc::clone(&base),
         },
         AssistantMessageEvent::ThinkingStart {
             content_index: 0,
-            partial: base.clone(),
+            partial: Arc::clone(&base),
         },
         AssistantMessageEvent::ThinkingDelta {
             content_index: 0,
             delta: "thinking".to_string(),
-            partial: base.clone(),
+            partial: Arc::clone(&base),
         },
         AssistantMessageEvent::ThinkingEnd {
             content_index: 0,
             content: "thinking".to_string(),
-            partial: base.clone(),
+            partial: Arc::clone(&base),
         },
         AssistantMessageEvent::ToolCallStart {
             content_index: 0,
-            partial: base.clone(),
+            partial: Arc::clone(&base),
         },
         AssistantMessageEvent::ToolCallDelta {
             content_index: 0,
             delta: "{\"path\":\"Cargo.toml\"}".to_string(),
-            partial: base.clone(),
+            partial: Arc::clone(&base),
         },
         AssistantMessageEvent::ToolCallEnd {
             content_index: 0,
             tool_call,
-            partial: base.clone(),
+            partial: Arc::clone(&base),
         },
         AssistantMessageEvent::Done {
             reason: StopReason::Stop,
-            message: base.clone(),
+            message: Arc::clone(&base),
         },
         AssistantMessageEvent::Error {
             reason: StopReason::Error,
@@ -960,7 +967,7 @@ fn test_assistant_message_event_all_variants_round_trip() {
 fn test_empty_content_blocks() {
     let harness = TestHarness::new("empty_content_blocks");
 
-    let msg = Message::Assistant(AssistantMessage {
+    let msg = Message::assistant(AssistantMessage {
         content: vec![],
         api: "anthropic-messages".to_string(),
         provider: "anthropic".to_string(),
@@ -1100,7 +1107,7 @@ fn test_large_tool_arguments() {
 fn test_mixed_content_sequence() {
     let harness = TestHarness::new("mixed_content_sequence");
 
-    let msg = Message::Assistant(AssistantMessage {
+    let msg = Message::assistant(AssistantMessage {
         content: vec![
             ContentBlock::Thinking(ThinkingContent {
                 thinking: "Let me analyze this...".to_string(),

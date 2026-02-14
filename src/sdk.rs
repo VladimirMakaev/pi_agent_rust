@@ -174,13 +174,13 @@ fn build_stream_options_with_optional_key(
 pub async fn create_agent_session(options: SessionOptions) -> Result<AgentSessionHandle> {
     let process_cwd =
         std::env::current_dir().map_err(|e| Error::config(format!("cwd lookup failed: {e}")))?;
-    let cwd = options
-        .working_directory
-        .as_deref()
-        .map_or_else(|| process_cwd.clone(), |path| resolve_path_for_cwd(path, &process_cwd));
+    let cwd = options.working_directory.as_deref().map_or_else(
+        || process_cwd.clone(),
+        |path| resolve_path_for_cwd(path, &process_cwd),
+    );
 
-    let mut cli =
-        Cli::try_parse_from(["pi"]).map_err(|e| Error::validation(format!("CLI init failed: {e}")))?;
+    let mut cli = Cli::try_parse_from(["pi"])
+        .map_err(|e| Error::validation(format!("CLI init failed: {e}")))?;
     cli.no_session = options.no_session;
     cli.provider = options.provider.clone();
     cli.model = options.model.clone();
@@ -258,11 +258,14 @@ pub async fn create_agent_session(options: SessionOptions) -> Result<AgentSessio
         std::env::var_os("PI_TEST_MODE").is_some(),
     );
 
-    let provider =
-        providers::create_provider(&selection.model_entry, None).map_err(|e| Error::provider("sdk", e.to_string()))?;
+    let provider = providers::create_provider(&selection.model_entry, None)
+        .map_err(|e| Error::provider("sdk", e.to_string()))?;
 
     let api_key = auth
-        .resolve_api_key(&selection.model_entry.model.provider, cli.api_key.as_deref())
+        .resolve_api_key(
+            &selection.model_entry.model.provider,
+            cli.api_key.as_deref(),
+        )
         .or_else(|| selection.model_entry.api_key.clone());
 
     let stream_options =
@@ -342,8 +345,8 @@ pub async fn create_agent_session(options: SessionOptions) -> Result<AgentSessio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use asupersync::runtime::reactor::create_reactor;
     use asupersync::runtime::RuntimeBuilder;
+    use asupersync::runtime::reactor::create_reactor;
     use tempfile::tempdir;
 
     fn run_async<F>(future: F) -> F::Output

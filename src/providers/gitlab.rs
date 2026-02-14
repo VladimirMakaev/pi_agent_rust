@@ -413,7 +413,7 @@ mod tests {
                     content: UserContent::Text("What is Rust?".to_string()),
                     timestamp: 0,
                 }),
-                Message::Assistant(AssistantMessage {
+                Message::assistant(AssistantMessage {
                     content: vec![ContentBlock::Text(TextContent {
                         text: "Rust is a systems language.".to_string(),
                         text_signature: None,

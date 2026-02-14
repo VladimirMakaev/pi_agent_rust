@@ -875,7 +875,7 @@ mod tests {
                     content: UserContent::Text("Hello".to_string()),
                     timestamp: 0,
                 }),
-                Message::Assistant(AssistantMessage {
+                Message::assistant(AssistantMessage {
                     content: vec![
                         ContentBlock::Text(TextContent::new("Need tool output")),
                         ContentBlock::ToolCall(ToolCall {

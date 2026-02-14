@@ -1672,7 +1672,7 @@ mod tests {
 
     #[test]
     fn serialize_conversation_assistant_text() {
-        let messages = vec![Message::Assistant(AssistantMessage {
+        let messages = vec![Message::assistant(AssistantMessage {
             content: vec![ContentBlock::Text(TextContent::new("response"))],
             api: String::new(),
             provider: String::new(),
@@ -1687,7 +1687,7 @@ mod tests {
 
     #[test]
     fn serialize_conversation_tool_calls() {
-        let messages = vec![Message::Assistant(AssistantMessage {
+        let messages = vec![Message::assistant(AssistantMessage {
             content: vec![ContentBlock::ToolCall(ToolCall {
                 id: "c1".to_string(),
                 name: "read".to_string(),
@@ -1709,7 +1709,7 @@ mod tests {
 
     #[test]
     fn serialize_conversation_thinking() {
-        let messages = vec![Message::Assistant(AssistantMessage {
+        let messages = vec![Message::assistant(AssistantMessage {
             content: vec![ContentBlock::Thinking(ThinkingContent {
                 thinking: "let me think".to_string(),
                 thinking_signature: None,

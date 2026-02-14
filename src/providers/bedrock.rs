@@ -965,7 +965,7 @@ mod tests {
                     content: UserContent::Text("Ping".to_string()),
                     timestamp: 0,
                 }),
-                Message::Assistant(AssistantMessage {
+                Message::assistant(AssistantMessage {
                     content: vec![ContentBlock::ToolCall(ToolCall {
                         id: "tool_1".to_string(),
                         name: "search".to_string(),

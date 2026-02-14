@@ -3550,7 +3550,10 @@ mod tests {
             normalize_command_type("set-steering-mode"),
             "set_steering_mode"
         );
-        assert_eq!(normalize_command_type("setSteeringMode"), "set_steering_mode");
+        assert_eq!(
+            normalize_command_type("setSteeringMode"),
+            "set_steering_mode"
+        );
         assert_eq!(
             normalize_command_type("set-follow-up-mode"),
             "set_follow_up_mode"

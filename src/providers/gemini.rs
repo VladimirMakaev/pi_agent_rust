@@ -1095,7 +1095,7 @@ mod tests {
 
     #[test]
     fn test_convert_assistant_message_with_tool_call() {
-        let message = Message::Assistant(AssistantMessage {
+        let message = Message::assistant(AssistantMessage {
             content: vec![
                 ContentBlock::Text(TextContent::new("Let me read that file.")),
                 ContentBlock::ToolCall(ToolCall {
@@ -1134,7 +1134,7 @@ mod tests {
 
     #[test]
     fn test_convert_assistant_empty_content_returns_empty() {
-        let message = Message::Assistant(AssistantMessage {
+        let message = Message::assistant(AssistantMessage {
             content: vec![],
             api: "google".to_string(),
             provider: "google".to_string(),
@@ -1297,7 +1297,7 @@ mod tests {
                     content: UserContent::Text("Read /tmp/a.txt".to_string()),
                     timestamp: 0,
                 }),
-                Message::Assistant(AssistantMessage {
+                Message::assistant(AssistantMessage {
                     content: vec![ContentBlock::ToolCall(ToolCall {
                         id: "call_1".to_string(),
                         name: "read".to_string(),
@@ -1360,8 +1360,8 @@ mod tests {
         use super::*;
         use proptest::prelude::*;
 
-        fn make_state(
-        ) -> StreamState<impl Stream<Item = std::result::Result<Vec<u8>, std::io::Error>> + Unpin>
+        fn make_state()
+        -> StreamState<impl Stream<Item = std::result::Result<Vec<u8>, std::io::Error>> + Unpin>
         {
             let empty = stream::empty::<std::result::Result<Vec<u8>, std::io::Error>>();
             let sse = crate::sse::SseStream::new(Box::pin(empty));
@@ -1374,11 +1374,7 @@ mod tests {
         }
 
         fn small_string() -> impl Strategy<Value = String> {
-            prop_oneof![
-                Just(String::new()),
-                "[a-zA-Z0-9_]{1,16}",
-                "[ -~]{0,32}",
-            ]
+            prop_oneof![Just(String::new()), "[a-zA-Z0-9_]{1,16}", "[ -~]{0,32}",]
         }
 
         fn token_count() -> impl Strategy<Value = u64> {
@@ -1419,9 +1415,9 @@ mod tests {
 
         /// Strategy for Gemini function call parts.
         fn function_call_part() -> impl Strategy<Value = serde_json::Value> {
-            (small_string(), json_args()).prop_map(|(name, args)| {
-                serde_json::json!({"functionCall": {"name": name, "args": args}})
-            })
+            (small_string(), json_args()).prop_map(
+                |(name, args)| serde_json::json!({"functionCall": {"name": name, "args": args}}),
+            )
         }
 
         /// Strategy for content parts (mix of text and function calls).

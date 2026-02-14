@@ -1472,7 +1472,7 @@ mod tests {
                     content: UserContent::Text("Read /tmp/a.txt".to_string()),
                     timestamp: 0,
                 }),
-                Message::Assistant(AssistantMessage {
+                Message::assistant(AssistantMessage {
                     content: vec![ContentBlock::ToolCall(ToolCall {
                         id: "call_1".to_string(),
                         name: "read".to_string(),

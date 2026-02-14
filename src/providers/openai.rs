@@ -1988,25 +1988,16 @@ mod tests {
         use super::*;
         use proptest::prelude::*;
 
-        fn make_state(
-        ) -> StreamState<impl Stream<Item = std::result::Result<Vec<u8>, std::io::Error>> + Unpin>
+        fn make_state()
+        -> StreamState<impl Stream<Item = std::result::Result<Vec<u8>, std::io::Error>> + Unpin>
         {
             let empty = stream::empty::<std::result::Result<Vec<u8>, std::io::Error>>();
             let sse = crate::sse::SseStream::new(Box::pin(empty));
-            StreamState::new(
-                sse,
-                "gpt-test".into(),
-                "openai".into(),
-                "openai".into(),
-            )
+            StreamState::new(sse, "gpt-test".into(), "openai".into(), "openai".into())
         }
 
         fn small_string() -> impl Strategy<Value = String> {
-            prop_oneof![
-                Just(String::new()),
-                "[a-zA-Z0-9_]{1,16}",
-                "[ -~]{0,32}",
-            ]
+            prop_oneof![Just(String::new()), "[a-zA-Z0-9_]{1,16}", "[ -~]{0,32}",]
         }
 
         fn optional_string() -> impl Strategy<Value = Option<String>> {

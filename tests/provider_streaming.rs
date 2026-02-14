@@ -456,7 +456,7 @@ pub(crate) fn assistant_tool_call_message(
     name: &str,
     arguments: serde_json::Value,
 ) -> Message {
-    Message::Assistant(AssistantMessage {
+    Message::assistant(AssistantMessage {
         content: vec![ContentBlock::ToolCall(ToolCall {
             id: id.to_string(),
             name: name.to_string(),

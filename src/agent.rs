@@ -917,8 +917,7 @@ impl Agent {
                             }),
                         });
                         return Ok(self.finalize_assistant_message(
-                            Arc::try_unwrap(abort_arc)
-                                .unwrap_or_else(|a| (*a).clone()),
+                            Arc::try_unwrap(abort_arc).unwrap_or_else(|a| (*a).clone()),
                             on_event,
                             added_partial,
                         ));
@@ -937,10 +936,7 @@ impl Agent {
             match event {
                 StreamEvent::Start { partial } => {
                     let shared = Arc::new(partial);
-                    self.update_partial_message(
-                        Arc::clone(&shared),
-                        &mut added_partial,
-                    );
+                    self.update_partial_message(Arc::clone(&shared), &mut added_partial);
                     on_event(AgentEvent::MessageStart {
                         message: Message::Assistant(Arc::clone(&shared)),
                     });

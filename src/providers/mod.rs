@@ -481,7 +481,9 @@ impl ExtensionStreamSimpleProvider {
 
     fn assistant_event_to_stream_event(event: AssistantMessageEvent) -> StreamEvent {
         match event {
-            AssistantMessageEvent::Start { partial } => StreamEvent::Start { partial },
+            AssistantMessageEvent::Start { partial } => StreamEvent::Start {
+                partial: partial.as_ref().clone(),
+            },
             AssistantMessageEvent::TextStart { content_index, .. } => {
                 StreamEvent::TextStart { content_index }
             }
@@ -539,10 +541,14 @@ impl ExtensionStreamSimpleProvider {
                 content_index,
                 tool_call,
             },
-            AssistantMessageEvent::Done { reason, message } => {
-                StreamEvent::Done { reason, message }
-            }
-            AssistantMessageEvent::Error { reason, error } => StreamEvent::Error { reason, error },
+            AssistantMessageEvent::Done { reason, message } => StreamEvent::Done {
+                reason,
+                message: message.as_ref().clone(),
+            },
+            AssistantMessageEvent::Error { reason, error } => StreamEvent::Error {
+                reason,
+                error: error.as_ref().clone(),
+            },
         }
     }
 
@@ -696,13 +702,13 @@ impl Provider for ExtensionStreamSimpleProvider {
                         | AssistantMessageEvent::ToolCallStart { partial, .. }
                         | AssistantMessageEvent::ToolCallDelta { partial, .. }
                         | AssistantMessageEvent::ToolCallEnd { partial, .. } => {
-                            state.last_message = Some(partial.clone());
+                            state.last_message = Some(partial.as_ref().clone());
                         }
                         AssistantMessageEvent::Done { message, .. } => {
-                            state.last_message = Some(message.clone());
+                            state.last_message = Some(message.as_ref().clone());
                         }
                         AssistantMessageEvent::Error { error, .. } => {
-                            state.last_message = Some(error.clone());
+                            state.last_message = Some(error.as_ref().clone());
                         }
                     }
 
