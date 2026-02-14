@@ -2395,34 +2395,75 @@ fn assert_json_mode_lifecycle_shape(lines: &[serde_json::Value]) {
     let event_lines = &lines[1..];
     let event_types = event_lines
         .iter()
-        .filter_map(|value| value.get("type").and_then(serde_json::Value::as_str))
+        .map(|value| {
+            value
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("<missing>")
+        })
         .collect::<Vec<_>>();
 
-    let required_order = [
-        "agent_start",
-        "turn_start",
-        "message_start",
-        "message_update",
-        "message_end",
-        "turn_end",
-        "agent_end",
-    ];
-    let mut last_index = 0usize;
-    for (idx, event_type) in required_order.iter().enumerate() {
-        let found = event_types
+    let index_of = |predicate: &dyn Fn(&serde_json::Value) -> bool, label: &str| -> usize {
+        event_lines
             .iter()
-            .position(|value| value == event_type)
-            .unwrap_or_else(|| panic!("missing required event `{event_type}` in {event_types:?}"));
-        if idx > 0 {
-            assert!(
-                found > last_index,
-                "event `{}` must occur before `{}`; got {event_types:?}",
-                required_order[idx - 1],
-                event_type
-            );
-        }
-        last_index = found;
-    }
+            .position(predicate)
+            .unwrap_or_else(|| panic!("missing required event `{label}` in {event_types:?}"))
+    };
+
+    let agent_start_idx = index_of(&|value| value["type"] == "agent_start", "agent_start");
+    let user_message_start_idx = index_of(
+        &|value| value["type"] == "message_start" && value["message"]["role"] == "user",
+        "user message_start",
+    );
+    let user_message_end_idx = index_of(
+        &|value| value["type"] == "message_end" && value["message"]["role"] == "user",
+        "user message_end",
+    );
+    let turn_start_idx = index_of(&|value| value["type"] == "turn_start", "turn_start");
+    let assistant_message_start_idx = index_of(
+        &|value| value["type"] == "message_start" && value["message"]["role"] == "assistant",
+        "assistant message_start",
+    );
+    let message_update_idx = index_of(&|value| value["type"] == "message_update", "message_update");
+    let assistant_message_end_idx = index_of(
+        &|value| value["type"] == "message_end" && value["message"]["role"] == "assistant",
+        "assistant message_end",
+    );
+    let turn_end_idx = index_of(&|value| value["type"] == "turn_end", "turn_end");
+    let agent_end_idx = index_of(&|value| value["type"] == "agent_end", "agent_end");
+
+    assert!(
+        agent_start_idx < user_message_start_idx,
+        "agent_start must occur before user message_start; got {event_types:?}"
+    );
+    assert!(
+        user_message_start_idx < user_message_end_idx,
+        "user message_start must occur before user message_end; got {event_types:?}"
+    );
+    assert!(
+        user_message_end_idx < turn_start_idx,
+        "user message_end must occur before turn_start; got {event_types:?}"
+    );
+    assert!(
+        turn_start_idx < assistant_message_start_idx,
+        "turn_start must occur before assistant message_start; got {event_types:?}"
+    );
+    assert!(
+        assistant_message_start_idx < message_update_idx,
+        "assistant message_start must occur before message_update; got {event_types:?}"
+    );
+    assert!(
+        message_update_idx < assistant_message_end_idx,
+        "message_update must occur before assistant message_end; got {event_types:?}"
+    );
+    assert!(
+        assistant_message_end_idx < turn_end_idx,
+        "assistant message_end must occur before turn_end; got {event_types:?}"
+    );
+    assert!(
+        turn_end_idx < agent_end_idx,
+        "turn_end must occur before agent_end; got {event_types:?}"
+    );
     assert_eq!(
         event_types.last().copied(),
         Some("agent_end"),
