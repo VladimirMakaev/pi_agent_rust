@@ -484,17 +484,18 @@ where
         let idx = index as usize;
 
         match self.partial.content.get_mut(idx) {
-            Some(ContentBlock::Text(t)) => {
+            Some(ContentBlock::Text(_)) => {
+                // t.text already has identical content from push_str during deltas;
+                // no need to clone_from — just take the accumulator for the event.
                 let content = std::mem::take(&mut self.current_text);
-                t.text.clone_from(&content);
                 Some(StreamEvent::TextEnd {
                     content_index: idx,
                     content,
                 })
             }
-            Some(ContentBlock::Thinking(t)) => {
+            Some(ContentBlock::Thinking(_)) => {
+                // t.thinking already has identical content from push_str during deltas.
                 let content = std::mem::take(&mut self.current_thinking);
-                t.thinking.clone_from(&content);
                 Some(StreamEvent::ThinkingEnd {
                     content_index: idx,
                     content,
