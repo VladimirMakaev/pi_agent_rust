@@ -1559,6 +1559,11 @@ impl Default for ExtensionPolicy {
 pub struct RuntimeRiskConfig {
     /// Master switch for runtime risk decisions.
     pub enabled: bool,
+    /// When `true`, risk decisions are enforced (deny/terminate block calls).
+    /// When `false` (shadow mode), calls are scored and telemetry is recorded
+    /// but enforcement actions are downgraded to `Allow` — letting the call
+    /// proceed while capturing what action *would* have been taken.
+    pub enforce: bool,
     /// Type-I error budget for sequential detection (0 < alpha < 1).
     pub alpha: f64,
     /// Sliding-window size for residual/drift checks.
@@ -1575,6 +1580,7 @@ impl Default for RuntimeRiskConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            enforce: true,
             alpha: 0.01,
             window_size: 128,
             ledger_limit: 2048,
@@ -3088,7 +3094,7 @@ pub struct SecurityAlertSeverityCounts {
 }
 
 impl SecurityAlertCategoryCounts {
-    fn increment(&mut self, cat: SecurityAlertCategory) {
+    const fn increment(&mut self, cat: SecurityAlertCategory) {
         match cat {
             SecurityAlertCategory::PolicyDenial => self.policy_denial += 1,
             SecurityAlertCategory::AnomalyDenial => self.anomaly_denial += 1,
@@ -3102,7 +3108,7 @@ impl SecurityAlertCategoryCounts {
 }
 
 impl SecurityAlertSeverityCounts {
-    fn increment(&mut self, sev: SecurityAlertSeverity) {
+    const fn increment(&mut self, sev: SecurityAlertSeverity) {
         match sev {
             SecurityAlertSeverity::Info => self.info += 1,
             SecurityAlertSeverity::Warning => self.warning += 1,
@@ -3110,6 +3116,342 @@ impl SecurityAlertSeverityCounts {
             SecurityAlertSeverity::Critical => self.critical += 1,
         }
     }
+}
+
+impl SecurityAlertAction {
+    /// Convert from an [`EnforcementState`].
+    pub const fn from_enforcement(state: EnforcementState) -> Self {
+        match state {
+            EnforcementState::Allow => Self::Allow,
+            EnforcementState::Harden => Self::Harden,
+            EnforcementState::Prompt => Self::Prompt,
+            EnforcementState::Deny => Self::Deny,
+            EnforcementState::Terminate => Self::Terminate,
+        }
+    }
+
+    /// String representation.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::Harden => "harden",
+            Self::Prompt => "prompt",
+            Self::Deny => "deny",
+            Self::Terminate => "terminate",
+            Self::Redact => "redact",
+        }
+    }
+}
+
+impl SecurityAlert {
+    /// Create a policy-denial alert.
+    pub fn from_policy_denial(
+        extension_id: &str,
+        capability: &str,
+        method: &str,
+        reason: &str,
+        policy_source: &str,
+    ) -> Self {
+        Self {
+            schema: SECURITY_ALERT_SCHEMA_VERSION.to_string(),
+            ts_ms: i64::try_from(wall_now().as_millis()).unwrap_or(i64::MAX),
+            sequence_id: 0,
+            extension_id: extension_id.to_string(),
+            category: SecurityAlertCategory::PolicyDenial,
+            severity: SecurityAlertSeverity::Error,
+            capability: capability.to_string(),
+            method: method.to_string(),
+            reason_codes: vec![reason.to_string()],
+            summary: format!(
+                "Capability `{capability}` denied for extension `{extension_id}` by {policy_source}"
+            ),
+            policy_source: policy_source.to_string(),
+            action: SecurityAlertAction::Deny,
+            remediation: format!(
+                "Use `--extension-policy permissive` or grant `{capability}` via per-extension override."
+            ),
+            risk_score: 0.0,
+            risk_state: None,
+            context_hash: String::new(),
+        }
+    }
+
+    /// Create an exec-mediation alert.
+    pub fn from_exec_mediation(
+        extension_id: &str,
+        command: &str,
+        class_label: Option<&str>,
+        reason: &str,
+    ) -> Self {
+        let summary = class_label.map_or_else(
+            || format!("Command blocked by exec mediation deny pattern: {reason}"),
+            |label| {
+                format!("Command classified as `{label}` and blocked by exec mediation")
+            },
+        );
+        Self {
+            schema: SECURITY_ALERT_SCHEMA_VERSION.to_string(),
+            ts_ms: i64::try_from(wall_now().as_millis()).unwrap_or(i64::MAX),
+            sequence_id: 0,
+            extension_id: extension_id.to_string(),
+            category: SecurityAlertCategory::ExecMediation,
+            severity: SecurityAlertSeverity::Error,
+            capability: "exec".to_string(),
+            method: "spawn".to_string(),
+            reason_codes: vec![reason.to_string()],
+            summary,
+            policy_source: "exec_mediation".to_string(),
+            action: SecurityAlertAction::Deny,
+            remediation:
+                "Add the command to `exec_mediation.allow_patterns` if this is expected."
+                    .to_string(),
+            risk_score: 0.0,
+            risk_state: None,
+            context_hash: sha256_short(command),
+        }
+    }
+
+    /// Create a secret-broker redaction alert.
+    pub fn from_secret_redaction(
+        extension_id: &str,
+        var_name: &str,
+    ) -> Self {
+        Self {
+            schema: SECURITY_ALERT_SCHEMA_VERSION.to_string(),
+            ts_ms: i64::try_from(wall_now().as_millis()).unwrap_or(i64::MAX),
+            sequence_id: 0,
+            extension_id: extension_id.to_string(),
+            category: SecurityAlertCategory::SecretBroker,
+            severity: SecurityAlertSeverity::Info,
+            capability: "env".to_string(),
+            method: "get".to_string(),
+            reason_codes: vec!["secret_redacted".to_string()],
+            summary: format!("Environment variable `{var_name}` redacted by secret broker"),
+            policy_source: "secret_broker".to_string(),
+            action: SecurityAlertAction::Redact,
+            remediation: "Add to `secret_broker.disclosure_allowlist` if disclosure is safe."
+                .to_string(),
+            risk_score: 0.0,
+            risk_state: None,
+            context_hash: sha256_short(var_name),
+        }
+    }
+
+    /// Create a risk-scorer anomaly alert.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_anomaly_detection(
+        extension_id: &str,
+        capability: &str,
+        method: &str,
+        risk_score: f64,
+        risk_state: RuntimeRiskStateLabelValue,
+        enforcement_action: SecurityAlertAction,
+        reason_codes: Vec<String>,
+        summary: String,
+    ) -> Self {
+        let severity = match enforcement_action {
+            SecurityAlertAction::Terminate => SecurityAlertSeverity::Critical,
+            SecurityAlertAction::Deny => SecurityAlertSeverity::Error,
+            SecurityAlertAction::Harden | SecurityAlertAction::Prompt => {
+                SecurityAlertSeverity::Warning
+            }
+            _ => SecurityAlertSeverity::Info,
+        };
+        Self {
+            schema: SECURITY_ALERT_SCHEMA_VERSION.to_string(),
+            ts_ms: i64::try_from(wall_now().as_millis()).unwrap_or(i64::MAX),
+            sequence_id: 0,
+            extension_id: extension_id.to_string(),
+            category: SecurityAlertCategory::AnomalyDenial,
+            severity,
+            capability: capability.to_string(),
+            method: method.to_string(),
+            reason_codes,
+            summary,
+            policy_source: "risk_scorer".to_string(),
+            action: enforcement_action,
+            remediation:
+                "Review the extension's recent behavior. Restart the session to clear risk state."
+                    .to_string(),
+            risk_score,
+            risk_state: Some(risk_state),
+            context_hash: String::new(),
+        }
+    }
+
+    /// Create a quarantine alert.
+    pub fn from_quarantine(
+        extension_id: &str,
+        reason: &str,
+        risk_score: f64,
+    ) -> Self {
+        Self {
+            schema: SECURITY_ALERT_SCHEMA_VERSION.to_string(),
+            ts_ms: i64::try_from(wall_now().as_millis()).unwrap_or(i64::MAX),
+            sequence_id: 0,
+            extension_id: extension_id.to_string(),
+            category: SecurityAlertCategory::Quarantine,
+            severity: SecurityAlertSeverity::Critical,
+            capability: String::new(),
+            method: String::new(),
+            reason_codes: vec![reason.to_string()],
+            summary: format!("Extension `{extension_id}` quarantined: {reason}"),
+            policy_source: "enforcement_state_machine".to_string(),
+            action: SecurityAlertAction::Terminate,
+            remediation: "Restart the session to re-enable the extension.".to_string(),
+            risk_score,
+            risk_state: None,
+            context_hash: String::new(),
+        }
+    }
+
+    /// Create an enforcement state transition alert.
+    pub fn from_enforcement_transition(
+        extension_id: &str,
+        transition: &EnforcementTransition,
+    ) -> Self {
+        let severity = match transition.to {
+            EnforcementState::Terminate => SecurityAlertSeverity::Critical,
+            EnforcementState::Deny => SecurityAlertSeverity::Error,
+            EnforcementState::Prompt | EnforcementState::Harden => SecurityAlertSeverity::Warning,
+            EnforcementState::Allow => SecurityAlertSeverity::Info,
+        };
+        Self {
+            schema: SECURITY_ALERT_SCHEMA_VERSION.to_string(),
+            ts_ms: i64::try_from(wall_now().as_millis()).unwrap_or(i64::MAX),
+            sequence_id: 0,
+            extension_id: extension_id.to_string(),
+            category: SecurityAlertCategory::ProfileTransition,
+            severity,
+            capability: String::new(),
+            method: String::new(),
+            reason_codes: vec![format!(
+                "enforcement_transition:{}->{}",
+                transition.from.as_str(),
+                transition.to.as_str()
+            )],
+            summary: format!(
+                "Enforcement state changed from `{}` to `{}` (score: {:.2})",
+                transition.from, transition.to, transition.score
+            ),
+            policy_source: "enforcement_state_machine".to_string(),
+            action: SecurityAlertAction::from_enforcement(transition.to),
+            remediation: if transition.to > EnforcementState::Harden {
+                "Review extension behavior. Restart session to reset enforcement state."
+                    .to_string()
+            } else {
+                String::new()
+            },
+            risk_score: transition.score,
+            risk_state: None,
+            context_hash: String::new(),
+        }
+    }
+}
+
+/// Compute a short hash for context identification.
+fn sha256_short(input: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    input.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+/// Record a security alert and emit a tracing event at the appropriate
+/// level.
+///
+/// This is the primary entry point for all security alert emission.
+pub fn emit_security_alert(manager: &ExtensionManager, alert: SecurityAlert) {
+    match alert.severity {
+        SecurityAlertSeverity::Critical => {
+            tracing::error!(
+                category = %serde_json::to_string(&alert.category).unwrap_or_default(),
+                extension_id = %alert.extension_id,
+                capability = %alert.capability,
+                action = %serde_json::to_string(&alert.action).unwrap_or_default(),
+                risk_score = alert.risk_score,
+                "SECURITY ALERT: {}",
+                alert.summary
+            );
+        }
+        SecurityAlertSeverity::Error => {
+            tracing::warn!(
+                category = %serde_json::to_string(&alert.category).unwrap_or_default(),
+                extension_id = %alert.extension_id,
+                capability = %alert.capability,
+                action = %serde_json::to_string(&alert.action).unwrap_or_default(),
+                "Security alert: {}",
+                alert.summary
+            );
+        }
+        SecurityAlertSeverity::Warning => {
+            tracing::info!(
+                category = %serde_json::to_string(&alert.category).unwrap_or_default(),
+                extension_id = %alert.extension_id,
+                capability = %alert.capability,
+                "Security notice: {}",
+                alert.summary
+            );
+        }
+        SecurityAlertSeverity::Info => {
+            tracing::debug!(
+                extension_id = %alert.extension_id,
+                capability = %alert.capability,
+                "Security info: {}",
+                alert.summary
+            );
+        }
+    }
+    manager.record_security_alert(alert);
+}
+
+/// Query the alert stream with optional filters.
+pub fn query_security_alerts(
+    manager: &ExtensionManager,
+    filter: &SecurityAlertFilter,
+) -> Vec<SecurityAlert> {
+    let artifact = manager.security_alert_artifact();
+    artifact
+        .alerts
+        .into_iter()
+        .filter(|a| {
+            if let Some(cat) = &filter.category {
+                if a.category != *cat {
+                    return false;
+                }
+            }
+            if let Some(sev) = &filter.min_severity {
+                if a.severity < *sev {
+                    return false;
+                }
+            }
+            if let Some(ext) = &filter.extension_id {
+                if a.extension_id != *ext {
+                    return false;
+                }
+            }
+            if let Some(after) = filter.after_ts_ms {
+                if a.ts_ms < after {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect()
+}
+
+/// Filter criteria for querying security alerts.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SecurityAlertFilter {
+    /// Only return alerts of this category.
+    pub category: Option<SecurityAlertCategory>,
+    /// Only return alerts at or above this severity.
+    pub min_severity: Option<SecurityAlertSeverity>,
+    /// Only return alerts for this extension.
+    pub extension_id: Option<String>,
+    /// Only return alerts after this timestamp (ms).
+    pub after_ts_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -11334,6 +11676,25 @@ pub async fn dispatch_host_call_shared(
                     method = %method,
                     reason = %qr,
                 );
+                // SEC-5.1: Alert for quota breach.
+                manager.record_security_alert(SecurityAlert {
+                    schema: SECURITY_ALERT_SCHEMA_VERSION.to_string(),
+                    ts_ms: runtime_risk_now_ms(),
+                    sequence_id: 0,
+                    extension_id: ctx.extension_id.unwrap_or("").to_string(),
+                    category: SecurityAlertCategory::QuotaBreach,
+                    severity: SecurityAlertSeverity::Warning,
+                    capability: capability.to_string(),
+                    method: method.clone(),
+                    reason_codes: vec!["quota_exceeded".to_string()],
+                    summary: format!("Quota exceeded: {qr}"),
+                    policy_source: "quota".to_string(),
+                    action: SecurityAlertAction::Deny,
+                    remediation: "Increase quota limits or reduce extension call frequency.".to_string(),
+                    risk_score: 0.0,
+                    risk_state: None,
+                    context_hash: params_hash.clone(),
+                });
                 let outcome = HostcallOutcome::Error {
                     code: "quota_exceeded".to_string(),
                     message: format!("Quota exceeded for extension: {qr}"),
@@ -11400,6 +11761,28 @@ pub async fn dispatch_host_call_shared(
             RuntimeRiskAction::Allow => dispatch_shared_allowed(ctx, &call).await,
             RuntimeRiskAction::Harden => {
                 if runtime_risk_is_dangerous(capability) {
+                    // SEC-5.1: Alert for anomaly-based hardening denial.
+                    if let Some(ref manager) = ctx.manager {
+                        manager.record_security_alert(SecurityAlert {
+                            schema: SECURITY_ALERT_SCHEMA_VERSION.to_string(),
+                            ts_ms: runtime_risk_now_ms(),
+                            sequence_id: 0,
+                            extension_id: ctx.extension_id.unwrap_or("").to_string(),
+                            category: SecurityAlertCategory::AnomalyDenial,
+                            severity: SecurityAlertSeverity::Error,
+                            capability: capability.to_string(),
+                            method: method.clone(),
+                            reason_codes: runtime_risk_decision.as_ref()
+                                .map(|d| d.triggers.clone()).unwrap_or_default(),
+                            summary: format!("Dangerous capability '{capability}' denied by risk hardening"),
+                            policy_source: "risk_scorer".to_string(),
+                            action: SecurityAlertAction::Deny,
+                            remediation: "Review extension behavior; risk scorer elevated threat level.".to_string(),
+                            risk_score: runtime_risk_decision.as_ref().map_or(0.0, |d| d.risk_score),
+                            risk_state: runtime_risk_decision.as_ref().map(|d| d.state_label.into()),
+                            context_hash: params_hash.clone(),
+                        });
+                    }
                     HostcallOutcome::Error {
                         code: "denied".to_string(),
                         message: format!(
@@ -11410,14 +11793,62 @@ pub async fn dispatch_host_call_shared(
                     dispatch_shared_allowed(ctx, &call).await
                 }
             }
-            RuntimeRiskAction::Deny => HostcallOutcome::Error {
-                code: "denied".to_string(),
-                message: format!("Capability '{capability}' denied by runtime risk controller"),
-            },
-            RuntimeRiskAction::Terminate => HostcallOutcome::Error {
-                code: "denied".to_string(),
-                message: "Extension quarantined by runtime risk controller".to_string(),
-            },
+            RuntimeRiskAction::Deny => {
+                // SEC-5.1: Alert for anomaly-based denial.
+                if let Some(ref manager) = ctx.manager {
+                    manager.record_security_alert(SecurityAlert {
+                        schema: SECURITY_ALERT_SCHEMA_VERSION.to_string(),
+                        ts_ms: runtime_risk_now_ms(),
+                        sequence_id: 0,
+                        extension_id: ctx.extension_id.unwrap_or("").to_string(),
+                        category: SecurityAlertCategory::AnomalyDenial,
+                        severity: SecurityAlertSeverity::Error,
+                        capability: capability.to_string(),
+                        method: method.clone(),
+                        reason_codes: runtime_risk_decision.as_ref()
+                            .map(|d| d.triggers.clone()).unwrap_or_default(),
+                        summary: format!("Capability '{capability}' denied by runtime risk controller"),
+                        policy_source: "risk_scorer".to_string(),
+                        action: SecurityAlertAction::Deny,
+                        remediation: "Review extension behavior; risk scorer detected anomaly.".to_string(),
+                        risk_score: runtime_risk_decision.as_ref().map_or(0.0, |d| d.risk_score),
+                        risk_state: runtime_risk_decision.as_ref().map(|d| d.state_label.into()),
+                        context_hash: params_hash.clone(),
+                    });
+                }
+                HostcallOutcome::Error {
+                    code: "denied".to_string(),
+                    message: format!("Capability '{capability}' denied by runtime risk controller"),
+                }
+            }
+            RuntimeRiskAction::Terminate => {
+                // SEC-5.1: Critical alert for quarantine.
+                if let Some(ref manager) = ctx.manager {
+                    manager.record_security_alert(SecurityAlert {
+                        schema: SECURITY_ALERT_SCHEMA_VERSION.to_string(),
+                        ts_ms: runtime_risk_now_ms(),
+                        sequence_id: 0,
+                        extension_id: ctx.extension_id.unwrap_or("").to_string(),
+                        category: SecurityAlertCategory::Quarantine,
+                        severity: SecurityAlertSeverity::Critical,
+                        capability: capability.to_string(),
+                        method: method.clone(),
+                        reason_codes: runtime_risk_decision.as_ref()
+                            .map(|d| d.triggers.clone()).unwrap_or_default(),
+                        summary: "Extension quarantined by runtime risk controller".to_string(),
+                        policy_source: "risk_scorer".to_string(),
+                        action: SecurityAlertAction::Terminate,
+                        remediation: "Extension has been quarantined. Remove or reinstall after review.".to_string(),
+                        risk_score: runtime_risk_decision.as_ref().map_or(0.0, |d| d.risk_score),
+                        risk_state: runtime_risk_decision.as_ref().map(|d| d.state_label.into()),
+                        context_hash: params_hash.clone(),
+                    });
+                }
+                HostcallOutcome::Error {
+                    code: "denied".to_string(),
+                    message: "Extension quarantined by runtime risk controller".to_string(),
+                }
+            }
         };
 
         // SEC-4.1: record subprocess exit after exec dispatch completes.
@@ -11429,6 +11860,29 @@ pub async fn dispatch_host_call_shared(
 
         dispatched
     } else {
+        // SEC-5.1: Alert for static policy denial.
+        if let Some(ref manager) = ctx.manager {
+            manager.record_security_alert(SecurityAlert {
+                schema: SECURITY_ALERT_SCHEMA_VERSION.to_string(),
+                ts_ms: runtime_risk_now_ms(),
+                sequence_id: 0,
+                extension_id: ctx.extension_id.unwrap_or("").to_string(),
+                category: SecurityAlertCategory::PolicyDenial,
+                severity: SecurityAlertSeverity::Error,
+                capability: capability.to_string(),
+                method: method.clone(),
+                reason_codes: vec![reason.clone()],
+                summary: format!("Capability '{capability}' denied by policy ({reason})"),
+                policy_source: reason.clone(),
+                action: SecurityAlertAction::Deny,
+                remediation: format!(
+                    "Grant '{capability}' in extension policy or switch to a more permissive profile."
+                ),
+                risk_score: 0.0,
+                risk_state: None,
+                context_hash: params_hash.clone(),
+            });
+        }
         HostcallOutcome::Error {
             code: "denied".to_string(),
             message: format!("Capability '{capability}' denied by policy ({reason})"),
@@ -11699,6 +12153,30 @@ async fn dispatch_shared_allowed(
                         reason = %reason,
                         "Exec command denied by mediation policy"
                     );
+                    // SEC-5.1: Emit security alert for exec mediation denial.
+                    if let Some(ref manager) = ctx.manager {
+                        let redacted = redact_command_for_logging(&ctx.policy.secret_broker, cmd);
+                        manager.record_security_alert(SecurityAlert {
+                            schema: SECURITY_ALERT_SCHEMA_VERSION.to_string(),
+                            ts_ms: runtime_risk_now_ms(),
+                            sequence_id: 0, // filled by record_security_alert
+                            extension_id: ctx.extension_id.unwrap_or("").to_string(),
+                            category: SecurityAlertCategory::ExecMediation,
+                            severity: SecurityAlertSeverity::Error,
+                            capability: "exec".to_string(),
+                            method: "spawn".to_string(),
+                            reason_codes: class
+                                .map(|c| vec![c.label().to_string()])
+                                .unwrap_or_default(),
+                            summary: format!("Exec denied: {reason}"),
+                            policy_source: "exec_mediation".to_string(),
+                            action: SecurityAlertAction::Deny,
+                            remediation: "Review the command and adjust exec mediation policy if intended.".to_string(),
+                            risk_score: 0.0,
+                            risk_state: None,
+                            context_hash: sha256_hex_standalone(&redacted),
+                        });
+                    }
                     return HostcallOutcome::Error {
                         code: "denied".to_string(),
                         message: format!("Exec denied by mediation policy: {reason}"),
@@ -11712,6 +12190,28 @@ async fn dispatch_shared_allowed(
                         reason = %reason,
                         "Exec command allowed with audit"
                     );
+                    // SEC-5.1: Emit informational alert for audited exec.
+                    if let Some(ref manager) = ctx.manager {
+                        let redacted = redact_command_for_logging(&ctx.policy.secret_broker, cmd);
+                        manager.record_security_alert(SecurityAlert {
+                            schema: SECURITY_ALERT_SCHEMA_VERSION.to_string(),
+                            ts_ms: runtime_risk_now_ms(),
+                            sequence_id: 0,
+                            extension_id: ctx.extension_id.unwrap_or("").to_string(),
+                            category: SecurityAlertCategory::ExecMediation,
+                            severity: SecurityAlertSeverity::Info,
+                            capability: "exec".to_string(),
+                            method: "spawn".to_string(),
+                            reason_codes: vec![class.label().to_string()],
+                            summary: format!("Exec audited: {reason}"),
+                            policy_source: "exec_mediation".to_string(),
+                            action: SecurityAlertAction::Harden,
+                            remediation: String::new(),
+                            risk_score: 0.0,
+                            risk_state: None,
+                            context_hash: sha256_hex_standalone(&redacted),
+                        });
+                    }
                 }
                 ExecMediationResult::Allow => {}
             }
@@ -14258,6 +14758,68 @@ impl ExtensionManager {
             .lock()
             .unwrap()
             .secret_broker_ledger
+            .iter()
+            .cloned()
+            .collect()
+    }
+
+    // ------------------------------------------------------------------
+    // SEC-5.1: Security alert recording and export
+    // ------------------------------------------------------------------
+
+    /// Record a security alert into the SEC-5.1 alert stream.
+    pub fn record_security_alert(&self, mut alert: SecurityAlert) {
+        let mut guard = self.inner.lock().unwrap();
+        guard.security_alert_seq += 1;
+        alert.sequence_id = guard.security_alert_seq;
+        guard.security_alerts.push_back(alert);
+        while guard.security_alerts.len() > guard.runtime_risk_config.ledger_limit {
+            let _ = guard.security_alerts.pop_front();
+        }
+        drop(guard);
+    }
+
+    /// Export the security alert stream as a structured artifact.
+    pub fn security_alert_artifact(&self) -> SecurityAlertArtifact {
+        let alerts: Vec<_> = self
+            .inner
+            .lock()
+            .unwrap()
+            .security_alerts
+            .iter()
+            .cloned()
+            .collect();
+        let mut category_counts = SecurityAlertCategoryCounts::default();
+        let mut severity_counts = SecurityAlertSeverityCounts::default();
+        for a in &alerts {
+            category_counts.increment(a.category);
+            severity_counts.increment(a.severity);
+        }
+        SecurityAlertArtifact {
+            schema: SECURITY_ALERT_SCHEMA_VERSION.to_string(),
+            generated_at_ms: runtime_risk_now_ms(),
+            alert_count: alerts.len(),
+            category_counts,
+            severity_counts,
+            alerts,
+        }
+    }
+
+    /// Return the current count of recorded security alerts.
+    pub fn security_alert_count(&self) -> usize {
+        self.inner
+            .lock()
+            .ok()
+            .map_or(0, |guard| guard.security_alerts.len())
+    }
+
+    /// Snapshot of security alerts (test helper).
+    #[cfg(test)]
+    fn security_alert_snapshot(&self) -> Vec<SecurityAlert> {
+        self.inner
+            .lock()
+            .unwrap()
+            .security_alerts
             .iter()
             .cloned()
             .collect()
@@ -29308,5 +29870,312 @@ mod tests {
         sm.evaluate(0.10);
         sm.evaluate(0.10);
         assert_eq!(sm.state(), EnforcementState::Allow);
+    }
+
+    // ====================================================================
+    // SEC-5.1: Security alert builder and emission tests
+    // ====================================================================
+
+    #[test]
+    fn alert_from_policy_denial_has_correct_fields() {
+        let alert = SecurityAlert::from_policy_denial(
+            "my-ext",
+            "exec",
+            "spawn",
+            "deny_caps",
+            "deny_caps",
+        );
+        assert_eq!(alert.schema, SECURITY_ALERT_SCHEMA_VERSION);
+        assert_eq!(alert.extension_id, "my-ext");
+        assert_eq!(alert.category, SecurityAlertCategory::PolicyDenial);
+        assert_eq!(alert.severity, SecurityAlertSeverity::Error);
+        assert_eq!(alert.capability, "exec");
+        assert_eq!(alert.method, "spawn");
+        assert_eq!(alert.action, SecurityAlertAction::Deny);
+        assert_eq!(alert.reason_codes, vec!["deny_caps"]);
+        assert!(alert.summary.contains("exec"));
+        assert!(alert.summary.contains("my-ext"));
+        assert!(!alert.remediation.is_empty());
+    }
+
+    #[test]
+    fn alert_from_exec_mediation_with_class() {
+        let alert = SecurityAlert::from_exec_mediation(
+            "ext-1",
+            "rm -rf /",
+            Some("recursive_delete"),
+            "classified_dangerous",
+        );
+        assert_eq!(alert.category, SecurityAlertCategory::ExecMediation);
+        assert_eq!(alert.severity, SecurityAlertSeverity::Error);
+        assert_eq!(alert.capability, "exec");
+        assert!(alert.summary.contains("recursive_delete"));
+        assert!(!alert.context_hash.is_empty());
+    }
+
+    #[test]
+    fn alert_from_exec_mediation_without_class() {
+        let alert = SecurityAlert::from_exec_mediation(
+            "ext-1",
+            "banned-tool",
+            None,
+            "deny_pattern_matched",
+        );
+        assert!(alert.summary.contains("deny pattern"));
+    }
+
+    #[test]
+    fn alert_from_secret_redaction() {
+        let alert = SecurityAlert::from_secret_redaction("ext-1", "AWS_SECRET_KEY");
+        assert_eq!(alert.category, SecurityAlertCategory::SecretBroker);
+        assert_eq!(alert.severity, SecurityAlertSeverity::Info);
+        assert_eq!(alert.action, SecurityAlertAction::Redact);
+        assert!(alert.summary.contains("AWS_SECRET_KEY"));
+        assert!(!alert.context_hash.is_empty());
+    }
+
+    #[test]
+    fn alert_from_anomaly_detection_deny() {
+        let alert = SecurityAlert::from_anomaly_detection(
+            "ext-1",
+            "exec",
+            "spawn",
+            0.85,
+            RuntimeRiskStateLabelValue::Unsafe,
+            SecurityAlertAction::Deny,
+            vec!["e_process_breach".to_string()],
+            "Anomalous exec behavior detected".to_string(),
+        );
+        assert_eq!(alert.category, SecurityAlertCategory::AnomalyDenial);
+        assert_eq!(alert.severity, SecurityAlertSeverity::Error);
+        assert_eq!(alert.action, SecurityAlertAction::Deny);
+        assert!((alert.risk_score - 0.85).abs() < f64::EPSILON);
+        assert_eq!(alert.risk_state, Some(RuntimeRiskStateLabelValue::Unsafe));
+    }
+
+    #[test]
+    fn alert_from_anomaly_detection_terminate_is_critical() {
+        let alert = SecurityAlert::from_anomaly_detection(
+            "ext-1",
+            "exec",
+            "spawn",
+            0.95,
+            RuntimeRiskStateLabelValue::Unsafe,
+            SecurityAlertAction::Terminate,
+            vec!["quarantine_triggered".to_string()],
+            "Extension quarantined".to_string(),
+        );
+        assert_eq!(alert.severity, SecurityAlertSeverity::Critical);
+    }
+
+    #[test]
+    fn alert_from_anomaly_detection_harden_is_warning() {
+        let alert = SecurityAlert::from_anomaly_detection(
+            "ext-1",
+            "http",
+            "fetch",
+            0.50,
+            RuntimeRiskStateLabelValue::Suspicious,
+            SecurityAlertAction::Harden,
+            vec!["drift_detected".to_string()],
+            "Drift in http behavior".to_string(),
+        );
+        assert_eq!(alert.severity, SecurityAlertSeverity::Warning);
+    }
+
+    #[test]
+    fn alert_from_quarantine() {
+        let alert = SecurityAlert::from_quarantine(
+            "bad-ext",
+            "consecutive_unsafe_exceeded",
+            0.90,
+        );
+        assert_eq!(alert.category, SecurityAlertCategory::Quarantine);
+        assert_eq!(alert.severity, SecurityAlertSeverity::Critical);
+        assert_eq!(alert.action, SecurityAlertAction::Terminate);
+        assert!(alert.summary.contains("bad-ext"));
+    }
+
+    #[test]
+    fn alert_from_enforcement_transition_escalation() {
+        let transition = EnforcementTransition {
+            from: EnforcementState::Allow,
+            to: EnforcementState::Deny,
+            hysteresis_active: false,
+            raw_band: EnforcementState::Deny,
+            score: 0.80,
+            cooldown_counter: 0,
+        };
+        let alert = SecurityAlert::from_enforcement_transition("ext-1", &transition);
+        assert_eq!(alert.category, SecurityAlertCategory::ProfileTransition);
+        assert_eq!(alert.severity, SecurityAlertSeverity::Error);
+        assert_eq!(alert.action, SecurityAlertAction::Deny);
+        assert!(alert.summary.contains("allow"));
+        assert!(alert.summary.contains("deny"));
+        assert!(!alert.remediation.is_empty());
+    }
+
+    #[test]
+    fn alert_from_enforcement_transition_de_escalation() {
+        let transition = EnforcementTransition {
+            from: EnforcementState::Harden,
+            to: EnforcementState::Allow,
+            hysteresis_active: false,
+            raw_band: EnforcementState::Allow,
+            score: 0.10,
+            cooldown_counter: 0,
+        };
+        let alert = SecurityAlert::from_enforcement_transition("ext-1", &transition);
+        assert_eq!(alert.severity, SecurityAlertSeverity::Info);
+        assert_eq!(alert.action, SecurityAlertAction::Allow);
+        assert!(alert.remediation.is_empty());
+    }
+
+    #[test]
+    fn alert_action_from_enforcement_roundtrip() {
+        for state in [
+            EnforcementState::Allow,
+            EnforcementState::Harden,
+            EnforcementState::Prompt,
+            EnforcementState::Deny,
+            EnforcementState::Terminate,
+        ] {
+            let action = SecurityAlertAction::from_enforcement(state);
+            assert_eq!(action.as_str(), state.as_str(),
+                "SecurityAlertAction should match EnforcementState string repr");
+        }
+    }
+
+    #[test]
+    fn alert_serializes_to_json() {
+        let alert = SecurityAlert::from_policy_denial(
+            "my-ext",
+            "exec",
+            "spawn",
+            "deny_caps",
+            "deny_caps",
+        );
+        let json = serde_json::to_string(&alert).expect("serialize");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        assert_eq!(parsed["category"], "policy_denial");
+        assert_eq!(parsed["severity"], "error");
+        assert_eq!(parsed["action"], "deny");
+        assert_eq!(parsed["extension_id"], "my-ext");
+    }
+
+    #[test]
+    fn alert_serde_roundtrip() {
+        let alert = SecurityAlert::from_anomaly_detection(
+            "ext-1",
+            "exec",
+            "spawn",
+            0.85,
+            RuntimeRiskStateLabelValue::Unsafe,
+            SecurityAlertAction::Deny,
+            vec!["e_process_breach".to_string()],
+            "Test anomaly".to_string(),
+        );
+        let json = serde_json::to_string(&alert).expect("serialize");
+        let deserialized: SecurityAlert = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(deserialized, alert);
+    }
+
+    #[test]
+    fn alert_filter_by_category() {
+        let alerts = vec![
+            SecurityAlert::from_policy_denial("ext-1", "exec", "spawn", "deny_caps", "deny_caps"),
+            SecurityAlert::from_secret_redaction("ext-1", "SECRET"),
+            SecurityAlert::from_policy_denial("ext-2", "env", "get", "deny_caps", "deny_caps"),
+        ];
+        let filter = SecurityAlertFilter {
+            category: Some(SecurityAlertCategory::PolicyDenial),
+            ..Default::default()
+        };
+        let filtered: Vec<_> = alerts
+            .into_iter()
+            .filter(|a| filter.category.map_or(true, |c| a.category == c))
+            .collect();
+        assert_eq!(filtered.len(), 2);
+    }
+
+    #[test]
+    fn alert_filter_by_severity() {
+        let alerts = vec![
+            SecurityAlert::from_secret_redaction("ext-1", "SECRET"), // Info
+            SecurityAlert::from_policy_denial("ext-1", "exec", "spawn", "r", "s"), // Error
+            SecurityAlert::from_quarantine("ext-1", "reason", 0.9), // Critical
+        ];
+        let filter = SecurityAlertFilter {
+            min_severity: Some(SecurityAlertSeverity::Error),
+            ..Default::default()
+        };
+        let filtered: Vec<_> = alerts
+            .into_iter()
+            .filter(|a| filter.min_severity.map_or(true, |s| a.severity >= s))
+            .collect();
+        assert_eq!(filtered.len(), 2);
+    }
+
+    #[test]
+    fn alert_filter_by_extension() {
+        let alerts = vec![
+            SecurityAlert::from_policy_denial("ext-1", "exec", "spawn", "r", "s"),
+            SecurityAlert::from_policy_denial("ext-2", "exec", "spawn", "r", "s"),
+        ];
+        let filter = SecurityAlertFilter {
+            extension_id: Some("ext-1".to_string()),
+            ..Default::default()
+        };
+        let filtered: Vec<_> = alerts
+            .into_iter()
+            .filter(|a| filter.extension_id.as_ref().map_or(true, |e| a.extension_id == *e))
+            .collect();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].extension_id, "ext-1");
+    }
+
+    #[test]
+    fn alert_category_counts_increment() {
+        let mut counts = SecurityAlertCategoryCounts::default();
+        counts.increment(SecurityAlertCategory::PolicyDenial);
+        counts.increment(SecurityAlertCategory::PolicyDenial);
+        counts.increment(SecurityAlertCategory::ExecMediation);
+        assert_eq!(counts.policy_denial, 2);
+        assert_eq!(counts.exec_mediation, 1);
+        assert_eq!(counts.anomaly_denial, 0);
+    }
+
+    #[test]
+    fn alert_severity_counts_increment() {
+        let mut counts = SecurityAlertSeverityCounts::default();
+        counts.increment(SecurityAlertSeverity::Error);
+        counts.increment(SecurityAlertSeverity::Critical);
+        counts.increment(SecurityAlertSeverity::Error);
+        assert_eq!(counts.error, 2);
+        assert_eq!(counts.critical, 1);
+        assert_eq!(counts.info, 0);
+    }
+
+    #[test]
+    fn alert_action_as_str() {
+        assert_eq!(SecurityAlertAction::Allow.as_str(), "allow");
+        assert_eq!(SecurityAlertAction::Deny.as_str(), "deny");
+        assert_eq!(SecurityAlertAction::Terminate.as_str(), "terminate");
+        assert_eq!(SecurityAlertAction::Redact.as_str(), "redact");
+    }
+
+    #[test]
+    fn sha256_short_deterministic() {
+        let h1 = sha256_short("hello");
+        let h2 = sha256_short("hello");
+        assert_eq!(h1, h2);
+        assert_eq!(h1.len(), 16);
+    }
+
+    #[test]
+    fn sha256_short_different_inputs() {
+        let h1 = sha256_short("hello");
+        let h2 = sha256_short("world");
+        assert_ne!(h1, h2);
     }
 }
