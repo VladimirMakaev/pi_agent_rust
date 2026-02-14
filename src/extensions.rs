@@ -138,6 +138,7 @@ pub const RUNTIME_RISK_EXPLANATION_SCHEMA_VERSION: &str = "pi.ext.runtime_risk_e
 pub const RUNTIME_RISK_EXPLANATION_TERM_BUDGET: usize = 12;
 pub const RUNTIME_RISK_EXPLANATION_TIME_BUDGET_MS: u64 = 2;
 pub const RUNTIME_RISK_BASELINE_SCHEMA_VERSION: &str = "pi.ext.runtime_risk_baseline.v1";
+pub const SECURITY_ALERT_SCHEMA_VERSION: &str = "pi.ext.security_alert.v1";
 const RUNTIME_HOSTCALL_SEQUENCE_WINDOW: usize = 64;
 const CAPABILITY_MANIFEST_SCHEMA_V1: &str = "pi.ext.cap.v1";
 const CAPABILITY_MANIFEST_SCHEMA_V2: &str = "pi.ext.cap.v2";
@@ -2935,6 +2936,178 @@ impl Default for RuntimeHostcallTelemetryArtifact {
             generated_at_ms: 0,
             entry_count: 0,
             entries: Vec::new(),
+        }
+    }
+}
+
+// ==========================================================================
+// SEC-5.1: Security alert types and alert stream
+// ==========================================================================
+
+/// Category of a security alert, enabling consumers to distinguish policy
+/// denials from anomaly-based denials at a glance.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum SecurityAlertCategory {
+    /// Denied by static capability policy (deny_caps, per-extension deny).
+    PolicyDenial,
+    /// Denied or hardened by the runtime risk scorer (anomaly detection).
+    AnomalyDenial,
+    /// Exec mediation blocked a dangerous command.
+    ExecMediation,
+    /// Secret broker detected or redacted a sensitive environment variable.
+    SecretBroker,
+    /// Quota limit was breached (rate or resource).
+    QuotaBreach,
+    /// Enforcement state machine escalated to terminate/quarantine.
+    Quarantine,
+    /// Profile transition was attempted (e.g. downgrade).
+    ProfileTransition,
+}
+
+/// Severity level for security alerts, ordered from lowest to highest.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum SecurityAlertSeverity {
+    /// Informational — no action required.
+    Info,
+    /// Warning — user should review.
+    Warning,
+    /// Error — action was blocked.
+    Error,
+    /// Critical — extension quarantined or terminated.
+    Critical,
+}
+
+/// A structured security alert with who/what/why/action fields.
+///
+/// Designed for both interactive display and downstream integrations (RPC,
+/// SIEM, structured logging).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SecurityAlert {
+    /// Schema version tag for stable deserialization.
+    pub schema: String,
+    /// Unix epoch milliseconds when the alert was generated.
+    pub ts_ms: i64,
+    /// Monotonically increasing alert sequence number.
+    pub sequence_id: u64,
+
+    // -- WHO --
+    /// Extension that triggered the alert (empty for global events).
+    pub extension_id: String,
+
+    // -- WHAT --
+    /// Alert category for quick classification.
+    pub category: SecurityAlertCategory,
+    /// Severity level.
+    pub severity: SecurityAlertSeverity,
+    /// Capability involved (e.g. "exec", "env", "http").
+    pub capability: String,
+    /// Method or sub-operation (e.g. "spawn", "get", "set").
+    pub method: String,
+
+    // -- WHY --
+    /// Structured reason codes (machine-readable).
+    pub reason_codes: Vec<String>,
+    /// Human-readable summary of why the alert was raised.
+    pub summary: String,
+    /// Policy source that caused the decision (e.g. "deny_caps",
+    /// "exec_mediation", "risk_scorer", "quota").
+    pub policy_source: String,
+
+    // -- ACTION --
+    /// Enforcement action taken.
+    pub action: SecurityAlertAction,
+    /// Suggested remediation for the user.
+    pub remediation: String,
+
+    // -- CONTEXT --
+    /// Risk score at the time of the alert (0.0 if not applicable).
+    pub risk_score: f64,
+    /// Derived risk state label (if from risk scorer).
+    pub risk_state: Option<RuntimeRiskStateLabelValue>,
+    /// Hash of the related command or params (redacted).
+    pub context_hash: String,
+}
+
+/// Action taken in response to a security event.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SecurityAlertAction {
+    /// Request was allowed.
+    Allow,
+    /// Request was allowed but with extra logging/auditing.
+    Harden,
+    /// User was prompted for approval.
+    Prompt,
+    /// Request was denied.
+    Deny,
+    /// Extension was quarantined/terminated.
+    Terminate,
+    /// Sensitive value was redacted.
+    Redact,
+}
+
+/// Container artifact for a stream of security alerts, suitable for export
+/// and downstream integration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SecurityAlertArtifact {
+    /// Schema version tag.
+    pub schema: String,
+    /// Unix epoch milliseconds when the artifact was generated.
+    pub generated_at_ms: i64,
+    /// Total number of alerts in this artifact.
+    pub alert_count: usize,
+    /// Summary counts by category.
+    pub category_counts: SecurityAlertCategoryCounts,
+    /// Summary counts by severity.
+    pub severity_counts: SecurityAlertSeverityCounts,
+    /// The alert entries.
+    pub alerts: Vec<SecurityAlert>,
+}
+
+/// Per-category alert counts for quick triage.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SecurityAlertCategoryCounts {
+    pub policy_denial: usize,
+    pub anomaly_denial: usize,
+    pub exec_mediation: usize,
+    pub secret_broker: usize,
+    pub quota_breach: usize,
+    pub quarantine: usize,
+    pub profile_transition: usize,
+}
+
+/// Per-severity alert counts.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SecurityAlertSeverityCounts {
+    pub info: usize,
+    pub warning: usize,
+    pub error: usize,
+    pub critical: usize,
+}
+
+impl SecurityAlertCategoryCounts {
+    fn increment(&mut self, cat: SecurityAlertCategory) {
+        match cat {
+            SecurityAlertCategory::PolicyDenial => self.policy_denial += 1,
+            SecurityAlertCategory::AnomalyDenial => self.anomaly_denial += 1,
+            SecurityAlertCategory::ExecMediation => self.exec_mediation += 1,
+            SecurityAlertCategory::SecretBroker => self.secret_broker += 1,
+            SecurityAlertCategory::QuotaBreach => self.quota_breach += 1,
+            SecurityAlertCategory::Quarantine => self.quarantine += 1,
+            SecurityAlertCategory::ProfileTransition => self.profile_transition += 1,
+        }
+    }
+}
+
+impl SecurityAlertSeverityCounts {
+    fn increment(&mut self, sev: SecurityAlertSeverity) {
+        match sev {
+            SecurityAlertSeverity::Info => self.info += 1,
+            SecurityAlertSeverity::Warning => self.warning += 1,
+            SecurityAlertSeverity::Error => self.error += 1,
+            SecurityAlertSeverity::Critical => self.critical += 1,
         }
     }
 }
@@ -12978,6 +13151,10 @@ struct ExtensionManagerInner {
     exec_mediation_ledger: VecDeque<ExecMediationLedgerEntry>,
     /// Secret broker decision ledger (SEC-4.3).
     secret_broker_ledger: VecDeque<SecretBrokerLedgerEntry>,
+    /// Security alert stream (SEC-5.1).
+    security_alerts: VecDeque<SecurityAlert>,
+    /// Monotonic counter for security alert sequence IDs.
+    security_alert_seq: u64,
     /// Budget for extension operations (structured concurrency).
     extension_budget: Budget,
 }
@@ -28761,6 +28938,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn score_bands_for_profile_selection() {
         let safe = EnforcementScoreBands::for_profile("safe");
         assert_eq!(safe.harden, EnforcementScoreBands::safe().harden);
