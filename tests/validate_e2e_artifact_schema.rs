@@ -1002,3 +1002,337 @@ fn comprehensive_artifact_schema_validation_report() {
         total - skipped - 1
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Section 13: Formal evidence contract schema (pi.qa.evidence_contract.v1)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn evidence_contract_schema_exists() {
+    let path = repo_root().join("docs/evidence-contract-schema.json");
+    assert!(
+        path.exists(),
+        "Formal evidence contract schema must exist at docs/evidence-contract-schema.json"
+    );
+}
+
+#[test]
+fn evidence_contract_schema_is_valid_json() {
+    let path = repo_root().join("docs/evidence-contract-schema.json");
+    let content = load_text(&path).expect("read evidence contract schema");
+    let parsed: Result<Value, _> = serde_json::from_str(&content);
+    assert!(
+        parsed.is_ok(),
+        "Evidence contract schema must be valid JSON: {:?}",
+        parsed.err()
+    );
+}
+
+#[test]
+fn evidence_contract_schema_has_correct_id() {
+    let path = repo_root().join("docs/evidence-contract-schema.json");
+    let schema = load_json(&path).expect("parse schema");
+    assert_eq!(
+        schema["$id"].as_str().unwrap_or(""),
+        "pi.qa.evidence_contract.v1",
+        "Schema $id must be pi.qa.evidence_contract.v1"
+    );
+}
+
+#[test]
+fn evidence_contract_schema_defines_required_fields() {
+    let path = repo_root().join("docs/evidence-contract-schema.json");
+    let schema = load_json(&path).expect("parse schema");
+    let required: Vec<&str> = schema["required"]
+        .as_array()
+        .expect("required array")
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+
+    let expected = [
+        "schema",
+        "generated_at",
+        "correlation_id",
+        "run_summary",
+        "environment",
+        "suite_evidence",
+        "aggregate_artifacts",
+    ];
+    for field in &expected {
+        assert!(
+            required.contains(field),
+            "Schema must list '{field}' as required"
+        );
+    }
+}
+
+#[test]
+fn evidence_contract_schema_defines_suite_entry() {
+    let path = repo_root().join("docs/evidence-contract-schema.json");
+    let schema = load_json(&path).expect("parse schema");
+    let suite_entry = &schema["definitions"]["suite_entry"];
+    assert!(
+        suite_entry.is_object(),
+        "Schema must define a suite_entry in definitions"
+    );
+
+    let required: Vec<&str> = suite_entry["required"]
+        .as_array()
+        .expect("suite_entry required array")
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+
+    assert!(required.contains(&"suite_id"), "suite_entry must require suite_id");
+    assert!(required.contains(&"status"), "suite_entry must require status");
+    assert!(required.contains(&"artifacts"), "suite_entry must require artifacts");
+    assert!(required.contains(&"elapsed_ms"), "suite_entry must require elapsed_ms");
+}
+
+#[test]
+fn evidence_contract_schema_defines_failure_digest() {
+    let path = repo_root().join("docs/evidence-contract-schema.json");
+    let schema = load_json(&path).expect("parse schema");
+    let digest = &schema["definitions"]["failure_digest"];
+    assert!(
+        digest.is_object(),
+        "Schema must define a failure_digest in definitions"
+    );
+
+    let root_cause_enum = &digest["properties"]["root_cause_class"]["enum"];
+    let causes: Vec<&str> = root_cause_enum
+        .as_array()
+        .expect("root_cause_class enum")
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+
+    let expected_causes = [
+        "timeout",
+        "assertion_failure",
+        "permission_denied",
+        "network_io",
+        "missing_file",
+        "panic",
+    ];
+    for cause in &expected_causes {
+        assert!(
+            causes.contains(cause),
+            "failure_digest root_cause_class must include '{cause}'"
+        );
+    }
+}
+
+#[test]
+fn evidence_contract_schema_suite_artifacts_match_contract() {
+    // Verify that the evidence contract schema's suite_artifacts fields
+    // match the per_suite_artifacts defined in the artifact contract
+    let schema_path = repo_root().join("docs/evidence-contract-schema.json");
+    let schema = load_json(&schema_path).expect("parse schema");
+
+    let contract_path = repo_root().join("docs/provider_e2e_artifact_contract.json");
+    let contract = load_json(&contract_path).expect("parse artifact contract");
+
+    // Map contract artifact names to schema field names
+    let contract_names: Vec<&str> = contract["per_suite_artifacts"]["required"]
+        .as_array()
+        .expect("required suite artifacts")
+        .iter()
+        .filter_map(|a| a["name"].as_str())
+        .collect();
+
+    let schema_artifact_props = schema["definitions"]["suite_artifacts"]["properties"]
+        .as_object()
+        .expect("suite_artifacts properties");
+
+    // Each contract artifact must have a corresponding schema field
+    // Contract names: output.log, result.json, test-log.jsonl, artifact-index.jsonl
+    // Schema fields: output_log, result, test_log, artifact_index
+    let name_to_field: Vec<(&str, &str)> = vec![
+        ("output.log", "output_log"),
+        ("result.json", "result"),
+        ("test-log.jsonl", "test_log"),
+        ("artifact-index.jsonl", "artifact_index"),
+    ];
+
+    for (contract_name, schema_field) in &name_to_field {
+        assert!(
+            contract_names.contains(contract_name),
+            "Artifact contract must define '{contract_name}'"
+        );
+        assert!(
+            schema_artifact_props.contains_key(*schema_field),
+            "Evidence schema must define field '{schema_field}' for artifact '{contract_name}'"
+        );
+    }
+}
+
+#[test]
+fn evidence_contract_schema_environment_matches_replay_bundle() {
+    // The evidence contract environment fields should be a superset of
+    // the replay bundle environment fields defined in the artifact contract
+    let schema_path = repo_root().join("docs/evidence-contract-schema.json");
+    let schema = load_json(&schema_path).expect("parse schema");
+
+    let contract_path = repo_root().join("docs/provider_e2e_artifact_contract.json");
+    let contract = load_json(&contract_path).expect("parse artifact contract");
+
+    let replay_env_fields: Vec<&str> = contract["failure_diagnostics"]["replay_bundle"]
+        ["environment_fields"]
+        .as_array()
+        .expect("replay bundle environment_fields")
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+
+    let schema_env_props = schema["properties"]["environment"]["properties"]
+        .as_object()
+        .expect("environment properties");
+
+    for field in &replay_env_fields {
+        assert!(
+            schema_env_props.contains_key(*field),
+            "Evidence schema environment must include replay_bundle field '{field}'"
+        );
+    }
+}
+
+#[test]
+fn synthetic_evidence_contract_validates_against_schema() {
+    // Build a synthetic evidence_contract.json and verify it has all required fields
+    let schema_path = repo_root().join("docs/evidence-contract-schema.json");
+    let schema = load_json(&schema_path).expect("parse schema");
+
+    let required: Vec<String> = schema["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str().map(String::from))
+        .collect();
+
+    let synthetic = serde_json::json!({
+        "schema": "pi.qa.evidence_contract.v1",
+        "generated_at": "2026-02-13T00:00:00Z",
+        "correlation_id": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+        "run_summary": {
+            "total_suites": 6,
+            "passed": 5,
+            "failed": 1,
+            "skipped": 0,
+            "elapsed_ms": 45000
+        },
+        "environment": {
+            "profile": "debug",
+            "rustc_version": "1.85.0-nightly",
+            "git_sha": "abc1234",
+            "git_branch": "main",
+            "os": "linux"
+        },
+        "suite_evidence": [
+            {
+                "suite_id": "anthropic",
+                "status": "pass",
+                "artifacts": {
+                    "test_log": "artifacts/anthropic/test-log.jsonl",
+                    "artifact_index": "artifacts/anthropic/artifact-index.jsonl",
+                    "result": "artifacts/anthropic/result.json",
+                    "output_log": "artifacts/anthropic/output.log"
+                },
+                "trace_id": "deadbeef01234567deadbeef01234567",
+                "elapsed_ms": 8000
+            },
+            {
+                "suite_id": "openai",
+                "status": "fail",
+                "artifacts": {
+                    "test_log": "artifacts/openai/test-log.jsonl",
+                    "artifact_index": "artifacts/openai/artifact-index.jsonl",
+                    "result": "artifacts/openai/result.json",
+                    "output_log": "artifacts/openai/output.log"
+                },
+                "elapsed_ms": 12000,
+                "failure_digest": {
+                    "schema": "pi.e2e.failure_digest.v1",
+                    "suite": "openai",
+                    "root_cause_class": "assertion_failure",
+                    "impacted_scenario_ids": ["SC-OAI-001"],
+                    "first_failing_assertion": "expected status 200, got 500",
+                    "remediation_pointer": {
+                        "replay_command": "cargo test --test e2e_openai -- --nocapture"
+                    }
+                }
+            }
+        ],
+        "aggregate_artifacts": {
+            "summary": "artifacts/summary.json",
+            "environment": "artifacts/environment.json",
+            "replay_bundle": "artifacts/replay_bundle.json"
+        }
+    });
+
+    // Verify all top-level required fields present
+    for field in &required {
+        assert!(
+            synthetic.get(field).is_some(),
+            "Synthetic evidence contract must have required field '{field}'"
+        );
+    }
+
+    // Verify schema value matches const
+    assert_eq!(
+        synthetic["schema"].as_str().unwrap(),
+        "pi.qa.evidence_contract.v1"
+    );
+
+    // Verify run_summary fields
+    let summary_required = ["total_suites", "passed", "failed", "skipped", "elapsed_ms"];
+    for field in &summary_required {
+        assert!(
+            synthetic["run_summary"].get(*field).is_some(),
+            "run_summary must have field '{field}'"
+        );
+    }
+
+    // Verify environment required fields
+    let env_required = ["profile", "rustc_version", "git_sha", "git_branch", "os"];
+    for field in &env_required {
+        assert!(
+            synthetic["environment"].get(*field).is_some(),
+            "environment must have field '{field}'"
+        );
+    }
+
+    // Verify suite_evidence entries
+    let suites = synthetic["suite_evidence"].as_array().unwrap();
+    assert_eq!(suites.len(), 2);
+    for suite in suites {
+        assert!(suite["suite_id"].is_string(), "suite must have suite_id");
+        assert!(suite["status"].is_string(), "suite must have status");
+        assert!(suite["artifacts"].is_object(), "suite must have artifacts");
+        assert!(suite["elapsed_ms"].is_number(), "suite must have elapsed_ms");
+
+        // Verify artifact paths
+        let artifacts = &suite["artifacts"];
+        for field in &["test_log", "artifact_index", "result", "output_log"] {
+            assert!(
+                artifacts.get(*field).is_some(),
+                "suite artifacts must have field '{field}'"
+            );
+        }
+    }
+
+    // Verify the failing suite has a failure_digest
+    let failing = &suites[1];
+    assert_eq!(failing["status"].as_str().unwrap(), "fail");
+    let digest = &failing["failure_digest"];
+    assert!(digest.is_object(), "failing suite must have failure_digest");
+    assert_eq!(
+        digest["schema"].as_str().unwrap(),
+        "pi.e2e.failure_digest.v1"
+    );
+    assert_eq!(
+        digest["root_cause_class"].as_str().unwrap(),
+        "assertion_failure"
+    );
+}

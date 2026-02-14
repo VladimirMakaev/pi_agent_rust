@@ -267,6 +267,9 @@
       "id": "GAP-4",
       "title": "No formal evidence_contract JSON schema document",
       "severity": "low",
+      "status": "resolved",
+      "resolved_by": "bd-7rs2j",
+      "resolution": "Created docs/evidence-contract-schema.json defining pi.qa.evidence_contract.v1 with required/optional fields, suite_entry/failure_digest definitions, and cross-reference validation tests.",
       "description": "evidence_contract.json is referenced in ci_policy but has no formal schema defining required fields.",
       "recommendation": "Define pi.qa.evidence_contract.v1 schema with required fields"
     },
