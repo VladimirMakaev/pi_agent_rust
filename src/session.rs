@@ -4835,14 +4835,14 @@ mod tests {
                 // Unknown type
                 Just(r#"{"type":"unknown_type","id":"bbbbbbbb","timestamp":"2024-01-01T00:00:00.000Z"}"#.to_string()),
                 // Empty object
-                Just(r#"{}"#.to_string()),
+                Just(r"{}".to_string()),
                 // Array instead of object
-                Just(r#"[1,2,3]"#.to_string()),
+                Just(r"[1,2,3]".to_string()),
                 // Scalar values
-                Just(r#"42"#.to_string()),
+                Just(r"42".to_string()),
                 Just(r#""just a string""#.to_string()),
-                Just(r#"null"#.to_string()),
-                Just(r#"true"#.to_string()),
+                Just(r"null".to_string()),
+                Just(r"true".to_string()),
                 // Truncated JSON (simulating crash)
                 Just(r#"{"type":"message","id":"cccccccc","timestamp":"2024-01-01T"#.to_string()),
                 // Valid JSON with wrong field types
@@ -5233,7 +5233,7 @@ mod tests {
                 "{}\n{}\n{}\n{}",
                 header,
                 r#"{"bad":"json","no":"type"}"#,
-                r#"not json at all"#,
+                r"not json at all",
                 r#"{"type":"nonexistent_type","id":"aaa","timestamp":"2024-01-01T00:00:00.000Z"}"#,
             );
 

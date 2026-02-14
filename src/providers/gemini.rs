@@ -1455,7 +1455,7 @@ mod tests {
                 // Empty candidates
                 1 => Just(r#"{"candidates":[]}"#.to_string()),
                 // No candidates, no usage
-                1 => Just(r#"{}"#.to_string()),
+                1 => Just(r"{}".to_string()),
                 // Candidate with finish reason only (no content)
                 1 => finish_reason()
                     .prop_filter("some reason", Option::is_some)
