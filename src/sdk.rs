@@ -27,8 +27,14 @@ use crate::models::default_models_path;
 use crate::provider::ThinkingBudgets;
 use crate::providers;
 use clap::Parser;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::{Map, Value, json};
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub use crate::agent::{
     AbortHandle, AbortSignal, Agent, AgentConfig, AgentEvent, AgentSession, QueueMode,
@@ -51,6 +57,127 @@ pub use crate::tools::{Tool, ToolOutput, ToolRegistry, ToolUpdate};
 /// Stable alias for model-exposed tool schema definitions.
 pub type ToolDefinition = ToolDef;
 
+// ============================================================================
+// Streaming Callbacks and Tool Hooks
+// ============================================================================
+
+/// Opaque identifier for an event subscription.
+///
+/// Returned by [`AgentSessionHandle::subscribe`] and used to remove the
+/// listener via [`AgentSessionHandle::unsubscribe`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SubscriptionId(u64);
+
+/// Callback invoked when a tool execution starts.
+///
+/// Arguments: `(tool_name, input_args)`.
+pub type OnToolStart = Arc<dyn Fn(&str, &Value) + Send + Sync>;
+
+/// Callback invoked when a tool execution ends.
+///
+/// Arguments: `(tool_name, output, is_error)`.
+pub type OnToolEnd = Arc<dyn Fn(&str, &ToolOutput, bool) + Send + Sync>;
+
+/// Callback invoked for every raw provider [`StreamEvent`].
+///
+/// This gives SDK consumers direct access to the low-level streaming protocol
+/// before events are wrapped into [`AgentEvent::MessageUpdate`].
+pub type OnStreamEvent = Arc<dyn Fn(&StreamEvent) + Send + Sync>;
+
+type EventSubscriber = Arc<dyn Fn(AgentEvent) + Send + Sync>;
+type EventSubscribers = HashMap<SubscriptionId, EventSubscriber>;
+
+/// Collection of session-level event listeners.
+///
+/// These are registered once and invoked for every prompt throughout the
+/// session lifetime, in contrast to per-prompt callbacks on
+/// [`AgentSessionHandle::prompt`].
+#[derive(Clone, Default)]
+pub struct EventListeners {
+    next_id: Arc<AtomicU64>,
+    subscribers: Arc<std::sync::Mutex<EventSubscribers>>,
+    pub on_tool_start: Option<OnToolStart>,
+    pub on_tool_end: Option<OnToolEnd>,
+    pub on_stream_event: Option<OnStreamEvent>,
+}
+
+impl EventListeners {
+    fn new() -> Self {
+        Self {
+            next_id: Arc::new(AtomicU64::new(1)),
+            subscribers: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            on_tool_start: None,
+            on_tool_end: None,
+            on_stream_event: None,
+        }
+    }
+
+    /// Register a session-level event listener.
+    fn subscribe(&self, listener: EventSubscriber) -> SubscriptionId {
+        let id = SubscriptionId(self.next_id.fetch_add(1, Ordering::Relaxed));
+        self.subscribers
+            .lock()
+            .expect("EventListeners lock poisoned")
+            .insert(id, listener);
+        id
+    }
+
+    /// Remove a previously registered listener.
+    fn unsubscribe(&self, id: SubscriptionId) -> bool {
+        self.subscribers
+            .lock()
+            .expect("EventListeners lock poisoned")
+            .remove(&id)
+            .is_some()
+    }
+
+    /// Dispatch an [`AgentEvent`] to all registered subscribers.
+    fn notify(&self, event: &AgentEvent) {
+        let subs = self
+            .subscribers
+            .lock()
+            .expect("EventListeners lock poisoned");
+        for listener in subs.values() {
+            listener(event.clone());
+        }
+    }
+
+    /// Dispatch tool-start to the typed hook (if set).
+    fn notify_tool_start(&self, tool_name: &str, args: &Value) {
+        if let Some(cb) = &self.on_tool_start {
+            cb(tool_name, args);
+        }
+    }
+
+    /// Dispatch tool-end to the typed hook (if set).
+    fn notify_tool_end(&self, tool_name: &str, output: &ToolOutput, is_error: bool) {
+        if let Some(cb) = &self.on_tool_end {
+            cb(tool_name, output, is_error);
+        }
+    }
+
+    /// Dispatch a raw stream event (if hook is set).
+    fn notify_stream_event(&self, event: &StreamEvent) {
+        if let Some(cb) = &self.on_stream_event {
+            cb(event);
+        }
+    }
+}
+
+impl std::fmt::Debug for EventListeners {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let count = self.subscribers.lock().map_or(0, |s| s.len());
+        let next_id = self.next_id.load(Ordering::Relaxed);
+        f.debug_struct("EventListeners")
+            .field("subscriber_count", &count)
+            .field("next_id", &next_id)
+            .field("has_on_tool_start", &self.on_tool_start.is_some())
+            .field("has_on_tool_end", &self.on_tool_end.is_some())
+            .field("has_on_stream_event", &self.on_stream_event.is_some())
+            .finish()
+    }
+}
+
 /// SDK session construction options.
 ///
 /// These options provide the programmatic equivalent of the core CLI startup
@@ -72,6 +199,21 @@ pub struct SessionOptions {
     pub extension_policy: Option<String>,
     pub repair_policy: Option<String>,
     pub max_tool_iterations: usize,
+
+    /// Session-level event listener invoked for every [`AgentEvent`].
+    ///
+    /// Unlike the per-prompt callback passed to [`AgentSessionHandle::prompt`],
+    /// this fires for all prompts throughout the session lifetime.
+    pub on_event: Option<Arc<dyn Fn(AgentEvent) + Send + Sync>>,
+
+    /// Typed callback invoked when tool execution starts.
+    pub on_tool_start: Option<OnToolStart>,
+
+    /// Typed callback invoked when tool execution ends.
+    pub on_tool_end: Option<OnToolEnd>,
+
+    /// Callback for raw provider [`StreamEvent`]s.
+    pub on_stream_event: Option<OnStreamEvent>,
 }
 
 impl Default for SessionOptions {
@@ -92,6 +234,10 @@ impl Default for SessionOptions {
             extension_policy: None,
             repair_policy: None,
             max_tool_iterations: 50,
+            on_event: None,
+            on_tool_start: None,
+            on_tool_end: None,
+            on_stream_event: None,
         }
     }
 }
@@ -100,8 +246,13 @@ impl Default for SessionOptions {
 ///
 /// This wraps `AgentSession` and exposes high-level request methods while still
 /// allowing access to the underlying session when needed.
+///
+/// Session-level event listeners can be registered via [`Self::subscribe`] or
+/// by providing callbacks on [`SessionOptions`].  These fire for **every**
+/// prompt, in addition to the per-prompt `on_event` callback.
 pub struct AgentSessionHandle {
     session: AgentSession,
+    listeners: EventListeners,
 }
 
 /// Snapshot of the current agent session state.
@@ -115,14 +266,710 @@ pub struct AgentSessionState {
     pub message_count: usize,
 }
 
+/// Prompt completion payload returned by `SessionTransport`.
+#[derive(Debug, Clone)]
+pub enum SessionPromptResult {
+    InProcess(AssistantMessage),
+    RpcEvents(Vec<Value>),
+}
+
+/// Event wrapper used by the unified `SessionTransport` callback.
+#[derive(Debug, Clone)]
+pub enum SessionTransportEvent {
+    InProcess(AgentEvent),
+    Rpc(Value),
+}
+
+/// Unified session state snapshot across in-process and RPC transports.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SessionTransportState {
+    InProcess(AgentSessionState),
+    Rpc(Box<RpcSessionState>),
+}
+
+/// Model metadata exposed by RPC APIs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RpcModelInfo {
+    pub id: String,
+    pub name: String,
+    pub api: String,
+    pub provider: String,
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default)]
+    pub reasoning: bool,
+    #[serde(default)]
+    pub input: Vec<InputType>,
+    #[serde(default)]
+    pub context_window: u32,
+    #[serde(default)]
+    pub max_tokens: u32,
+    #[serde(default)]
+    pub cost: Option<ModelCost>,
+}
+
+/// Session state payload returned by RPC `get_state`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RpcSessionState {
+    #[serde(default)]
+    pub model: Option<RpcModelInfo>,
+    #[serde(default)]
+    pub thinking_level: String,
+    #[serde(default)]
+    pub is_streaming: bool,
+    #[serde(default)]
+    pub is_compacting: bool,
+    #[serde(default)]
+    pub steering_mode: String,
+    #[serde(default)]
+    pub follow_up_mode: String,
+    #[serde(default)]
+    pub session_file: Option<String>,
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub session_name: Option<String>,
+    #[serde(default)]
+    pub auto_compaction_enabled: bool,
+    #[serde(default)]
+    pub message_count: usize,
+    #[serde(default)]
+    pub pending_message_count: usize,
+}
+
+/// Session-level token aggregates returned by RPC `get_session_stats`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RpcTokenStats {
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+    pub total: u64,
+}
+
+/// Session stats payload returned by RPC `get_session_stats`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RpcSessionStats {
+    #[serde(default)]
+    pub session_file: Option<String>,
+    pub session_id: String,
+    pub user_messages: u64,
+    pub assistant_messages: u64,
+    pub tool_calls: u64,
+    pub tool_results: u64,
+    pub total_messages: u64,
+    pub tokens: RpcTokenStats,
+    pub cost: f64,
+}
+
+/// Result payload for `new_session` and `switch_session`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RpcCancelledResult {
+    pub cancelled: bool,
+}
+
+/// Result payload returned by RPC `cycle_model`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RpcCycleModelResult {
+    pub model: RpcModelInfo,
+    pub thinking_level: crate::model::ThinkingLevel,
+    pub is_scoped: bool,
+}
+
+/// Result payload returned by RPC `cycle_thinking_level`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RpcThinkingLevelResult {
+    pub level: crate::model::ThinkingLevel,
+}
+
+/// Bash execution result returned by RPC `bash`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RpcBashResult {
+    pub output: String,
+    pub exit_code: i32,
+    pub cancelled: bool,
+    pub truncated: bool,
+    pub full_output_path: Option<String>,
+}
+
+/// Compaction result returned by RPC `compact`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RpcCompactionResult {
+    pub summary: String,
+    pub first_kept_entry_id: String,
+    pub tokens_before: u64,
+    #[serde(default)]
+    pub details: Value,
+}
+
+/// Result payload returned by RPC `fork`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RpcForkResult {
+    pub text: String,
+    pub cancelled: bool,
+}
+
+/// Forkable message entry returned by RPC `get_fork_messages`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RpcForkMessage {
+    pub entry_id: String,
+    pub text: String,
+}
+
+/// Slash command metadata returned by RPC `get_commands`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RpcCommandInfo {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    pub source: String,
+    #[serde(default)]
+    pub location: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+/// Export HTML response payload.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RpcExportHtmlResult {
+    pub path: String,
+}
+
+/// Last-assistant-text response payload.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RpcLastAssistantText {
+    pub text: Option<String>,
+}
+
+/// Process-boundary transport options for SDK callers that prefer RPC mode.
+#[derive(Debug, Clone)]
+pub struct RpcTransportOptions {
+    pub binary_path: PathBuf,
+    pub args: Vec<String>,
+    pub cwd: Option<PathBuf>,
+}
+
+impl Default for RpcTransportOptions {
+    fn default() -> Self {
+        Self {
+            binary_path: PathBuf::from("pi"),
+            args: vec!["--mode".to_string(), "rpc".to_string()],
+            cwd: None,
+        }
+    }
+}
+
+/// Subprocess-backed SDK transport for `pi --mode rpc`.
+pub struct RpcTransportClient {
+    child: Child,
+    stdin: BufWriter<ChildStdin>,
+    stdout: BufReader<ChildStdout>,
+    next_request_id: u64,
+}
+
+/// Unified adapter over in-process and subprocess-backed session control.
+pub enum SessionTransport {
+    InProcess(Box<AgentSessionHandle>),
+    RpcSubprocess(RpcTransportClient),
+}
+
+impl SessionTransport {
+    pub async fn in_process(options: SessionOptions) -> Result<Self> {
+        create_agent_session(options)
+            .await
+            .map(Box::new)
+            .map(Self::InProcess)
+    }
+
+    pub fn rpc_subprocess(options: RpcTransportOptions) -> Result<Self> {
+        RpcTransportClient::connect(options).map(Self::RpcSubprocess)
+    }
+
+    pub const fn as_in_process_mut(&mut self) -> Option<&mut AgentSessionHandle> {
+        match self {
+            Self::InProcess(handle) => Some(handle.as_mut()),
+            Self::RpcSubprocess(_) => None,
+        }
+    }
+
+    pub const fn as_rpc_mut(&mut self) -> Option<&mut RpcTransportClient> {
+        match self {
+            Self::InProcess(_) => None,
+            Self::RpcSubprocess(client) => Some(client),
+        }
+    }
+
+    /// Send one prompt over whichever transport is active.
+    ///
+    /// - In-process mode returns the final assistant message.
+    /// - RPC mode waits for `agent_end` and returns collected raw events.
+    pub async fn prompt(
+        &mut self,
+        input: impl Into<String>,
+        on_event: impl Fn(SessionTransportEvent) + Send + Sync + 'static,
+    ) -> Result<SessionPromptResult> {
+        let input = input.into();
+        let on_event = Arc::new(on_event);
+        match self {
+            Self::InProcess(handle) => {
+                let on_event = Arc::clone(&on_event);
+                let assistant = handle
+                    .prompt(input, move |event| {
+                        (on_event)(SessionTransportEvent::InProcess(event));
+                    })
+                    .await?;
+                Ok(SessionPromptResult::InProcess(assistant))
+            }
+            Self::RpcSubprocess(client) => {
+                let events = client.prompt(input).await?;
+                for event in events.iter().cloned() {
+                    (on_event)(SessionTransportEvent::Rpc(event));
+                }
+                Ok(SessionPromptResult::RpcEvents(events))
+            }
+        }
+    }
+
+    /// Return a state snapshot from the active transport.
+    pub async fn state(&mut self) -> Result<SessionTransportState> {
+        match self {
+            Self::InProcess(handle) => handle.state().await.map(SessionTransportState::InProcess),
+            Self::RpcSubprocess(client) => client
+                .get_state()
+                .await
+                .map(Box::new)
+                .map(SessionTransportState::Rpc),
+        }
+    }
+
+    /// Update provider/model for the active transport.
+    pub async fn set_model(&mut self, provider: &str, model_id: &str) -> Result<()> {
+        match self {
+            Self::InProcess(handle) => handle.set_model(provider, model_id).await,
+            Self::RpcSubprocess(client) => {
+                let _ = client.set_model(provider, model_id).await?;
+                Ok(())
+            }
+        }
+    }
+
+    /// Shut down transport resources (best effort for in-process, explicit for RPC).
+    pub fn shutdown(&mut self) -> Result<()> {
+        match self {
+            Self::InProcess(_) => Ok(()),
+            Self::RpcSubprocess(client) => client.shutdown(),
+        }
+    }
+}
+
+impl RpcTransportClient {
+    pub fn connect(options: RpcTransportOptions) -> Result<Self> {
+        let mut command = Command::new(&options.binary_path);
+        command
+            .args(&options.args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
+        if let Some(cwd) = options.cwd {
+            command.current_dir(cwd);
+        }
+
+        let mut child = command.spawn().map_err(|err| {
+            Error::config(format!(
+                "Failed to spawn RPC subprocess {}: {err}",
+                options.binary_path.display()
+            ))
+        })?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| Error::config("RPC subprocess stdin is not piped"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| Error::config("RPC subprocess stdout is not piped"))?;
+
+        Ok(Self {
+            child,
+            stdin: BufWriter::new(stdin),
+            stdout: BufReader::new(stdout),
+            next_request_id: 1,
+        })
+    }
+
+    pub async fn request(&mut self, command: &str, payload: Map<String, Value>) -> Result<Value> {
+        let request_id = self.next_request_id();
+        let mut command_payload = Map::new();
+        command_payload.insert("type".to_string(), Value::String(command.to_string()));
+        command_payload.insert("id".to_string(), Value::String(request_id.clone()));
+        command_payload.extend(payload);
+
+        self.write_json_line(&Value::Object(command_payload))?;
+        self.wait_for_response(&request_id, command)
+    }
+
+    fn parse_response_data<T: DeserializeOwned>(data: Value, command: &str) -> Result<T> {
+        serde_json::from_value(data).map_err(|err| {
+            Error::api(format!(
+                "Failed to decode RPC `{command}` response payload: {err}"
+            ))
+        })
+    }
+
+    async fn request_typed<T: DeserializeOwned>(
+        &mut self,
+        command: &str,
+        payload: Map<String, Value>,
+    ) -> Result<T> {
+        let data = self.request(command, payload).await?;
+        Self::parse_response_data(data, command)
+    }
+
+    async fn request_no_data(&mut self, command: &str, payload: Map<String, Value>) -> Result<()> {
+        let _ = self.request(command, payload).await?;
+        Ok(())
+    }
+
+    pub async fn steer(&mut self, message: impl Into<String>) -> Result<()> {
+        let mut payload = Map::new();
+        payload.insert("message".to_string(), Value::String(message.into()));
+        self.request_no_data("steer", payload).await
+    }
+
+    pub async fn follow_up(&mut self, message: impl Into<String>) -> Result<()> {
+        let mut payload = Map::new();
+        payload.insert("message".to_string(), Value::String(message.into()));
+        self.request_no_data("follow_up", payload).await
+    }
+
+    pub async fn abort(&mut self) -> Result<()> {
+        self.request_no_data("abort", Map::new()).await
+    }
+
+    pub async fn new_session(
+        &mut self,
+        parent_session: Option<&Path>,
+    ) -> Result<RpcCancelledResult> {
+        let mut payload = Map::new();
+        if let Some(parent_session) = parent_session {
+            payload.insert(
+                "parentSession".to_string(),
+                Value::String(parent_session.display().to_string()),
+            );
+        }
+        self.request_typed("new_session", payload).await
+    }
+
+    pub async fn get_state(&mut self) -> Result<RpcSessionState> {
+        self.request_typed("get_state", Map::new()).await
+    }
+
+    pub async fn get_session_stats(&mut self) -> Result<RpcSessionStats> {
+        self.request_typed("get_session_stats", Map::new()).await
+    }
+
+    pub async fn get_messages(&mut self) -> Result<Vec<Value>> {
+        #[derive(Deserialize)]
+        struct MessagesPayload {
+            messages: Vec<Value>,
+        }
+        let payload: MessagesPayload = self.request_typed("get_messages", Map::new()).await?;
+        Ok(payload.messages)
+    }
+
+    pub async fn get_available_models(&mut self) -> Result<Vec<RpcModelInfo>> {
+        #[derive(Deserialize)]
+        struct ModelsPayload {
+            models: Vec<RpcModelInfo>,
+        }
+        let payload: ModelsPayload = self
+            .request_typed("get_available_models", Map::new())
+            .await?;
+        Ok(payload.models)
+    }
+
+    pub async fn set_model(&mut self, provider: &str, model_id: &str) -> Result<RpcModelInfo> {
+        let mut payload = Map::new();
+        payload.insert("provider".to_string(), Value::String(provider.to_string()));
+        payload.insert("modelId".to_string(), Value::String(model_id.to_string()));
+        self.request_typed("set_model", payload).await
+    }
+
+    pub async fn cycle_model(&mut self) -> Result<Option<RpcCycleModelResult>> {
+        self.request_typed("cycle_model", Map::new()).await
+    }
+
+    pub async fn set_thinking_level(&mut self, level: crate::model::ThinkingLevel) -> Result<()> {
+        let mut payload = Map::new();
+        payload.insert("level".to_string(), Value::String(level.to_string()));
+        self.request_no_data("set_thinking_level", payload).await
+    }
+
+    pub async fn cycle_thinking_level(&mut self) -> Result<Option<RpcThinkingLevelResult>> {
+        self.request_typed("cycle_thinking_level", Map::new()).await
+    }
+
+    pub async fn set_steering_mode(&mut self, mode: &str) -> Result<()> {
+        let mut payload = Map::new();
+        payload.insert("mode".to_string(), Value::String(mode.to_string()));
+        self.request_no_data("set_steering_mode", payload).await
+    }
+
+    pub async fn set_follow_up_mode(&mut self, mode: &str) -> Result<()> {
+        let mut payload = Map::new();
+        payload.insert("mode".to_string(), Value::String(mode.to_string()));
+        self.request_no_data("set_follow_up_mode", payload).await
+    }
+
+    pub async fn set_auto_compaction(&mut self, enabled: bool) -> Result<()> {
+        let mut payload = Map::new();
+        payload.insert("enabled".to_string(), Value::Bool(enabled));
+        self.request_no_data("set_auto_compaction", payload).await
+    }
+
+    pub async fn set_auto_retry(&mut self, enabled: bool) -> Result<()> {
+        let mut payload = Map::new();
+        payload.insert("enabled".to_string(), Value::Bool(enabled));
+        self.request_no_data("set_auto_retry", payload).await
+    }
+
+    pub async fn abort_retry(&mut self) -> Result<()> {
+        self.request_no_data("abort_retry", Map::new()).await
+    }
+
+    pub async fn set_session_name(&mut self, name: impl Into<String>) -> Result<()> {
+        let mut payload = Map::new();
+        payload.insert("name".to_string(), Value::String(name.into()));
+        self.request_no_data("set_session_name", payload).await
+    }
+
+    pub async fn get_last_assistant_text(&mut self) -> Result<Option<String>> {
+        let payload: RpcLastAssistantText = self
+            .request_typed("get_last_assistant_text", Map::new())
+            .await?;
+        Ok(payload.text)
+    }
+
+    pub async fn export_html(&mut self, output_path: Option<&Path>) -> Result<RpcExportHtmlResult> {
+        let mut payload = Map::new();
+        if let Some(path) = output_path {
+            payload.insert(
+                "outputPath".to_string(),
+                Value::String(path.display().to_string()),
+            );
+        }
+        self.request_typed("export_html", payload).await
+    }
+
+    pub async fn bash(&mut self, command: impl Into<String>) -> Result<RpcBashResult> {
+        let mut payload = Map::new();
+        payload.insert("command".to_string(), Value::String(command.into()));
+        self.request_typed("bash", payload).await
+    }
+
+    pub async fn abort_bash(&mut self) -> Result<()> {
+        self.request_no_data("abort_bash", Map::new()).await
+    }
+
+    pub async fn compact(&mut self) -> Result<RpcCompactionResult> {
+        self.compact_with_instructions(None).await
+    }
+
+    pub async fn compact_with_instructions(
+        &mut self,
+        custom_instructions: Option<&str>,
+    ) -> Result<RpcCompactionResult> {
+        let mut payload = Map::new();
+        if let Some(custom_instructions) = custom_instructions {
+            payload.insert(
+                "customInstructions".to_string(),
+                Value::String(custom_instructions.to_string()),
+            );
+        }
+        self.request_typed("compact", payload).await
+    }
+
+    pub async fn switch_session(&mut self, session_path: &Path) -> Result<RpcCancelledResult> {
+        let mut payload = Map::new();
+        payload.insert(
+            "sessionPath".to_string(),
+            Value::String(session_path.display().to_string()),
+        );
+        self.request_typed("switch_session", payload).await
+    }
+
+    pub async fn fork(&mut self, entry_id: impl Into<String>) -> Result<RpcForkResult> {
+        let mut payload = Map::new();
+        payload.insert("entryId".to_string(), Value::String(entry_id.into()));
+        self.request_typed("fork", payload).await
+    }
+
+    pub async fn get_fork_messages(&mut self) -> Result<Vec<RpcForkMessage>> {
+        #[derive(Deserialize)]
+        struct ForkMessagesPayload {
+            messages: Vec<RpcForkMessage>,
+        }
+        let payload: ForkMessagesPayload =
+            self.request_typed("get_fork_messages", Map::new()).await?;
+        Ok(payload.messages)
+    }
+
+    pub async fn get_commands(&mut self) -> Result<Vec<RpcCommandInfo>> {
+        #[derive(Deserialize)]
+        struct CommandsPayload {
+            commands: Vec<RpcCommandInfo>,
+        }
+        let payload: CommandsPayload = self.request_typed("get_commands", Map::new()).await?;
+        Ok(payload.commands)
+    }
+
+    pub async fn prompt(&mut self, message: impl Into<String>) -> Result<Vec<Value>> {
+        let request_id = self.next_request_id();
+        let payload = json!({
+            "type": "prompt",
+            "id": request_id,
+            "message": message.into(),
+        });
+        self.write_json_line(&payload)?;
+
+        let mut saw_ack = false;
+        let mut events = Vec::new();
+        loop {
+            let item = self.read_json_line()?;
+            let item_type = item.get("type").and_then(Value::as_str);
+            if item_type == Some("response") {
+                if item.get("id").and_then(Value::as_str) != Some(request_id.as_str()) {
+                    continue;
+                }
+                let success = item
+                    .get("success")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if !success {
+                    return Err(rpc_error_from_response(&item, "prompt"));
+                }
+                saw_ack = true;
+                continue;
+            }
+
+            if saw_ack {
+                let reached_end = item_type == Some("agent_end");
+                events.push(item);
+                if reached_end {
+                    return Ok(events);
+                }
+            }
+        }
+    }
+
+    pub fn shutdown(&mut self) -> Result<()> {
+        if self
+            .child
+            .try_wait()
+            .map_err(|err| Error::Io(Box::new(err)))?
+            .is_none()
+        {
+            self.child.kill().map_err(|err| Error::Io(Box::new(err)))?;
+        }
+        let _ = self.child.wait();
+        Ok(())
+    }
+
+    fn next_request_id(&mut self) -> String {
+        let id = format!("rpc-{}", self.next_request_id);
+        self.next_request_id = self.next_request_id.saturating_add(1);
+        id
+    }
+
+    fn write_json_line(&mut self, payload: &Value) -> Result<()> {
+        let encoded = serde_json::to_string(payload).map_err(|err| Error::Json(Box::new(err)))?;
+        self.stdin
+            .write_all(encoded.as_bytes())
+            .map_err(|err| Error::Io(Box::new(err)))?;
+        self.stdin
+            .write_all(b"\n")
+            .map_err(|err| Error::Io(Box::new(err)))?;
+        self.stdin.flush().map_err(|err| Error::Io(Box::new(err)))?;
+        Ok(())
+    }
+
+    fn read_json_line(&mut self) -> Result<Value> {
+        let mut line = String::new();
+        let read = self
+            .stdout
+            .read_line(&mut line)
+            .map_err(|err| Error::Io(Box::new(err)))?;
+        if read == 0 {
+            return Err(Error::api(
+                "RPC subprocess exited before sending a response",
+            ));
+        }
+        serde_json::from_str(line.trim_end()).map_err(|err| Error::Json(Box::new(err)))
+    }
+
+    fn wait_for_response(&mut self, request_id: &str, command: &str) -> Result<Value> {
+        loop {
+            let item = self.read_json_line()?;
+            let Some(item_type) = item.get("type").and_then(Value::as_str) else {
+                continue;
+            };
+            if item_type != "response" {
+                continue;
+            }
+            if item.get("id").and_then(Value::as_str) != Some(request_id) {
+                continue;
+            }
+            if item.get("command").and_then(Value::as_str) != Some(command) {
+                continue;
+            }
+
+            let success = item
+                .get("success")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if success {
+                return Ok(item.get("data").cloned().unwrap_or(Value::Null));
+            }
+            return Err(rpc_error_from_response(&item, command));
+        }
+    }
+}
+
+impl Drop for RpcTransportClient {
+    fn drop(&mut self) {
+        let _ = self.shutdown();
+    }
+}
+
+fn rpc_error_from_response(response: &Value, command: &str) -> Error {
+    let error = response
+        .get("error")
+        .and_then(Value::as_str)
+        .unwrap_or("RPC command failed");
+    Error::api(format!("RPC {command} failed: {error}"))
+}
+
 impl AgentSessionHandle {
     /// Send one user prompt through the agent loop.
+    ///
+    /// The `on_event` callback receives events for this prompt only.
+    /// Session-level listeners registered via [`Self::subscribe`] or
+    /// [`SessionOptions`] callbacks also fire for every event.
     pub async fn prompt(
         &mut self,
         input: impl Into<String>,
         on_event: impl Fn(AgentEvent) + Send + Sync + 'static,
     ) -> Result<AssistantMessage> {
-        self.session.run_text(input.into(), on_event).await
+        let combined = self.make_combined_callback(on_event);
+        self.session.run_text(input.into(), combined).await
     }
 
     /// Send one user prompt through the agent loop with an explicit abort signal.
@@ -132,14 +979,48 @@ impl AgentSessionHandle {
         abort_signal: AbortSignal,
         on_event: impl Fn(AgentEvent) + Send + Sync + 'static,
     ) -> Result<AssistantMessage> {
+        let combined = self.make_combined_callback(on_event);
         self.session
-            .run_text_with_abort(input.into(), Some(abort_signal), on_event)
+            .run_text_with_abort(input.into(), Some(abort_signal), combined)
             .await
     }
 
     /// Create a new abort handle/signal pair for prompt cancellation.
     pub fn new_abort_handle() -> (AbortHandle, AbortSignal) {
         AbortHandle::new()
+    }
+
+    /// Register a session-level event listener.
+    ///
+    /// The listener fires for every [`AgentEvent`] across all future prompts
+    /// until removed via [`Self::unsubscribe`].
+    ///
+    /// Returns a [`SubscriptionId`] that can be used to remove the listener.
+    pub fn subscribe(
+        &self,
+        listener: impl Fn(AgentEvent) + Send + Sync + 'static,
+    ) -> SubscriptionId {
+        self.listeners.subscribe(Arc::new(listener))
+    }
+
+    /// Remove a previously registered event listener.
+    ///
+    /// Returns `true` if the listener was found and removed.
+    pub fn unsubscribe(&self, id: SubscriptionId) -> bool {
+        self.listeners.unsubscribe(id)
+    }
+
+    /// Access the session-level event listeners.
+    pub const fn listeners(&self) -> &EventListeners {
+        &self.listeners
+    }
+
+    /// Mutable access to session-level event listeners.
+    ///
+    /// Allows updating typed hooks (`on_tool_start`, `on_tool_end`,
+    /// `on_stream_event`) after session creation.
+    pub const fn listeners_mut(&mut self) -> &mut EventListeners {
+        &mut self.listeners
     }
 
     /// Return the active provider/model pair.
@@ -239,6 +1120,130 @@ impl AgentSessionHandle {
     /// Consume the handle and return the inner `AgentSession`.
     pub fn into_inner(self) -> AgentSession {
         self.session
+    }
+
+    /// Build a combined callback that fans out to the per-prompt callback,
+    /// session-level subscribers, and typed hooks.
+    fn make_combined_callback(
+        &self,
+        per_prompt: impl Fn(AgentEvent) + Send + Sync + 'static,
+    ) -> impl Fn(AgentEvent) + Send + Sync + 'static {
+        let listeners = self.listeners.clone();
+        move |event: AgentEvent| {
+            // Typed tool hooks — fire before generic listeners.
+            match &event {
+                AgentEvent::ToolExecutionStart {
+                    tool_name, args, ..
+                } => {
+                    listeners.notify_tool_start(tool_name, args);
+                }
+                AgentEvent::ToolExecutionEnd {
+                    tool_name,
+                    result,
+                    is_error,
+                    ..
+                } => {
+                    listeners.notify_tool_end(tool_name, result, *is_error);
+                }
+                AgentEvent::MessageUpdate {
+                    assistant_message_event,
+                    ..
+                } => {
+                    // Forward raw stream events from the nested
+                    // `AssistantMessageEvent` when possible.
+                    if let Some(stream_ev) =
+                        stream_event_from_assistant_message_event(assistant_message_event)
+                    {
+                        listeners.notify_stream_event(&stream_ev);
+                    }
+                }
+                _ => {}
+            }
+
+            // Session-level generic subscribers.
+            listeners.notify(&event);
+
+            // Per-prompt callback.
+            per_prompt(event);
+        }
+    }
+}
+
+/// Extract a raw [`StreamEvent`] equivalent from an [`AssistantMessageEvent`].
+///
+/// This lets the typed `on_stream_event` hook fire with the low-level provider
+/// protocol event rather than the wrapped agent-level event.
+fn stream_event_from_assistant_message_event(
+    event: &crate::model::AssistantMessageEvent,
+) -> Option<StreamEvent> {
+    use crate::model::AssistantMessageEvent as AME;
+    match event {
+        AME::TextStart { content_index, .. } => Some(StreamEvent::TextStart {
+            content_index: *content_index,
+        }),
+        AME::TextDelta {
+            content_index,
+            delta,
+            ..
+        } => Some(StreamEvent::TextDelta {
+            content_index: *content_index,
+            delta: delta.clone(),
+        }),
+        AME::TextEnd {
+            content_index,
+            content,
+            ..
+        } => Some(StreamEvent::TextEnd {
+            content_index: *content_index,
+            content: content.clone(),
+        }),
+        AME::ThinkingStart { content_index, .. } => Some(StreamEvent::ThinkingStart {
+            content_index: *content_index,
+        }),
+        AME::ThinkingDelta {
+            content_index,
+            delta,
+            ..
+        } => Some(StreamEvent::ThinkingDelta {
+            content_index: *content_index,
+            delta: delta.clone(),
+        }),
+        AME::ThinkingEnd {
+            content_index,
+            content,
+            ..
+        } => Some(StreamEvent::ThinkingEnd {
+            content_index: *content_index,
+            content: content.clone(),
+        }),
+        AME::ToolCallStart { content_index, .. } => Some(StreamEvent::ToolCallStart {
+            content_index: *content_index,
+        }),
+        AME::ToolCallDelta {
+            content_index,
+            delta,
+            ..
+        } => Some(StreamEvent::ToolCallDelta {
+            content_index: *content_index,
+            delta: delta.clone(),
+        }),
+        AME::ToolCallEnd {
+            content_index,
+            tool_call,
+            ..
+        } => Some(StreamEvent::ToolCallEnd {
+            content_index: *content_index,
+            tool_call: tool_call.clone(),
+        }),
+        AME::Done { reason, message } => Some(StreamEvent::Done {
+            reason: *reason,
+            message: (**message).clone(),
+        }),
+        AME::Error { reason, error } => Some(StreamEvent::Error {
+            reason: *reason,
+            error: (**error).clone(),
+        }),
+        AME::Start { .. } => None,
     }
 }
 
@@ -449,8 +1454,17 @@ pub async fn create_agent_session(options: SessionOptions) -> Result<AgentSessio
         agent_session.agent.replace_messages(history);
     }
 
+    let mut listeners = EventListeners::new();
+    if let Some(on_event) = options.on_event {
+        listeners.subscribe(on_event);
+    }
+    listeners.on_tool_start = options.on_tool_start;
+    listeners.on_tool_end = options.on_tool_end;
+    listeners.on_stream_event = options.on_stream_event;
+
     Ok(AgentSessionHandle {
         session: agent_session,
+        listeners,
     })
 }
 
@@ -589,5 +1603,232 @@ mod tests {
             resolve_path_for_cwd(Path::new("/etc/hosts"), cwd),
             PathBuf::from("/etc/hosts")
         );
+    }
+
+    // =====================================================================
+    // EventListeners tests
+    // =====================================================================
+
+    #[test]
+    fn event_listeners_subscribe_and_notify() {
+        let listeners = EventListeners::new();
+        let received = Arc::new(Mutex::new(Vec::new()));
+
+        let recv_clone = Arc::clone(&received);
+        let id = listeners.subscribe(Arc::new(move |event| {
+            recv_clone.lock().expect("lock").push(event);
+        }));
+
+        let event = AgentEvent::AgentStart {
+            session_id: "test-123".to_string(),
+        };
+        listeners.notify(&event);
+
+        let events = received.lock().expect("lock");
+        assert_eq!(events.len(), 1);
+
+        // Verify unsubscribe
+        drop(events);
+        assert!(listeners.unsubscribe(id));
+        listeners.notify(&AgentEvent::AgentStart {
+            session_id: "test-456".to_string(),
+        });
+        assert_eq!(received.lock().expect("lock").len(), 1);
+    }
+
+    #[test]
+    fn event_listeners_unsubscribe_nonexistent_returns_false() {
+        let listeners = EventListeners::new();
+        assert!(!listeners.unsubscribe(SubscriptionId(999)));
+    }
+
+    #[test]
+    fn event_listeners_multiple_subscribers() {
+        let listeners = EventListeners::new();
+        let count_a = Arc::new(Mutex::new(0u32));
+        let count_b = Arc::new(Mutex::new(0u32));
+
+        let ca = Arc::clone(&count_a);
+        listeners.subscribe(Arc::new(move |_| {
+            *ca.lock().expect("lock") += 1;
+        }));
+
+        let cb = Arc::clone(&count_b);
+        listeners.subscribe(Arc::new(move |_| {
+            *cb.lock().expect("lock") += 1;
+        }));
+
+        listeners.notify(&AgentEvent::AgentStart {
+            session_id: "s".to_string(),
+        });
+
+        assert_eq!(*count_a.lock().expect("lock"), 1);
+        assert_eq!(*count_b.lock().expect("lock"), 1);
+    }
+
+    #[test]
+    fn event_listeners_tool_hooks_fire() {
+        let listeners = EventListeners::new();
+        let starts = Arc::new(Mutex::new(Vec::new()));
+        let ends = Arc::new(Mutex::new(Vec::new()));
+
+        let s = Arc::clone(&starts);
+        let mut listeners = listeners;
+        listeners.on_tool_start = Some(Arc::new(move |name, args| {
+            s.lock()
+                .expect("lock")
+                .push((name.to_string(), args.clone()));
+        }));
+
+        let e = Arc::clone(&ends);
+        listeners.on_tool_end = Some(Arc::new(move |name, _output, is_error| {
+            e.lock().expect("lock").push((name.to_string(), is_error));
+        }));
+
+        let args = serde_json::json!({"path": "/foo"});
+        listeners.notify_tool_start("bash", &args);
+        let output = ToolOutput {
+            content: vec![ContentBlock::Text(TextContent::new("ok"))],
+            details: None,
+            is_error: false,
+        };
+        listeners.notify_tool_end("bash", &output, false);
+
+        let s = starts.lock().expect("lock");
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].0, "bash");
+
+        let e = ends.lock().expect("lock");
+        assert_eq!(e.len(), 1);
+        assert_eq!(e[0].0, "bash");
+        assert!(!e[0].1);
+    }
+
+    #[test]
+    fn event_listeners_stream_event_hook_fires() {
+        let mut listeners = EventListeners::new();
+        let received = Arc::new(Mutex::new(Vec::new()));
+
+        let r = Arc::clone(&received);
+        listeners.on_stream_event = Some(Arc::new(move |ev| {
+            r.lock().expect("lock").push(format!("{ev:?}"));
+        }));
+
+        let event = StreamEvent::TextDelta {
+            content_index: 0,
+            delta: "hello".to_string(),
+        };
+        listeners.notify_stream_event(&event);
+
+        assert_eq!(received.lock().expect("lock").len(), 1);
+    }
+
+    #[test]
+    fn session_options_on_event_wired_into_listeners() {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let r = Arc::clone(&received);
+        let tmp = tempdir().expect("tempdir");
+
+        let options = SessionOptions {
+            working_directory: Some(tmp.path().to_path_buf()),
+            no_session: true,
+            on_event: Some(Arc::new(move |event| {
+                r.lock().expect("lock").push(format!("{event:?}"));
+            })),
+            ..SessionOptions::default()
+        };
+
+        let handle = run_async(create_agent_session(options)).expect("create session");
+        // Verify the listener was registered
+        let count = handle.listeners().subscribers.lock().expect("lock").len();
+        assert_eq!(
+            count, 1,
+            "on_event from SessionOptions should register one subscriber"
+        );
+    }
+
+    #[test]
+    fn subscribe_unsubscribe_on_handle() {
+        let tmp = tempdir().expect("tempdir");
+        let options = SessionOptions {
+            working_directory: Some(tmp.path().to_path_buf()),
+            no_session: true,
+            ..SessionOptions::default()
+        };
+
+        let handle = run_async(create_agent_session(options)).expect("create session");
+        let id = handle.subscribe(|_event| {});
+        assert_eq!(
+            handle.listeners().subscribers.lock().expect("lock").len(),
+            1
+        );
+
+        assert!(handle.unsubscribe(id));
+        assert_eq!(
+            handle.listeners().subscribers.lock().expect("lock").len(),
+            0
+        );
+
+        // Double unsubscribe returns false
+        assert!(!handle.unsubscribe(id));
+    }
+
+    #[test]
+    fn stream_event_from_assistant_message_event_converts_text_delta() {
+        use crate::model::AssistantMessageEvent as AME;
+
+        let partial = Arc::new(AssistantMessage {
+            content: Vec::new(),
+            api: String::new(),
+            provider: String::new(),
+            model: String::new(),
+            usage: Usage::default(),
+            stop_reason: StopReason::Stop,
+            error_message: None,
+            timestamp: 0,
+        });
+        let ame = AME::TextDelta {
+            content_index: 2,
+            delta: "chunk".to_string(),
+            partial,
+        };
+        let result = stream_event_from_assistant_message_event(&ame);
+        assert!(result.is_some());
+        match result.unwrap() {
+            StreamEvent::TextDelta {
+                content_index,
+                delta,
+            } => {
+                assert_eq!(content_index, 2);
+                assert_eq!(delta, "chunk");
+            }
+            other => panic!("unexpected variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stream_event_from_assistant_message_event_start_returns_none() {
+        use crate::model::AssistantMessageEvent as AME;
+
+        let partial = Arc::new(AssistantMessage {
+            content: Vec::new(),
+            api: String::new(),
+            provider: String::new(),
+            model: String::new(),
+            usage: Usage::default(),
+            stop_reason: StopReason::Stop,
+            error_message: None,
+            timestamp: 0,
+        });
+        let ame = AME::Start { partial };
+        assert!(stream_event_from_assistant_message_event(&ame).is_none());
+    }
+
+    #[test]
+    fn event_listeners_debug_impl() {
+        let listeners = EventListeners::new();
+        let debug = format!("{listeners:?}");
+        assert!(debug.contains("subscriber_count"));
+        assert!(debug.contains("has_on_tool_start"));
     }
 }
