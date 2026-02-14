@@ -277,9 +277,7 @@ mod tests {
 
     #[test]
     fn assistant_content_text_only() {
-        let blocks = vec![ContentBlock::Text(TextContent::new(
-            "response".to_string(),
-        ))];
+        let blocks = vec![ContentBlock::Text(TextContent::new("response".to_string()))];
         let (text, thinking) = assistant_content_to_text(&blocks);
         assert_eq!(text, "response");
         assert!(thinking.is_none());
@@ -533,9 +531,9 @@ mod tests {
     #[test]
     fn last_assistant_message_none_when_no_assistant() {
         let messages = vec![ModelMessage::User(UserMessage {
-                content: UserContent::Text("hello".to_string()),
-                timestamp: 0,
-            })];
+            content: UserContent::Text("hello".to_string()),
+            timestamp: 0,
+        })];
         assert!(last_assistant_message(&messages).is_none());
     }
 }

@@ -109,10 +109,7 @@ mod tests {
 
     #[test]
     fn parse_gist_url_simple() {
-        let (url, id) = parse_gist_url_and_id(
-            "https://gist.github.com/user/abc123def456",
-        )
-        .unwrap();
+        let (url, id) = parse_gist_url_and_id("https://gist.github.com/user/abc123def456").unwrap();
         assert_eq!(url, "https://gist.github.com/user/abc123def456");
         assert_eq!(id, "abc123def456");
     }
@@ -143,20 +140,15 @@ mod tests {
 
     #[test]
     fn parse_gist_url_strips_quotes() {
-        let (url, id) = parse_gist_url_and_id(
-            "\"https://gist.github.com/user/deadbeef\"",
-        )
-        .unwrap();
+        let (url, id) = parse_gist_url_and_id("\"https://gist.github.com/user/deadbeef\"").unwrap();
         assert_eq!(url, "https://gist.github.com/user/deadbeef");
         assert_eq!(id, "deadbeef");
     }
 
     #[test]
     fn parse_gist_url_trailing_punctuation() {
-        let (_, id) = parse_gist_url_and_id(
-            "Created: https://gist.github.com/user/aaa111,",
-        )
-        .unwrap();
+        let (_, id) =
+            parse_gist_url_and_id("Created: https://gist.github.com/user/aaa111,").unwrap();
         assert_eq!(id, "aaa111");
     }
 
