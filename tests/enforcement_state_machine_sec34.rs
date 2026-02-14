@@ -7,7 +7,7 @@
 //! - Quarantine is terminal: consecutive unsafe >=3 locks extension to Terminate
 //! - Sliding-window hysteresis prevents action flapping on borderline scores
 //! - Policy profiles affect base score and therefore enforcement behavior
-//! - Fail-closed: config.fail_closed causes denial on timeout or error
+//! - Fail-closed: `config.fail_closed` causes denial on timeout or error
 //! - Action progression through benign/adversarial/recovery phases is monotonic
 
 mod common;
@@ -146,8 +146,8 @@ fn action_selection_deterministic_across_runs() {
             .map(|e| {
                 (
                     e.call_id.clone(),
-                    e.selected_action.clone(),
-                    e.derived_state.clone(),
+                    e.selected_action,
+                    e.derived_state,
                 )
             })
             .collect();
@@ -211,8 +211,9 @@ fn benign_calls_produce_allow_safe_fast() {
     }
 
     // Risk scores should be low for log calls
+    let n = u32::try_from(artifact.entries.len()).expect("entry count fits u32");
     let avg_risk: f64 = artifact.entries.iter().map(|e| e.risk_score).sum::<f64>()
-        / artifact.entries.len() as f64;
+        / f64::from(n);
     assert!(
         avg_risk < 0.5,
         "average risk for all-benign trace should be < 0.5, got {avg_risk:.4}"
@@ -263,7 +264,7 @@ fn adversarial_burst_escalates_action() {
         .iter()
         .map(|e| e.risk_score)
         .sum::<f64>()
-        / artifact.entries[10..].len() as f64;
+        / f64::from(u32::try_from(artifact.entries[10..].len()).expect("fits u32"));
     assert!(
         second_half_avg >= first_half_avg,
         "later adversarial risk ({second_half_avg:.4}) should be >= earlier ({first_half_avg:.4})"
@@ -710,25 +711,25 @@ fn independent_state_per_extension() {
 
     let artifact = manager.runtime_risk_ledger_artifact();
 
-    let ext_a_entries: Vec<_> = artifact
+    let alpha_entries: Vec<_> = artifact
         .entries
         .iter()
         .filter(|e| e.extension_id == "ext.alpha")
         .collect();
-    let ext_b_entries: Vec<_> = artifact
+    let beta_entries: Vec<_> = artifact
         .entries
         .iter()
         .filter(|e| e.extension_id == "ext.beta")
         .collect();
 
-    assert_eq!(ext_a_entries.len(), 8, "ext.alpha should have 8 entries");
-    assert_eq!(ext_b_entries.len(), 8, "ext.beta should have 8 entries");
+    assert_eq!(alpha_entries.len(), 8, "ext.alpha should have 8 entries");
+    assert_eq!(beta_entries.len(), 8, "ext.beta should have 8 entries");
 
     // Extension A (benign) should have lower average risk than B (adversarial)
     let avg_risk_a: f64 =
-        ext_a_entries.iter().map(|e| e.risk_score).sum::<f64>() / ext_a_entries.len() as f64;
+        alpha_entries.iter().map(|e| e.risk_score).sum::<f64>() / f64::from(u32::try_from(alpha_entries.len()).expect("fits u32"));
     let avg_risk_b: f64 =
-        ext_b_entries.iter().map(|e| e.risk_score).sum::<f64>() / ext_b_entries.len() as f64;
+        beta_entries.iter().map(|e| e.risk_score).sum::<f64>() / f64::from(u32::try_from(beta_entries.len()).expect("fits u32"));
 
     assert!(
         avg_risk_a < avg_risk_b,
