@@ -11278,7 +11278,7 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
         }
 
         let tick = self.tick_counter.fetch_add(1, AtomicOrdering::SeqCst) + 1;
-        tick == 1 || tick.is_multiple_of(UNBOUNDED_MEMORY_USAGE_SAMPLE_EVERY_TICKS)
+        tick == 1 || (tick % UNBOUNDED_MEMORY_USAGE_SAMPLE_EVERY_TICKS == 0)
     }
 
     /// Evaluate JavaScript source code.
