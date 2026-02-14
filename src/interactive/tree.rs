@@ -1,11 +1,17 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::sync::Arc;
 
 use crate::model::{ContentBlock, UserContent};
 use crate::session::{Session, SessionEntry, SessionMessage};
 use crate::theme::TuiStyles;
+use serde_json::json;
 
-use super::conversation::assistant_content_to_text;
+use super::conversation::{assistant_content_to_text, user_content_to_text};
+use super::{
+    AgentState, Cmd, ConversationMessage, EXTENSION_EVENT_TIMEOUT_MS, MessageRole, PiApp, PiMsg,
+    conversation_from_session,
+};
 
 #[derive(Debug, Clone)]
 pub(super) enum TreeUiState {
@@ -221,6 +227,263 @@ pub(super) fn resolve_tree_selector_initial_id(session: &Session, args: &str) ->
     }
 
     None
+}
+
+#[derive(Debug, Clone)]
+struct ForkCandidate {
+    id: String,
+    summary: String,
+}
+
+fn fork_candidates(session: &Session) -> Vec<ForkCandidate> {
+    let mut out = Vec::new();
+
+    for entry in session.entries_for_current_path() {
+        let SessionEntry::Message(message_entry) = entry else {
+            continue;
+        };
+
+        let Some(id) = message_entry.base.id.as_ref() else {
+            continue;
+        };
+
+        let SessionMessage::User { content, .. } = &message_entry.message else {
+            continue;
+        };
+
+        let text = user_content_to_text(content);
+        let first_line = text
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("")
+            .trim();
+        let summary = if first_line.is_empty() {
+            "(empty)".to_string()
+        } else {
+            super::truncate(first_line, 80)
+        };
+
+        out.push(ForkCandidate {
+            id: id.clone(),
+            summary,
+        });
+    }
+
+    out
+}
+
+impl PiApp {
+    #[allow(clippy::too_many_lines)]
+    pub(super) fn handle_slash_fork(&mut self, args: &str) -> Option<Cmd> {
+        if self.agent_state != AgentState::Idle {
+            self.status_message = Some("Cannot fork while processing a request".to_string());
+            return None;
+        }
+
+        let candidates = if let Ok(mut session_guard) = self.session.try_lock() {
+            session_guard.ensure_entry_ids();
+            fork_candidates(&session_guard)
+        } else {
+            self.status_message = Some("Session busy; try again".to_string());
+            return None;
+        };
+        if candidates.is_empty() {
+            self.status_message = Some("No user messages to fork from".to_string());
+            return None;
+        }
+
+        if args.eq_ignore_ascii_case("list") || args.eq_ignore_ascii_case("ls") {
+            let list = candidates
+                .iter()
+                .enumerate()
+                .map(|(i, c)| format!("  {}. {} - {}", i + 1, c.id, c.summary))
+                .collect::<Vec<_>>()
+                .join("\n");
+            self.messages.push(ConversationMessage {
+                role: MessageRole::System,
+                content: format!("Forkable user messages (use /fork <id|index>):\n{list}"),
+                thinking: None,
+                collapsed: false,
+            });
+            self.scroll_to_bottom();
+            return None;
+        }
+
+        let selection = if args.is_empty() {
+            candidates.last().expect("candidates is non-empty").clone()
+        } else if let Ok(index) = args.parse::<usize>() {
+            if index == 0 || index > candidates.len() {
+                self.status_message =
+                    Some(format!("Invalid index: {index} (1-{})", candidates.len()));
+                return None;
+            }
+            candidates[index - 1].clone()
+        } else {
+            let matches = candidates
+                .iter()
+                .filter(|c| c.id == args || c.id.starts_with(args))
+                .cloned()
+                .collect::<Vec<_>>();
+            if matches.is_empty() {
+                self.status_message = Some(format!("No user message id matches \"{args}\""));
+                return None;
+            }
+            if matches.len() > 1 {
+                self.status_message = Some(format!(
+                    "Ambiguous id \"{args}\" (matches {})",
+                    matches.len()
+                ));
+                return None;
+            }
+            matches[0].clone()
+        };
+
+        let event_tx = self.event_tx.clone();
+        let session = Arc::clone(&self.session);
+        let agent = Arc::clone(&self.agent);
+        let extensions = self.extensions.clone();
+        let model_provider = self.model_entry.model.provider.clone();
+        let model_id = self.model_entry.model.id.clone();
+        let (thinking_level, session_id) = if let Ok(guard) = self.session.try_lock() {
+            (guard.header.thinking_level.clone(), guard.header.id.clone())
+        } else {
+            self.status_message = Some("Session busy; try again".to_string());
+            return None;
+        };
+
+        self.agent_state = AgentState::Processing;
+        self.status_message = Some("Forking session...".to_string());
+
+        let runtime_handle = self.runtime_handle.clone();
+        runtime_handle.spawn(async move {
+            let cx = asupersync::Cx::for_request();
+            if let Some(manager) = extensions.clone() {
+                let cancelled = manager
+                    .dispatch_cancellable_event(
+                        crate::extensions::ExtensionEventName::SessionBeforeFork,
+                        Some(json!({
+                            "entryId": selection.id.clone(),
+                            "summary": selection.summary.clone(),
+                            "sessionId": session_id.clone(),
+                        })),
+                        EXTENSION_EVENT_TIMEOUT_MS,
+                    )
+                    .await
+                    .unwrap_or(false);
+                if cancelled {
+                    let _ =
+                        event_tx.try_send(PiMsg::System("Fork cancelled by extension".to_string()));
+                    return;
+                }
+            }
+
+            let (fork_plan, parent_path, session_dir) = {
+                let guard = match session.lock(&cx).await {
+                    Ok(guard) => guard,
+                    Err(err) => {
+                        let _ = event_tx
+                            .try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
+                        return;
+                    }
+                };
+                let fork_plan = match guard.plan_fork_from_user_message(&selection.id) {
+                    Ok(plan) => plan,
+                    Err(err) => {
+                        let _ = event_tx
+                            .try_send(PiMsg::AgentError(format!("Failed to build fork: {err}")));
+                        return;
+                    }
+                };
+                let parent_path = guard.path.as_ref().map(|p| p.display().to_string());
+                let session_dir = guard.session_dir.clone();
+                drop(guard);
+                (fork_plan, parent_path, session_dir)
+            };
+
+            let crate::session::ForkPlan {
+                entries,
+                leaf_id,
+                selected_text,
+            } = fork_plan;
+
+            let mut new_session = Session::create_with_dir(session_dir);
+            new_session.header.provider = Some(model_provider);
+            new_session.header.model_id = Some(model_id);
+            new_session.header.thinking_level = thinking_level;
+            if let Some(parent_path) = parent_path {
+                new_session.set_branched_from(Some(parent_path));
+            }
+            new_session.entries = entries;
+            new_session.leaf_id = leaf_id;
+            new_session.ensure_entry_ids();
+            let new_session_id = new_session.header.id.clone();
+
+            if let Err(err) = new_session.save().await {
+                let _ = event_tx.try_send(PiMsg::AgentError(format!("Failed to save fork: {err}")));
+                return;
+            }
+
+            let messages_for_agent = new_session.to_messages_for_current_path();
+            {
+                let mut agent_guard = match agent.lock(&cx).await {
+                    Ok(guard) => guard,
+                    Err(err) => {
+                        let _ = event_tx
+                            .try_send(PiMsg::AgentError(format!("Failed to lock agent: {err}")));
+                        return;
+                    }
+                };
+                agent_guard.replace_messages(messages_for_agent);
+            }
+
+            {
+                let mut guard = match session.lock(&cx).await {
+                    Ok(guard) => guard,
+                    Err(err) => {
+                        let _ = event_tx
+                            .try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
+                        return;
+                    }
+                };
+                *guard = new_session;
+            }
+
+            let (messages, usage) = {
+                let guard = match session.lock(&cx).await {
+                    Ok(guard) => guard,
+                    Err(err) => {
+                        let _ = event_tx
+                            .try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
+                        return;
+                    }
+                };
+                conversation_from_session(&guard)
+            };
+
+            let _ = event_tx.try_send(PiMsg::ConversationReset {
+                messages,
+                usage,
+                status: Some(format!("Forked new session from {}", selection.summary)),
+            });
+
+            let _ = event_tx.try_send(PiMsg::SetEditorText(selected_text));
+
+            if let Some(manager) = extensions {
+                let _ = manager
+                    .dispatch_event(
+                        crate::extensions::ExtensionEventName::SessionFork,
+                        Some(json!({
+                            "entryId": selection.id,
+                            "summary": selection.summary,
+                            "sessionId": session_id,
+                            "newSessionId": new_session_id,
+                        })),
+                    )
+                    .await;
+            }
+        });
+        None
+    }
 }
 
 #[allow(clippy::too_many_lines)]

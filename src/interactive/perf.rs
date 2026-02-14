@@ -1,4 +1,9 @@
 use std::collections::VecDeque;
+use std::sync::Arc;
+
+use serde_json::json;
+
+use super::{AgentState, Cmd, EXTENSION_EVENT_TIMEOUT_MS, PiApp, PiMsg, conversation_from_session};
 
 /// Safely convert `Duration::as_micros()` (u128) to u64 with saturation.
 #[inline]
@@ -380,6 +385,195 @@ impl MemoryMonitor {
     /// Whether Critical-level rendering degradation should be forced.
     pub(super) const fn should_force_degraded(&self) -> bool {
         matches!(self.level, MemoryLevel::Critical)
+    }
+}
+
+impl PiApp {
+    #[allow(clippy::too_many_lines)]
+    pub(super) fn handle_slash_compact(&mut self, args: &str) -> Option<Cmd> {
+        if self.agent_state != AgentState::Idle {
+            self.status_message = Some("Cannot compact while processing".to_string());
+            return None;
+        }
+
+        let Ok(agent_guard) = self.agent.try_lock() else {
+            self.status_message = Some("Agent busy; try again".to_string());
+            return None;
+        };
+        let provider = agent_guard.provider();
+        let api_key_opt = agent_guard.stream_options().api_key.clone();
+        drop(agent_guard);
+
+        let Some(api_key) = api_key_opt else {
+            self.status_message = Some("No API key configured; cannot run compaction".to_string());
+            return None;
+        };
+
+        let event_tx = self.event_tx.clone();
+        let session = Arc::clone(&self.session);
+        let agent = Arc::clone(&self.agent);
+        let extensions = self.extensions.clone();
+        let runtime_handle = self.runtime_handle.clone();
+        let reserve_tokens = self.config.compaction_reserve_tokens();
+        let keep_recent_tokens = self.config.compaction_keep_recent_tokens();
+        let custom_instructions = args.trim().to_string();
+        let custom_instructions = if custom_instructions.is_empty() {
+            None
+        } else {
+            Some(custom_instructions)
+        };
+        let is_compacting = Arc::clone(&self.extension_compacting);
+
+        self.agent_state = AgentState::Processing;
+        self.status_message = Some("Compacting session...".to_string());
+        self.extension_compacting
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        runtime_handle.spawn(async move {
+            let cx = asupersync::Cx::for_request();
+
+            let (session_id, path_entries) = {
+                let mut guard = match session.lock(&cx).await {
+                    Ok(guard) => guard,
+                    Err(err) => {
+                        is_compacting.store(false, std::sync::atomic::Ordering::SeqCst);
+                        let _ = event_tx
+                            .try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
+                        return;
+                    }
+                };
+                guard.ensure_entry_ids();
+                let session_id = guard.header.id.clone();
+                let entries = guard
+                    .entries_for_current_path()
+                    .into_iter()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                (session_id, entries)
+            };
+
+            if let Some(manager) = extensions.clone() {
+                let cancelled = manager
+                    .dispatch_cancellable_event(
+                        crate::extensions::ExtensionEventName::SessionBeforeCompact,
+                        Some(json!({
+                            "sessionId": session_id,
+                            "notes": custom_instructions.as_deref(),
+                        })),
+                        EXTENSION_EVENT_TIMEOUT_MS,
+                    )
+                    .await
+                    .unwrap_or(false);
+                if cancelled {
+                    is_compacting.store(false, std::sync::atomic::Ordering::SeqCst);
+                    let _ = event_tx.try_send(PiMsg::System(
+                        "Compaction cancelled by extension".to_string(),
+                    ));
+                    return;
+                }
+            }
+
+            let settings = crate::compaction::ResolvedCompactionSettings {
+                enabled: true,
+                reserve_tokens,
+                keep_recent_tokens,
+                ..Default::default()
+            };
+            let Some(prep) = crate::compaction::prepare_compaction(&path_entries, settings) else {
+                is_compacting.store(false, std::sync::atomic::Ordering::SeqCst);
+                let _ = event_tx.try_send(PiMsg::System(
+                    "Nothing to compact (already compacted or too little history)".to_string(),
+                ));
+                return;
+            };
+
+            let result = match crate::compaction::compact(
+                prep,
+                Arc::clone(&provider),
+                &api_key,
+                custom_instructions.as_deref(),
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(err) => {
+                    is_compacting.store(false, std::sync::atomic::Ordering::SeqCst);
+                    let _ =
+                        event_tx.try_send(PiMsg::AgentError(format!("Compaction failed: {err}")));
+                    return;
+                }
+            };
+
+            let details = crate::compaction::compaction_details_to_value(&result.details).ok();
+
+            let messages_for_agent = {
+                let mut guard = match session.lock(&cx).await {
+                    Ok(guard) => guard,
+                    Err(err) => {
+                        is_compacting.store(false, std::sync::atomic::Ordering::SeqCst);
+                        let _ = event_tx
+                            .try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
+                        return;
+                    }
+                };
+
+                guard.append_compaction(
+                    result.summary.clone(),
+                    result.first_kept_entry_id.clone(),
+                    result.tokens_before,
+                    details,
+                    None,
+                );
+                let _ = guard.save().await;
+                guard.to_messages_for_current_path()
+            };
+
+            {
+                let mut agent_guard = match agent.lock(&cx).await {
+                    Ok(guard) => guard,
+                    Err(err) => {
+                        is_compacting.store(false, std::sync::atomic::Ordering::SeqCst);
+                        let _ = event_tx
+                            .try_send(PiMsg::AgentError(format!("Failed to lock agent: {err}")));
+                        return;
+                    }
+                };
+                agent_guard.replace_messages(messages_for_agent);
+            }
+
+            let (messages, usage) = {
+                let guard = match session.lock(&cx).await {
+                    Ok(guard) => guard,
+                    Err(err) => {
+                        is_compacting.store(false, std::sync::atomic::Ordering::SeqCst);
+                        let _ = event_tx
+                            .try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
+                        return;
+                    }
+                };
+                conversation_from_session(&guard)
+            };
+
+            is_compacting.store(false, std::sync::atomic::Ordering::SeqCst);
+            let _ = event_tx.try_send(PiMsg::ConversationReset {
+                messages,
+                usage,
+                status: Some("Compaction complete".to_string()),
+            });
+
+            if let Some(manager) = extensions {
+                let _ = manager
+                    .dispatch_event(
+                        crate::extensions::ExtensionEventName::SessionCompact,
+                        Some(json!({
+                            "tokensBefore": result.tokens_before,
+                            "firstKeptEntryId": result.first_kept_entry_id,
+                        })),
+                    )
+                    .await;
+            }
+        });
+        None
     }
 }
 

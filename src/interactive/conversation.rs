@@ -1,5 +1,9 @@
-use crate::model::{ContentBlock, ImageContent, TextContent, UserContent};
+use crate::model::{ContentBlock, ImageContent, ModelMessage, TextContent, Usage, UserContent};
+use crate::models::ModelEntry;
+use crate::session::{Session, SessionEntry, SessionMessage, bash_execution_to_text};
+use serde_json::{Value, json};
 
+use super::{ConversationMessage, MessageRole};
 use super::text_utils::push_line;
 
 pub(super) fn user_content_to_text(content: &UserContent) -> String {
@@ -110,4 +114,129 @@ pub(super) fn tool_content_blocks_to_text(blocks: &[ContentBlock], show_images: 
     }
 
     output
+}
+
+pub fn conversation_from_session(session: &Session) -> (Vec<ConversationMessage>, Usage) {
+    let mut messages = Vec::new();
+    let mut usage = Usage::default();
+
+    for entry in session.entries_for_current_path() {
+        let SessionEntry::Message(message_entry) = entry else {
+            continue;
+        };
+
+        match &message_entry.message {
+            SessionMessage::User { content, .. } => {
+                messages.push(ConversationMessage::new(
+                    MessageRole::User,
+                    user_content_to_text(content),
+                    None,
+                ));
+            }
+            SessionMessage::Assistant { message } => {
+                let (text, thinking) = assistant_content_to_text(&message.content);
+                add_usage(&mut usage, &message.usage);
+                messages.push(ConversationMessage::new(
+                    MessageRole::Assistant,
+                    text,
+                    thinking,
+                ));
+            }
+            SessionMessage::ToolResult {
+                tool_name,
+                content,
+                details,
+                is_error,
+                ..
+            } => {
+                let (mut text, _) = assistant_content_to_text(content);
+                if let Some(diff) = details
+                    .as_ref()
+                    .and_then(|details| details.get("diff"))
+                    .and_then(Value::as_str)
+                {
+                    let diff = diff.trim();
+                    if !diff.is_empty() {
+                        if !text.trim().is_empty() {
+                            text.push_str("\n\n");
+                        }
+                        text.push_str("Diff:\n");
+                        text.push_str(diff);
+                    }
+                }
+                let prefix = if *is_error {
+                    "Tool error"
+                } else {
+                    "Tool result"
+                };
+                messages.push(ConversationMessage::tool(format!(
+                    "{prefix} ({tool_name}): {text}"
+                )));
+            }
+            SessionMessage::BashExecution {
+                command,
+                output,
+                extra,
+                ..
+            } => {
+                let mut text = bash_execution_to_text(command, output, 0, false, false, None);
+                if extra
+                    .get("excludeFromContext")
+                    .and_then(Value::as_bool)
+                    .is_some_and(|v| v)
+                {
+                    text.push_str("\n\n[Output excluded from model context]");
+                }
+                messages.push(ConversationMessage::tool(text));
+            }
+            SessionMessage::Custom {
+                content, display, ..
+            } => {
+                if *display {
+                    messages.push(ConversationMessage::new(
+                        MessageRole::System,
+                        content.clone(),
+                        None,
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    (messages, usage)
+}
+
+pub(super) fn extension_model_from_entry(entry: &ModelEntry) -> Value {
+    json!({
+        "provider": entry.model.provider.as_str(),
+        "id": entry.model.id.as_str(),
+        "name": entry.model.name.as_str(),
+        "api": entry.model.api.as_str(),
+        "baseUrl": entry.model.base_url.as_str(),
+        "reasoning": entry.model.reasoning,
+        "contextWindow": entry.model.context_window,
+        "maxTokens": entry.model.max_tokens,
+        "apiKeyPresent": entry.api_key.is_some(),
+    })
+}
+
+pub(super) fn last_assistant_message(messages: &[ModelMessage]) -> Option<&crate::model::AssistantMessage> {
+    messages.iter().rev().find_map(|msg| match msg {
+        ModelMessage::Assistant(assistant) => Some(assistant),
+        _ => None,
+    })
+}
+
+pub(super) fn add_usage(total: &mut Usage, delta: &Usage) {
+    total.input = total.input.saturating_add(delta.input);
+    total.output = total.output.saturating_add(delta.output);
+    total.cache_read = total.cache_read.saturating_add(delta.cache_read);
+    total.cache_write = total.cache_write.saturating_add(delta.cache_write);
+    total.total_tokens = total.total_tokens.saturating_add(delta.total_tokens);
+    total.cost.input += delta.cost.input;
+    total.cost.output += delta.cost.output;
+    total.cost.cache_read += delta.cost.cache_read;
+    total.cost.cache_write += delta.cost.cache_write;
+    total.cost.total += delta.cost.total;
 }

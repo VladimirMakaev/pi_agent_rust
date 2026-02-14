@@ -67,7 +67,7 @@ impl PiApp {
 
     /// Render the view.
     #[allow(clippy::too_many_lines)]
-    fn view(&self) -> String {
+    pub(super) fn view(&self) -> String {
         let view_start = if self.frame_timing.enabled {
             Some(std::time::Instant::now())
         } else {
