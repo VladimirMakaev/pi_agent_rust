@@ -51,7 +51,12 @@ const fn default_risk_config() -> RuntimeRiskConfig {
 fn setup(
     harness: &TestHarness,
     config: RuntimeRiskConfig,
-) -> (ToolRegistry, HttpConnector, ExtensionManager, ExtensionPolicy) {
+) -> (
+    ToolRegistry,
+    HttpConnector,
+    ExtensionManager,
+    ExtensionPolicy,
+) {
     let tools = ToolRegistry::new(&[], harness.temp_dir(), None);
     let http = HttpConnector::with_defaults();
     let manager = ExtensionManager::new();
@@ -144,13 +149,7 @@ fn action_selection_deterministic_across_runs() {
         let actions: Vec<(String, RuntimeRiskActionValue, RuntimeRiskStateLabelValue)> = artifact
             .entries
             .iter()
-            .map(|e| {
-                (
-                    e.call_id.clone(),
-                    e.selected_action,
-                    e.derived_state,
-                )
-            })
+            .map(|e| (e.call_id.clone(), e.selected_action, e.derived_state))
             .collect();
         all_actions.push(actions);
     }
@@ -213,8 +212,7 @@ fn benign_calls_produce_allow_safe_fast() {
 
     // Risk scores should be low for log calls
     let n = u32::try_from(artifact.entries.len()).expect("entry count fits u32");
-    let avg_risk: f64 = artifact.entries.iter().map(|e| e.risk_score).sum::<f64>()
-        / f64::from(n);
+    let avg_risk: f64 = artifact.entries.iter().map(|e| e.risk_score).sum::<f64>() / f64::from(n);
     assert!(
         avg_risk < 0.5,
         "average risk for all-benign trace should be < 0.5, got {avg_risk:.4}"
@@ -328,11 +326,13 @@ fn quarantine_locks_to_terminate() {
     }
 
     // Log quarantine status for observability
-    harness.log().info_ctx("quarantine_test", "quarantine status", |ctx_log| {
-        ctx_log.push(("issue_id".into(), "bd-3tb30".into()));
-        ctx_log.push(("total_entries".into(), artifact.entry_count.to_string()));
-        ctx_log.push(("has_quarantine".into(), has_quarantine.to_string()));
-    });
+    harness
+        .log()
+        .info_ctx("quarantine_test", "quarantine status", |ctx_log| {
+            ctx_log.push(("issue_id".into(), "bd-3tb30".into()));
+            ctx_log.push(("total_entries".into(), artifact.entry_count.to_string()));
+            ctx_log.push(("has_quarantine".into(), has_quarantine.to_string()));
+        });
 }
 
 // ============================================================================
@@ -475,11 +475,13 @@ fn sliding_window_prevents_action_flapping() {
         "action flapping ({flap_count}) should be bounded by windowed hysteresis (max {max_expected_flaps})"
     );
 
-    harness.log().info_ctx("hysteresis", "flapping analysis", |ctx_log| {
-        ctx_log.push(("issue_id".into(), "bd-3tb30".into()));
-        ctx_log.push(("total_entries".into(), artifact.entry_count.to_string()));
-        ctx_log.push(("flap_count".into(), flap_count.to_string()));
-    });
+    harness
+        .log()
+        .info_ctx("hysteresis", "flapping analysis", |ctx_log| {
+            ctx_log.push(("issue_id".into(), "bd-3tb30".into()));
+            ctx_log.push(("total_entries".into(), artifact.entry_count.to_string()));
+            ctx_log.push(("flap_count".into(), flap_count.to_string()));
+        });
 }
 
 // ============================================================================
@@ -586,13 +588,13 @@ fn expected_loss_action_ordering() {
             (RuntimeRiskActionValue::Allow, entry.expected_loss.allow),
             (RuntimeRiskActionValue::Harden, entry.expected_loss.harden),
             (RuntimeRiskActionValue::Deny, entry.expected_loss.deny),
-            (RuntimeRiskActionValue::Terminate, entry.expected_loss.terminate),
+            (
+                RuntimeRiskActionValue::Terminate,
+                entry.expected_loss.terminate,
+            ),
         ];
 
-        let min_loss = losses
-            .iter()
-            .map(|(_, l)| *l)
-            .fold(f64::INFINITY, f64::min);
+        let min_loss = losses.iter().map(|(_, l)| *l).fold(f64::INFINITY, f64::min);
 
         // The selected action's loss should equal the minimum (or the action was trigger-overridden)
         let selected_loss = match entry.selected_action {
@@ -603,11 +605,10 @@ fn expected_loss_action_ordering() {
         };
 
         // If trigger-overridden, the action may not match minimum loss
-        let has_override_trigger = entry.triggers.iter().any(|t| {
-            t == "e_process_breach"
-                || t == "drift_detected"
-                || t == "quarantined"
-        });
+        let has_override_trigger = entry
+            .triggers
+            .iter()
+            .any(|t| t == "e_process_breach" || t == "drift_detected" || t == "quarantined");
 
         if !has_override_trigger {
             assert!(
@@ -729,10 +730,10 @@ fn independent_state_per_extension() {
     assert_eq!(beta_entries.len(), 8, "ext.beta should have 8 entries");
 
     // Extension A (benign) should have lower average risk than B (adversarial)
-    let avg_risk_a: f64 =
-        alpha_entries.iter().map(|e| e.risk_score).sum::<f64>() / f64::from(u32::try_from(alpha_entries.len()).expect("fits u32"));
-    let avg_risk_b: f64 =
-        beta_entries.iter().map(|e| e.risk_score).sum::<f64>() / f64::from(u32::try_from(beta_entries.len()).expect("fits u32"));
+    let avg_risk_a: f64 = alpha_entries.iter().map(|e| e.risk_score).sum::<f64>()
+        / f64::from(u32::try_from(alpha_entries.len()).expect("fits u32"));
+    let avg_risk_b: f64 = beta_entries.iter().map(|e| e.risk_score).sum::<f64>()
+        / f64::from(u32::try_from(beta_entries.len()).expect("fits u32"));
 
     assert!(
         avg_risk_a < avg_risk_b,
@@ -789,4 +790,255 @@ fn posterior_evolves_with_call_patterns() {
         "benign recovery should reduce risk score: pre={pre_risk:.4} post={:.4}",
         last_post.risk_score
     );
+}
+
+// ============================================================================
+// SEC-7.1: Shadow mode tests (bd-2teqs)
+// ============================================================================
+
+/// Shadow mode: all hostcalls are dispatched regardless of risk score,
+/// but telemetry is still recorded with the counterfactual action.
+#[test]
+fn shadow_mode_allows_all_calls_but_records_telemetry() {
+    let harness = TestHarness::new("shadow_mode_allows_all_calls_but_records_telemetry");
+    let config = RuntimeRiskConfig {
+        enabled: true,
+        enforce: false, // Shadow mode!
+        alpha: 0.01,
+        window_size: 64,
+        ledger_limit: 1024,
+        decision_timeout_ms: 5000,
+        fail_closed: true,
+    };
+    let (tools, http, manager, policy) = setup(&harness, config);
+    let ctx = HostCallContext {
+        runtime_name: "shadow-test",
+        extension_id: Some("ext.shadow.test"),
+        tools: &tools,
+        http: &http,
+        manager: Some(manager.clone()),
+        policy: &policy,
+        js_runtime: None,
+        interceptor: None,
+    };
+
+    futures::executor::block_on(async {
+        // Fire rapid exec calls to drive up the risk score.
+        // Use a benign command so exec mediation doesn't intervene
+        // (shadow mode only bypasses runtime risk enforcement, not
+        // the command-class exec mediation policy).
+        for idx in 0..20 {
+            let call = HostCallPayload {
+                call_id: format!("shadow-adversarial-{idx}"),
+                capability: "exec".to_string(),
+                method: "exec".to_string(),
+                params: json!({ "cmd": "echo", "args": [idx.to_string()] }),
+                timeout_ms: Some(25),
+                cancel_token: None,
+                context: None,
+            };
+            let result = dispatch_host_call_shared(&ctx, call).await;
+            // In shadow mode, risk-based denials should not apply
+            assert!(
+                !result.is_error,
+                "shadow mode should not deny call {idx}, got: {result:?}"
+            );
+        }
+    });
+
+    // Telemetry should still be recorded
+    let telemetry = manager.runtime_hostcall_telemetry_artifact();
+    assert!(
+        !telemetry.entries.is_empty(),
+        "shadow mode must still record telemetry"
+    );
+    assert_eq!(
+        telemetry.entries.len(),
+        20,
+        "all 20 calls should appear in telemetry"
+    );
+
+    // Ledger should be populated with risk decisions
+    let ledger = manager.runtime_risk_ledger_artifact();
+    assert!(
+        !ledger.entries.is_empty(),
+        "shadow mode must still populate risk ledger"
+    );
+
+    // Verify ledger integrity is maintained in shadow mode
+    let report = verify_runtime_risk_ledger_artifact(&ledger);
+    assert!(
+        report.valid,
+        "ledger hash chain must be valid in shadow mode"
+    );
+}
+
+/// Shadow mode vs enforced mode: same calls produce same telemetry but
+/// different dispatch outcomes.
+#[test]
+fn shadow_mode_vs_enforced_mode_telemetry_comparison() {
+    // Run enforced mode
+    let harness_enforced =
+        TestHarness::new("shadow_mode_vs_enforced_mode_telemetry_comparison_enforced");
+    let config_enforced = RuntimeRiskConfig {
+        enabled: true,
+        enforce: true,
+        alpha: 0.01,
+        window_size: 64,
+        ledger_limit: 1024,
+        decision_timeout_ms: 5000,
+        fail_closed: true,
+    };
+    let (tools_e, http_e, manager_e, policy_e) = setup(&harness_enforced, config_enforced);
+    let ctx_enforced = HostCallContext {
+        runtime_name: "enforced-test",
+        extension_id: Some("ext.enforce.test"),
+        tools: &tools_e,
+        http: &http_e,
+        manager: Some(manager_e.clone()),
+        policy: &policy_e,
+        js_runtime: None,
+        interceptor: None,
+    };
+
+    // Run shadow mode
+    let harness_shadow =
+        TestHarness::new("shadow_mode_vs_enforced_mode_telemetry_comparison_shadow");
+    let config_shadow = RuntimeRiskConfig {
+        enabled: true,
+        enforce: false,
+        alpha: 0.01,
+        window_size: 64,
+        ledger_limit: 1024,
+        decision_timeout_ms: 5000,
+        fail_closed: true,
+    };
+    let (tools_s, http_s, manager_s, policy_s) = setup(&harness_shadow, config_shadow);
+    let ctx_shadow = HostCallContext {
+        runtime_name: "shadow-test",
+        extension_id: Some("ext.shadow.test"),
+        tools: &tools_s,
+        http: &http_s,
+        manager: Some(manager_s.clone()),
+        policy: &policy_s,
+        js_runtime: None,
+        interceptor: None,
+    };
+
+    futures::executor::block_on(async {
+        for idx in 0..10 {
+            let call_enforced = HostCallPayload {
+                call_id: format!("cmp-{idx}"),
+                capability: "exec".to_string(),
+                method: "exec".to_string(),
+                params: json!({ "cmd": "echo", "args": [idx.to_string()] }),
+                timeout_ms: Some(25),
+                cancel_token: None,
+                context: None,
+            };
+            let call_shadow = HostCallPayload {
+                call_id: format!("cmp-{idx}"),
+                capability: "exec".to_string(),
+                method: "exec".to_string(),
+                params: json!({ "cmd": "echo", "args": [idx.to_string()] }),
+                timeout_ms: Some(25),
+                cancel_token: None,
+                context: None,
+            };
+
+            let _ = dispatch_host_call_shared(&ctx_enforced, call_enforced).await;
+            let _ = dispatch_host_call_shared(&ctx_shadow, call_shadow).await;
+        }
+    });
+
+    // Both should record the same number of telemetry entries
+    let telemetry_enforced = manager_e.runtime_hostcall_telemetry_artifact();
+    let telemetry_shadow = manager_s.runtime_hostcall_telemetry_artifact();
+    assert_eq!(
+        telemetry_enforced.entries.len(),
+        telemetry_shadow.entries.len(),
+        "both modes should record same number of telemetry entries"
+    );
+}
+
+/// Shadow mode: config toggle between enforce=true and enforce=false
+/// changes behavior without restart.
+#[test]
+fn shadow_mode_toggle_at_runtime() {
+    let harness = TestHarness::new("shadow_mode_toggle_at_runtime");
+    let config = RuntimeRiskConfig {
+        enabled: true,
+        enforce: true, // Start enforced
+        alpha: 0.01,
+        window_size: 64,
+        ledger_limit: 1024,
+        decision_timeout_ms: 5000,
+        fail_closed: true,
+    };
+    let (tools, http, manager, policy) = setup(&harness, config);
+    let ctx = HostCallContext {
+        runtime_name: "toggle-test",
+        extension_id: Some("ext.toggle.test"),
+        tools: &tools,
+        http: &http,
+        manager: Some(manager.clone()),
+        policy: &policy,
+        js_runtime: None,
+        interceptor: None,
+    };
+
+    futures::executor::block_on(async {
+        // Phase 1: enforced mode — some calls may be denied
+        for idx in 0..5 {
+            let call = HostCallPayload {
+                call_id: format!("toggle-enforced-{idx}"),
+                capability: "log".to_string(),
+                method: "log".to_string(),
+                params: json!({ "level": "info", "message": "test" }),
+                timeout_ms: None,
+                cancel_token: None,
+                context: None,
+            };
+            let _ = dispatch_host_call_shared(&ctx, call).await;
+        }
+
+        let telemetry_phase1 = manager.runtime_hostcall_telemetry_artifact();
+        let phase1_count = telemetry_phase1.entries.len();
+
+        // Switch to shadow mode
+        manager.set_runtime_risk_config(RuntimeRiskConfig {
+            enabled: true,
+            enforce: false,
+            alpha: 0.01,
+            window_size: 64,
+            ledger_limit: 1024,
+            decision_timeout_ms: 5000,
+            fail_closed: true,
+        });
+
+        // Phase 2: shadow mode — all calls proceed
+        for idx in 0..5 {
+            let call = HostCallPayload {
+                call_id: format!("toggle-shadow-{idx}"),
+                capability: "exec".to_string(),
+                method: "exec".to_string(),
+                params: json!({ "cmd": "echo", "args": ["test"] }),
+                timeout_ms: Some(25),
+                cancel_token: None,
+                context: None,
+            };
+            let result = dispatch_host_call_shared(&ctx, call).await;
+            assert!(
+                !result.is_error,
+                "shadow mode phase should not deny call {idx}"
+            );
+        }
+
+        let telemetry_phase2 = manager.runtime_hostcall_telemetry_artifact();
+        assert_eq!(
+            telemetry_phase2.entries.len(),
+            phase1_count + 5,
+            "shadow mode phase should add 5 more telemetry entries"
+        );
+    });
 }

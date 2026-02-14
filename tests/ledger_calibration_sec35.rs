@@ -14,15 +14,14 @@ use common::TestHarness;
 use pi::connectors::http::HttpConnector;
 use pi::extensions::{
     ExtensionManager, ExtensionPolicy, ExtensionPolicyMode, HostCallContext, HostCallPayload,
+    RUNTIME_RISK_EXPLANATION_SCHEMA_VERSION, RUNTIME_RISK_LEDGER_SCHEMA_VERSION,
     RuntimeRiskActionValue, RuntimeRiskCalibrationConfig, RuntimeRiskCalibrationObjective,
-    RuntimeRiskConfig, RuntimeRiskExplanationBudgetState, RuntimeRiskExplanationContributor,
-    RuntimeRiskExplanationLevelValue, RuntimeRiskExpectedLossEvidence,
-    RuntimeRiskLedgerArtifact, RuntimeRiskLedgerArtifactEntry, RuntimeRiskPosteriorEvidence,
-    RuntimeRiskStateLabelValue, calibrate_runtime_risk_from_ledger,
-    dispatch_host_call_shared, replay_runtime_risk_ledger_artifact,
-    runtime_risk_compute_ledger_hash_artifact, runtime_risk_ledger_data_hash,
-    verify_runtime_risk_ledger_artifact, RUNTIME_RISK_EXPLANATION_SCHEMA_VERSION,
-    RUNTIME_RISK_LEDGER_SCHEMA_VERSION,
+    RuntimeRiskConfig, RuntimeRiskExpectedLossEvidence, RuntimeRiskExplanationBudgetState,
+    RuntimeRiskExplanationContributor, RuntimeRiskExplanationLevelValue, RuntimeRiskLedgerArtifact,
+    RuntimeRiskLedgerArtifactEntry, RuntimeRiskPosteriorEvidence, RuntimeRiskStateLabelValue,
+    calibrate_runtime_risk_from_ledger, dispatch_host_call_shared,
+    replay_runtime_risk_ledger_artifact, runtime_risk_compute_ledger_hash_artifact,
+    runtime_risk_ledger_data_hash, verify_runtime_risk_ledger_artifact,
 };
 use pi::tools::ToolRegistry;
 use serde_json::json;
@@ -56,7 +55,12 @@ const fn default_risk_config() -> RuntimeRiskConfig {
 fn setup(
     harness: &TestHarness,
     config: RuntimeRiskConfig,
-) -> (ToolRegistry, HttpConnector, ExtensionManager, ExtensionPolicy) {
+) -> (
+    ToolRegistry,
+    HttpConnector,
+    ExtensionManager,
+    ExtensionPolicy,
+) {
     let tools = ToolRegistry::new(&[], harness.temp_dir(), None);
     let http = HttpConnector::with_defaults();
     let manager = ExtensionManager::new();
@@ -192,9 +196,30 @@ fn build_valid_artifact(entries: Vec<RuntimeRiskLedgerArtifactEntry>) -> Runtime
 #[test]
 fn tamper_score_mutation_detected() {
     let entries = vec![
-        synthetic_entry("c1", "log", 0.1, RuntimeRiskStateLabelValue::SafeFast, RuntimeRiskActionValue::Allow, 1000),
-        synthetic_entry("c2", "exec", 0.8, RuntimeRiskStateLabelValue::Suspicious, RuntimeRiskActionValue::Harden, 2000),
-        synthetic_entry("c3", "log", 0.15, RuntimeRiskStateLabelValue::SafeFast, RuntimeRiskActionValue::Allow, 3000),
+        synthetic_entry(
+            "c1",
+            "log",
+            0.1,
+            RuntimeRiskStateLabelValue::SafeFast,
+            RuntimeRiskActionValue::Allow,
+            1000,
+        ),
+        synthetic_entry(
+            "c2",
+            "exec",
+            0.8,
+            RuntimeRiskStateLabelValue::Suspicious,
+            RuntimeRiskActionValue::Harden,
+            2000,
+        ),
+        synthetic_entry(
+            "c3",
+            "log",
+            0.15,
+            RuntimeRiskStateLabelValue::SafeFast,
+            RuntimeRiskActionValue::Allow,
+            3000,
+        ),
     ];
     let mut artifact = build_valid_artifact(entries);
 
@@ -221,9 +246,30 @@ fn tamper_score_mutation_detected() {
 #[test]
 fn tamper_broken_chain_link_detected() {
     let entries = vec![
-        synthetic_entry("c1", "log", 0.1, RuntimeRiskStateLabelValue::SafeFast, RuntimeRiskActionValue::Allow, 1000),
-        synthetic_entry("c2", "log", 0.2, RuntimeRiskStateLabelValue::SafeFast, RuntimeRiskActionValue::Allow, 2000),
-        synthetic_entry("c3", "exec", 0.7, RuntimeRiskStateLabelValue::Suspicious, RuntimeRiskActionValue::Harden, 3000),
+        synthetic_entry(
+            "c1",
+            "log",
+            0.1,
+            RuntimeRiskStateLabelValue::SafeFast,
+            RuntimeRiskActionValue::Allow,
+            1000,
+        ),
+        synthetic_entry(
+            "c2",
+            "log",
+            0.2,
+            RuntimeRiskStateLabelValue::SafeFast,
+            RuntimeRiskActionValue::Allow,
+            2000,
+        ),
+        synthetic_entry(
+            "c3",
+            "exec",
+            0.7,
+            RuntimeRiskStateLabelValue::Suspicious,
+            RuntimeRiskActionValue::Harden,
+            3000,
+        ),
     ];
     let mut artifact = build_valid_artifact(entries);
 
@@ -249,8 +295,22 @@ fn tamper_broken_chain_link_detected() {
 #[test]
 fn tamper_forged_data_hash_detected() {
     let entries = vec![
-        synthetic_entry("c1", "log", 0.1, RuntimeRiskStateLabelValue::SafeFast, RuntimeRiskActionValue::Allow, 1000),
-        synthetic_entry("c2", "exec", 0.5, RuntimeRiskStateLabelValue::Suspicious, RuntimeRiskActionValue::Harden, 2000),
+        synthetic_entry(
+            "c1",
+            "log",
+            0.1,
+            RuntimeRiskStateLabelValue::SafeFast,
+            RuntimeRiskActionValue::Allow,
+            1000,
+        ),
+        synthetic_entry(
+            "c2",
+            "exec",
+            0.5,
+            RuntimeRiskStateLabelValue::Suspicious,
+            RuntimeRiskActionValue::Harden,
+            2000,
+        ),
     ];
     let mut artifact = build_valid_artifact(entries);
 
@@ -276,8 +336,22 @@ fn tamper_forged_data_hash_detected() {
 #[test]
 fn tamper_head_tail_hash_mismatch_detected() {
     let entries = vec![
-        synthetic_entry("c1", "log", 0.1, RuntimeRiskStateLabelValue::SafeFast, RuntimeRiskActionValue::Allow, 1000),
-        synthetic_entry("c2", "log", 0.15, RuntimeRiskStateLabelValue::SafeFast, RuntimeRiskActionValue::Allow, 2000),
+        synthetic_entry(
+            "c1",
+            "log",
+            0.1,
+            RuntimeRiskStateLabelValue::SafeFast,
+            RuntimeRiskActionValue::Allow,
+            1000,
+        ),
+        synthetic_entry(
+            "c2",
+            "log",
+            0.15,
+            RuntimeRiskStateLabelValue::SafeFast,
+            RuntimeRiskActionValue::Allow,
+            2000,
+        ),
     ];
     let mut artifact = build_valid_artifact(entries);
 
@@ -305,8 +379,22 @@ fn tamper_head_tail_hash_mismatch_detected() {
 #[test]
 fn tamper_entry_count_mismatch_detected() {
     let entries = vec![
-        synthetic_entry("c1", "log", 0.1, RuntimeRiskStateLabelValue::SafeFast, RuntimeRiskActionValue::Allow, 1000),
-        synthetic_entry("c2", "log", 0.2, RuntimeRiskStateLabelValue::SafeFast, RuntimeRiskActionValue::Allow, 2000),
+        synthetic_entry(
+            "c1",
+            "log",
+            0.1,
+            RuntimeRiskStateLabelValue::SafeFast,
+            RuntimeRiskActionValue::Allow,
+            1000,
+        ),
+        synthetic_entry(
+            "c2",
+            "log",
+            0.2,
+            RuntimeRiskStateLabelValue::SafeFast,
+            RuntimeRiskActionValue::Allow,
+            2000,
+        ),
     ];
     let mut artifact = build_valid_artifact(entries);
 
@@ -316,7 +404,10 @@ fn tamper_entry_count_mismatch_detected() {
     let report = verify_runtime_risk_ledger_artifact(&artifact);
     assert!(!report.valid, "wrong entry_count must fail verification");
     assert!(
-        report.errors.iter().any(|e| e.code == "entry_count_mismatch"),
+        report
+            .errors
+            .iter()
+            .any(|e| e.code == "entry_count_mismatch"),
         "must report entry_count_mismatch, got: {:?}",
         report.errors
     );
@@ -328,9 +419,14 @@ fn tamper_entry_count_mismatch_detected() {
 
 #[test]
 fn tamper_schema_version_mismatch_detected() {
-    let entries = vec![
-        synthetic_entry("c1", "log", 0.1, RuntimeRiskStateLabelValue::SafeFast, RuntimeRiskActionValue::Allow, 1000),
-    ];
+    let entries = vec![synthetic_entry(
+        "c1",
+        "log",
+        0.1,
+        RuntimeRiskStateLabelValue::SafeFast,
+        RuntimeRiskActionValue::Allow,
+        1000,
+    )];
     let mut artifact = build_valid_artifact(entries);
 
     artifact.schema = "pi.ext.runtime_risk_ledger.v999".to_string();
@@ -351,8 +447,22 @@ fn tamper_schema_version_mismatch_detected() {
 #[test]
 fn replay_rejects_tampered_ledger() {
     let entries = vec![
-        synthetic_entry("c1", "log", 0.1, RuntimeRiskStateLabelValue::SafeFast, RuntimeRiskActionValue::Allow, 1000),
-        synthetic_entry("c2", "exec", 0.7, RuntimeRiskStateLabelValue::Suspicious, RuntimeRiskActionValue::Harden, 2000),
+        synthetic_entry(
+            "c1",
+            "log",
+            0.1,
+            RuntimeRiskStateLabelValue::SafeFast,
+            RuntimeRiskActionValue::Allow,
+            1000,
+        ),
+        synthetic_entry(
+            "c2",
+            "exec",
+            0.7,
+            RuntimeRiskStateLabelValue::Suspicious,
+            RuntimeRiskActionValue::Harden,
+            2000,
+        ),
     ];
     let mut artifact = build_valid_artifact(entries);
 
@@ -389,10 +499,10 @@ fn calibration_determinism_identical_reports() {
     let artifact = manager.runtime_risk_ledger_artifact();
     let config = RuntimeRiskCalibrationConfig::default();
 
-    let report_a = calibrate_runtime_risk_from_ledger(&artifact, &config)
-        .expect("calibration must succeed");
-    let report_b = calibrate_runtime_risk_from_ledger(&artifact, &config)
-        .expect("calibration must succeed");
+    let report_a =
+        calibrate_runtime_risk_from_ledger(&artifact, &config).expect("calibration must succeed");
+    let report_b =
+        calibrate_runtime_risk_from_ledger(&artifact, &config).expect("calibration must succeed");
 
     assert!(
         (report_a.recommended_threshold - report_b.recommended_threshold).abs() < f64::EPSILON,
@@ -411,7 +521,12 @@ fn calibration_determinism_identical_reports() {
         report_b.candidates.len(),
         "candidate count must match"
     );
-    for (i, (ca, cb)) in report_a.candidates.iter().zip(report_b.candidates.iter()).enumerate() {
+    for (i, (ca, cb)) in report_a
+        .candidates
+        .iter()
+        .zip(report_b.candidates.iter())
+        .enumerate()
+    {
         assert!(
             (ca.objective_score - cb.objective_score).abs() < 1e-12,
             "candidate {i} objective_score mismatch: {} vs {}",
@@ -481,7 +596,11 @@ fn calibration_objectives_differ() {
     assert_eq!(report_ba.source_data_hash, artifact.data_hash);
 
     // Recommended thresholds must be within [0,1]
-    for (name, report) in [("mel", &report_mel), ("mfp", &report_mfp), ("ba", &report_ba)] {
+    for (name, report) in [
+        ("mel", &report_mel),
+        ("mfp", &report_mfp),
+        ("ba", &report_ba),
+    ] {
         assert!(
             (0.0..=1.0).contains(&report.recommended_threshold),
             "{name}: recommended threshold {} out of [0,1]",
@@ -494,12 +613,25 @@ fn calibration_objectives_differ() {
     }
 
     // Log recommendations for observability
-    harness.log().info_ctx("calibration_objectives", "objective comparison", |ctx_log| {
-        ctx_log.push(("issue_id".into(), "bd-3i9da".into()));
-        ctx_log.push(("mel_threshold".into(), format!("{:.3}", report_mel.recommended_threshold)));
-        ctx_log.push(("mfp_threshold".into(), format!("{:.3}", report_mfp.recommended_threshold)));
-        ctx_log.push(("ba_threshold".into(), format!("{:.3}", report_ba.recommended_threshold)));
-    });
+    harness.log().info_ctx(
+        "calibration_objectives",
+        "objective comparison",
+        |ctx_log| {
+            ctx_log.push(("issue_id".into(), "bd-3i9da".into()));
+            ctx_log.push((
+                "mel_threshold".into(),
+                format!("{:.3}", report_mel.recommended_threshold),
+            ));
+            ctx_log.push((
+                "mfp_threshold".into(),
+                format!("{:.3}", report_mfp.recommended_threshold),
+            ));
+            ctx_log.push((
+                "ba_threshold".into(),
+                format!("{:.3}", report_ba.recommended_threshold),
+            ));
+        },
+    );
 }
 
 // ============================================================================
@@ -545,9 +677,14 @@ fn calibration_all_benign_trace() {
 
 #[test]
 fn calibration_single_entry_ledger() {
-    let entries = vec![
-        synthetic_entry("c1", "exec", 0.8, RuntimeRiskStateLabelValue::Suspicious, RuntimeRiskActionValue::Harden, 1000),
-    ];
+    let entries = vec![synthetic_entry(
+        "c1",
+        "exec",
+        0.8,
+        RuntimeRiskStateLabelValue::Suspicious,
+        RuntimeRiskActionValue::Harden,
+        1000,
+    )];
     let artifact = build_valid_artifact(entries);
 
     let config = RuntimeRiskCalibrationConfig::default();
@@ -593,9 +730,30 @@ fn verification_empty_ledger() {
 #[test]
 fn data_hash_reproducibility() {
     let entries = vec![
-        synthetic_entry("c1", "log", 0.1, RuntimeRiskStateLabelValue::SafeFast, RuntimeRiskActionValue::Allow, 1000),
-        synthetic_entry("c2", "exec", 0.7, RuntimeRiskStateLabelValue::Suspicious, RuntimeRiskActionValue::Harden, 2000),
-        synthetic_entry("c3", "log", 0.2, RuntimeRiskStateLabelValue::SafeFast, RuntimeRiskActionValue::Allow, 3000),
+        synthetic_entry(
+            "c1",
+            "log",
+            0.1,
+            RuntimeRiskStateLabelValue::SafeFast,
+            RuntimeRiskActionValue::Allow,
+            1000,
+        ),
+        synthetic_entry(
+            "c2",
+            "exec",
+            0.7,
+            RuntimeRiskStateLabelValue::Suspicious,
+            RuntimeRiskActionValue::Harden,
+            2000,
+        ),
+        synthetic_entry(
+            "c3",
+            "log",
+            0.2,
+            RuntimeRiskStateLabelValue::SafeFast,
+            RuntimeRiskActionValue::Allow,
+            3000,
+        ),
     ];
 
     let artifact_a = build_valid_artifact(entries.clone());
@@ -615,7 +773,12 @@ fn data_hash_reproducibility() {
     );
 
     // Verify each entry hash matches
-    for (i, (ea, eb)) in artifact_a.entries.iter().zip(artifact_b.entries.iter()).enumerate() {
+    for (i, (ea, eb)) in artifact_a
+        .entries
+        .iter()
+        .zip(artifact_b.entries.iter())
+        .enumerate()
+    {
         assert_eq!(
             ea.ledger_hash, eb.ledger_hash,
             "entry {i} ledger_hash must be identical"
@@ -658,7 +821,10 @@ fn e2e_full_pipeline_verify_replay_calibrate() {
         "ledger must pass integrity check: {:?}",
         verification.errors
     );
-    assert_eq!(verification.computed_data_hash, verification.artifact_data_hash);
+    assert_eq!(
+        verification.computed_data_hash,
+        verification.artifact_data_hash
+    );
 
     // Step 3: Replay
     let replay = replay_runtime_risk_ledger_artifact(&artifact)
@@ -669,9 +835,18 @@ fn e2e_full_pipeline_verify_replay_calibrate() {
     // Verify replay steps match ledger entries
     for (i, (entry, step)) in artifact.entries.iter().zip(replay.steps.iter()).enumerate() {
         assert_eq!(entry.call_id, step.call_id, "call_id mismatch at {i}");
-        assert_eq!(entry.capability, step.capability, "capability mismatch at {i}");
-        assert_eq!(entry.selected_action, step.selected_action, "action mismatch at {i}");
-        assert_eq!(entry.derived_state, step.derived_state, "state mismatch at {i}");
+        assert_eq!(
+            entry.capability, step.capability,
+            "capability mismatch at {i}"
+        );
+        assert_eq!(
+            entry.selected_action, step.selected_action,
+            "action mismatch at {i}"
+        );
+        assert_eq!(
+            entry.derived_state, step.derived_state,
+            "state mismatch at {i}"
+        );
         assert!(
             (entry.risk_score - step.risk_score).abs() < 1e-12,
             "risk_score mismatch at {i}: {} vs {}",
@@ -683,8 +858,8 @@ fn e2e_full_pipeline_verify_replay_calibrate() {
 
     // Step 4: Calibrate
     let config = RuntimeRiskCalibrationConfig::default();
-    let cal_report = calibrate_runtime_risk_from_ledger(&artifact, &config)
-        .expect("calibration must succeed");
+    let cal_report =
+        calibrate_runtime_risk_from_ledger(&artifact, &config).expect("calibration must succeed");
 
     assert_eq!(cal_report.source_data_hash, artifact.data_hash);
     assert!(
@@ -702,13 +877,21 @@ fn e2e_full_pipeline_verify_replay_calibrate() {
         "baseline threshold must be 0.65"
     );
 
-    harness.log().info_ctx("e2e_pipeline", "full pipeline complete", |ctx_log| {
-        ctx_log.push(("issue_id".into(), "bd-3i9da".into()));
-        ctx_log.push(("entries".into(), artifact.entry_count.to_string()));
-        ctx_log.push(("replay_steps".into(), replay.steps.len().to_string()));
-        ctx_log.push(("recommended_threshold".into(), format!("{:.3}", cal_report.recommended_threshold)));
-        ctx_log.push(("recommended_delta".into(), format!("{:.3}", cal_report.recommended_delta)));
-    });
+    harness
+        .log()
+        .info_ctx("e2e_pipeline", "full pipeline complete", |ctx_log| {
+            ctx_log.push(("issue_id".into(), "bd-3i9da".into()));
+            ctx_log.push(("entries".into(), artifact.entry_count.to_string()));
+            ctx_log.push(("replay_steps".into(), replay.steps.len().to_string()));
+            ctx_log.push((
+                "recommended_threshold".into(),
+                format!("{:.3}", cal_report.recommended_threshold),
+            ));
+            ctx_log.push((
+                "recommended_delta".into(),
+                format!("{:.3}", cal_report.recommended_delta),
+            ));
+        });
 }
 
 // ============================================================================
@@ -763,9 +946,17 @@ fn calibration_weight_sensitivity() {
         "FN-weighted threshold out of range"
     );
 
-    harness.log().info_ctx("weight_sensitivity", "weight comparison", |ctx_log| {
-        ctx_log.push(("issue_id".into(), "bd-3i9da".into()));
-        ctx_log.push(("high_fp_threshold".into(), format!("{:.3}", report_precision.recommended_threshold)));
-        ctx_log.push(("high_fn_threshold".into(), format!("{:.3}", report_recall.recommended_threshold)));
-    });
+    harness
+        .log()
+        .info_ctx("weight_sensitivity", "weight comparison", |ctx_log| {
+            ctx_log.push(("issue_id".into(), "bd-3i9da".into()));
+            ctx_log.push((
+                "high_fp_threshold".into(),
+                format!("{:.3}", report_precision.recommended_threshold),
+            ));
+            ctx_log.push((
+                "high_fn_threshold".into(),
+                format!("{:.3}", report_recall.recommended_threshold),
+            ));
+        });
 }

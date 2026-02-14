@@ -12,9 +12,8 @@ use common::TestHarness;
 use pi::connectors::http::HttpConnector;
 use pi::extensions::{
     ExtensionManager, ExtensionPolicy, ExtensionPolicyMode, HostCallContext, HostCallPayload,
-    RuntimeRiskConfig,
-    dispatch_host_call_shared, replay_runtime_risk_ledger_artifact,
-    verify_runtime_risk_ledger_artifact, RUNTIME_RISK_EXPLANATION_SCHEMA_VERSION,
+    RUNTIME_RISK_EXPLANATION_SCHEMA_VERSION, RuntimeRiskConfig, dispatch_host_call_shared,
+    replay_runtime_risk_ledger_artifact, verify_runtime_risk_ledger_artifact,
 };
 use pi::tools::ToolRegistry;
 use serde_json::json;
@@ -289,7 +288,11 @@ fn golden_reason_codes_stable() {
     // Reason codes must be non-empty strings
     for entry in &ledger.entries {
         for trigger in &entry.triggers {
-            assert!(!trigger.is_empty(), "empty trigger in call {}", entry.call_id);
+            assert!(
+                !trigger.is_empty(),
+                "empty trigger in call {}",
+                entry.call_id
+            );
             // Must be snake_case (no uppercase, no spaces)
             assert!(
                 !trigger.chars().any(|c| c.is_uppercase() || c == ' '),
@@ -298,22 +301,16 @@ fn golden_reason_codes_stable() {
         }
     }
 
-    harness.log().info_ctx(
-        "reason_codes",
-        "reason code stability validated",
-        |ctx| {
+    harness
+        .log()
+        .info_ctx("reason_codes", "reason code stability validated", |ctx| {
             ctx.push(("bead_id".into(), "bd-3f1ab".into()));
             ctx.push(("unique_codes".into(), all_codes.len().to_string()));
             ctx.push((
                 "codes".into(),
-                all_codes
-                    .iter()
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(","),
+                all_codes.iter().cloned().collect::<Vec<_>>().join(","),
             ));
-        },
-    );
+        });
 }
 
 // ============================================================================
@@ -376,8 +373,7 @@ fn golden_score_composition_bounded() {
 
         // Explanation schema must be present and correct
         assert_eq!(
-            entry.explanation_schema,
-            RUNTIME_RISK_EXPLANATION_SCHEMA_VERSION,
+            entry.explanation_schema, RUNTIME_RISK_EXPLANATION_SCHEMA_VERSION,
             "wrong schema for {}",
             entry.call_id
         );
@@ -656,15 +652,13 @@ fn golden_score_escalation_pattern() {
         "exec avg score ({avg_exec:.4}) should be >= benign avg ({avg_benign:.4})"
     );
 
-    harness.log().info_ctx(
-        "escalation",
-        "score escalation pattern validated",
-        |ctx| {
+    harness
+        .log()
+        .info_ctx("escalation", "score escalation pattern validated", |ctx| {
             ctx.push(("bead_id".into(), "bd-3f1ab".into()));
             ctx.push(("avg_benign".into(), format!("{avg_benign:.6}")));
             ctx.push(("avg_exec".into(), format!("{avg_exec:.6}")));
-        },
-    );
+        });
 }
 
 // ============================================================================

@@ -14,10 +14,10 @@ use common::TestHarness;
 use pi::connectors::http::HttpConnector;
 use pi::extensions::{
     ExtensionManager, ExtensionPolicy, ExtensionPolicyMode, HostCallContext, HostCallPayload,
-    RuntimeRiskCalibrationConfig, RuntimeRiskCalibrationObjective, RuntimeRiskConfig,
-    calibrate_runtime_risk_from_ledger, dispatch_host_call_shared,
-    verify_runtime_risk_ledger_artifact, RUNTIME_RISK_CALIBRATION_SCHEMA_VERSION,
-    RUNTIME_RISK_EXPLANATION_TERM_BUDGET, RUNTIME_RISK_LEDGER_SCHEMA_VERSION,
+    RUNTIME_RISK_CALIBRATION_SCHEMA_VERSION, RUNTIME_RISK_EXPLANATION_TERM_BUDGET,
+    RUNTIME_RISK_LEDGER_SCHEMA_VERSION, RuntimeRiskCalibrationConfig,
+    RuntimeRiskCalibrationObjective, RuntimeRiskConfig, calibrate_runtime_risk_from_ledger,
+    dispatch_host_call_shared, verify_runtime_risk_ledger_artifact,
 };
 use pi::tools::ToolRegistry;
 use serde_json::json;
@@ -52,7 +52,12 @@ const fn default_risk_config() -> RuntimeRiskConfig {
 fn setup(
     harness: &TestHarness,
     config: RuntimeRiskConfig,
-) -> (ToolRegistry, HttpConnector, ExtensionManager, ExtensionPolicy) {
+) -> (
+    ToolRegistry,
+    HttpConnector,
+    ExtensionManager,
+    ExtensionPolicy,
+) {
     let tools = ToolRegistry::new(&[], harness.temp_dir(), None);
     let http = HttpConnector::with_defaults();
     let manager = ExtensionManager::new();
@@ -167,8 +172,8 @@ fn fp_fn_metrics_per_scenario_class() {
 
     let artifact = manager.runtime_risk_ledger_artifact();
     let config = RuntimeRiskCalibrationConfig::default();
-    let report = calibrate_runtime_risk_from_ledger(&artifact, &config)
-        .expect("calibration must succeed");
+    let report =
+        calibrate_runtime_risk_from_ledger(&artifact, &config).expect("calibration must succeed");
 
     // Verify calibration report has FP/FN metrics
     assert!(
@@ -231,29 +236,31 @@ fn fp_fn_metrics_per_scenario_class() {
         );
     }
 
-    harness.log().info_ctx("fp_fn_metrics", "calibration metrics", |ctx_log| {
-        ctx_log.push(("issue_id".into(), "bd-cu17q".into()));
-        ctx_log.push((
-            "baseline_fpr".into(),
-            format!("{:.4}", report.baseline.false_positive_rate),
-        ));
-        ctx_log.push((
-            "baseline_fnr".into(),
-            format!("{:.4}", report.baseline.false_negative_rate),
-        ));
-        ctx_log.push((
-            "recommended_fpr".into(),
-            format!("{:.4}", report.recommended.false_positive_rate),
-        ));
-        ctx_log.push((
-            "recommended_fnr".into(),
-            format!("{:.4}", report.recommended.false_negative_rate),
-        ));
-        ctx_log.push((
-            "recommended_threshold".into(),
-            format!("{:.3}", report.recommended_threshold),
-        ));
-    });
+    harness
+        .log()
+        .info_ctx("fp_fn_metrics", "calibration metrics", |ctx_log| {
+            ctx_log.push(("issue_id".into(), "bd-cu17q".into()));
+            ctx_log.push((
+                "baseline_fpr".into(),
+                format!("{:.4}", report.baseline.false_positive_rate),
+            ));
+            ctx_log.push((
+                "baseline_fnr".into(),
+                format!("{:.4}", report.baseline.false_negative_rate),
+            ));
+            ctx_log.push((
+                "recommended_fpr".into(),
+                format!("{:.4}", report.recommended.false_positive_rate),
+            ));
+            ctx_log.push((
+                "recommended_fnr".into(),
+                format!("{:.4}", report.recommended.false_negative_rate),
+            ));
+            ctx_log.push((
+                "recommended_threshold".into(),
+                format!("{:.3}", report.recommended_threshold),
+            ));
+        });
 }
 
 // ============================================================================
@@ -299,16 +306,18 @@ fn feature_extraction_latency_within_budget() {
         budget_compliance_rate * 100.0
     );
 
-    harness.log().info_ctx("feature_latency", "feature extraction metrics", |ctx_log| {
-        ctx_log.push(("issue_id".into(), "bd-cu17q".into()));
-        ctx_log.push(("total_entries".into(), total.to_string()));
-        ctx_log.push(("max_latency_us".into(), max_latency_us.to_string()));
-        ctx_log.push(("budget_exceeded".into(), budget_exceeded_count.to_string()));
-        ctx_log.push((
-            "compliance_rate".into(),
-            format!("{:.1}%", budget_compliance_rate * 100.0),
-        ));
-    });
+    harness
+        .log()
+        .info_ctx("feature_latency", "feature extraction metrics", |ctx_log| {
+            ctx_log.push(("issue_id".into(), "bd-cu17q".into()));
+            ctx_log.push(("total_entries".into(), total.to_string()));
+            ctx_log.push(("max_latency_us".into(), max_latency_us.to_string()));
+            ctx_log.push(("budget_exceeded".into(), budget_exceeded_count.to_string()));
+            ctx_log.push((
+                "compliance_rate".into(),
+                format!("{:.1}%", budget_compliance_rate * 100.0),
+            ));
+        });
 }
 
 // ============================================================================
@@ -376,17 +385,18 @@ fn calibration_report_comparable_across_runs() {
 
         let artifact = manager.runtime_risk_ledger_artifact();
         let config = RuntimeRiskCalibrationConfig::default();
-        let report =
-            calibrate_runtime_risk_from_ledger(&artifact, &config).expect("calibration");
+        let report = calibrate_runtime_risk_from_ledger(&artifact, &config).expect("calibration");
 
-        harness.log().info_ctx("comparable_run", "run complete", |ctx_log| {
-            ctx_log.push(("issue_id".into(), "bd-cu17q".into()));
-            ctx_log.push(("run".into(), run_idx.to_string()));
-            ctx_log.push((
-                "recommended_threshold".into(),
-                format!("{:.3}", report.recommended_threshold),
-            ));
-        });
+        harness
+            .log()
+            .info_ctx("comparable_run", "run complete", |ctx_log| {
+                ctx_log.push(("issue_id".into(), "bd-cu17q".into()));
+                ctx_log.push(("run".into(), run_idx.to_string()));
+                ctx_log.push((
+                    "recommended_threshold".into(),
+                    format!("{:.3}", report.recommended_threshold),
+                ));
+            });
 
         reports.push(report);
     }
@@ -467,12 +477,14 @@ fn decision_throughput_under_load() {
         "all calls must be recorded in ledger"
     );
 
-    harness.log().info_ctx("throughput", "throughput results", |ctx_log| {
-        ctx_log.push(("issue_id".into(), "bd-cu17q".into()));
-        ctx_log.push(("call_count".into(), call_count.to_string()));
-        ctx_log.push(("total_ms".into(), elapsed.as_millis().to_string()));
-        ctx_log.push(("per_call_us".into(), per_call_us.to_string()));
-    });
+    harness
+        .log()
+        .info_ctx("throughput", "throughput results", |ctx_log| {
+            ctx_log.push(("issue_id".into(), "bd-cu17q".into()));
+            ctx_log.push(("call_count".into(), call_count.to_string()));
+            ctx_log.push(("total_ms".into(), elapsed.as_millis().to_string()));
+            ctx_log.push(("per_call_us".into(), per_call_us.to_string()));
+        });
 }
 
 // ============================================================================
@@ -491,9 +503,18 @@ fn multi_objective_calibration_comparison() {
     let artifact = manager.runtime_risk_ledger_artifact();
 
     let objectives = [
-        ("min_expected_loss", RuntimeRiskCalibrationObjective::MinExpectedLoss),
-        ("min_false_positives", RuntimeRiskCalibrationObjective::MinFalsePositives),
-        ("balanced_accuracy", RuntimeRiskCalibrationObjective::BalancedAccuracy),
+        (
+            "min_expected_loss",
+            RuntimeRiskCalibrationObjective::MinExpectedLoss,
+        ),
+        (
+            "min_false_positives",
+            RuntimeRiskCalibrationObjective::MinFalsePositives,
+        ),
+        (
+            "balanced_accuracy",
+            RuntimeRiskCalibrationObjective::BalancedAccuracy,
+        ),
     ];
 
     for (name, objective) in &objectives {
@@ -501,8 +522,7 @@ fn multi_objective_calibration_comparison() {
             objective: *objective,
             ..RuntimeRiskCalibrationConfig::default()
         };
-        let report =
-            calibrate_runtime_risk_from_ledger(&artifact, &config).expect(name);
+        let report = calibrate_runtime_risk_from_ledger(&artifact, &config).expect(name);
 
         // Schema must be correct
         assert_eq!(report.schema, RUNTIME_RISK_CALIBRATION_SCHEMA_VERSION);
@@ -519,8 +539,7 @@ fn multi_objective_calibration_comparison() {
 
         // Delta must be consistent
         assert!(
-            (report.recommended_delta
-                - (report.recommended_threshold - report.baseline_threshold))
+            (report.recommended_delta - (report.recommended_threshold - report.baseline_threshold))
                 .abs()
                 < 1e-12,
             "{name}: delta inconsistency"
@@ -538,22 +557,24 @@ fn multi_objective_calibration_comparison() {
             );
         }
 
-        harness.log().info_ctx("multi_objective", "objective evaluation", |ctx_log| {
-            ctx_log.push(("issue_id".into(), "bd-cu17q".into()));
-            ctx_log.push(("objective".into(), (*name).to_string()));
-            ctx_log.push((
-                "threshold".into(),
-                format!("{:.3}", report.recommended_threshold),
-            ));
-            ctx_log.push((
-                "fpr".into(),
-                format!("{:.4}", report.recommended.false_positive_rate),
-            ));
-            ctx_log.push((
-                "fnr".into(),
-                format!("{:.4}", report.recommended.false_negative_rate),
-            ));
-        });
+        harness
+            .log()
+            .info_ctx("multi_objective", "objective evaluation", |ctx_log| {
+                ctx_log.push(("issue_id".into(), "bd-cu17q".into()));
+                ctx_log.push(("objective".into(), (*name).to_string()));
+                ctx_log.push((
+                    "threshold".into(),
+                    format!("{:.3}", report.recommended_threshold),
+                ));
+                ctx_log.push((
+                    "fpr".into(),
+                    format!("{:.4}", report.recommended.false_positive_rate),
+                ));
+                ctx_log.push((
+                    "fnr".into(),
+                    format!("{:.4}", report.recommended.false_negative_rate),
+                ));
+            });
     }
 }
 
@@ -606,14 +627,16 @@ fn overhead_scales_with_trace_length() {
             size_ratio * 2.0
         );
 
-        harness.log().info_ctx("scaling", "overhead scaling analysis", |ctx_log| {
-            ctx_log.push(("issue_id".into(), "bd-cu17q".into()));
-            ctx_log.push(("small_size".into(), small.0.to_string()));
-            ctx_log.push(("small_us".into(), small.1.as_micros().to_string()));
-            ctx_log.push(("large_size".into(), large.0.to_string()));
-            ctx_log.push(("large_us".into(), large.1.as_micros().to_string()));
-            ctx_log.push(("ratio".into(), format!("{ratio:.1}x")));
-        });
+        harness
+            .log()
+            .info_ctx("scaling", "overhead scaling analysis", |ctx_log| {
+                ctx_log.push(("issue_id".into(), "bd-cu17q".into()));
+                ctx_log.push(("small_size".into(), small.0.to_string()));
+                ctx_log.push(("small_us".into(), small.1.as_micros().to_string()));
+                ctx_log.push(("large_size".into(), large.0.to_string()));
+                ctx_log.push(("large_us".into(), large.1.as_micros().to_string()));
+                ctx_log.push(("ratio".into(), format!("{ratio:.1}x")));
+            });
     }
 }
 
@@ -687,24 +710,25 @@ fn multi_capability_accuracy() {
 
     // Log per-capability risk statistics
     for (cap, scores) in &cap_scores {
-        let avg = scores.iter().sum::<f64>()
-            / f64::from(u32::try_from(scores.len()).expect("fits"));
+        let avg =
+            scores.iter().sum::<f64>() / f64::from(u32::try_from(scores.len()).expect("fits"));
         let min = scores.iter().copied().fold(f64::INFINITY, f64::min);
         let max = scores.iter().copied().fold(f64::NEG_INFINITY, f64::max);
 
-        harness.log().info_ctx("capability_accuracy", "per-capability stats", |ctx_log| {
-            ctx_log.push(("issue_id".into(), "bd-cu17q".into()));
-            ctx_log.push(("capability".into(), cap.clone()));
-            ctx_log.push(("count".into(), scores.len().to_string()));
-            ctx_log.push(("avg_risk".into(), format!("{avg:.4}")));
-            ctx_log.push(("min_risk".into(), format!("{min:.4}")));
-            ctx_log.push(("max_risk".into(), format!("{max:.4}")));
-        });
+        harness
+            .log()
+            .info_ctx("capability_accuracy", "per-capability stats", |ctx_log| {
+                ctx_log.push(("issue_id".into(), "bd-cu17q".into()));
+                ctx_log.push(("capability".into(), cap.clone()));
+                ctx_log.push(("count".into(), scores.len().to_string()));
+                ctx_log.push(("avg_risk".into(), format!("{avg:.4}")));
+                ctx_log.push(("min_risk".into(), format!("{min:.4}")));
+                ctx_log.push(("max_risk".into(), format!("{max:.4}")));
+            });
     }
 
     // Exec should have higher base risk than log
-    if let (Some(log_scores), Some(exec_scores)) = (cap_scores.get("log"), cap_scores.get("exec"))
-    {
+    if let (Some(log_scores), Some(exec_scores)) = (cap_scores.get("log"), cap_scores.get("exec")) {
         let avg_log = log_scores.iter().sum::<f64>()
             / f64::from(u32::try_from(log_scores.len()).expect("fits"));
         let avg_exec = exec_scores.iter().sum::<f64>()
@@ -730,8 +754,7 @@ fn evaluation_report_source_fingerprinting() {
 
     let artifact = manager.runtime_risk_ledger_artifact();
     let config = RuntimeRiskCalibrationConfig::default();
-    let report = calibrate_runtime_risk_from_ledger(&artifact, &config)
-        .expect("calibration");
+    let report = calibrate_runtime_risk_from_ledger(&artifact, &config).expect("calibration");
 
     // Report must reference the exact source ledger
     assert_eq!(
