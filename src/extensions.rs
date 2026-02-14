@@ -3095,7 +3095,7 @@ pub struct SecurityAlertSeverityCounts {
 }
 
 impl SecurityAlertCategoryCounts {
-    const fn increment(&mut self, cat: SecurityAlertCategory) {
+    pub const fn increment(&mut self, cat: SecurityAlertCategory) {
         match cat {
             SecurityAlertCategory::PolicyDenial => self.policy_denial += 1,
             SecurityAlertCategory::AnomalyDenial => self.anomaly_denial += 1,
@@ -3109,7 +3109,7 @@ impl SecurityAlertCategoryCounts {
 }
 
 impl SecurityAlertSeverityCounts {
-    const fn increment(&mut self, sev: SecurityAlertSeverity) {
+    pub const fn increment(&mut self, sev: SecurityAlertSeverity) {
         match sev {
             SecurityAlertSeverity::Info => self.info += 1,
             SecurityAlertSeverity::Warning => self.warning += 1,
