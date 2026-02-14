@@ -2141,6 +2141,21 @@ fn fs_op_read(params: &Value, path: &Path) -> std::result::Result<Value, HostCal
         .and_then(Value::as_str)
         .map_or("utf8", str::trim);
 
+    if let Ok(meta) = fs::metadata(path) {
+        if meta.len() > crate::tools::READ_TOOL_MAX_BYTES {
+            return Err(HostCallError {
+                code: HostCallErrorCode::Io,
+                message: format!(
+                    "File is too large ({} bytes). Max allowed is {} bytes.",
+                    meta.len(),
+                    crate::tools::READ_TOOL_MAX_BYTES
+                ),
+                details: None,
+                retryable: None,
+            });
+        }
+    }
+
     let bytes = fs::read(path).map_err(|err| HostCallError {
         code: HostCallErrorCode::Io,
         message: format!("read: {err}"),
@@ -2236,6 +2251,18 @@ fn fs_op_list(path: &Path) -> std::result::Result<Value, HostCallError> {
 
     let mut entries = Vec::new();
     for entry in read_dir {
+        if entries.len() >= crate::tools::LS_SCAN_HARD_LIMIT {
+            return Err(HostCallError {
+                code: HostCallErrorCode::Io,
+                message: format!(
+                    "Directory scan limit reached ({} entries).",
+                    crate::tools::LS_SCAN_HARD_LIMIT
+                ),
+                details: None,
+                retryable: None,
+            });
+        }
+
         let entry = entry.map_err(|err| HostCallError {
             code: HostCallErrorCode::Io,
             message: format!("read_dir entry: {err}"),

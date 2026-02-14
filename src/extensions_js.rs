@@ -11141,8 +11141,6 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
         let process_args = self.config.args.clone();
         let env = self.config.env.clone();
         let allowed_read_roots = Arc::clone(&self.allowed_read_roots);
-        let bridge_repair_mode = self.config.repair_mode;
-        let bridge_repair_events = Arc::clone(&self.repair_events);
 
         self.context
             .with(|ctx| {
@@ -11701,8 +11699,6 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
                     Func::from({
                         let process_cwd = process_cwd.clone();
                         let allowed_read_roots = Arc::clone(&allowed_read_roots);
-                        let repair_mode = bridge_repair_mode;
-                        let repair_events = Arc::clone(&bridge_repair_events);
                         move |path: String| -> rquickjs::Result<String> {
                             let workspace_root =
                                 crate::extensions::safe_canonicalize(Path::new(&process_cwd));

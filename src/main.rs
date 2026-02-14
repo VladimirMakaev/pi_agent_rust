@@ -65,7 +65,7 @@ fn main_impl() -> Result<()> {
     if let Some(command) = &cli.command {
         match command {
             cli::Commands::Config => {
-                handle_config(&cwd)?;
+                handle_config(&cwd);
                 return Ok(());
             }
             cli::Commands::List => {
@@ -817,7 +817,7 @@ async fn handle_subcommand(command: cli::Commands, cwd: &Path) -> Result<()> {
             handle_package_list(&manager).await?;
         }
         cli::Commands::Config => {
-            handle_config(cwd)?;
+            handle_config(cwd);
         }
         cli::Commands::Doctor {
             path,
@@ -1362,7 +1362,8 @@ fn print_package_entry_blocking(manager: &PackageManager, entry: &PackageEntry) 
     Ok(())
 }
 
-fn handle_config(cwd: &Path) -> Result<()> {
+#[allow(clippy::unnecessary_wraps)]
+fn handle_config(cwd: &Path) {
     let config_path = std::env::var("PI_CONFIG_PATH")
         .ok()
         .map_or_else(|| Config::global_dir().join("settings.json"), PathBuf::from);
@@ -1390,8 +1391,6 @@ fn handle_config(cwd: &Path) -> Result<()> {
         Ok(_) => println!("Current configuration is valid."),
         Err(e) => println!("Configuration Error: {e}"),
     }
-
-    Ok(())
 }
 
 fn handle_doctor(
