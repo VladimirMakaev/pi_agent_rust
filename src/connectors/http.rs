@@ -37,6 +37,10 @@ pub struct HttpConnectorConfig {
     #[serde(default)]
     pub denylist: Vec<String>,
 
+    /// When true, an empty allowlist denies all outbound hosts.
+    #[serde(default)]
+    pub enforce_allowlist: bool,
+
     /// Require TLS for all requests (default: true)
     #[serde(default = "default_require_tls")]
     pub require_tls: bool,
@@ -75,6 +79,7 @@ impl Default for HttpConnectorConfig {
         Self {
             allowlist: Vec::new(),
             denylist: Vec::new(),
+            enforce_allowlist: false,
             require_tls: default_require_tls(),
             max_request_bytes: default_max_request_bytes(),
             max_response_bytes: default_max_response_bytes(),
@@ -214,10 +219,9 @@ impl HttpConnector {
             ));
         }
 
-        // Check allowlist (if non-empty, host must match)
-        if !self.config.allowlist.is_empty()
-            && !Self::matches_pattern_list(host, &self.config.allowlist)
-        {
+        // Check allowlist. In strict mode, empty allowlist means deny-all.
+        let requires_allowlist = self.config.enforce_allowlist || !self.config.allowlist.is_empty();
+        if requires_allowlist && !Self::matches_pattern_list(host, &self.config.allowlist) {
             return Err((
                 HostCallErrorCode::Denied,
                 format!("Host '{host}' is not in allowlist"),
@@ -835,6 +839,7 @@ mod tests {
         assert_eq!(config.default_timeout_ms, 30_000);
         assert!(config.allowlist.is_empty());
         assert!(config.denylist.is_empty());
+        assert!(!config.enforce_allowlist);
     }
 
     #[test]
@@ -890,6 +895,21 @@ mod tests {
         assert!(result.is_err());
         let (code, _) = result.unwrap_err();
         assert_eq!(code, HostCallErrorCode::Denied);
+    }
+
+    #[test]
+    fn test_url_validation_enforced_allowlist_denies_when_empty() {
+        let connector = HttpConnector::new(HttpConnectorConfig {
+            require_tls: false,
+            enforce_allowlist: true,
+            ..Default::default()
+        });
+
+        let result = connector.validate_url("http://example.com/path");
+        assert!(result.is_err());
+        let (code, msg) = result.unwrap_err();
+        assert_eq!(code, HostCallErrorCode::Denied);
+        assert!(msg.contains("allowlist"), "{msg}");
     }
 
     #[test]
@@ -1055,6 +1075,7 @@ mod tests {
         let config = HttpConnectorConfig {
             allowlist: vec!["*.example.com".to_string()],
             denylist: vec!["evil.com".to_string()],
+            enforce_allowlist: true,
             require_tls: true,
             max_request_bytes: 1024,
             max_response_bytes: 2048,
@@ -1066,6 +1087,7 @@ mod tests {
 
         assert_eq!(parsed.allowlist, config.allowlist);
         assert_eq!(parsed.denylist, config.denylist);
+        assert_eq!(parsed.enforce_allowlist, config.enforce_allowlist);
         assert_eq!(parsed.require_tls, config.require_tls);
         assert_eq!(parsed.max_request_bytes, config.max_request_bytes);
         assert_eq!(parsed.max_response_bytes, config.max_response_bytes);
