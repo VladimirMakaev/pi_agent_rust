@@ -46,7 +46,7 @@
     "qa_runbook": "docs/qa-runbook.md",
     "testing_policy": "docs/testing-policy.md"
   },
-  "generated_at": "2026-02-14T03:12:28.944136537+00:00",
+  "generated_at": "2026-02-14T06:30:36.652999464+00:00",
   "schema": "pi.ci.artifact_retention_report.v1",
   "triage_artifacts": {
     "evidence_contract": "tests/e2e_results/<ts>/evidence_contract.json",
