@@ -134,6 +134,7 @@ pub const RUNTIME_RISK_CALIBRATION_SCHEMA_VERSION: &str = "pi.ext.runtime_risk_c
 pub const RUNTIME_HOSTCALL_TELEMETRY_SCHEMA_VERSION: &str = "pi.ext.hostcall_telemetry.v1";
 pub const RUNTIME_HOSTCALL_FEATURE_SCHEMA_VERSION: &str = "pi.ext.hostcall_feature_vector.v1";
 pub const RUNTIME_HOSTCALL_FEATURE_BUDGET_US: u64 = 250;
+pub const RUNTIME_RISK_BASELINE_SCHEMA_VERSION: &str = "pi.ext.runtime_risk_baseline.v1";
 const RUNTIME_HOSTCALL_SEQUENCE_WINDOW: usize = 64;
 const CAPABILITY_MANIFEST_SCHEMA_V1: &str = "pi.ext.cap.v1";
 const CAPABILITY_MANIFEST_SCHEMA_V2: &str = "pi.ext.cap.v2";
@@ -1947,6 +1948,109 @@ pub struct RuntimeRiskCalibrationReport {
     pub candidates: Vec<RuntimeRiskThresholdCalibration>,
 }
 
+// ============================================================================
+// Baseline Modeling (bd-153pv)
+// ============================================================================
+
+/// Per-capability robust statistics from approved traces.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BaselineCapabilityProfile {
+    /// Capability name (e.g. "log", "exec", "http").
+    pub capability: String,
+    /// Number of observations.
+    pub sample_count: usize,
+    /// Median of risk scores.
+    pub risk_score_median: f64,
+    /// Median Absolute Deviation of risk scores.
+    pub risk_score_mad: f64,
+    /// 5th percentile of risk scores.
+    pub risk_score_p5: f64,
+    /// 95th percentile of risk scores.
+    pub risk_score_p95: f64,
+    /// Median error rate across calls.
+    pub error_rate_median: f64,
+    /// Median burst density (1s window).
+    pub burst_density_1s_median: f64,
+    /// Median burst density (10s window).
+    pub burst_density_10s_median: f64,
+}
+
+/// Markov transition matrix over risk state labels.
+///
+/// States: `SafeFast`=0, `Suspicious`=1, `Unsafe`=2.
+/// `counts[i][j]` = number of observed transitions from state `i` to state `j`.
+/// `probabilities[i][j]` = smoothed transition probability.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BaselineMarkovTransitionMatrix {
+    /// Raw transition counts `[from][to]`, 3x3.
+    pub counts: [[u64; 3]; 3],
+    /// Smoothed probabilities `[from][to]`, 3x3. Rows sum to 1.0.
+    pub probabilities: [[f64; 3]; 3],
+    /// Dirichlet smoothing prior per cell (default: 1.0).
+    pub smoothing_prior: f64,
+    /// Total transitions observed.
+    pub total_transitions: u64,
+    /// Stationary distribution `[SafeFast, Suspicious, Unsafe]`.
+    pub stationary_distribution: [f64; 3],
+}
+
+/// Single drift anomaly detected when comparing live features to baseline.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BaselineDriftAnomaly {
+    /// Which metric deviated (e.g. "risk_score", "error_rate", "burst_density_1s").
+    pub metric: String,
+    /// Observed value.
+    pub observed: f64,
+    /// Baseline median for this metric.
+    pub baseline_median: f64,
+    /// Baseline MAD for this metric.
+    pub baseline_mad: f64,
+    /// Number of MAD units from median (z-score analog).
+    pub deviation_mads: f64,
+    /// Human-readable explanation.
+    pub explanation: String,
+}
+
+/// Result of comparing live features against a baseline model.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BaselineDriftReport {
+    /// Extension ID this report pertains to.
+    pub extension_id: String,
+    /// Capability being evaluated.
+    pub capability: String,
+    /// Whether any anomaly exceeded the threshold.
+    pub drift_detected: bool,
+    /// Individual anomalies found.
+    pub anomalies: Vec<BaselineDriftAnomaly>,
+    /// Markov transition anomaly score (KL divergence from baseline).
+    pub transition_divergence: f64,
+    /// Whether transition pattern is anomalous (KL > threshold).
+    pub transition_anomalous: bool,
+}
+
+/// Complete baseline model for an extension, built from approved traces.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RuntimeRiskBaselineModel {
+    /// Schema version.
+    pub schema: String,
+    /// Extension ID this baseline covers.
+    pub extension_id: String,
+    /// Timestamp when baseline was generated (ms since epoch).
+    pub generated_at_ms: i64,
+    /// Source data hash from the ledger used to build this baseline.
+    pub source_data_hash: String,
+    /// Number of ledger entries used to build the baseline.
+    pub source_entry_count: usize,
+    /// Per-capability robust statistics.
+    pub capability_profiles: Vec<BaselineCapabilityProfile>,
+    /// Markov transition matrix over risk states.
+    pub transition_matrix: BaselineMarkovTransitionMatrix,
+    /// MAD deviation threshold for flagging anomalies (default: 3.0).
+    pub anomaly_threshold_mads: f64,
+    /// KL divergence threshold for transition anomalies (default: 0.5).
+    pub transition_divergence_threshold: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(default)]
 pub struct RuntimeHostcallSequenceContext {
@@ -2896,6 +3000,378 @@ pub fn calibrate_runtime_risk_from_ledger(
         recommended,
         candidates,
     })
+}
+
+// ============================================================================
+// Baseline Model Builder (bd-153pv)
+// ============================================================================
+
+/// Compute the median of a sorted slice. Returns 0.0 for empty slices.
+fn baseline_median(sorted: &[f64]) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let mid = sorted.len() / 2;
+    if sorted.len() % 2 == 0 {
+        // Use midpoint arithmetic to avoid overflow lint
+        let a = sorted[mid - 1];
+        let b = sorted[mid];
+        a + (b - a) / 2.0
+    } else {
+        sorted[mid]
+    }
+}
+
+/// Compute the Median Absolute Deviation of a sorted slice.
+/// MAD = median(|x_i - median(x)|).
+fn baseline_mad(sorted: &[f64]) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let med = baseline_median(sorted);
+    let mut deviations: Vec<f64> = sorted.iter().map(|x| (x - med).abs()).collect();
+    deviations.sort_by(f64::total_cmp);
+    baseline_median(&deviations)
+}
+
+/// Map a `RuntimeRiskStateLabelValue` to a 0-indexed state for the Markov matrix.
+const fn state_label_to_index(label: RuntimeRiskStateLabelValue) -> usize {
+    match label {
+        RuntimeRiskStateLabelValue::SafeFast => 0,
+        RuntimeRiskStateLabelValue::Suspicious => 1,
+        RuntimeRiskStateLabelValue::Unsafe => 2,
+    }
+}
+
+/// Build a Markov transition matrix from a sequence of state labels.
+/// Uses Dirichlet smoothing (additive prior) for sparse data.
+#[allow(clippy::cast_precision_loss)]
+fn build_markov_transition_matrix(
+    states: &[RuntimeRiskStateLabelValue],
+    smoothing_prior: f64,
+) -> BaselineMarkovTransitionMatrix {
+    let mut counts = [[0u64; 3]; 3];
+    let mut total_transitions = 0u64;
+    for window in states.windows(2) {
+        let from = state_label_to_index(window[0]);
+        let to = state_label_to_index(window[1]);
+        counts[from][to] += 1;
+        total_transitions += 1;
+    }
+
+    // Smooth and normalize
+    let mut probabilities = [[0.0f64; 3]; 3];
+    for (i, row) in counts.iter().enumerate() {
+        let row_sum: f64 = row.iter().map(|&c| c as f64).sum::<f64>();
+        let row_total = 3.0f64.mul_add(smoothing_prior, row_sum);
+        for (j, &count) in row.iter().enumerate() {
+            probabilities[i][j] = (count as f64 + smoothing_prior) / row_total;
+        }
+    }
+
+    // Compute stationary distribution via power iteration.
+    let stationary = markov_stationary_distribution(&probabilities);
+
+    BaselineMarkovTransitionMatrix {
+        counts,
+        probabilities,
+        smoothing_prior,
+        total_transitions,
+        stationary_distribution: stationary,
+    }
+}
+
+/// Compute stationary distribution of a 3x3 transition matrix via power iteration.
+fn markov_stationary_distribution(prob: &[[f64; 3]; 3]) -> [f64; 3] {
+    let mut pi = [1.0 / 3.0; 3];
+    for _ in 0..200 {
+        let mut next = [0.0f64; 3];
+        for (j, next_j) in next.iter_mut().enumerate() {
+            for (i, pi_i) in pi.iter().enumerate() {
+                *next_j += pi_i * prob[i][j];
+            }
+        }
+        // Normalize
+        let sum: f64 = next.iter().sum();
+        if sum > 0.0 {
+            for v in &mut next {
+                *v /= sum;
+            }
+        }
+        pi = next;
+    }
+    pi
+}
+
+/// Compute KL divergence D_KL(p || q) for two discrete distributions.
+/// Returns 0.0 if distributions are identical. Uses floor of 1e-12 for q to
+/// avoid log(0).
+fn kl_divergence(p: &[f64; 3], q: &[f64; 3]) -> f64 {
+    let mut kl = 0.0f64;
+    for (i, &p_i) in p.iter().enumerate() {
+        if p_i > 0.0 {
+            let q_i = q[i].max(1e-12);
+            kl += p_i * (p_i / q_i).ln();
+        }
+    }
+    kl.max(0.0)
+}
+
+/// Build a per-capability profile from ledger entries for a single capability.
+fn build_capability_profile(
+    capability: &str,
+    entries: &[&RuntimeRiskLedgerArtifactEntry],
+) -> BaselineCapabilityProfile {
+    let mut risk_scores: Vec<f64> = entries.iter().map(|e| e.risk_score).collect();
+    risk_scores.sort_by(f64::total_cmp);
+
+    let median = baseline_median(&risk_scores);
+    let mad = baseline_mad(&risk_scores);
+    let p5 = runtime_risk_quantile(risk_scores.clone(), 0.05);
+    let p95 = runtime_risk_quantile(risk_scores, 0.95);
+
+    // Compute error rate from outcome_error_code presence
+    let error_count = entries
+        .iter()
+        .filter(|e| e.outcome_error_code.is_some())
+        .count();
+    #[allow(clippy::cast_precision_loss)]
+    let error_rate = if entries.is_empty() {
+        0.0
+    } else {
+        error_count as f64 / entries.len() as f64
+    };
+
+    // burst_density is harder to compute from ledger entries (no feature vector),
+    // but we can estimate from timestamp clustering
+    let mut timestamps: Vec<i64> = entries.iter().map(|e| e.ts_ms).collect();
+    timestamps.sort_unstable();
+    let burst_1s_median = estimate_burst_density(&timestamps, 1000);
+    let burst_10s_median = estimate_burst_density(&timestamps, 10_000);
+
+    BaselineCapabilityProfile {
+        capability: capability.to_string(),
+        sample_count: entries.len(),
+        risk_score_median: median,
+        risk_score_mad: mad,
+        risk_score_p5: p5,
+        risk_score_p95: p95,
+        error_rate_median: error_rate,
+        burst_density_1s_median: burst_1s_median,
+        burst_density_10s_median: burst_10s_median,
+    }
+}
+
+/// Estimate median burst density for a set of sorted timestamps within a given
+/// window size (in ms). Returns 0.0 if there are fewer than 2 timestamps.
+fn estimate_burst_density(sorted_timestamps: &[i64], window_ms: i64) -> f64 {
+    if sorted_timestamps.len() < 2 {
+        return 0.0;
+    }
+    let mut densities = Vec::with_capacity(sorted_timestamps.len());
+    for (i, &ts) in sorted_timestamps.iter().enumerate() {
+        let count = sorted_timestamps[i..]
+            .iter()
+            .take_while(|&&t| t - ts <= window_ms)
+            .count();
+        // Normalize: 8 for 1s, 24 for 10s (same as feature extraction)
+        let normalizer = if window_ms <= 1000 { 8.0 } else { 24.0 };
+        #[allow(clippy::cast_precision_loss)]
+        densities.push(runtime_risk_clamp01(count as f64 / normalizer));
+    }
+    densities.sort_by(f64::total_cmp);
+    baseline_median(&densities)
+}
+
+/// Build a complete baseline model from a runtime risk ledger artifact.
+///
+/// The baseline captures per-capability robust statistics (median/MAD/quantiles)
+/// and a Markov transition matrix over risk state labels, both of which can be
+/// used by the online scorer for drift detection.
+pub fn build_baseline_from_ledger(
+    artifact: &RuntimeRiskLedgerArtifact,
+    extension_id: &str,
+) -> Result<RuntimeRiskBaselineModel> {
+    build_baseline_from_ledger_with_options(artifact, extension_id, 3.0, 0.5, 1.0)
+}
+
+/// Build a baseline model with customizable thresholds.
+pub fn build_baseline_from_ledger_with_options(
+    artifact: &RuntimeRiskLedgerArtifact,
+    extension_id: &str,
+    anomaly_threshold_mads: f64,
+    transition_divergence_threshold: f64,
+    smoothing_prior: f64,
+) -> Result<RuntimeRiskBaselineModel> {
+    let verification = verify_runtime_risk_ledger_artifact(artifact);
+    if !verification.valid {
+        return Err(Error::validation(
+            "cannot build baseline from invalid ledger".to_string(),
+        ));
+    }
+    if artifact.entries.is_empty() {
+        return Err(Error::validation(
+            "baseline requires at least one ledger entry".to_string(),
+        ));
+    }
+
+    // Filter to this extension only
+    let ext_entries: Vec<&RuntimeRiskLedgerArtifactEntry> = artifact
+        .entries
+        .iter()
+        .filter(|e| e.extension_id == extension_id)
+        .collect();
+
+    if ext_entries.is_empty() {
+        return Err(Error::validation(format!(
+            "no ledger entries found for extension '{extension_id}'"
+        )));
+    }
+
+    // Group by capability
+    let mut by_capability: std::collections::BTreeMap<
+        String,
+        Vec<&RuntimeRiskLedgerArtifactEntry>,
+    > = std::collections::BTreeMap::new();
+    for entry in &ext_entries {
+        by_capability
+            .entry(entry.capability.clone())
+            .or_default()
+            .push(entry);
+    }
+
+    let capability_profiles: Vec<BaselineCapabilityProfile> = by_capability
+        .iter()
+        .map(|(cap, entries)| build_capability_profile(cap, entries))
+        .collect();
+
+    // Build Markov transition matrix from state sequence
+    let states: Vec<RuntimeRiskStateLabelValue> =
+        ext_entries.iter().map(|e| e.derived_state).collect();
+    let transition_matrix = build_markov_transition_matrix(&states, smoothing_prior);
+
+    Ok(RuntimeRiskBaselineModel {
+        schema: RUNTIME_RISK_BASELINE_SCHEMA_VERSION.to_string(),
+        extension_id: extension_id.to_string(),
+        generated_at_ms: runtime_risk_now_ms(),
+        source_data_hash: artifact.data_hash.clone(),
+        source_entry_count: ext_entries.len(),
+        capability_profiles,
+        transition_matrix,
+        anomaly_threshold_mads,
+        transition_divergence_threshold,
+    })
+}
+
+/// Detect drift in live features compared to a baseline model.
+///
+/// Returns a drift report with individual anomalies (metrics exceeding the MAD
+/// threshold) and Markov transition divergence.
+#[allow(clippy::too_many_arguments)]
+pub fn detect_baseline_drift(
+    baseline: &RuntimeRiskBaselineModel,
+    extension_id: &str,
+    capability: &str,
+    live_risk_score: f64,
+    live_error_rate: f64,
+    live_burst_1s: f64,
+    live_burst_10s: f64,
+    recent_states: &[RuntimeRiskStateLabelValue],
+) -> BaselineDriftReport {
+    let profile = baseline
+        .capability_profiles
+        .iter()
+        .find(|p| p.capability == capability);
+
+    let mut anomalies = Vec::new();
+    let mut drift_detected = false;
+
+    if let Some(prof) = profile {
+        // Check risk score deviation
+        let mad_threshold = baseline.anomaly_threshold_mads;
+
+        let check_metric = |metric: &str,
+                            observed: f64,
+                            median: f64,
+                            mad: f64,
+                            anomalies: &mut Vec<BaselineDriftAnomaly>|
+         -> bool {
+            // Use a floor of 0.01 for MAD to avoid infinite deviation on constant data
+            let effective_mad = mad.max(0.01);
+            let deviation = (observed - median).abs() / effective_mad;
+            if deviation > mad_threshold {
+                anomalies.push(BaselineDriftAnomaly {
+                    metric: metric.to_string(),
+                    observed,
+                    baseline_median: median,
+                    baseline_mad: mad,
+                    deviation_mads: deviation,
+                    explanation: format!(
+                        "{metric} = {observed:.4} is {deviation:.1} MADs from baseline median \
+                         {median:.4} (MAD={mad:.4})"
+                    ),
+                });
+                true
+            } else {
+                false
+            }
+        };
+
+        drift_detected |= check_metric(
+            "risk_score",
+            live_risk_score,
+            prof.risk_score_median,
+            prof.risk_score_mad,
+            &mut anomalies,
+        );
+        drift_detected |= check_metric(
+            "error_rate",
+            live_error_rate,
+            prof.error_rate_median,
+            prof.error_rate_median.max(0.01), // Use median as proxy MAD when no explicit MAD
+            &mut anomalies,
+        );
+        drift_detected |= check_metric(
+            "burst_density_1s",
+            live_burst_1s,
+            prof.burst_density_1s_median,
+            prof.burst_density_1s_median.max(0.01),
+            &mut anomalies,
+        );
+        drift_detected |= check_metric(
+            "burst_density_10s",
+            live_burst_10s,
+            prof.burst_density_10s_median,
+            prof.burst_density_10s_median.max(0.01),
+            &mut anomalies,
+        );
+    }
+
+    // Check Markov transition divergence
+    let mut transition_divergence = 0.0;
+    let mut transition_anomalous = false;
+    if recent_states.len() >= 2 {
+        // Build observed transition matrix from recent states
+        let observed_matrix = build_markov_transition_matrix(recent_states, 0.5);
+        // Compare stationary distributions via KL divergence
+        transition_divergence = kl_divergence(
+            &observed_matrix.stationary_distribution,
+            &baseline.transition_matrix.stationary_distribution,
+        );
+        if transition_divergence > baseline.transition_divergence_threshold {
+            transition_anomalous = true;
+            drift_detected = true;
+        }
+    }
+
+    BaselineDriftReport {
+        extension_id: extension_id.to_string(),
+        capability: capability.to_string(),
+        drift_detected,
+        anomalies,
+        transition_divergence,
+        transition_anomalous,
+    }
 }
 
 fn runtime_risk_choose_action(
@@ -4846,6 +5322,8 @@ mod wasm_host {
         http: HttpConnector,
         fs: FsConnector,
         env_allowlist: BTreeSet<String>,
+        manifest_schema: Option<String>,
+        manifest_requirements: Vec<CapabilityRequirement>,
         extension_id: Option<String>,
     }
 
@@ -4878,6 +5356,8 @@ mod wasm_host {
                 }),
                 fs,
                 env_allowlist: BTreeSet::new(),
+                manifest_schema: None,
+                manifest_requirements: Vec::new(),
                 extension_id: None,
             })
         }
@@ -4940,6 +5420,9 @@ mod wasm_host {
             }
 
             let manifest = registration.capability_manifest.as_ref();
+            self.manifest_schema = manifest.map(|value| value.schema.clone());
+            self.manifest_requirements =
+                manifest.map_or_else(Vec::new, |value| value.capabilities.clone());
 
             self.env_allowlist = Self::env_allowlist_from_manifest(manifest);
 
@@ -4970,6 +5453,144 @@ mod wasm_host {
                 .and_then(Value::as_str)
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
+        }
+
+        fn matches_manifest_class(classes: &[String], class_name: &str) -> bool {
+            classes
+                .iter()
+                .any(|value| value.trim().eq_ignore_ascii_case(class_name))
+        }
+
+        fn connector_class_for_call(call: &HostCallPayload) -> Option<&'static str> {
+            let method = call.method.trim();
+            if method.eq_ignore_ascii_case("tool") {
+                Some("tool")
+            } else if method.eq_ignore_ascii_case("fs") {
+                Some("fs")
+            } else if method.eq_ignore_ascii_case("exec") {
+                Some("exec")
+            } else if method.eq_ignore_ascii_case("env") {
+                Some("env")
+            } else if method.eq_ignore_ascii_case("http") {
+                Some("http")
+            } else if method.eq_ignore_ascii_case("session") {
+                Some("session")
+            } else if method.eq_ignore_ascii_case("events") {
+                Some("events")
+            } else if method.eq_ignore_ascii_case("ui") {
+                Some("ui")
+            } else if method.eq_ignore_ascii_case("log") {
+                Some("log")
+            } else {
+                None
+            }
+        }
+
+        fn hostcall_class_for_call(call: &HostCallPayload) -> Option<String> {
+            let method = call.method.trim();
+            if method.eq_ignore_ascii_case("fs") {
+                let op = call
+                    .params
+                    .get("op")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .unwrap_or_default();
+                let op = FsOp::parse(op)?;
+                let suffix = match op {
+                    FsOp::Read => "read",
+                    FsOp::Write => "write",
+                    FsOp::List => "list",
+                    FsOp::Stat => "stat",
+                    FsOp::Mkdir => "mkdir",
+                    FsOp::Delete => "delete",
+                };
+                return Some(format!("fs.{suffix}"));
+            }
+
+            if method.is_empty() {
+                None
+            } else {
+                Some(method.to_ascii_lowercase())
+            }
+        }
+
+        fn enforce_manifest_classes(
+            &self,
+            required: &str,
+            call: &HostCallPayload,
+        ) -> std::result::Result<(), String> {
+            if self.manifest_schema.as_deref() != Some(CAPABILITY_MANIFEST_SCHEMA_V2) {
+                return Ok(());
+            }
+
+            let Some(connector_class) = Self::connector_class_for_call(call) else {
+                return Ok(());
+            };
+            let Some(hostcall_class) = Self::hostcall_class_for_call(call) else {
+                // Let downstream call parsing return the canonical invalid-request error.
+                return Ok(());
+            };
+
+            let matching_requirements = self
+                .manifest_requirements
+                .iter()
+                .filter(|req| req.capability.trim().eq_ignore_ascii_case(required))
+                .collect::<Vec<_>>();
+
+            if matching_requirements.is_empty() {
+                return Err(Self::host_error_json(
+                    HostCallErrorCode::Denied,
+                    format!("Capability '{required}' not declared in capability manifest"),
+                    Some(json!({
+                        "capability": required,
+                        "connector_class": connector_class,
+                        "hostcall_class": hostcall_class,
+                        "hint": "Declare this capability in capability_manifest.v2 before use."
+                    })),
+                    None,
+                ));
+            }
+
+            let allowed = matching_requirements.iter().any(|req| {
+                Self::matches_manifest_class(&req.connector_classes, connector_class)
+                    && Self::matches_manifest_class(&req.hostcall_classes, &hostcall_class)
+            });
+            if allowed {
+                return Ok(());
+            }
+
+            let allowed_connector_classes = matching_requirements
+                .iter()
+                .flat_map(|req| req.connector_classes.iter())
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            let allowed_hostcall_classes = matching_requirements
+                .iter()
+                .flat_map(|req| req.hostcall_classes.iter())
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+
+            Err(Self::host_error_json(
+                HostCallErrorCode::Denied,
+                format!(
+                    "Capability scope mismatch: connector class '{connector_class}' / hostcall class '{hostcall_class}' is not allowed for capability '{required}'"
+                ),
+                Some(json!({
+                    "capability": required,
+                    "connector_class": connector_class,
+                    "hostcall_class": hostcall_class,
+                    "allowed_connector_classes": allowed_connector_classes,
+                    "allowed_hostcall_classes": allowed_hostcall_classes,
+                    "hint": "Update capability_manifest scope: connector_classes and hostcall_classes must include this call."
+                })),
+                None,
+            ))
         }
 
         fn host_error_json(
@@ -5496,6 +6117,7 @@ mod wasm_host {
                     None,
                 ));
             }
+            self.enforce_manifest_classes(required, &payload)?;
 
             let call_timeout_ms = payload.timeout_ms.filter(|ms| *ms > 0);
             let params_hash = Self::hostcall_params_hash(&payload.method, &payload.params);
@@ -5910,6 +6532,50 @@ mod wasm_host {
             payload
         }
 
+        fn registration_payload_v2_read_fs_scope() -> RegisterPayload {
+            RegisterPayload {
+                name: "ext.test".to_string(),
+                version: "0.2.0".to_string(),
+                api_version: PROTOCOL_VERSION.to_string(),
+                capabilities: Vec::new(),
+                capability_manifest: Some(CapabilityManifest {
+                    schema: CAPABILITY_MANIFEST_SCHEMA_V2.to_string(),
+                    capabilities: vec![CapabilityRequirement {
+                        capability: "read".to_string(),
+                        methods: Vec::new(),
+                        intents: vec!["file_read".to_string()],
+                        connector_classes: vec!["fs".to_string()],
+                        hostcall_classes: vec!["fs.read".to_string()],
+                        risk_tier: Some("low".to_string()),
+                        scope: Some(CapabilityScope {
+                            paths: Some(vec![".".to_string()]),
+                            hosts: None,
+                            env: None,
+                            allowed_tools: None,
+                        }),
+                        provenance: Some(CapabilityProvenance {
+                            source: "local".to_string(),
+                            integrity: CapabilityIntegrityAttestation {
+                                algorithm: "sha256".to_string(),
+                                digest:
+                                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                                        .to_string(),
+                            },
+                            publisher: CapabilityPublisherAttestation {
+                                id: "publisher.local.test".to_string(),
+                                verification: "unsigned".to_string(),
+                            },
+                        }),
+                    }],
+                }),
+                tools: Vec::new(),
+                slash_commands: Vec::new(),
+                shortcuts: Vec::new(),
+                flags: Vec::new(),
+                event_hooks: Vec::new(),
+            }
+        }
+
         #[derive(Debug, Clone)]
         struct CapturedEvent {
             level: tracing::Level,
@@ -6213,6 +6879,106 @@ mod wasm_host {
             .expect_err("fs write denied");
             let err: HostCallError = serde_json::from_str(&err_json).expect("parse error json");
             assert_eq!(err.code, HostCallErrorCode::Denied);
+        }
+
+        #[test]
+        fn wasm_host_v2_manifest_denies_connector_class_mismatch() {
+            let dir = tempdir().expect("tempdir");
+            let cwd = dir.path().to_path_buf();
+            std::fs::write(dir.path().join("file.txt"), "hello").expect("write file");
+
+            let mut state = HostState::new(permissive_policy(), cwd).expect("host state");
+            state
+                .apply_registration(&registration_payload_v2_read_fs_scope())
+                .expect("apply registration");
+
+            let call = HostCallPayload {
+                call_id: "call-v2-connector-class-deny".to_string(),
+                capability: "read".to_string(),
+                method: "tool".to_string(),
+                params: json!({ "name": "read", "input": { "file_path": "file.txt" } }),
+                timeout_ms: None,
+                cancel_token: None,
+                context: None,
+            };
+
+            let err_json = {
+                let json = serde_json::to_string(&call).expect("serialize hostcall");
+                run_async(async { host::Host::call(&mut state, "tool".to_string(), json).await })
+                    .expect_err("tool read should be denied by connector class scope")
+            };
+            let err: HostCallError = serde_json::from_str(&err_json).expect("parse error json");
+            assert_eq!(err.code, HostCallErrorCode::Denied);
+            assert!(
+                err.message.contains("connector class"),
+                "expected connector class guidance, got: {}",
+                err.message
+            );
+        }
+
+        #[test]
+        fn wasm_host_v2_manifest_denies_hostcall_class_mismatch() {
+            let dir = tempdir().expect("tempdir");
+            let cwd = dir.path().to_path_buf();
+            std::fs::write(dir.path().join("file.txt"), "hello").expect("write file");
+
+            let mut state = HostState::new(permissive_policy(), cwd).expect("host state");
+            state
+                .apply_registration(&registration_payload_v2_read_fs_scope())
+                .expect("apply registration");
+
+            let call = HostCallPayload {
+                call_id: "call-v2-hostcall-class-deny".to_string(),
+                capability: "read".to_string(),
+                method: "fs".to_string(),
+                params: json!({ "op": "list", "path": "." }),
+                timeout_ms: None,
+                cancel_token: None,
+                context: None,
+            };
+
+            let err_json = {
+                let json = serde_json::to_string(&call).expect("serialize hostcall");
+                run_async(async { host::Host::call(&mut state, "fs".to_string(), json).await })
+                    .expect_err("fs.list should be denied when only fs.read is allowed")
+            };
+            let err: HostCallError = serde_json::from_str(&err_json).expect("parse error json");
+            assert_eq!(err.code, HostCallErrorCode::Denied);
+            assert!(
+                err.message.contains("hostcall class"),
+                "expected hostcall class guidance, got: {}",
+                err.message
+            );
+        }
+
+        #[test]
+        fn wasm_host_v2_manifest_allows_matching_connector_and_hostcall_classes() {
+            let dir = tempdir().expect("tempdir");
+            let cwd = dir.path().to_path_buf();
+            std::fs::write(dir.path().join("file.txt"), "hello").expect("write file");
+
+            let mut state = HostState::new(permissive_policy(), cwd).expect("host state");
+            state
+                .apply_registration(&registration_payload_v2_read_fs_scope())
+                .expect("apply registration");
+
+            let call = HostCallPayload {
+                call_id: "call-v2-hostcall-class-allow".to_string(),
+                capability: "read".to_string(),
+                method: "fs".to_string(),
+                params: json!({ "op": "read", "path": "file.txt" }),
+                timeout_ms: None,
+                cancel_token: None,
+                context: None,
+            };
+
+            let out_json = {
+                let json = serde_json::to_string(&call).expect("serialize hostcall");
+                run_async(async { host::Host::call(&mut state, "fs".to_string(), json).await })
+                    .expect("fs.read should be allowed by matching v2 scope classes")
+            };
+            let out: Value = serde_json::from_str(&out_json).expect("parse fs output");
+            assert_eq!(out.get("text").and_then(Value::as_str), Some("hello"));
         }
 
         #[test]
@@ -11520,6 +12286,12 @@ impl ExtensionManager {
     ) -> Result<RuntimeRiskCalibrationReport> {
         let artifact = self.runtime_risk_ledger_artifact();
         calibrate_runtime_risk_from_ledger(&artifact, config)
+    }
+
+    /// Build a baseline model for the given extension from the current ledger.
+    pub fn build_baseline(&self, extension_id: &str) -> Result<RuntimeRiskBaselineModel> {
+        let artifact = self.runtime_risk_ledger_artifact();
+        build_baseline_from_ledger(&artifact, extension_id)
     }
 
     #[cfg(test)]
@@ -22240,6 +23012,457 @@ mod tests {
         assert!((runtime_risk_clamp01(1.0) - 1.0).abs() < f64::EPSILON);
     }
 
+    // ========================================================================
+    // Baseline modeling (bd-153pv)
+    // ========================================================================
+
+    #[test]
+    fn baseline_median_empty_returns_zero() {
+        assert!((baseline_median(&[]) - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn baseline_median_single_element() {
+        assert!((baseline_median(&[4.2]) - 4.2).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn baseline_median_odd_count() {
+        assert!((baseline_median(&[1.0, 3.0, 5.0]) - 3.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn baseline_median_even_count() {
+        // midpoint of 3.0 and 5.0 = 4.0
+        assert!((baseline_median(&[1.0, 3.0, 5.0, 7.0]) - 4.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn baseline_mad_constant_data_is_zero() {
+        assert!((baseline_mad(&[5.0, 5.0, 5.0, 5.0]) - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn baseline_mad_known_values() {
+        // data = [1, 2, 3, 4, 5], median = 3
+        // deviations = [2, 1, 0, 1, 2], sorted = [0, 1, 1, 2, 2], median = 1
+        let sorted = &[1.0, 2.0, 3.0, 4.0, 5.0];
+        assert!((baseline_mad(sorted) - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn state_label_index_mapping() {
+        assert_eq!(
+            state_label_to_index(RuntimeRiskStateLabelValue::SafeFast),
+            0
+        );
+        assert_eq!(
+            state_label_to_index(RuntimeRiskStateLabelValue::Suspicious),
+            1
+        );
+        assert_eq!(state_label_to_index(RuntimeRiskStateLabelValue::Unsafe), 2);
+    }
+
+    #[test]
+    fn markov_matrix_empty_states_uses_uniform_prior() {
+        let matrix = build_markov_transition_matrix(&[], 1.0);
+        assert_eq!(matrix.total_transitions, 0);
+        // With no data, each row should be uniform (1/3 each due to smoothing)
+        for row in &matrix.probabilities {
+            for &prob in row {
+                assert!((prob - 1.0 / 3.0).abs() < 1e-10);
+            }
+        }
+    }
+
+    #[test]
+    fn markov_matrix_single_transition() {
+        let states = vec![
+            RuntimeRiskStateLabelValue::SafeFast,
+            RuntimeRiskStateLabelValue::Suspicious,
+        ];
+        let matrix = build_markov_transition_matrix(&states, 1.0);
+        assert_eq!(matrix.total_transitions, 1);
+        // Row 0 (SafeFast): 1 transition to Suspicious + 1.0 prior each
+        // counts[0] = [0, 1, 0], row_total = 1 + 3*1.0 = 4
+        assert!((matrix.probabilities[0][1] - 2.0 / 4.0).abs() < 1e-10);
+        assert!((matrix.probabilities[0][0] - 1.0 / 4.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn markov_matrix_deterministic() {
+        let states = vec![
+            RuntimeRiskStateLabelValue::SafeFast,
+            RuntimeRiskStateLabelValue::SafeFast,
+            RuntimeRiskStateLabelValue::Suspicious,
+            RuntimeRiskStateLabelValue::Unsafe,
+            RuntimeRiskStateLabelValue::SafeFast,
+        ];
+        let m1 = build_markov_transition_matrix(&states, 1.0);
+        let m2 = build_markov_transition_matrix(&states, 1.0);
+        assert_eq!(m1, m2, "Markov matrix must be deterministic");
+    }
+
+    #[test]
+    fn markov_stationary_sums_to_one() {
+        let states = vec![
+            RuntimeRiskStateLabelValue::SafeFast,
+            RuntimeRiskStateLabelValue::SafeFast,
+            RuntimeRiskStateLabelValue::Suspicious,
+            RuntimeRiskStateLabelValue::Unsafe,
+            RuntimeRiskStateLabelValue::SafeFast,
+            RuntimeRiskStateLabelValue::SafeFast,
+            RuntimeRiskStateLabelValue::Suspicious,
+        ];
+        let matrix = build_markov_transition_matrix(&states, 1.0);
+        let sum: f64 = matrix.stationary_distribution.iter().sum();
+        assert!(
+            (sum - 1.0).abs() < 1e-8,
+            "stationary distribution should sum to 1.0, got {sum}"
+        );
+    }
+
+    #[test]
+    fn kl_divergence_identical_is_zero() {
+        let p = [0.5, 0.3, 0.2];
+        assert!((kl_divergence(&p, &p) - 0.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn kl_divergence_different_is_positive() {
+        let p = [0.9, 0.05, 0.05];
+        let q = [0.33, 0.34, 0.33];
+        assert!(kl_divergence(&p, &q) > 0.0);
+    }
+
+    #[test]
+    fn build_baseline_deterministic() {
+        use crate::extensions::RuntimeRiskConfig;
+        let manager = ExtensionManager::new();
+        manager.set_runtime_risk_config(RuntimeRiskConfig {
+            enabled: true,
+            alpha: 0.01,
+            window_size: 64,
+            ledger_limit: 512,
+            decision_timeout_ms: 50,
+            fail_closed: true,
+        });
+
+        let policy = ExtensionPolicy {
+            mode: ExtensionPolicyMode::Permissive,
+            max_memory_mb: 256,
+            default_caps: Vec::new(),
+            deny_caps: Vec::new(),
+            ..Default::default()
+        };
+        let tools = crate::tools::ToolRegistry::new(&[], std::path::Path::new("/tmp"), None);
+        let http = crate::connectors::http::HttpConnector::with_defaults();
+        let ctx = HostCallContext {
+            runtime_name: "test",
+            extension_id: Some("ext.test.baseline"),
+            tools: &tools,
+            http: &http,
+            manager: Some(manager.clone()),
+            policy: &policy,
+            js_runtime: None,
+            interceptor: None,
+        };
+
+        futures::executor::block_on(async {
+            for i in 0..10 {
+                let call = HostCallPayload {
+                    call_id: format!("baseline-{i}"),
+                    capability: "log".to_string(),
+                    method: "log".to_string(),
+                    params: serde_json::json!({ "message": format!("test-{i}") }),
+                    timeout_ms: None,
+                    cancel_token: None,
+                    context: None,
+                };
+                let _ = dispatch_host_call_shared(&ctx, call).await;
+            }
+        });
+
+        let b1 = manager.build_baseline("ext.test.baseline").unwrap();
+        let b2 = manager.build_baseline("ext.test.baseline").unwrap();
+
+        // Schema, profiles, and transition matrix should match (timestamps may differ)
+        assert_eq!(b1.schema, b2.schema);
+        assert_eq!(b1.capability_profiles, b2.capability_profiles);
+        assert_eq!(b1.transition_matrix, b2.transition_matrix);
+        assert_eq!(b1.source_entry_count, b2.source_entry_count);
+    }
+
+    #[test]
+    fn build_baseline_sparse_data_has_fallback() {
+        use crate::extensions::RuntimeRiskConfig;
+        let manager = ExtensionManager::new();
+        manager.set_runtime_risk_config(RuntimeRiskConfig {
+            enabled: true,
+            alpha: 0.01,
+            window_size: 64,
+            ledger_limit: 512,
+            decision_timeout_ms: 50,
+            fail_closed: true,
+        });
+
+        let policy = ExtensionPolicy {
+            mode: ExtensionPolicyMode::Permissive,
+            max_memory_mb: 256,
+            default_caps: Vec::new(),
+            deny_caps: Vec::new(),
+            ..Default::default()
+        };
+        let tools = crate::tools::ToolRegistry::new(&[], std::path::Path::new("/tmp"), None);
+        let http = crate::connectors::http::HttpConnector::with_defaults();
+        let ctx = HostCallContext {
+            runtime_name: "test",
+            extension_id: Some("ext.test.sparse"),
+            tools: &tools,
+            http: &http,
+            manager: Some(manager.clone()),
+            policy: &policy,
+            js_runtime: None,
+            interceptor: None,
+        };
+
+        // Only 1 call - very sparse data
+        futures::executor::block_on(async {
+            let call = HostCallPayload {
+                call_id: "sparse-0".to_string(),
+                capability: "log".to_string(),
+                method: "log".to_string(),
+                params: serde_json::json!({ "message": "sparse" }),
+                timeout_ms: None,
+                cancel_token: None,
+                context: None,
+            };
+            let _ = dispatch_host_call_shared(&ctx, call).await;
+        });
+
+        let baseline = manager.build_baseline("ext.test.sparse").unwrap();
+        assert_eq!(baseline.source_entry_count, 1);
+        assert_eq!(baseline.capability_profiles.len(), 1);
+        assert_eq!(baseline.capability_profiles[0].sample_count, 1);
+        // Markov matrix should have uniform prior (no transitions from 1 entry)
+        assert_eq!(baseline.transition_matrix.total_transitions, 0);
+    }
+
+    #[test]
+    fn build_baseline_wrong_extension_returns_error() {
+        use crate::extensions::RuntimeRiskConfig;
+        let manager = ExtensionManager::new();
+        manager.set_runtime_risk_config(RuntimeRiskConfig {
+            enabled: true,
+            alpha: 0.01,
+            window_size: 64,
+            ledger_limit: 512,
+            decision_timeout_ms: 50,
+            fail_closed: true,
+        });
+
+        let policy = ExtensionPolicy {
+            mode: ExtensionPolicyMode::Permissive,
+            max_memory_mb: 256,
+            default_caps: Vec::new(),
+            deny_caps: Vec::new(),
+            ..Default::default()
+        };
+        let tools = crate::tools::ToolRegistry::new(&[], std::path::Path::new("/tmp"), None);
+        let http = crate::connectors::http::HttpConnector::with_defaults();
+        let ctx = HostCallContext {
+            runtime_name: "test",
+            extension_id: Some("ext.test.exists"),
+            tools: &tools,
+            http: &http,
+            manager: Some(manager.clone()),
+            policy: &policy,
+            js_runtime: None,
+            interceptor: None,
+        };
+
+        futures::executor::block_on(async {
+            let call = HostCallPayload {
+                call_id: "exists-0".to_string(),
+                capability: "log".to_string(),
+                method: "log".to_string(),
+                params: serde_json::json!({ "message": "exists" }),
+                timeout_ms: None,
+                cancel_token: None,
+                context: None,
+            };
+            let _ = dispatch_host_call_shared(&ctx, call).await;
+        });
+
+        let result = manager.build_baseline("ext.nonexistent");
+        assert!(result.is_err(), "should fail for nonexistent extension");
+    }
+
+    #[test]
+    fn drift_detection_no_anomaly_for_baseline_data() {
+        let profile = BaselineCapabilityProfile {
+            capability: "log".to_string(),
+            sample_count: 100,
+            risk_score_median: 0.10,
+            risk_score_mad: 0.02,
+            risk_score_p5: 0.06,
+            risk_score_p95: 0.14,
+            error_rate_median: 0.0,
+            burst_density_1s_median: 0.1,
+            burst_density_10s_median: 0.05,
+        };
+        let baseline = RuntimeRiskBaselineModel {
+            schema: RUNTIME_RISK_BASELINE_SCHEMA_VERSION.to_string(),
+            extension_id: "ext.test".to_string(),
+            generated_at_ms: 0,
+            source_data_hash: "test".to_string(),
+            source_entry_count: 100,
+            capability_profiles: vec![profile],
+            transition_matrix: build_markov_transition_matrix(&[], 1.0),
+            anomaly_threshold_mads: 3.0,
+            transition_divergence_threshold: 0.5,
+        };
+
+        let report = detect_baseline_drift(
+            &baseline,
+            "ext.test",
+            "log",
+            0.10, // close to median
+            0.0,
+            0.1,
+            0.05,
+            &[],
+        );
+        assert!(
+            !report.drift_detected,
+            "should not detect drift for baseline-matching data"
+        );
+        assert!(report.anomalies.is_empty());
+    }
+
+    #[test]
+    fn drift_detection_flags_outlier_risk_score() {
+        let profile = BaselineCapabilityProfile {
+            capability: "log".to_string(),
+            sample_count: 100,
+            risk_score_median: 0.10,
+            risk_score_mad: 0.02,
+            risk_score_p5: 0.06,
+            risk_score_p95: 0.14,
+            error_rate_median: 0.0,
+            burst_density_1s_median: 0.1,
+            burst_density_10s_median: 0.05,
+        };
+        let baseline = RuntimeRiskBaselineModel {
+            schema: RUNTIME_RISK_BASELINE_SCHEMA_VERSION.to_string(),
+            extension_id: "ext.test".to_string(),
+            generated_at_ms: 0,
+            source_data_hash: "test".to_string(),
+            source_entry_count: 100,
+            capability_profiles: vec![profile],
+            transition_matrix: build_markov_transition_matrix(&[], 1.0),
+            anomaly_threshold_mads: 3.0,
+            transition_divergence_threshold: 0.5,
+        };
+
+        let report = detect_baseline_drift(
+            &baseline,
+            "ext.test",
+            "log",
+            0.90, // far from baseline median 0.10
+            0.0,
+            0.1,
+            0.05,
+            &[],
+        );
+        assert!(
+            report.drift_detected,
+            "should detect drift for outlier score"
+        );
+        assert!(
+            report.anomalies.iter().any(|a| a.metric == "risk_score"),
+            "should have risk_score anomaly"
+        );
+    }
+
+    #[test]
+    fn drift_detection_transition_anomaly() {
+        // Baseline: mostly SafeFast transitions
+        let baseline_states = vec![
+            RuntimeRiskStateLabelValue::SafeFast,
+            RuntimeRiskStateLabelValue::SafeFast,
+            RuntimeRiskStateLabelValue::SafeFast,
+            RuntimeRiskStateLabelValue::SafeFast,
+            RuntimeRiskStateLabelValue::SafeFast,
+        ];
+        let baseline = RuntimeRiskBaselineModel {
+            schema: RUNTIME_RISK_BASELINE_SCHEMA_VERSION.to_string(),
+            extension_id: "ext.test".to_string(),
+            generated_at_ms: 0,
+            source_data_hash: "test".to_string(),
+            source_entry_count: 50,
+            capability_profiles: vec![],
+            transition_matrix: build_markov_transition_matrix(&baseline_states, 1.0),
+            anomaly_threshold_mads: 3.0,
+            transition_divergence_threshold: 0.1, // low threshold for sensitivity
+        };
+
+        // Live: mostly Unsafe transitions
+        let live_states = vec![
+            RuntimeRiskStateLabelValue::Unsafe,
+            RuntimeRiskStateLabelValue::Unsafe,
+            RuntimeRiskStateLabelValue::Unsafe,
+            RuntimeRiskStateLabelValue::Unsafe,
+        ];
+        let report = detect_baseline_drift(
+            &baseline,
+            "ext.test",
+            "log",
+            0.10,
+            0.0,
+            0.0,
+            0.0,
+            &live_states,
+        );
+        assert!(
+            report.transition_anomalous,
+            "should detect transition anomaly when live pattern differs from baseline"
+        );
+        assert!(report.transition_divergence > 0.0);
+    }
+
+    #[test]
+    fn baseline_model_json_roundtrip() {
+        let baseline = RuntimeRiskBaselineModel {
+            schema: RUNTIME_RISK_BASELINE_SCHEMA_VERSION.to_string(),
+            extension_id: "ext.roundtrip".to_string(),
+            generated_at_ms: 1_234_567_890,
+            source_data_hash: "abc123".to_string(),
+            source_entry_count: 42,
+            capability_profiles: vec![BaselineCapabilityProfile {
+                capability: "log".to_string(),
+                sample_count: 42,
+                risk_score_median: 0.1,
+                risk_score_mad: 0.02,
+                risk_score_p5: 0.06,
+                risk_score_p95: 0.14,
+                error_rate_median: 0.0,
+                burst_density_1s_median: 0.1,
+                burst_density_10s_median: 0.05,
+            }],
+            transition_matrix: build_markov_transition_matrix(&[], 1.0),
+            anomaly_threshold_mads: 3.0,
+            transition_divergence_threshold: 0.5,
+        };
+
+        let json = serde_json::to_string(&baseline).unwrap();
+        let deserialized: RuntimeRiskBaselineModel = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            baseline, deserialized,
+            "roundtrip should preserve all fields"
+        );
+    }
+
     // ── SEC-4.1: Per-Extension Resource Quota Tests ──────────────────────
 
     #[test]
@@ -22576,5 +23799,925 @@ mod tests {
             let _ = check_extension_quota(&config, &mut state, i * 1000, "tool");
         }
         assert_eq!(state.hostcalls_total, 100);
+    }
+
+    // ========================================================================
+    // SEC-3.2 Baseline Modeling Tests (bd-153pv)
+    // ========================================================================
+
+    /// Helper: build a test ledger artifact entry with required fields.
+    #[allow(clippy::too_many_arguments)]
+    fn make_test_ledger_entry(
+        ext_id: &str,
+        capability: &str,
+        method: &str,
+        risk_score: f64,
+        state: RuntimeRiskStateLabelValue,
+        ts_ms: i64,
+        call_id: &str,
+        outcome_error: Option<&str>,
+    ) -> RuntimeRiskLedgerArtifactEntry {
+        RuntimeRiskLedgerArtifactEntry {
+            ts_ms,
+            extension_id: ext_id.to_string(),
+            call_id: call_id.to_string(),
+            capability: capability.to_string(),
+            method: method.to_string(),
+            params_hash: "test_hash".to_string(),
+            policy_reason: "allowed".to_string(),
+            risk_score,
+            posterior: RuntimeRiskPosteriorEvidence {
+                safe_fast: 0.7,
+                suspicious: 0.2,
+                unsafe_: 0.1,
+            },
+            expected_loss: RuntimeRiskExpectedLossEvidence {
+                allow: 1.0,
+                harden: 2.0,
+                deny: 3.0,
+                terminate: 4.0,
+            },
+            selected_action: RuntimeRiskActionValue::Allow,
+            derived_state: state,
+            triggers: Vec::new(),
+            fallback_reason: None,
+            e_process: 0.5,
+            e_threshold: 100.0,
+            conformal_residual: 0.01,
+            conformal_quantile: 0.05,
+            drift_detected: false,
+            outcome_error_code: outcome_error.map(ToString::to_string),
+            ledger_hash: String::new(),
+            prev_ledger_hash: None,
+        }
+    }
+
+    /// Helper: build a valid ledger artifact with hash chains.
+    fn make_test_ledger_artifact(
+        entries: Vec<RuntimeRiskLedgerArtifactEntry>,
+    ) -> RuntimeRiskLedgerArtifact {
+        let mut hashed_entries = Vec::with_capacity(entries.len());
+        let mut prev_hash: Option<String> = None;
+        for mut entry in entries {
+            let hash = runtime_risk_compute_ledger_hash_artifact(&entry, prev_hash.as_deref());
+            entry.ledger_hash = hash.clone();
+            entry.prev_ledger_hash = prev_hash.clone();
+            prev_hash = Some(hash);
+            hashed_entries.push(entry);
+        }
+        let data_hash = runtime_risk_ledger_data_hash(&hashed_entries);
+        RuntimeRiskLedgerArtifact {
+            schema: RUNTIME_RISK_LEDGER_SCHEMA_VERSION.to_string(),
+            generated_at_ms: 1000,
+            entry_count: hashed_entries.len(),
+            head_ledger_hash: hashed_entries.first().map(|e| e.ledger_hash.clone()),
+            tail_ledger_hash: hashed_entries.last().map(|e| e.ledger_hash.clone()),
+            data_hash,
+            entries: hashed_entries,
+        }
+    }
+
+    #[test]
+    fn baseline_generation_is_deterministic() {
+        let entries = vec![
+            make_test_ledger_entry(
+                "ext.test",
+                "log",
+                "log",
+                0.15,
+                RuntimeRiskStateLabelValue::SafeFast,
+                1000,
+                "c1",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.test",
+                "exec",
+                "exec",
+                0.85,
+                RuntimeRiskStateLabelValue::Suspicious,
+                2000,
+                "c2",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.test",
+                "log",
+                "log",
+                0.20,
+                RuntimeRiskStateLabelValue::SafeFast,
+                3000,
+                "c3",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.test",
+                "http",
+                "fetch",
+                0.65,
+                RuntimeRiskStateLabelValue::Suspicious,
+                4000,
+                "c4",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.test",
+                "log",
+                "log",
+                0.10,
+                RuntimeRiskStateLabelValue::SafeFast,
+                5000,
+                "c5",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.test",
+                "exec",
+                "exec",
+                0.90,
+                RuntimeRiskStateLabelValue::Unsafe,
+                6000,
+                "c6",
+                Some("denied"),
+            ),
+        ];
+        let artifact = make_test_ledger_artifact(entries);
+
+        let model1 = build_baseline_from_ledger(&artifact, "ext.test").unwrap();
+        let model2 = build_baseline_from_ledger(&artifact, "ext.test").unwrap();
+
+        // Compare everything except generated_at_ms (uses wall clock)
+        assert_eq!(model1.schema, model2.schema);
+        assert_eq!(model1.extension_id, model2.extension_id);
+        assert_eq!(model1.source_data_hash, model2.source_data_hash);
+        assert_eq!(model1.source_entry_count, model2.source_entry_count);
+        assert_eq!(model1.capability_profiles, model2.capability_profiles);
+        assert_eq!(model1.transition_matrix, model2.transition_matrix);
+        assert!(
+            (model1.anomaly_threshold_mads - model2.anomaly_threshold_mads).abs() < f64::EPSILON
+        );
+        assert!(
+            (model1.transition_divergence_threshold - model2.transition_divergence_threshold).abs()
+                < f64::EPSILON
+        );
+    }
+
+    #[test]
+    fn baseline_schema_version_is_set() {
+        let entries = vec![
+            make_test_ledger_entry(
+                "ext.a",
+                "log",
+                "log",
+                0.1,
+                RuntimeRiskStateLabelValue::SafeFast,
+                1000,
+                "c1",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.a",
+                "log",
+                "log",
+                0.2,
+                RuntimeRiskStateLabelValue::SafeFast,
+                2000,
+                "c2",
+                None,
+            ),
+        ];
+        let artifact = make_test_ledger_artifact(entries);
+        let model = build_baseline_from_ledger(&artifact, "ext.a").unwrap();
+        assert_eq!(model.schema, RUNTIME_RISK_BASELINE_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn baseline_sparse_data_single_entry() {
+        // A single entry should still produce a valid baseline (not error).
+        let entries = vec![make_test_ledger_entry(
+            "ext.sparse",
+            "log",
+            "log",
+            0.15,
+            RuntimeRiskStateLabelValue::SafeFast,
+            1000,
+            "c1",
+            None,
+        )];
+        let artifact = make_test_ledger_artifact(entries);
+        let model = build_baseline_from_ledger(&artifact, "ext.sparse").unwrap();
+        assert_eq!(model.source_entry_count, 1);
+        assert_eq!(model.capability_profiles.len(), 1);
+        assert_eq!(model.capability_profiles[0].sample_count, 1);
+        // Median should equal the single observation
+        assert!((model.capability_profiles[0].risk_score_median - 0.15).abs() < 1e-10);
+        // MAD of a single value is 0
+        assert!((model.capability_profiles[0].risk_score_mad).abs() < 1e-10);
+    }
+
+    #[test]
+    fn baseline_sparse_markov_with_single_entry() {
+        let entries = vec![make_test_ledger_entry(
+            "ext.sparse",
+            "log",
+            "log",
+            0.1,
+            RuntimeRiskStateLabelValue::SafeFast,
+            1000,
+            "c1",
+            None,
+        )];
+        let artifact = make_test_ledger_artifact(entries);
+        let model = build_baseline_from_ledger(&artifact, "ext.sparse").unwrap();
+        // No transitions possible with a single entry
+        assert_eq!(model.transition_matrix.total_transitions, 0);
+        // Stationary distribution should still exist (from smoothing)
+        let sum: f64 = model.transition_matrix.stationary_distribution.iter().sum();
+        assert!(
+            (sum - 1.0).abs() < 1e-6,
+            "stationary distribution must sum to 1"
+        );
+    }
+
+    #[test]
+    fn baseline_per_capability_profiles_correct() {
+        let entries = vec![
+            make_test_ledger_entry(
+                "ext.a",
+                "log",
+                "log",
+                0.10,
+                RuntimeRiskStateLabelValue::SafeFast,
+                1000,
+                "c1",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.a",
+                "log",
+                "log",
+                0.20,
+                RuntimeRiskStateLabelValue::SafeFast,
+                2000,
+                "c2",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.a",
+                "log",
+                "log",
+                0.30,
+                RuntimeRiskStateLabelValue::SafeFast,
+                3000,
+                "c3",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.a",
+                "exec",
+                "exec",
+                0.90,
+                RuntimeRiskStateLabelValue::Unsafe,
+                4000,
+                "c4",
+                Some("denied"),
+            ),
+            make_test_ledger_entry(
+                "ext.a",
+                "exec",
+                "exec",
+                0.85,
+                RuntimeRiskStateLabelValue::Suspicious,
+                5000,
+                "c5",
+                None,
+            ),
+        ];
+        let artifact = make_test_ledger_artifact(entries);
+        let model = build_baseline_from_ledger(&artifact, "ext.a").unwrap();
+
+        // Should have 2 capability profiles: exec and log (sorted by BTreeMap)
+        assert_eq!(model.capability_profiles.len(), 2);
+        let exec_prof = model
+            .capability_profiles
+            .iter()
+            .find(|p| p.capability == "exec")
+            .unwrap();
+        let log_prof = model
+            .capability_profiles
+            .iter()
+            .find(|p| p.capability == "log")
+            .unwrap();
+
+        assert_eq!(exec_prof.sample_count, 2);
+        assert_eq!(log_prof.sample_count, 3);
+
+        // Log median: sorted [0.10, 0.20, 0.30] → median = 0.20
+        assert!((log_prof.risk_score_median - 0.20).abs() < 1e-10);
+
+        // Exec median: sorted [0.85, 0.90] → median = (0.85 + 0.90)/2 = 0.875
+        assert!((exec_prof.risk_score_median - 0.875).abs() < 1e-10);
+
+        // Exec error rate: 1 error out of 2 = 0.5
+        assert!((exec_prof.error_rate_median - 0.5).abs() < 1e-10);
+
+        // Log error rate: 0 errors = 0.0
+        assert!(log_prof.error_rate_median.abs() < 1e-10);
+    }
+
+    #[test]
+    fn baseline_markov_transition_matrix_correct() {
+        // Sequence: Safe → Safe → Suspicious → Unsafe → Safe → Suspicious
+        let entries = vec![
+            make_test_ledger_entry(
+                "ext.a",
+                "log",
+                "log",
+                0.1,
+                RuntimeRiskStateLabelValue::SafeFast,
+                1000,
+                "c1",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.a",
+                "log",
+                "log",
+                0.15,
+                RuntimeRiskStateLabelValue::SafeFast,
+                2000,
+                "c2",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.a",
+                "exec",
+                "exec",
+                0.7,
+                RuntimeRiskStateLabelValue::Suspicious,
+                3000,
+                "c3",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.a",
+                "exec",
+                "exec",
+                0.95,
+                RuntimeRiskStateLabelValue::Unsafe,
+                4000,
+                "c4",
+                Some("denied"),
+            ),
+            make_test_ledger_entry(
+                "ext.a",
+                "log",
+                "log",
+                0.1,
+                RuntimeRiskStateLabelValue::SafeFast,
+                5000,
+                "c5",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.a",
+                "exec",
+                "exec",
+                0.6,
+                RuntimeRiskStateLabelValue::Suspicious,
+                6000,
+                "c6",
+                None,
+            ),
+        ];
+        let artifact = make_test_ledger_artifact(entries);
+        let model = build_baseline_from_ledger(&artifact, "ext.a").unwrap();
+
+        assert_eq!(model.transition_matrix.total_transitions, 5);
+        // Safe→Safe: 1, Safe→Suspicious: 2, Suspicious→Unsafe: 1, Unsafe→Safe: 1
+        assert_eq!(model.transition_matrix.counts[0][0], 1); // Safe→Safe
+        assert_eq!(model.transition_matrix.counts[0][1], 2); // Safe→Suspicious
+        assert_eq!(model.transition_matrix.counts[1][2], 1); // Suspicious→Unsafe
+        assert_eq!(model.transition_matrix.counts[2][0], 1); // Unsafe→Safe
+    }
+
+    #[test]
+    fn baseline_stationary_distribution_sums_to_one() {
+        let entries = vec![
+            make_test_ledger_entry(
+                "ext.a",
+                "log",
+                "log",
+                0.1,
+                RuntimeRiskStateLabelValue::SafeFast,
+                1000,
+                "c1",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.a",
+                "exec",
+                "exec",
+                0.8,
+                RuntimeRiskStateLabelValue::Suspicious,
+                2000,
+                "c2",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.a",
+                "log",
+                "log",
+                0.1,
+                RuntimeRiskStateLabelValue::SafeFast,
+                3000,
+                "c3",
+                None,
+            ),
+        ];
+        let artifact = make_test_ledger_artifact(entries);
+        let model = build_baseline_from_ledger(&artifact, "ext.a").unwrap();
+
+        let sum: f64 = model.transition_matrix.stationary_distribution.iter().sum();
+        assert!(
+            (sum - 1.0).abs() < 1e-6,
+            "stationary distribution must sum to 1, got {sum}"
+        );
+    }
+
+    #[test]
+    fn baseline_from_ledger_serialization_roundtrip() {
+        let entries = vec![
+            make_test_ledger_entry(
+                "ext.serde",
+                "log",
+                "log",
+                0.1,
+                RuntimeRiskStateLabelValue::SafeFast,
+                1000,
+                "c1",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.serde",
+                "exec",
+                "exec",
+                0.9,
+                RuntimeRiskStateLabelValue::Unsafe,
+                2000,
+                "c2",
+                Some("timeout"),
+            ),
+            make_test_ledger_entry(
+                "ext.serde",
+                "http",
+                "fetch",
+                0.5,
+                RuntimeRiskStateLabelValue::Suspicious,
+                3000,
+                "c3",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.serde",
+                "log",
+                "log",
+                0.15,
+                RuntimeRiskStateLabelValue::SafeFast,
+                4000,
+                "c4",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.serde",
+                "log",
+                "log",
+                0.2,
+                RuntimeRiskStateLabelValue::SafeFast,
+                5000,
+                "c5",
+                None,
+            ),
+        ];
+        let artifact = make_test_ledger_artifact(entries);
+        let model = build_baseline_from_ledger(&artifact, "ext.serde").unwrap();
+
+        let json = serde_json::to_string(&model).expect("serialize baseline");
+        let deser: RuntimeRiskBaselineModel =
+            serde_json::from_str(&json).expect("deserialize baseline");
+        assert_eq!(model, deser, "roundtrip must preserve equality");
+    }
+
+    #[test]
+    fn baseline_drift_detects_risk_score_anomaly() {
+        let entries = vec![
+            make_test_ledger_entry(
+                "ext.a",
+                "log",
+                "log",
+                0.10,
+                RuntimeRiskStateLabelValue::SafeFast,
+                1000,
+                "c1",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.a",
+                "log",
+                "log",
+                0.12,
+                RuntimeRiskStateLabelValue::SafeFast,
+                2000,
+                "c2",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.a",
+                "log",
+                "log",
+                0.11,
+                RuntimeRiskStateLabelValue::SafeFast,
+                3000,
+                "c3",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.a",
+                "log",
+                "log",
+                0.13,
+                RuntimeRiskStateLabelValue::SafeFast,
+                4000,
+                "c4",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.a",
+                "log",
+                "log",
+                0.10,
+                RuntimeRiskStateLabelValue::SafeFast,
+                5000,
+                "c5",
+                None,
+            ),
+        ];
+        let artifact = make_test_ledger_artifact(entries);
+        let model = build_baseline_from_ledger(&artifact, "ext.a").unwrap();
+
+        // Drift: live risk_score of 0.90 vs baseline median ~0.11
+        let report = detect_baseline_drift(
+            &model,
+            "ext.a",
+            "log",
+            0.90, // far from median
+            0.0,  // error rate
+            0.0,  // burst 1s
+            0.0,  // burst 10s
+            &[],  // no recent states
+        );
+        assert!(
+            report.drift_detected,
+            "should detect drift for extreme score"
+        );
+        assert!(
+            report.anomalies.iter().any(|a| a.metric == "risk_score"),
+            "anomalies should include risk_score"
+        );
+    }
+
+    #[test]
+    fn baseline_drift_no_anomaly_within_normal_range() {
+        let entries = vec![
+            make_test_ledger_entry(
+                "ext.a",
+                "log",
+                "log",
+                0.10,
+                RuntimeRiskStateLabelValue::SafeFast,
+                1000,
+                "c1",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.a",
+                "log",
+                "log",
+                0.15,
+                RuntimeRiskStateLabelValue::SafeFast,
+                2000,
+                "c2",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.a",
+                "log",
+                "log",
+                0.12,
+                RuntimeRiskStateLabelValue::SafeFast,
+                3000,
+                "c3",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.a",
+                "log",
+                "log",
+                0.14,
+                RuntimeRiskStateLabelValue::SafeFast,
+                4000,
+                "c4",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.a",
+                "log",
+                "log",
+                0.13,
+                RuntimeRiskStateLabelValue::SafeFast,
+                5000,
+                "c5",
+                None,
+            ),
+        ];
+        let artifact = make_test_ledger_artifact(entries);
+        let model = build_baseline_from_ledger(&artifact, "ext.a").unwrap();
+
+        let report = detect_baseline_drift(
+            &model,
+            "ext.a",
+            "log",
+            0.13, // within normal range
+            0.0,
+            0.0,
+            0.0,
+            &[],
+        );
+        assert!(
+            !report.drift_detected,
+            "should not detect drift for values within normal range"
+        );
+    }
+
+    #[test]
+    fn baseline_drift_transition_anomaly_detected() {
+        // Baseline: mostly Safe→Safe transitions
+        let entries = vec![
+            make_test_ledger_entry(
+                "ext.a",
+                "log",
+                "log",
+                0.1,
+                RuntimeRiskStateLabelValue::SafeFast,
+                1000,
+                "c1",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.a",
+                "log",
+                "log",
+                0.1,
+                RuntimeRiskStateLabelValue::SafeFast,
+                2000,
+                "c2",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.a",
+                "log",
+                "log",
+                0.1,
+                RuntimeRiskStateLabelValue::SafeFast,
+                3000,
+                "c3",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.a",
+                "log",
+                "log",
+                0.1,
+                RuntimeRiskStateLabelValue::SafeFast,
+                4000,
+                "c4",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.a",
+                "log",
+                "log",
+                0.1,
+                RuntimeRiskStateLabelValue::SafeFast,
+                5000,
+                "c5",
+                None,
+            ),
+        ];
+        let artifact = make_test_ledger_artifact(entries);
+        // Use low divergence threshold and small smoothing so transition
+        // anomaly is clearly detectable.
+        let model =
+            build_baseline_from_ledger_with_options(&artifact, "ext.a", 3.0, 0.01, 0.01).unwrap();
+
+        // Live: mostly Unsafe→Unsafe transitions (very different from baseline)
+        let live_states = vec![
+            RuntimeRiskStateLabelValue::Unsafe,
+            RuntimeRiskStateLabelValue::Unsafe,
+            RuntimeRiskStateLabelValue::Unsafe,
+            RuntimeRiskStateLabelValue::Unsafe,
+            RuntimeRiskStateLabelValue::Unsafe,
+            RuntimeRiskStateLabelValue::Unsafe,
+            RuntimeRiskStateLabelValue::Unsafe,
+            RuntimeRiskStateLabelValue::Unsafe,
+        ];
+        let report =
+            detect_baseline_drift(&model, "ext.a", "log", 0.1, 0.0, 0.0, 0.0, &live_states);
+        assert!(
+            report.transition_divergence > 0.0,
+            "divergence should be positive for different state patterns"
+        );
+        assert!(
+            report.transition_anomalous,
+            "should detect transition anomaly (div={:.4}, thr={:.4})",
+            report.transition_divergence, model.transition_divergence_threshold,
+        );
+    }
+
+    #[test]
+    fn baseline_drift_anomaly_has_explanation() {
+        let entries = vec![
+            make_test_ledger_entry(
+                "ext.a",
+                "log",
+                "log",
+                0.10,
+                RuntimeRiskStateLabelValue::SafeFast,
+                1000,
+                "c1",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.a",
+                "log",
+                "log",
+                0.10,
+                RuntimeRiskStateLabelValue::SafeFast,
+                2000,
+                "c2",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.a",
+                "log",
+                "log",
+                0.10,
+                RuntimeRiskStateLabelValue::SafeFast,
+                3000,
+                "c3",
+                None,
+            ),
+        ];
+        let artifact = make_test_ledger_artifact(entries);
+        let model = build_baseline_from_ledger(&artifact, "ext.a").unwrap();
+
+        let report = detect_baseline_drift(
+            &model,
+            "ext.a",
+            "log",
+            0.95, // extreme anomaly
+            0.0,
+            0.0,
+            0.0,
+            &[],
+        );
+        assert!(report.drift_detected);
+        let anomaly = report
+            .anomalies
+            .iter()
+            .find(|a| a.metric == "risk_score")
+            .unwrap();
+        assert!(
+            !anomaly.explanation.is_empty(),
+            "anomaly must have explanation"
+        );
+        assert!(
+            anomaly.explanation.contains("MAD"),
+            "explanation should reference MAD, got: {}",
+            anomaly.explanation,
+        );
+        assert!(anomaly.deviation_mads > 3.0, "deviation should be large");
+    }
+
+    #[test]
+    fn baseline_rejects_invalid_ledger() {
+        let artifact = RuntimeRiskLedgerArtifact {
+            schema: "wrong_schema".to_string(),
+            generated_at_ms: 1000,
+            entry_count: 0,
+            head_ledger_hash: None,
+            tail_ledger_hash: None,
+            data_hash: String::new(),
+            entries: Vec::new(),
+        };
+        let result = build_baseline_from_ledger(&artifact, "ext.x");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn baseline_rejects_empty_entries() {
+        let artifact = RuntimeRiskLedgerArtifact {
+            schema: RUNTIME_RISK_LEDGER_SCHEMA_VERSION.to_string(),
+            generated_at_ms: 1000,
+            entry_count: 0,
+            head_ledger_hash: None,
+            tail_ledger_hash: None,
+            data_hash: runtime_risk_ledger_data_hash(&[]),
+            entries: Vec::new(),
+        };
+        let result = build_baseline_from_ledger(&artifact, "ext.x");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn baseline_rejects_missing_extension() {
+        let entries = vec![make_test_ledger_entry(
+            "ext.other",
+            "log",
+            "log",
+            0.1,
+            RuntimeRiskStateLabelValue::SafeFast,
+            1000,
+            "c1",
+            None,
+        )];
+        let artifact = make_test_ledger_artifact(entries);
+        let result = build_baseline_from_ledger(&artifact, "ext.missing");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn baseline_kl_divergence_zero_for_identical() {
+        let p = [0.6, 0.3, 0.1];
+        assert!(kl_divergence(&p, &p).abs() < 1e-12);
+    }
+
+    #[test]
+    fn baseline_kl_divergence_positive_for_different() {
+        let p = [0.8, 0.1, 0.1];
+        let q = [0.1, 0.1, 0.8];
+        let kl = kl_divergence(&p, &q);
+        assert!(
+            kl > 0.0,
+            "KL divergence should be positive for different distributions"
+        );
+    }
+
+    #[test]
+    fn baseline_median_correct() {
+        assert!((baseline_median(&[1.0, 2.0, 3.0]) - 2.0).abs() < 1e-10);
+        assert!((baseline_median(&[1.0, 2.0, 3.0, 4.0]) - 2.5).abs() < 1e-10);
+        assert!((baseline_median(&[5.0]) - 5.0).abs() < 1e-10);
+        assert!((baseline_median(&[]) - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn baseline_mad_correct() {
+        // Values: [1, 2, 3, 4, 5], median=3, deviations=[2,1,0,1,2], sorted=[0,1,1,2,2], MAD=1
+        assert!((baseline_mad(&[1.0, 2.0, 3.0, 4.0, 5.0]) - 1.0).abs() < 1e-10);
+        // Single value: MAD = 0
+        assert!((baseline_mad(&[7.0]) - 0.0).abs() < 1e-10);
+        assert!((baseline_mad(&[]) - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn baseline_custom_thresholds_propagate() {
+        let entries = vec![
+            make_test_ledger_entry(
+                "ext.a",
+                "log",
+                "log",
+                0.1,
+                RuntimeRiskStateLabelValue::SafeFast,
+                1000,
+                "c1",
+                None,
+            ),
+            make_test_ledger_entry(
+                "ext.a",
+                "log",
+                "log",
+                0.15,
+                RuntimeRiskStateLabelValue::SafeFast,
+                2000,
+                "c2",
+                None,
+            ),
+        ];
+        let artifact = make_test_ledger_artifact(entries);
+        let model =
+            build_baseline_from_ledger_with_options(&artifact, "ext.a", 5.0, 2.0, 0.1).unwrap();
+        assert!((model.anomaly_threshold_mads - 5.0).abs() < 1e-10);
+        assert!((model.transition_divergence_threshold - 2.0).abs() < 1e-10);
     }
 }
