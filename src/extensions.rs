@@ -11738,13 +11738,24 @@ pub async fn dispatch_host_call_shared(
             );
         }
 
-        let will_dispatch = match runtime_risk_decision
-            .as_ref()
-            .map_or(RuntimeRiskAction::Allow, |d| d.action)
-        {
-            RuntimeRiskAction::Allow => true,
-            RuntimeRiskAction::Harden => !runtime_risk_is_dangerous(capability),
-            RuntimeRiskAction::Deny | RuntimeRiskAction::Terminate => false,
+        // SEC-7.1: In shadow mode (enabled=true, enforce=false) the risk
+        // scorer runs and records telemetry but all calls are allowed through.
+        let shadow_mode = ctx.manager.as_ref().is_some_and(|m| {
+            let cfg = m.runtime_risk_config();
+            cfg.enabled && !cfg.enforce
+        });
+
+        let will_dispatch = if shadow_mode {
+            true
+        } else {
+            match runtime_risk_decision
+                .as_ref()
+                .map_or(RuntimeRiskAction::Allow, |d| d.action)
+            {
+                RuntimeRiskAction::Allow => true,
+                RuntimeRiskAction::Harden => !runtime_risk_is_dangerous(capability),
+                RuntimeRiskAction::Deny | RuntimeRiskAction::Terminate => false,
+            }
         };
 
         // SEC-4.1: record subprocess spawn before exec dispatch.
@@ -11754,10 +11765,15 @@ pub async fn dispatch_host_call_shared(
             }
         }
 
-        let dispatched = match runtime_risk_decision
-            .as_ref()
-            .map_or(RuntimeRiskAction::Allow, |d| d.action)
-        {
+        let dispatched = if shadow_mode {
+            // SEC-7.1: Shadow mode — score is recorded but call is always allowed.
+            // Alerts are still generated with counterfactual actions for review.
+            dispatch_shared_allowed(ctx, &call).await
+        } else {
+            match runtime_risk_decision
+                .as_ref()
+                .map_or(RuntimeRiskAction::Allow, |d| d.action)
+            {
             RuntimeRiskAction::Allow => dispatch_shared_allowed(ctx, &call).await,
             RuntimeRiskAction::Harden => {
                 if runtime_risk_is_dangerous(capability) {
@@ -11848,6 +11864,7 @@ pub async fn dispatch_host_call_shared(
                     code: "denied".to_string(),
                     message: "Extension quarantined by runtime risk controller".to_string(),
                 }
+            }
             }
         };
 
@@ -13939,6 +13956,7 @@ impl ExtensionManager {
         let mut guard = self.inner.lock().unwrap();
         let clamped = RuntimeRiskConfig {
             enabled: config.enabled,
+            enforce: config.enforce,
             alpha: config.alpha.clamp(1.0e-6, 0.5),
             window_size: config.window_size.clamp(8, 4096),
             ledger_limit: config.ledger_limit.clamp(32, 20_000),
