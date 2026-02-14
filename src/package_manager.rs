@@ -12,11 +12,13 @@ use crate::error::{Error, Result};
 use crate::extension_index::ExtensionIndexStore;
 use crate::extensions::{CompatibilityScanner, load_extension_manifest};
 use asupersync::channel::oneshot;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::fs;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -107,6 +109,109 @@ pub struct PackageManager {
     cwd: PathBuf,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PackageLockAction {
+    Install,
+    Update,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct PackageLockfile {
+    schema: String,
+    #[serde(default)]
+    entries: Vec<PackageLockEntry>,
+}
+
+impl Default for PackageLockfile {
+    fn default() -> Self {
+        Self {
+            schema: PACKAGE_LOCK_SCHEMA.to_string(),
+            entries: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct PackageLockEntry {
+    identity: String,
+    source: String,
+    source_kind: PackageSourceKind,
+    resolved: PackageResolvedProvenance,
+    digest_sha256: String,
+    trust_state: PackageEntryTrustState,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum PackageSourceKind {
+    Npm,
+    Git,
+    Local,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum PackageResolvedProvenance {
+    Npm {
+        name: String,
+        requested_spec: String,
+        requested_version: Option<String>,
+        installed_version: String,
+        pinned: bool,
+    },
+    Git {
+        repo: String,
+        host: String,
+        path: String,
+        requested_ref: Option<String>,
+        resolved_commit: String,
+        origin_url: Option<String>,
+        pinned: bool,
+    },
+    Local {
+        resolved_path: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum PackageEntryTrustState {
+    Trusted,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PackageTrustAuditEvent {
+    schema: &'static str,
+    timestamp: String,
+    action: String,
+    scope: String,
+    source: String,
+    identity: String,
+    from_state: String,
+    to_state: String,
+    reason_codes: Vec<String>,
+    remediation: Option<String>,
+    details: serde_json::Value,
+}
+
+#[derive(Debug, Clone)]
+struct LockTransitionPlan {
+    reason_codes: Vec<String>,
+    from_state: String,
+    to_state: String,
+}
+
+#[derive(Debug, Clone)]
+struct PackageLockMismatch {
+    code: &'static str,
+    reason: String,
+    remediation: String,
+}
+
+const PACKAGE_LOCK_SCHEMA: &str = "pi.package_lock.v1";
+const PACKAGE_TRUST_AUDIT_SCHEMA: &str = "pi.package_trust_audit.v1";
+
 impl PackageManager {
     pub const fn new(cwd: PathBuf) -> Self {
         Self { cwd }
@@ -172,7 +277,9 @@ impl PackageManager {
                     )))
                 }
             }
-        }
+        }?;
+
+        self.verify_and_record_lock(source, scope, PackageLockAction::Install)
     }
 
     pub async fn remove(&self, source: &str, scope: PackageScope) -> Result<()> {
@@ -198,7 +305,9 @@ impl PackageManager {
             ParsedSource::Npm { name, .. } => self.uninstall_npm(&name, scope),
             ParsedSource::Git { host, path, .. } => self.remove_git(&host, &path, scope),
             ParsedSource::Local { .. } => Ok(()),
-        }
+        }?;
+
+        self.remove_lock_entry(source, scope)
     }
 
     pub async fn update_source(&self, source: &str, scope: PackageScope) -> Result<()> {
@@ -222,10 +331,9 @@ impl PackageManager {
         let parsed = parse_source(source, &self.cwd);
         match parsed {
             ParsedSource::Npm { spec, pinned, .. } => {
-                if pinned {
-                    return Ok(());
+                if !pinned {
+                    self.install_npm(&spec, scope)?;
                 }
-                self.install_npm(&spec, scope)
             }
             ParsedSource::Git {
                 repo,
@@ -234,13 +342,14 @@ impl PackageManager {
                 pinned,
                 ..
             } => {
-                if pinned {
-                    return Ok(());
+                if !pinned {
+                    self.update_git(&repo, &host, &path, scope)?;
                 }
-                self.update_git(&repo, &host, &path, scope)
             }
-            ParsedSource::Local { .. } => Ok(()),
-        }
+            ParsedSource::Local { .. } => {}
+        };
+
+        self.verify_and_record_lock(source, scope, PackageLockAction::Update)
     }
 
     pub async fn installed_path(
@@ -570,6 +679,296 @@ impl PackageManager {
             }
         };
         update_package_sources(&path, source, UpdateAction::Remove)
+    }
+
+    fn lockfile_path_for_scope(&self, scope: PackageScope) -> Option<PathBuf> {
+        match scope {
+            PackageScope::User => Some(Config::global_dir().join("packages.lock.json")),
+            PackageScope::Project => Some(self.cwd.join(Config::project_dir()).join("packages.lock.json")),
+            PackageScope::Temporary => None,
+        }
+    }
+
+    fn trust_audit_path_for_scope(&self, scope: PackageScope) -> Option<PathBuf> {
+        match scope {
+            PackageScope::User => Some(Config::global_dir().join("package-trust-audit.jsonl")),
+            PackageScope::Project => {
+                Some(self.cwd.join(Config::project_dir()).join("package-trust-audit.jsonl"))
+            }
+            PackageScope::Temporary => None,
+        }
+    }
+
+    fn verify_and_record_lock(
+        &self,
+        source: &str,
+        scope: PackageScope,
+        action: PackageLockAction,
+    ) -> Result<()> {
+        let Some(lockfile_path) = self.lockfile_path_for_scope(scope) else {
+            return Ok(());
+        };
+
+        let candidate = self.build_lock_entry(source, scope)?;
+        let mut lockfile = read_package_lockfile(&lockfile_path)?;
+        let existing_idx = lockfile
+            .entries
+            .iter()
+            .position(|entry| entry.identity == candidate.identity);
+        let existing = existing_idx.and_then(|idx| lockfile.entries.get(idx).cloned());
+
+        match evaluate_lock_transition(existing.as_ref(), &candidate, action) {
+            Ok(transition) => {
+                if let Some(idx) = existing_idx {
+                    lockfile.entries[idx] = candidate.clone();
+                } else {
+                    lockfile.entries.push(candidate.clone());
+                }
+                sort_lock_entries(&mut lockfile.entries);
+                write_package_lockfile_atomic(&lockfile_path, &lockfile)?;
+
+                let event = PackageTrustAuditEvent {
+                    schema: PACKAGE_TRUST_AUDIT_SCHEMA,
+                    timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    action: match action {
+                        PackageLockAction::Install => "install",
+                        PackageLockAction::Update => "update",
+                    }
+                    .to_string(),
+                    scope: scope_label(scope).to_string(),
+                    source: source.to_string(),
+                    identity: candidate.identity.clone(),
+                    from_state: transition.from_state,
+                    to_state: transition.to_state,
+                    reason_codes: transition.reason_codes,
+                    remediation: None,
+                    details: serde_json::to_value(&candidate).unwrap_or_else(|_| serde_json::json!({})),
+                };
+                self.append_trust_audit_event(scope, &event)?;
+                Ok(())
+            }
+            Err(mismatch) => {
+                let from_state = existing
+                    .as_ref()
+                    .map_or_else(|| "untracked".to_string(), |entry| trust_state_label(entry.trust_state).to_string());
+                let event = PackageTrustAuditEvent {
+                    schema: PACKAGE_TRUST_AUDIT_SCHEMA,
+                    timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    action: match action {
+                        PackageLockAction::Install => "install",
+                        PackageLockAction::Update => "update",
+                    }
+                    .to_string(),
+                    scope: scope_label(scope).to_string(),
+                    source: source.to_string(),
+                    identity: candidate.identity.clone(),
+                    from_state,
+                    to_state: "rejected".to_string(),
+                    reason_codes: vec![mismatch.code.to_string()],
+                    remediation: Some(mismatch.remediation.clone()),
+                    details: serde_json::to_value(&candidate).unwrap_or_else(|_| serde_json::json!({})),
+                };
+                self.append_trust_audit_event(scope, &event)?;
+
+                Err(verification_error(
+                    mismatch.code,
+                    &mismatch.reason,
+                    &mismatch.remediation,
+                ))
+            }
+        }
+    }
+
+    fn remove_lock_entry(&self, source: &str, scope: PackageScope) -> Result<()> {
+        let Some(lockfile_path) = self.lockfile_path_for_scope(scope) else {
+            return Ok(());
+        };
+
+        let identity = self.package_identity(source);
+        let mut lockfile = read_package_lockfile(&lockfile_path)?;
+        let Some(idx) = lockfile.entries.iter().position(|entry| entry.identity == identity) else {
+            return Ok(());
+        };
+
+        let removed = lockfile.entries.remove(idx);
+        sort_lock_entries(&mut lockfile.entries);
+        write_package_lockfile_atomic(&lockfile_path, &lockfile)?;
+
+        let event = PackageTrustAuditEvent {
+            schema: PACKAGE_TRUST_AUDIT_SCHEMA,
+            timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            action: "remove".to_string(),
+            scope: scope_label(scope).to_string(),
+            source: source.to_string(),
+            identity,
+            from_state: trust_state_label(removed.trust_state).to_string(),
+            to_state: "removed".to_string(),
+            reason_codes: vec!["removed".to_string()],
+            remediation: None,
+            details: serde_json::to_value(&removed).unwrap_or_else(|_| serde_json::json!({})),
+        };
+        self.append_trust_audit_event(scope, &event)?;
+        Ok(())
+    }
+
+    fn append_trust_audit_event(&self, scope: PackageScope, event: &PackageTrustAuditEvent) -> Result<()> {
+        let Some(path) = self.trust_audit_path_for_scope(scope) else {
+            return Ok(());
+        };
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let payload = serde_json::to_string(event)?;
+        let mut file = fs::OpenOptions::new().create(true).append(true).open(path)?;
+        writeln!(file, "{payload}")?;
+        Ok(())
+    }
+
+    fn build_lock_entry(&self, source: &str, scope: PackageScope) -> Result<PackageLockEntry> {
+        let parsed = parse_source(source, &self.cwd);
+        match parsed {
+            ParsedSource::Npm { spec, name, pinned } => {
+                let installed_path = self.npm_install_path(&name, scope)?.ok_or_else(|| {
+                    Error::tool(
+                        "package_manager",
+                        "npm lock verification requires a concrete install path",
+                    )
+                })?;
+                if !installed_path.exists() {
+                    return Err(Error::tool(
+                        "package_manager",
+                        format!(
+                            "Installed npm package path is missing for lock verification: {}",
+                            installed_path.display()
+                        ),
+                    ));
+                }
+
+                let (_, requested_version) = parse_npm_spec(&spec);
+                let installed_version = read_installed_npm_version(&installed_path).ok_or_else(|| {
+                    verification_error(
+                        "npm_version_missing",
+                        &format!(
+                            "Missing package.json version for installed npm package at {}",
+                            installed_path.display()
+                        ),
+                        "Reinstall the package (`pi remove <source>` then `pi install <source>`) and retry.",
+                    )
+                })?;
+
+                if let Some(expected) = requested_version.as_deref().filter(|value| is_exact_npm_version(value)) {
+                    if expected != installed_version {
+                        return Err(verification_error(
+                            "npm_version_mismatch",
+                            &format!(
+                                "Pinned npm version mismatch for {name}: expected {expected}, got {installed_version}",
+                            ),
+                            "Pin the intended version explicitly and reinstall to refresh trusted provenance.",
+                        ));
+                    }
+                }
+
+                let digest_sha256 = digest_package_path(&installed_path)?;
+                Ok(PackageLockEntry {
+                    identity: self.package_identity(source),
+                    source: source.to_string(),
+                    source_kind: PackageSourceKind::Npm,
+                    resolved: PackageResolvedProvenance::Npm {
+                        name,
+                        requested_spec: spec,
+                        requested_version,
+                        installed_version,
+                        pinned,
+                    },
+                    digest_sha256,
+                    trust_state: PackageEntryTrustState::Trusted,
+                })
+            }
+            ParsedSource::Git {
+                repo,
+                host,
+                path,
+                r#ref,
+                pinned,
+            } => {
+                let installed_path = self.git_install_path(&host, &path, scope);
+                if !installed_path.exists() {
+                    return Err(Error::tool(
+                        "package_manager",
+                        format!(
+                            "Installed git package path is missing for lock verification: {}",
+                            installed_path.display()
+                        ),
+                    ));
+                }
+
+                let resolved_commit =
+                    run_command_capture("git", ["rev-parse", "HEAD"], Some(&installed_path))?;
+                if let Some(expected_ref) = r#ref.as_ref() {
+                    let expected_commit = run_command_capture(
+                        "git",
+                        ["rev-parse", expected_ref.as_str()],
+                        Some(&installed_path),
+                    )?;
+                    if expected_commit != resolved_commit {
+                        return Err(verification_error(
+                            "git_ref_mismatch",
+                            &format!(
+                                "Pinned git ref mismatch for {repo}: ref {expected_ref} resolved to {expected_commit}, but HEAD is {resolved_commit}",
+                            ),
+                            "Fetch/reset the repo and reinstall from the intended pinned ref.",
+                        ));
+                    }
+                }
+
+                let origin_url =
+                    run_command_capture("git", ["config", "--get", "remote.origin.url"], Some(&installed_path))
+                        .ok()
+                        .filter(|value| !value.trim().is_empty());
+                let digest_sha256 = digest_package_path(&installed_path)?;
+
+                Ok(PackageLockEntry {
+                    identity: self.package_identity(source),
+                    source: source.to_string(),
+                    source_kind: PackageSourceKind::Git,
+                    resolved: PackageResolvedProvenance::Git {
+                        repo,
+                        host,
+                        path,
+                        requested_ref: r#ref,
+                        resolved_commit,
+                        origin_url,
+                        pinned,
+                    },
+                    digest_sha256,
+                    trust_state: PackageEntryTrustState::Trusted,
+                })
+            }
+            ParsedSource::Local { path } => {
+                if !path.exists() {
+                    return Err(Error::config(format!(
+                        "Local package path does not exist: {}",
+                        path.display()
+                    )));
+                }
+
+                let digest_sha256 = digest_package_path(&path)?;
+                let resolved_path = path
+                    .canonicalize()
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .to_string();
+                Ok(PackageLockEntry {
+                    identity: self.package_identity(source),
+                    source: source.to_string(),
+                    source_kind: PackageSourceKind::Local,
+                    resolved: PackageResolvedProvenance::Local { resolved_path },
+                    digest_sha256,
+                    trust_state: PackageEntryTrustState::Trusted,
+                })
+            }
+        }
     }
 
     fn project_npm_root(&self) -> PathBuf {
@@ -2421,6 +2820,274 @@ where
         return Err(Error::tool(program, msg));
     }
 
+    Ok(())
+}
+
+fn run_command_capture<I, S>(program: &str, args: I, cwd: Option<&Path>) -> Result<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let mut cmd = Command::new(program);
+    cmd.args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(cwd) = cwd {
+        cmd.current_dir(cwd);
+    }
+
+    let output = cmd
+        .output()
+        .map_err(|e| Error::tool(program, format!("Failed to spawn {program}: {e}")))?;
+
+    if !output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let mut msg = format!("Command failed: {program}");
+        if let Some(code) = output.status.code() {
+            let _ = write!(msg, " (exit {code})");
+        }
+        if !stdout.trim().is_empty() {
+            let _ = write!(msg, "\nstdout:\n{stdout}");
+        }
+        if !stderr.trim().is_empty() {
+            let _ = write!(msg, "\nstderr:\n{stderr}");
+        }
+        return Err(Error::tool(program, msg));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn scope_label(scope: PackageScope) -> &'static str {
+    match scope {
+        PackageScope::User => "user",
+        PackageScope::Project => "project",
+        PackageScope::Temporary => "temporary",
+    }
+}
+
+fn trust_state_label(state: PackageEntryTrustState) -> &'static str {
+    match state {
+        PackageEntryTrustState::Trusted => "trusted",
+        PackageEntryTrustState::Rejected => "rejected",
+    }
+}
+
+fn verification_error(code: &str, reason: &str, remediation: &str) -> Error {
+    Error::tool(
+        "package_manager",
+        format!(
+            "Package lock/provenance verification failed [{code}]: {reason}\nRemediation: {remediation}"
+        ),
+    )
+}
+
+fn evaluate_lock_transition(
+    existing: Option<&PackageLockEntry>,
+    candidate: &PackageLockEntry,
+    action: PackageLockAction,
+) -> std::result::Result<LockTransitionPlan, PackageLockMismatch> {
+    let Some(existing) = existing else {
+        return Ok(LockTransitionPlan {
+            reason_codes: vec!["first_seen".to_string()],
+            from_state: "untracked".to_string(),
+            to_state: "trusted".to_string(),
+        });
+    };
+
+    let allow_mutation = allow_lock_entry_update(candidate, action);
+
+    if existing.source_kind != candidate.source_kind || existing.source != candidate.source {
+        if !allow_mutation {
+            return Err(PackageLockMismatch {
+                code: "provenance_mismatch",
+                reason: format!(
+                    "source identity changed for {}: previous='{}' ({:?}), current='{}' ({:?})",
+                    candidate.identity,
+                    existing.source,
+                    existing.source_kind,
+                    candidate.source,
+                    candidate.source_kind
+                ),
+                remediation: format!(
+                    "Review the source change, then run `pi remove {}` and `pi install {}` to re-establish trust.",
+                    candidate.source, candidate.source
+                ),
+            });
+        }
+    }
+
+    if existing.resolved != candidate.resolved && !allow_mutation {
+        return Err(PackageLockMismatch {
+            code: "provenance_mismatch",
+            reason: format!(
+                "resolved provenance changed for {} while source is immutable in this operation",
+                candidate.identity
+            ),
+            remediation: format!(
+                "Use `pi update {}` for unpinned sources, or reinstall after intentional provenance changes.",
+                candidate.source
+            ),
+        });
+    }
+
+    if existing.digest_sha256 != candidate.digest_sha256 && !allow_mutation {
+        return Err(PackageLockMismatch {
+            code: "digest_mismatch",
+            reason: format!(
+                "digest changed for {}: expected {}, got {}",
+                candidate.identity, existing.digest_sha256, candidate.digest_sha256
+            ),
+            remediation: format!(
+                "Inspect upstream changes. If expected, run `pi remove {}` then `pi install {}` to trust the new digest.",
+                candidate.source, candidate.source
+            ),
+        });
+    }
+
+    let mut reason_codes = Vec::new();
+    if existing.resolved != candidate.resolved {
+        reason_codes.push("provenance_changed".to_string());
+    }
+    if existing.digest_sha256 != candidate.digest_sha256 {
+        reason_codes.push("digest_changed".to_string());
+    }
+    if reason_codes.is_empty() {
+        reason_codes.push("verified".to_string());
+    }
+
+    Ok(LockTransitionPlan {
+        reason_codes,
+        from_state: trust_state_label(existing.trust_state).to_string(),
+        to_state: "trusted".to_string(),
+    })
+}
+
+fn allow_lock_entry_update(candidate: &PackageLockEntry, action: PackageLockAction) -> bool {
+    match action {
+        PackageLockAction::Install => false,
+        PackageLockAction::Update => match candidate.resolved {
+            PackageResolvedProvenance::Npm { pinned, .. }
+            | PackageResolvedProvenance::Git { pinned, .. } => !pinned,
+            PackageResolvedProvenance::Local { .. } => false,
+        },
+    }
+}
+
+fn sort_lock_entries(entries: &mut [PackageLockEntry]) {
+    entries.sort_by(|left, right| {
+        left.identity
+            .cmp(&right.identity)
+            .then_with(|| left.source.cmp(&right.source))
+    });
+}
+
+fn read_package_lockfile(path: &Path) -> Result<PackageLockfile> {
+    if !path.exists() {
+        return Ok(PackageLockfile::default());
+    }
+
+    let content = fs::read_to_string(path)?;
+    let mut lockfile: PackageLockfile = serde_json::from_str(&content).map_err(|err| {
+        Error::config(format!(
+            "Invalid package lockfile JSON in {}: {err}",
+            path.display()
+        ))
+    })?;
+    if lockfile.schema.trim().is_empty() {
+        lockfile.schema = PACKAGE_LOCK_SCHEMA.to_string();
+    }
+    sort_lock_entries(&mut lockfile.entries);
+    Ok(lockfile)
+}
+
+fn write_package_lockfile_atomic(path: &Path, lockfile: &PackageLockfile) -> Result<()> {
+    let value = serde_json::to_value(lockfile)?;
+    write_settings_json_atomic(path, &value)
+}
+
+fn is_exact_npm_version(value: &str) -> bool {
+    !value.is_empty()
+        && !value.contains(|ch: char| {
+            matches!(
+                ch,
+                '^' | '~' | '>' | '<' | '=' | '*' | 'x' | 'X' | '|' | ' ' | '\t'
+            )
+        })
+}
+
+fn digest_package_path(path: &Path) -> Result<String> {
+    if path.is_file() {
+        let mut hasher = Sha256::new();
+        hasher.update(b"file\0");
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("entry");
+        hasher.update(file_name.as_bytes());
+        hasher.update(b"\0");
+        let bytes = fs::read(path)?
+            .into_iter()
+            .filter(|byte| *byte != b'\r')
+            .collect::<Vec<_>>();
+        hasher.update(&bytes);
+        hasher.update(b"\0");
+        return Ok(hex_encode(hasher.finalize().as_slice()));
+    }
+
+    if !path.is_dir() {
+        return Err(Error::tool(
+            "package_manager",
+            format!(
+                "Cannot compute digest for non-file/non-directory path: {}",
+                path.display()
+            ),
+        ));
+    }
+
+    let mut files = Vec::new();
+    collect_digest_files_recursive(path, path, &mut files)?;
+    files.sort_by_key(|(_, relative)| relative.clone());
+
+    let mut hasher = Sha256::new();
+    for (full_path, relative) in files {
+        hasher.update(b"file\0");
+        hasher.update(relative.as_bytes());
+        hasher.update(b"\0");
+        let bytes = fs::read(full_path)?
+            .into_iter()
+            .filter(|byte| *byte != b'\r')
+            .collect::<Vec<_>>();
+        hasher.update(&bytes);
+        hasher.update(b"\0");
+    }
+
+    Ok(hex_encode(hasher.finalize().as_slice()))
+}
+
+fn collect_digest_files_recursive(root: &Path, dir: &Path, out: &mut Vec<(PathBuf, String)>) -> Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        let name = entry.file_name();
+        if name == OsStr::new(".git") {
+            continue;
+        }
+
+        if file_type.is_dir() {
+            collect_digest_files_recursive(root, &path, out)?;
+            continue;
+        }
+
+        if !file_type.is_file() {
+            continue;
+        }
+
+        out.push((path.clone(), relative_posix(root, &path)));
+    }
     Ok(())
 }
 
@@ -4351,5 +5018,162 @@ mod tests {
             }
             other => panic!("expected Git, got {other:?}"),
         }
+    }
+
+    fn sample_npm_lock_entry(
+        source: &str,
+        requested_spec: &str,
+        requested_version: Option<&str>,
+        installed_version: &str,
+        digest: &str,
+        pinned: bool,
+    ) -> PackageLockEntry {
+        PackageLockEntry {
+            identity: "npm:demo-pkg".to_string(),
+            source: source.to_string(),
+            source_kind: PackageSourceKind::Npm,
+            resolved: PackageResolvedProvenance::Npm {
+                name: "demo-pkg".to_string(),
+                requested_spec: requested_spec.to_string(),
+                requested_version: requested_version.map(str::to_string),
+                installed_version: installed_version.to_string(),
+                pinned,
+            },
+            digest_sha256: digest.to_string(),
+            trust_state: PackageEntryTrustState::Trusted,
+        }
+    }
+
+    #[test]
+    fn evaluate_lock_transition_rejects_install_digest_mismatch() {
+        let existing = sample_npm_lock_entry(
+            "npm:demo-pkg@1.0.0",
+            "demo-pkg@1.0.0",
+            Some("1.0.0"),
+            "1.0.0",
+            "aaaaaaaa",
+            true,
+        );
+        let candidate = sample_npm_lock_entry(
+            "npm:demo-pkg@1.0.0",
+            "demo-pkg@1.0.0",
+            Some("1.0.0"),
+            "1.0.0",
+            "bbbbbbbb",
+            true,
+        );
+
+        let mismatch = evaluate_lock_transition(
+            Some(&existing),
+            &candidate,
+            PackageLockAction::Install,
+        )
+        .expect_err("install should fail closed on digest mismatch");
+        assert_eq!(mismatch.code, "digest_mismatch");
+    }
+
+    #[test]
+    fn evaluate_lock_transition_allows_unpinned_update_changes() {
+        let existing = sample_npm_lock_entry(
+            "npm:demo-pkg",
+            "demo-pkg",
+            None,
+            "1.0.0",
+            "aaaaaaaa",
+            false,
+        );
+        let candidate = sample_npm_lock_entry(
+            "npm:demo-pkg",
+            "demo-pkg",
+            None,
+            "1.1.0",
+            "bbbbbbbb",
+            false,
+        );
+
+        let transition = evaluate_lock_transition(Some(&existing), &candidate, PackageLockAction::Update)
+            .expect("unpinned update should permit provenance/digest rotation");
+        assert!(
+            transition.reason_codes.contains(&"provenance_changed".to_string()),
+            "expected provenance_changed reason code"
+        );
+        assert!(
+            transition.reason_codes.contains(&"digest_changed".to_string()),
+            "expected digest_changed reason code"
+        );
+    }
+
+    #[test]
+    fn digest_package_path_ignores_git_metadata() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let package_root = dir.path().join("pkg");
+        fs::create_dir_all(package_root.join(".git")).expect("create .git dir");
+        fs::write(package_root.join("index.js"), "export const ok = true;\n").expect("write index.js");
+        fs::write(package_root.join(".git/HEAD"), "ref: refs/heads/main\n").expect("write .git/HEAD");
+
+        let digest_before = digest_package_path(&package_root).expect("digest before");
+
+        fs::write(package_root.join(".git/HEAD"), "ref: refs/heads/feature\n").expect("rewrite .git/HEAD");
+        fs::write(package_root.join(".git/config"), "[core]\nrepositoryformatversion = 0\n")
+            .expect("write .git/config");
+
+        let digest_after = digest_package_path(&package_root).expect("digest after");
+        assert_eq!(
+            digest_before, digest_after,
+            "digest should ignore .git metadata"
+        );
+    }
+
+    #[test]
+    fn verify_and_record_lock_is_deterministic_for_same_inputs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cwd = dir.path().to_path_buf();
+        let pkg = cwd.join("local-pkg");
+        fs::create_dir_all(&pkg).expect("create local package dir");
+        fs::write(pkg.join("index.js"), "export const stable = true;\n").expect("write extension file");
+
+        let manager = PackageManager::new(cwd.clone());
+        manager
+            .verify_and_record_lock("./local-pkg", PackageScope::Project, PackageLockAction::Install)
+            .expect("first lock verification");
+
+        let lockfile_path = cwd.join(".pi").join("packages.lock.json");
+        let first = fs::read_to_string(&lockfile_path).expect("read first lockfile");
+
+        manager
+            .verify_and_record_lock("./local-pkg", PackageScope::Project, PackageLockAction::Install)
+            .expect("second lock verification");
+        let second = fs::read_to_string(&lockfile_path).expect("read second lockfile");
+
+        assert_eq!(
+            first, second,
+            "same inputs should produce identical lockfile artifacts"
+        );
+    }
+
+    #[test]
+    fn verify_and_record_lock_fails_closed_on_local_digest_mismatch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cwd = dir.path().to_path_buf();
+        let pkg = cwd.join("local-pkg");
+        fs::create_dir_all(&pkg).expect("create local package dir");
+        let file_path = pkg.join("index.js");
+        fs::write(&file_path, "export const version = 1;\n").expect("write extension file");
+
+        let manager = PackageManager::new(cwd.clone());
+        manager
+            .verify_and_record_lock("./local-pkg", PackageScope::Project, PackageLockAction::Install)
+            .expect("initial lock verification");
+
+        fs::write(&file_path, "export const version = 2;\n").expect("tamper package file");
+
+        let err = manager
+            .verify_and_record_lock("./local-pkg", PackageScope::Project, PackageLockAction::Install)
+            .expect_err("install verification should fail on digest mismatch");
+        let message = err.to_string();
+        assert!(
+            message.contains("digest_mismatch"),
+            "expected digest_mismatch error, got: {message}"
+        );
     }
 }
