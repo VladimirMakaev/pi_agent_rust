@@ -1097,6 +1097,136 @@ mod tests {
         let cli = Cli::parse_from(["pi", "--explain-repair-policy"]);
         assert!(cli.explain_repair_policy);
     }
+
+    // ── 14. CLI parity: every TS flag is parseable ──────────────────
+    //
+    // Reference: legacy_pi_mono_code/.../cli/args.ts
+    // This test validates that all flags from the TypeScript CLI are
+    // accepted by the Rust CLI parser (DROPIN-141 / bd-3meug).
+
+    #[test]
+    fn ts_parity_all_shared_flags_parse() {
+        // Every flag from the TS args.ts that Rust must support.
+        let cli = Cli::parse_from([
+            "pi",
+            "--provider",
+            "anthropic",
+            "--model",
+            "claude-sonnet-4-5",
+            "--api-key",
+            "sk-test",
+            "--system-prompt",
+            "You are helpful.",
+            "--append-system-prompt",
+            "Extra context.",
+            "--continue",
+            "--session",
+            "/tmp/sess",
+            "--session-dir",
+            "/tmp/sessdir",
+            "--no-session",
+            "--mode",
+            "json",
+            "--print",
+            "--verbose",
+            "--no-tools",
+            "--tools",
+            "read,bash",
+            "--thinking",
+            "high",
+            "--extension",
+            "ext.js",
+            "--no-extensions",
+            "--skill",
+            "skill.md",
+            "--no-skills",
+            "--prompt-template",
+            "tmpl.md",
+            "--no-prompt-templates",
+            "--theme",
+            "dark",
+            "--no-themes",
+            "--export",
+            "/tmp/out.html",
+            "--models",
+            "claude*,gpt*",
+        ]);
+
+        assert_eq!(cli.provider.as_deref(), Some("anthropic"));
+        assert_eq!(cli.model.as_deref(), Some("claude-sonnet-4-5"));
+        assert_eq!(cli.api_key.as_deref(), Some("sk-test"));
+        assert_eq!(cli.system_prompt.as_deref(), Some("You are helpful."));
+        assert_eq!(cli.append_system_prompt.as_deref(), Some("Extra context."));
+        assert!(cli.r#continue);
+        assert_eq!(cli.session.as_deref(), Some("/tmp/sess"));
+        assert_eq!(cli.session_dir.as_deref(), Some("/tmp/sessdir"));
+        assert!(cli.no_session);
+        assert_eq!(cli.mode.as_deref(), Some("json"));
+        assert!(cli.print);
+        assert!(cli.verbose);
+        assert!(cli.no_tools);
+        assert_eq!(cli.tools, "read,bash");
+        assert_eq!(cli.thinking.as_deref(), Some("high"));
+        assert_eq!(cli.extension, vec!["ext.js"]);
+        assert!(cli.no_extensions);
+        assert_eq!(cli.skill, vec!["skill.md"]);
+        assert!(cli.no_skills);
+        assert_eq!(cli.prompt_template, vec!["tmpl.md"]);
+        assert!(cli.no_prompt_templates);
+        assert_eq!(cli.theme.as_deref(), Some("dark"));
+        assert!(cli.no_themes);
+        assert_eq!(cli.export.as_deref(), Some("/tmp/out.html"));
+        assert_eq!(cli.models.as_deref(), Some("claude*,gpt*"));
+    }
+
+    #[test]
+    fn ts_parity_short_flags_match() {
+        // TS short flags: -c (continue), -r (resume), -p (print),
+        // -e (extension), -v (version), -h (help)
+        let cli = Cli::parse_from(["pi", "-c", "-p", "-e", "ext.js"]);
+        assert!(cli.r#continue);
+        assert!(cli.print);
+        assert_eq!(cli.extension, vec!["ext.js"]);
+
+        let cli2 = Cli::parse_from(["pi", "-r"]);
+        assert!(cli2.resume);
+    }
+
+    #[test]
+    fn ts_parity_subcommands() {
+        // TS subcommands: install, remove, update, list, config
+        let cli = Cli::parse_from(["pi", "install", "npm:my-ext"]);
+        assert!(matches!(cli.command, Some(Commands::Install { .. })));
+
+        let cli = Cli::parse_from(["pi", "remove", "npm:my-ext"]);
+        assert!(matches!(cli.command, Some(Commands::Remove { .. })));
+
+        let cli = Cli::parse_from(["pi", "update"]);
+        assert!(matches!(cli.command, Some(Commands::Update { .. })));
+
+        let cli = Cli::parse_from(["pi", "list"]);
+        assert!(matches!(cli.command, Some(Commands::List { .. })));
+
+        let cli = Cli::parse_from(["pi", "config"]);
+        assert!(matches!(cli.command, Some(Commands::Config { .. })));
+    }
+
+    #[test]
+    fn ts_parity_at_file_expansion() {
+        let cli = Cli::parse_from(["pi", "-p", "@readme.md", "summarize this"]);
+        assert_eq!(cli.file_args(), vec!["readme.md"]);
+        assert_eq!(cli.message_args(), vec!["summarize this"]);
+    }
+
+    #[test]
+    fn ts_parity_list_models_optional_search() {
+        // --list-models with optional search term (TS parity)
+        let cli = Cli::parse_from(["pi", "--list-models"]);
+        assert_eq!(cli.list_models, Some(None));
+
+        let cli = Cli::parse_from(["pi", "--list-models", "sonnet"]);
+        assert_eq!(cli.list_models, Some(Some("sonnet".to_string())));
+    }
 }
 
 /// Package management subcommands
