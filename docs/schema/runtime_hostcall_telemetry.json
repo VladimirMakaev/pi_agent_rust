@@ -1,0 +1,181 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Runtime Hostcall Telemetry Artifact",
+  "type": "object",
+  "required": ["schema", "generated_at_ms", "entry_count", "entries"],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "enum": ["pi.ext.hostcall_telemetry.v1"]
+    },
+    "generated_at_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "entry_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "entries": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/event" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "event": {
+      "type": "object",
+      "required": [
+        "schema",
+        "ts_ms",
+        "extension_id",
+        "call_id",
+        "capability",
+        "method",
+        "params_hash",
+        "args_shape_hash",
+        "resource_target_class",
+        "policy_reason",
+        "policy_profile",
+        "risk_score",
+        "latency_ms",
+        "outcome",
+        "selected_action",
+        "reason_codes",
+        "sequence",
+        "features",
+        "extraction_latency_us",
+        "extraction_budget_us",
+        "extraction_budget_exceeded",
+        "redaction_summary"
+      ],
+      "properties": {
+        "schema": {
+          "type": "string",
+          "enum": ["pi.ext.hostcall_telemetry.v1"]
+        },
+        "ts_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extension_id": { "type": "string" },
+        "call_id": { "type": "string" },
+        "capability": { "type": "string" },
+        "method": { "type": "string" },
+        "params_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{3,64}$"
+        },
+        "args_shape_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{3,64}$"
+        },
+        "resource_target_class": { "type": "string" },
+        "policy_reason": { "type": "string" },
+        "policy_profile": {
+          "type": "string",
+          "enum": ["strict", "balanced", "permissive"]
+        },
+        "risk_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "timeout_ms": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "latency_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "outcome": {
+          "type": "string",
+          "enum": ["success", "error"]
+        },
+        "outcome_error_code": {
+          "type": ["string", "null"]
+        },
+        "selected_action": {
+          "type": "string",
+          "enum": ["allow", "harden", "deny", "terminate"]
+        },
+        "reason_codes": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "sequence": { "$ref": "#/$defs/sequence_context" },
+        "features": { "$ref": "#/$defs/feature_vector" },
+        "extraction_latency_us": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extraction_budget_us": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "extraction_budget_exceeded": {
+          "type": "boolean"
+        },
+        "redaction_summary": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "sequence_context": {
+      "type": "object",
+      "required": [
+        "sequence_id",
+        "burst_count_1s",
+        "burst_count_10s",
+        "recent_error_count",
+        "recent_window_count",
+        "prior_failure_streak"
+      ],
+      "properties": {
+        "sequence_id": { "type": "integer", "minimum": 1 },
+        "previous_capability": { "type": ["string", "null"] },
+        "previous_method": { "type": ["string", "null"] },
+        "previous_resource_target_class": { "type": ["string", "null"] },
+        "burst_count_1s": { "type": "integer", "minimum": 0 },
+        "burst_count_10s": { "type": "integer", "minimum": 0 },
+        "recent_error_count": { "type": "integer", "minimum": 0 },
+        "recent_window_count": { "type": "integer", "minimum": 0 },
+        "prior_failure_streak": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "feature_vector": {
+      "type": "object",
+      "required": [
+        "schema",
+        "base_score",
+        "recent_mean_score",
+        "recent_error_rate",
+        "burst_density_1s",
+        "burst_density_10s",
+        "prior_failure_streak_norm",
+        "dangerous_capability",
+        "timeout_requested",
+        "policy_prompt_bias"
+      ],
+      "properties": {
+        "schema": {
+          "type": "string",
+          "enum": ["pi.ext.hostcall_feature_vector.v1"]
+        },
+        "base_score": { "type": "number", "minimum": 0, "maximum": 1 },
+        "recent_mean_score": { "type": "number", "minimum": 0, "maximum": 1 },
+        "recent_error_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+        "burst_density_1s": { "type": "number", "minimum": 0, "maximum": 1 },
+        "burst_density_10s": { "type": "number", "minimum": 0, "maximum": 1 },
+        "prior_failure_streak_norm": { "type": "number", "minimum": 0, "maximum": 1 },
+        "dangerous_capability": { "type": "number", "minimum": 0, "maximum": 1 },
+        "timeout_requested": { "type": "number", "minimum": 0, "maximum": 1 },
+        "policy_prompt_bias": { "type": "number", "minimum": 0, "maximum": 1 }
+      },
+      "additionalProperties": false
+    }
+  }
+}

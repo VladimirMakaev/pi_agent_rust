@@ -15,7 +15,6 @@ use std::fmt;
 use std::fmt::Write as _;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 // ── Core Types ──────────────────────────────────────────────────────
 
@@ -375,7 +374,7 @@ pub fn run_doctor(opts: &DoctorOptions<'_>) -> Result<DoctorReport> {
     }
 
     if should_run(CheckCategory::Config) {
-        check_config(&mut findings);
+        check_config(opts.cwd, &mut findings);
     }
     if should_run(CheckCategory::Dirs) {
         check_dirs(opts.fix, &mut findings);
@@ -395,7 +394,7 @@ pub fn run_doctor(opts: &DoctorOptions<'_>) -> Result<DoctorReport> {
 
 // ── Check: Config ───────────────────────────────────────────────────
 
-fn check_config(findings: &mut Vec<Finding>) {
+fn check_config(cwd: &Path, findings: &mut Vec<Finding>) {
     let cat = CheckCategory::Config;
 
     // Global settings
@@ -403,7 +402,7 @@ fn check_config(findings: &mut Vec<Finding>) {
     check_settings_file(cat, &global_path, "Global settings", findings);
 
     // Project settings
-    let project_path = Config::project_dir().join("settings.json");
+    let project_path = cwd.join(Config::project_dir()).join("settings.json");
     if project_path.exists() {
         check_settings_file(
             cat,
@@ -423,38 +422,46 @@ fn check_settings_file(cat: CheckCategory, path: &Path, label: &str, findings: &
     }
     match std::fs::read_to_string(path) {
         Ok(content) => {
-            if let Err(e) = serde_json::from_str::<serde_json::Value>(&content) {
-                findings.push(
-                    Finding::fail(cat, format!("{label}: JSON parse error"))
-                        .with_detail(e.to_string())
-                        .with_remediation(format!("Fix the JSON syntax in {}", path.display())),
-                );
-            } else {
-                // Check for unknown keys
-                if let Ok(map) =
-                    serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&content)
-                {
-                    let unknown: Vec<&String> =
-                        map.keys().filter(|k| !is_known_config_key(k)).collect();
-                    if unknown.is_empty() {
-                        findings.push(Finding::pass(cat, label.to_string()));
-                    } else {
-                        findings.push(
-                            Finding::warn(cat, format!("{label}: unknown keys"))
-                                .with_detail(format!(
-                                    "Unknown keys: {}",
-                                    unknown
-                                        .iter()
-                                        .map(|k| k.as_str())
-                                        .collect::<Vec<_>>()
-                                        .join(", ")
-                                ))
-                                .with_remediation("Check for typos in settings key names"),
-                        );
-                    }
-                } else {
-                    findings.push(Finding::pass(cat, label.to_string()));
+            let value: serde_json::Value = match serde_json::from_str(&content) {
+                Ok(value) => value,
+                Err(e) => {
+                    findings.push(
+                        Finding::fail(cat, format!("{label}: JSON parse error"))
+                            .with_detail(e.to_string())
+                            .with_remediation(format!("Fix the JSON syntax in {}", path.display())),
+                    );
+                    return;
                 }
+            };
+
+            let serde_json::Value::Object(map) = value else {
+                findings.push(
+                    Finding::fail(
+                        cat,
+                        format!("{label}: top-level value must be a JSON object"),
+                    )
+                    .with_detail(format!("Found non-object JSON in {}", path.display()))
+                    .with_remediation(format!("Wrap settings in {{ ... }} in {}", path.display())),
+                );
+                return;
+            };
+
+            let unknown: Vec<&String> = map.keys().filter(|k| !is_known_config_key(k)).collect();
+            if unknown.is_empty() {
+                findings.push(Finding::pass(cat, label.to_string()));
+            } else {
+                findings.push(
+                    Finding::warn(cat, format!("{label}: unknown keys"))
+                        .with_detail(format!(
+                            "Unknown keys: {}",
+                            unknown
+                                .iter()
+                                .map(|k| k.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ))
+                        .with_remediation("Check for typos in settings key names"),
+                );
             }
         }
         Err(e) => {
@@ -773,53 +780,95 @@ fn check_shell(findings: &mut Vec<Finding>) {
 fn check_tool(
     cat: CheckCategory,
     tool: &str,
-    args: &[&str],
+    _args: &[&str],
     missing_severity: Severity,
     findings: &mut Vec<Finding>,
 ) {
-    match Command::new(tool).args(args).output() {
-        Ok(output) if output.status.success() => {
-            // Extract version from first line of stdout
-            let version = String::from_utf8_lossy(&output.stdout);
-            let first_line = version.lines().next().unwrap_or("").trim();
-            // Try to find the path
-            let path = which_tool(tool).unwrap_or_default();
-            let label = if path.is_empty() {
-                format!("{tool}: {first_line}")
-            } else {
-                format!("{tool} ({path})")
-            };
-            findings.push(Finding::pass(cat, label));
+    let Some(path) = which_tool(tool) else {
+        let suffix = if missing_severity == Severity::Info {
+            " (optional)"
+        } else {
+            ""
+        };
+        let mut f = Finding {
+            category: cat,
+            severity: missing_severity,
+            title: format!("{tool}: not found{suffix}"),
+            detail: None,
+            remediation: None,
+            fixability: Fixability::NotFixable,
+        };
+        if tool == "gh" {
+            f.remediation = Some("Install: https://cli.github.com/".to_string());
         }
-        _ => {
-            let suffix = if missing_severity == Severity::Info {
-                " (optional)"
-            } else {
-                ""
-            };
-            let mut f = Finding {
-                category: cat,
-                severity: missing_severity,
-                title: format!("{tool}: not found{suffix}"),
-                detail: None,
-                remediation: None,
-                fixability: Fixability::NotFixable,
-            };
-            if tool == "gh" {
-                f.remediation = Some("Install: https://cli.github.com/".to_string());
-            }
-            findings.push(f);
-        }
-    }
+        findings.push(f);
+        return;
+    };
+
+    findings.push(Finding::pass(cat, format!("{tool} ({path})")));
 }
 
 fn which_tool(tool: &str) -> Option<String> {
-    Command::new("which")
-        .arg(tool)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    let tool_path = Path::new(tool);
+    if tool_path.components().count() > 1 {
+        return is_executable(tool_path).then(|| tool_path.display().to_string());
+    }
+
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        if let Some(path) = resolve_executable_in_dir(&dir, tool) {
+            return Some(path.display().to_string());
+        }
+    }
+    None
+}
+
+fn resolve_executable_in_dir(dir: &Path, tool: &str) -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        let candidate = dir.join(tool);
+        if is_executable(&candidate) {
+            return Some(candidate);
+        }
+        let pathext = std::env::var_os("PATHEXT").unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into());
+        for ext in std::env::split_paths(&pathext) {
+            let ext = ext.to_string_lossy();
+            let suffix = ext.trim_matches('.');
+            if suffix.is_empty() {
+                continue;
+            }
+            let candidate = dir.join(format!("{tool}.{suffix}"));
+            if is_executable(&candidate) {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
+    #[cfg(not(windows))]
+    {
+        let candidate = dir.join(tool);
+        is_executable(&candidate).then_some(candidate)
+    }
+}
+
+fn is_executable(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::metadata(path)
+            .ok()
+            .is_some_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
+    }
+
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 // ── Check: Sessions ─────────────────────────────────────────────────
@@ -1166,6 +1215,65 @@ mod tests {
         // bash should be available in CI/dev environments
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].severity, Severity::Pass);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn check_tool_falls_back_when_probe_args_are_unsupported() {
+        let mut findings = Vec::new();
+        check_tool(
+            CheckCategory::Shell,
+            "sh",
+            &["--version"],
+            Severity::Fail,
+            &mut findings,
+        );
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, Severity::Pass);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn check_tool_reports_invocation_failure_for_broken_executable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("broken_tool.sh");
+        // Mark a non-binary, non-script blob as executable so spawn fails with
+        // "exec format error" rather than "not found".
+        std::fs::write(&script, "not an executable format").unwrap();
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        let mut findings = Vec::new();
+        check_tool(
+            CheckCategory::Shell,
+            script.to_str().unwrap(),
+            &["--version"],
+            Severity::Fail,
+            &mut findings,
+        );
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, Severity::Fail);
+        assert!(findings[0].title.contains("invocation failed"));
+    }
+
+    #[test]
+    fn check_settings_file_rejects_non_object_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "[1,2,3]").unwrap();
+        let mut findings = Vec::new();
+        check_settings_file(CheckCategory::Config, &path, "Settings", &mut findings);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, Severity::Fail);
+        assert!(
+            findings[0]
+                .title
+                .contains("top-level value must be a JSON object")
+        );
     }
 
     #[test]

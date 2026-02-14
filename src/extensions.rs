@@ -31,11 +31,13 @@ use sha2::Digest as _;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
+use url::Url;
 use uuid::Uuid;
 
 /// Canonicalize a path, stripping the `\\?\` verbatim prefix on Windows.
@@ -91,9 +93,50 @@ fn hostcall_params_hash(method: &str, params: &Value) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+fn hostcall_params_shape_hash(method: &str, params: &Value) -> String {
+    fn shape_only(value: &Value) -> Value {
+        match value {
+            Value::Object(map) => {
+                let mut keys = map.keys().cloned().collect::<Vec<_>>();
+                keys.sort();
+                let mut out = serde_json::Map::new();
+                for key in keys {
+                    if let Some(value) = map.get(&key) {
+                        out.insert(key, shape_only(value));
+                    }
+                }
+                Value::Object(out)
+            }
+            Value::Array(items) => Value::Array(items.iter().map(shape_only).collect()),
+            Value::String(_) => Value::String("string".to_string()),
+            Value::Number(_) => Value::String("number".to_string()),
+            Value::Bool(_) => Value::String("bool".to_string()),
+            Value::Null => Value::String("null".to_string()),
+        }
+    }
+
+    let canonical = json!({
+        "method": method,
+        "params_shape": shape_only(params),
+    });
+    let encoded = serde_json::to_string(&canonical).unwrap_or_default();
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(encoded.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
 pub const PROTOCOL_VERSION: &str = "1.0";
 pub const LOG_SCHEMA_VERSION: &str = "pi.ext.log.v1";
 pub const COMPAT_LEDGER_SCHEMA_VERSION: &str = "pi.ext.compat_ledger.v1";
+pub const RUNTIME_RISK_LEDGER_SCHEMA_VERSION: &str = "pi.ext.runtime_risk_ledger.v1";
+pub const RUNTIME_RISK_REPLAY_SCHEMA_VERSION: &str = "pi.ext.runtime_risk_replay.v1";
+pub const RUNTIME_RISK_CALIBRATION_SCHEMA_VERSION: &str = "pi.ext.runtime_risk_calibration.v1";
+pub const RUNTIME_HOSTCALL_TELEMETRY_SCHEMA_VERSION: &str = "pi.ext.hostcall_telemetry.v1";
+pub const RUNTIME_HOSTCALL_FEATURE_SCHEMA_VERSION: &str = "pi.ext.hostcall_feature_vector.v1";
+pub const RUNTIME_HOSTCALL_FEATURE_BUDGET_US: u64 = 250;
+const RUNTIME_HOSTCALL_SEQUENCE_WINDOW: usize = 64;
+const CAPABILITY_MANIFEST_SCHEMA_V1: &str = "pi.ext.cap.v1";
+const CAPABILITY_MANIFEST_SCHEMA_V2: &str = "pi.ext.cap.v2";
 
 // ============================================================================
 // Compatibility Scanner (bd-3bs)
@@ -1516,6 +1559,308 @@ impl Default for RuntimeRiskConfig {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum RuntimeRiskStateLabelValue {
+    SafeFast,
+    Suspicious,
+    Unsafe,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeRiskActionValue {
+    Allow,
+    Harden,
+    Deny,
+    Terminate,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RuntimeRiskPosteriorEvidence {
+    pub safe_fast: f64,
+    pub suspicious: f64,
+    #[serde(rename = "unsafe")]
+    pub unsafe_: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RuntimeRiskExpectedLossEvidence {
+    pub allow: f64,
+    pub harden: f64,
+    pub deny: f64,
+    pub terminate: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RuntimeRiskLedgerArtifactEntry {
+    pub ts_ms: i64,
+    pub extension_id: String,
+    pub call_id: String,
+    pub capability: String,
+    pub method: String,
+    pub params_hash: String,
+    pub policy_reason: String,
+    pub risk_score: f64,
+    pub posterior: RuntimeRiskPosteriorEvidence,
+    pub expected_loss: RuntimeRiskExpectedLossEvidence,
+    pub selected_action: RuntimeRiskActionValue,
+    pub derived_state: RuntimeRiskStateLabelValue,
+    pub triggers: Vec<String>,
+    pub fallback_reason: Option<String>,
+    pub e_process: f64,
+    pub e_threshold: f64,
+    pub conformal_residual: f64,
+    pub conformal_quantile: f64,
+    pub drift_detected: bool,
+    pub outcome_error_code: Option<String>,
+    pub ledger_hash: String,
+    pub prev_ledger_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RuntimeRiskLedgerArtifact {
+    pub schema: String,
+    pub generated_at_ms: i64,
+    pub entry_count: usize,
+    pub head_ledger_hash: Option<String>,
+    pub tail_ledger_hash: Option<String>,
+    pub data_hash: String,
+    pub entries: Vec<RuntimeRiskLedgerArtifactEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeRiskLedgerIntegrityError {
+    pub index: usize,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeRiskLedgerVerificationReport {
+    pub schema: String,
+    pub entry_count: usize,
+    pub head_ledger_hash: Option<String>,
+    pub tail_ledger_hash: Option<String>,
+    pub artifact_data_hash: String,
+    pub computed_data_hash: String,
+    pub valid: bool,
+    pub errors: Vec<RuntimeRiskLedgerIntegrityError>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RuntimeRiskReplayStep {
+    pub index: usize,
+    pub call_id: String,
+    pub extension_id: String,
+    pub capability: String,
+    pub method: String,
+    pub policy_reason: String,
+    pub selected_action: RuntimeRiskActionValue,
+    pub derived_state: RuntimeRiskStateLabelValue,
+    pub risk_score: f64,
+    pub reason_codes: Vec<String>,
+    pub fallback_reason: Option<String>,
+    pub drift_detected: bool,
+    pub e_process: f64,
+    pub e_threshold: f64,
+    pub conformal_residual: f64,
+    pub conformal_quantile: f64,
+    pub ledger_hash: String,
+    pub prev_ledger_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RuntimeRiskReplayArtifact {
+    pub schema: String,
+    pub source_schema: String,
+    pub source_data_hash: String,
+    pub entry_count: usize,
+    pub tail_ledger_hash: Option<String>,
+    pub steps: Vec<RuntimeRiskReplayStep>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeRiskCalibrationObjective {
+    MinExpectedLoss,
+    MinFalsePositives,
+    #[default]
+    BalancedAccuracy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RuntimeRiskThresholdCalibration {
+    pub threshold: f64,
+    pub objective_score: f64,
+    pub expected_loss: f64,
+    pub false_positive_rate: f64,
+    pub false_negative_rate: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct RuntimeRiskCalibrationConfig {
+    pub objective: RuntimeRiskCalibrationObjective,
+    pub baseline_threshold: f64,
+    pub threshold_grid: Vec<f64>,
+    pub false_positive_weight: f64,
+    pub false_negative_weight: f64,
+}
+
+impl Default for RuntimeRiskCalibrationConfig {
+    fn default() -> Self {
+        let threshold_grid = (1..=19).map(|step| f64::from(step) * 0.05_f64).collect();
+        Self {
+            objective: RuntimeRiskCalibrationObjective::BalancedAccuracy,
+            baseline_threshold: 0.65,
+            threshold_grid,
+            false_positive_weight: 1.0,
+            false_negative_weight: 1.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RuntimeRiskCalibrationReport {
+    pub schema: String,
+    pub source_schema: String,
+    pub source_data_hash: String,
+    pub objective: RuntimeRiskCalibrationObjective,
+    pub baseline_threshold: f64,
+    pub recommended_threshold: f64,
+    pub recommended_delta: f64,
+    pub baseline: RuntimeRiskThresholdCalibration,
+    pub recommended: RuntimeRiskThresholdCalibration,
+    pub candidates: Vec<RuntimeRiskThresholdCalibration>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(default)]
+pub struct RuntimeHostcallSequenceContext {
+    pub sequence_id: u64,
+    pub previous_capability: Option<String>,
+    pub previous_method: Option<String>,
+    pub previous_resource_target_class: Option<String>,
+    pub burst_count_1s: u32,
+    pub burst_count_10s: u32,
+    pub recent_error_count: u32,
+    pub recent_window_count: u32,
+    pub prior_failure_streak: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct RuntimeHostcallFeatureVector {
+    pub schema: String,
+    pub base_score: f64,
+    pub recent_mean_score: f64,
+    pub recent_error_rate: f64,
+    pub burst_density_1s: f64,
+    pub burst_density_10s: f64,
+    pub prior_failure_streak_norm: f64,
+    pub dangerous_capability: f64,
+    pub timeout_requested: f64,
+    pub policy_prompt_bias: f64,
+}
+
+impl Default for RuntimeHostcallFeatureVector {
+    fn default() -> Self {
+        Self {
+            schema: RUNTIME_HOSTCALL_FEATURE_SCHEMA_VERSION.to_string(),
+            base_score: 0.0,
+            recent_mean_score: 0.0,
+            recent_error_rate: 0.0,
+            burst_density_1s: 0.0,
+            burst_density_10s: 0.0,
+            prior_failure_streak_norm: 0.0,
+            dangerous_capability: 0.0,
+            timeout_requested: 0.0,
+            policy_prompt_bias: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct RuntimeHostcallTelemetryEvent {
+    pub schema: String,
+    pub ts_ms: i64,
+    pub extension_id: String,
+    pub call_id: String,
+    pub capability: String,
+    pub method: String,
+    pub params_hash: String,
+    pub args_shape_hash: String,
+    pub resource_target_class: String,
+    pub policy_reason: String,
+    pub policy_profile: String,
+    pub risk_score: f64,
+    pub timeout_ms: Option<u64>,
+    pub latency_ms: u64,
+    pub outcome: String,
+    pub outcome_error_code: Option<String>,
+    pub selected_action: RuntimeRiskActionValue,
+    pub reason_codes: Vec<String>,
+    pub sequence: RuntimeHostcallSequenceContext,
+    pub features: RuntimeHostcallFeatureVector,
+    pub extraction_latency_us: u64,
+    pub extraction_budget_us: u64,
+    pub extraction_budget_exceeded: bool,
+    pub redaction_summary: String,
+}
+
+impl Default for RuntimeHostcallTelemetryEvent {
+    fn default() -> Self {
+        Self {
+            schema: RUNTIME_HOSTCALL_TELEMETRY_SCHEMA_VERSION.to_string(),
+            ts_ms: 0,
+            extension_id: String::new(),
+            call_id: String::new(),
+            capability: String::new(),
+            method: String::new(),
+            params_hash: String::new(),
+            args_shape_hash: String::new(),
+            resource_target_class: "unknown".to_string(),
+            policy_reason: String::new(),
+            policy_profile: String::new(),
+            risk_score: 0.0,
+            timeout_ms: None,
+            latency_ms: 0,
+            outcome: "success".to_string(),
+            outcome_error_code: None,
+            selected_action: RuntimeRiskActionValue::Allow,
+            reason_codes: Vec::new(),
+            sequence: RuntimeHostcallSequenceContext::default(),
+            features: RuntimeHostcallFeatureVector::default(),
+            extraction_latency_us: 0,
+            extraction_budget_us: RUNTIME_HOSTCALL_FEATURE_BUDGET_US,
+            extraction_budget_exceeded: false,
+            redaction_summary: "params redacted via hash-only telemetry".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct RuntimeHostcallTelemetryArtifact {
+    pub schema: String,
+    pub generated_at_ms: i64,
+    pub entry_count: usize,
+    pub entries: Vec<RuntimeHostcallTelemetryEvent>,
+}
+
+impl Default for RuntimeHostcallTelemetryArtifact {
+    fn default() -> Self {
+        Self {
+            schema: RUNTIME_HOSTCALL_TELEMETRY_SCHEMA_VERSION.to_string(),
+            generated_at_ms: 0,
+            entry_count: 0,
+            entries: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 enum RuntimeRiskStateLabel {
     SafeFast,
     Suspicious,
@@ -1579,6 +1924,10 @@ struct RuntimeRiskDecision {
     capability: String,
     method: String,
     params_hash: String,
+    args_shape_hash: String,
+    resource_target_class: String,
+    policy_profile: String,
+    timeout_ms: Option<u64>,
     risk_score: f64,
     posterior: RuntimeRiskPosterior,
     expected_loss: RuntimeRiskExpectedLoss,
@@ -1591,6 +1940,18 @@ struct RuntimeRiskDecision {
     fallback_reason: Option<String>,
     elapsed_ms: u64,
     state_label: RuntimeRiskStateLabel,
+    sequence_context: RuntimeHostcallSequenceContext,
+    features: RuntimeHostcallFeatureVector,
+    feature_extraction_latency_us: u64,
+    feature_budget_exceeded: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RuntimeRiskCallMetadata<'a> {
+    args_shape_hash: &'a str,
+    resource_target_class: &'a str,
+    timeout_ms: Option<u64>,
+    policy_profile: &'a str,
 }
 
 #[derive(Debug, Clone)]
@@ -1600,11 +1961,18 @@ struct RuntimeRiskState {
     alpha_unsafe: f64,
     log_e_process: f64,
     recent_scores: VecDeque<f64>,
+    recent_call_timestamps_ms: VecDeque<i64>,
+    recent_outcome_errors: VecDeque<bool>,
     residual_window: VecDeque<f64>,
     previous_residual_quantile: f64,
     consecutive_unsafe: u32,
+    consecutive_failures: u32,
     quarantined: bool,
     last_decision: Option<RuntimeRiskAction>,
+    last_capability: Option<String>,
+    last_method: Option<String>,
+    last_resource_target_class: Option<String>,
+    sequence_counter: u64,
 }
 
 impl Default for RuntimeRiskState {
@@ -1615,11 +1983,148 @@ impl Default for RuntimeRiskState {
             alpha_unsafe: 0.5,
             log_e_process: 0.0,
             recent_scores: VecDeque::new(),
+            recent_call_timestamps_ms: VecDeque::new(),
+            recent_outcome_errors: VecDeque::new(),
             residual_window: VecDeque::new(),
             previous_residual_quantile: 0.0,
             consecutive_unsafe: 0,
+            consecutive_failures: 0,
             quarantined: false,
             last_decision: None,
+            last_capability: None,
+            last_method: None,
+            last_resource_target_class: None,
+            sequence_counter: 0,
+        }
+    }
+}
+
+impl From<RuntimeRiskStateLabel> for RuntimeRiskStateLabelValue {
+    fn from(value: RuntimeRiskStateLabel) -> Self {
+        match value {
+            RuntimeRiskStateLabel::SafeFast => Self::SafeFast,
+            RuntimeRiskStateLabel::Suspicious => Self::Suspicious,
+            RuntimeRiskStateLabel::Unsafe => Self::Unsafe,
+        }
+    }
+}
+
+impl From<RuntimeRiskStateLabelValue> for RuntimeRiskStateLabel {
+    fn from(value: RuntimeRiskStateLabelValue) -> Self {
+        match value {
+            RuntimeRiskStateLabelValue::SafeFast => Self::SafeFast,
+            RuntimeRiskStateLabelValue::Suspicious => Self::Suspicious,
+            RuntimeRiskStateLabelValue::Unsafe => Self::Unsafe,
+        }
+    }
+}
+
+impl From<RuntimeRiskAction> for RuntimeRiskActionValue {
+    fn from(value: RuntimeRiskAction) -> Self {
+        match value {
+            RuntimeRiskAction::Allow => Self::Allow,
+            RuntimeRiskAction::Harden => Self::Harden,
+            RuntimeRiskAction::Deny => Self::Deny,
+            RuntimeRiskAction::Terminate => Self::Terminate,
+        }
+    }
+}
+
+impl From<RuntimeRiskActionValue> for RuntimeRiskAction {
+    fn from(value: RuntimeRiskActionValue) -> Self {
+        match value {
+            RuntimeRiskActionValue::Allow => Self::Allow,
+            RuntimeRiskActionValue::Harden => Self::Harden,
+            RuntimeRiskActionValue::Deny => Self::Deny,
+            RuntimeRiskActionValue::Terminate => Self::Terminate,
+        }
+    }
+}
+
+impl From<&RuntimeRiskPosterior> for RuntimeRiskPosteriorEvidence {
+    fn from(value: &RuntimeRiskPosterior) -> Self {
+        Self {
+            safe_fast: value.safe_fast,
+            suspicious: value.suspicious,
+            unsafe_: value.unsafe_,
+        }
+    }
+}
+
+impl From<&RuntimeRiskExpectedLoss> for RuntimeRiskExpectedLossEvidence {
+    fn from(value: &RuntimeRiskExpectedLoss) -> Self {
+        Self {
+            allow: value.allow,
+            harden: value.harden,
+            deny: value.deny,
+            terminate: value.terminate,
+        }
+    }
+}
+
+impl From<&RuntimeRiskLedgerEntry> for RuntimeRiskLedgerArtifactEntry {
+    fn from(value: &RuntimeRiskLedgerEntry) -> Self {
+        Self {
+            ts_ms: value.ts_ms,
+            extension_id: value.extension_id.clone(),
+            call_id: value.call_id.clone(),
+            capability: value.capability.clone(),
+            method: value.method.clone(),
+            params_hash: value.params_hash.clone(),
+            policy_reason: value.policy_reason.clone(),
+            risk_score: value.risk_score,
+            posterior: RuntimeRiskPosteriorEvidence::from(&value.posterior),
+            expected_loss: RuntimeRiskExpectedLossEvidence::from(&value.expected_loss),
+            selected_action: RuntimeRiskActionValue::from(value.selected_action),
+            derived_state: RuntimeRiskStateLabelValue::from(value.derived_state),
+            triggers: value.triggers.clone(),
+            fallback_reason: value.fallback_reason.clone(),
+            e_process: value.e_process,
+            e_threshold: value.e_threshold,
+            conformal_residual: value.conformal_residual,
+            conformal_quantile: value.conformal_quantile,
+            drift_detected: value.drift_detected,
+            outcome_error_code: value.outcome_error_code.clone(),
+            ledger_hash: value.ledger_hash.clone(),
+            prev_ledger_hash: value.prev_ledger_hash.clone(),
+        }
+    }
+}
+
+impl From<&RuntimeRiskLedgerArtifactEntry> for RuntimeRiskLedgerEntry {
+    fn from(value: &RuntimeRiskLedgerArtifactEntry) -> Self {
+        Self {
+            ts_ms: value.ts_ms,
+            extension_id: value.extension_id.clone(),
+            call_id: value.call_id.clone(),
+            capability: value.capability.clone(),
+            method: value.method.clone(),
+            params_hash: value.params_hash.clone(),
+            policy_reason: value.policy_reason.clone(),
+            risk_score: value.risk_score,
+            posterior: RuntimeRiskPosterior {
+                safe_fast: value.posterior.safe_fast,
+                suspicious: value.posterior.suspicious,
+                unsafe_: value.posterior.unsafe_,
+            },
+            expected_loss: RuntimeRiskExpectedLoss {
+                allow: value.expected_loss.allow,
+                harden: value.expected_loss.harden,
+                deny: value.expected_loss.deny,
+                terminate: value.expected_loss.terminate,
+            },
+            selected_action: RuntimeRiskAction::from(value.selected_action),
+            derived_state: RuntimeRiskStateLabel::from(value.derived_state),
+            triggers: value.triggers.clone(),
+            fallback_reason: value.fallback_reason.clone(),
+            e_process: value.e_process,
+            e_threshold: value.e_threshold,
+            conformal_residual: value.conformal_residual,
+            conformal_quantile: value.conformal_quantile,
+            drift_detected: value.drift_detected,
+            outcome_error_code: value.outcome_error_code.clone(),
+            ledger_hash: value.ledger_hash.clone(),
+            prev_ledger_hash: value.prev_ledger_hash.clone(),
         }
     }
 }
@@ -1673,6 +2178,147 @@ fn runtime_risk_base_score(capability: &str, method: &str, policy_reason: &str) 
     runtime_risk_clamp01(capability_score + method_bonus + policy_bonus)
 }
 
+fn runtime_hostcall_policy_profile(mode: ExtensionPolicyMode) -> String {
+    match mode {
+        ExtensionPolicyMode::Strict => "strict".to_string(),
+        ExtensionPolicyMode::Prompt => "balanced".to_string(),
+        ExtensionPolicyMode::Permissive => "permissive".to_string(),
+    }
+}
+
+fn runtime_hostcall_count_recent(window: &VecDeque<i64>, now_ms: i64, horizon_ms: i64) -> u32 {
+    let count = window
+        .iter()
+        .rev()
+        .take_while(|ts| now_ms.saturating_sub(**ts) <= horizon_ms)
+        .count();
+    u32::try_from(count).unwrap_or(u32::MAX)
+}
+
+fn runtime_hostcall_sequence_context(
+    state: &RuntimeRiskState,
+    now_ms: i64,
+) -> RuntimeHostcallSequenceContext {
+    let recent_error_count = state
+        .recent_outcome_errors
+        .iter()
+        .filter(|value| **value)
+        .count();
+    RuntimeHostcallSequenceContext {
+        sequence_id: state.sequence_counter.saturating_add(1),
+        previous_capability: state.last_capability.clone(),
+        previous_method: state.last_method.clone(),
+        previous_resource_target_class: state.last_resource_target_class.clone(),
+        burst_count_1s: runtime_hostcall_count_recent(
+            &state.recent_call_timestamps_ms,
+            now_ms,
+            1_000,
+        ),
+        burst_count_10s: runtime_hostcall_count_recent(
+            &state.recent_call_timestamps_ms,
+            now_ms,
+            10_000,
+        ),
+        recent_error_count: u32::try_from(recent_error_count).unwrap_or(u32::MAX),
+        recent_window_count: u32::try_from(state.recent_outcome_errors.len()).unwrap_or(u32::MAX),
+        prior_failure_streak: state.consecutive_failures,
+    }
+}
+
+fn runtime_hostcall_extract_features(
+    base_score: f64,
+    recent_mean_score: f64,
+    sequence: &RuntimeHostcallSequenceContext,
+    capability: &str,
+    policy_reason: &str,
+    timeout_ms: Option<u64>,
+) -> RuntimeHostcallFeatureVector {
+    let recent_error_rate = if sequence.recent_window_count == 0 {
+        0.0
+    } else {
+        f64::from(sequence.recent_error_count) / f64::from(sequence.recent_window_count)
+    };
+
+    RuntimeHostcallFeatureVector {
+        schema: RUNTIME_HOSTCALL_FEATURE_SCHEMA_VERSION.to_string(),
+        base_score: runtime_risk_clamp01(base_score),
+        recent_mean_score: runtime_risk_clamp01(recent_mean_score),
+        recent_error_rate: runtime_risk_clamp01(recent_error_rate),
+        burst_density_1s: runtime_risk_clamp01(f64::from(sequence.burst_count_1s) / 8.0),
+        burst_density_10s: runtime_risk_clamp01(f64::from(sequence.burst_count_10s) / 24.0),
+        prior_failure_streak_norm: runtime_risk_clamp01(
+            f64::from(sequence.prior_failure_streak) / 8.0,
+        ),
+        dangerous_capability: if runtime_risk_is_dangerous(capability) {
+            1.0
+        } else {
+            0.0
+        },
+        timeout_requested: if timeout_ms.unwrap_or(0) > 0 {
+            1.0
+        } else {
+            0.0
+        },
+        policy_prompt_bias: if policy_reason.starts_with("prompt_") {
+            1.0
+        } else {
+            0.0
+        },
+    }
+}
+
+fn runtime_hostcall_is_private_ip(host: &str) -> Option<bool> {
+    let parsed = host.parse::<IpAddr>().ok()?;
+    Some(match parsed {
+        IpAddr::V4(v4) => v4.is_private() || v4.is_link_local() || v4.is_loopback(),
+        IpAddr::V6(v6) => v6.is_unique_local() || v6.is_unicast_link_local() || v6.is_loopback(),
+    })
+}
+
+fn runtime_hostcall_resource_target_class(method: &str, params: &Value) -> String {
+    match method {
+        "http" => {
+            let Some(url_raw) = params.get("url").and_then(Value::as_str) else {
+                return "network.unknown".to_string();
+            };
+            let parsed = Url::parse(url_raw).ok();
+            let Some(url) = parsed else {
+                return "network.unknown".to_string();
+            };
+            let Some(host) = url.host_str() else {
+                return "network.unknown".to_string();
+            };
+            if host.eq_ignore_ascii_case("localhost") {
+                return "network.loopback".to_string();
+            }
+            if let Some(is_private) = runtime_hostcall_is_private_ip(host) {
+                if is_private {
+                    return "network.private".to_string();
+                }
+                return "network.public".to_string();
+            }
+            "network.public".to_string()
+        }
+        "exec" => "subprocess.exec".to_string(),
+        "tool" => {
+            let tool_name = params
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            match tool_name {
+                "read" | "write" | "edit" | "grep" | "find" | "ls" => "filesystem.tool".to_string(),
+                "bash" => "subprocess.tool".to_string(),
+                _ => "tool.unknown".to_string(),
+            }
+        }
+        "session" => "session.state".to_string(),
+        "ui" => "ui.interaction".to_string(),
+        "events" => "event.bus".to_string(),
+        "log" => "telemetry.log".to_string(),
+        _ => "unknown".to_string(),
+    }
+}
+
 #[allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
@@ -1686,6 +2332,356 @@ fn runtime_risk_quantile(mut values: Vec<f64>, q: f64) -> f64 {
     let q = runtime_risk_clamp01(q);
     let idx = ((values.len() - 1) as f64 * q).round() as usize;
     values[idx.min(values.len() - 1)]
+}
+
+fn runtime_risk_compute_ledger_hash(
+    entry: &RuntimeRiskLedgerEntry,
+    prev_hash: Option<&str>,
+) -> String {
+    let mut canonical = entry.clone();
+    canonical.ledger_hash.clear();
+    canonical.prev_ledger_hash = prev_hash.map(ToString::to_string);
+
+    let mut hasher = sha2::Sha256::new();
+    if let Some(prev) = prev_hash {
+        hasher.update(prev.as_bytes());
+    }
+    let payload = serde_json::to_string(&canonical).unwrap_or_default();
+    hasher.update(payload.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn runtime_risk_compute_ledger_hash_artifact(
+    entry: &RuntimeRiskLedgerArtifactEntry,
+    prev_hash: Option<&str>,
+) -> String {
+    let internal = RuntimeRiskLedgerEntry::from(entry);
+    runtime_risk_compute_ledger_hash(&internal, prev_hash)
+}
+
+fn runtime_risk_ledger_data_hash(entries: &[RuntimeRiskLedgerArtifactEntry]) -> String {
+    let mut hasher = sha2::Sha256::new();
+    for entry in entries {
+        hasher.update(entry.ledger_hash.as_bytes());
+        hasher.update(b"\n");
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+pub fn verify_runtime_risk_ledger_artifact(
+    artifact: &RuntimeRiskLedgerArtifact,
+) -> RuntimeRiskLedgerVerificationReport {
+    let mut errors = Vec::new();
+    if artifact.schema != RUNTIME_RISK_LEDGER_SCHEMA_VERSION {
+        errors.push(RuntimeRiskLedgerIntegrityError {
+            index: 0,
+            code: "schema_mismatch".to_string(),
+            message: format!(
+                "expected schema {}, got {}",
+                RUNTIME_RISK_LEDGER_SCHEMA_VERSION, artifact.schema
+            ),
+        });
+    }
+
+    if artifact.entry_count != artifact.entries.len() {
+        errors.push(RuntimeRiskLedgerIntegrityError {
+            index: artifact.entries.len(),
+            code: "entry_count_mismatch".to_string(),
+            message: format!(
+                "entry_count={}, actual={}",
+                artifact.entry_count,
+                artifact.entries.len()
+            ),
+        });
+    }
+
+    let head_ledger_hash = artifact
+        .entries
+        .first()
+        .map(|entry| entry.ledger_hash.clone());
+    let tail_ledger_hash = artifact
+        .entries
+        .last()
+        .map(|entry| entry.ledger_hash.clone());
+
+    if artifact.head_ledger_hash != head_ledger_hash {
+        errors.push(RuntimeRiskLedgerIntegrityError {
+            index: 0,
+            code: "head_hash_mismatch".to_string(),
+            message: "head_ledger_hash does not match first entry".to_string(),
+        });
+    }
+
+    if artifact.tail_ledger_hash != tail_ledger_hash {
+        errors.push(RuntimeRiskLedgerIntegrityError {
+            index: artifact.entries.len(),
+            code: "tail_hash_mismatch".to_string(),
+            message: "tail_ledger_hash does not match last entry".to_string(),
+        });
+    }
+
+    let mut expected_prev_hash = artifact
+        .entries
+        .first()
+        .and_then(|entry| entry.prev_ledger_hash.clone());
+
+    for (idx, entry) in artifact.entries.iter().enumerate() {
+        if entry.prev_ledger_hash != expected_prev_hash {
+            errors.push(RuntimeRiskLedgerIntegrityError {
+                index: idx,
+                code: "prev_hash_mismatch".to_string(),
+                message: format!(
+                    "expected prev {:?}, got {:?}",
+                    expected_prev_hash, entry.prev_ledger_hash
+                ),
+            });
+        }
+
+        let expected_hash =
+            runtime_risk_compute_ledger_hash_artifact(entry, expected_prev_hash.as_deref());
+        if entry.ledger_hash != expected_hash {
+            errors.push(RuntimeRiskLedgerIntegrityError {
+                index: idx,
+                code: "hash_mismatch".to_string(),
+                message: format!("expected {}, got {}", expected_hash, entry.ledger_hash),
+            });
+        }
+
+        expected_prev_hash = Some(entry.ledger_hash.clone());
+    }
+
+    let computed_data_hash = runtime_risk_ledger_data_hash(&artifact.entries);
+    if artifact.data_hash != computed_data_hash {
+        errors.push(RuntimeRiskLedgerIntegrityError {
+            index: artifact.entries.len(),
+            code: "data_hash_mismatch".to_string(),
+            message: format!(
+                "expected {}, got {}",
+                computed_data_hash, artifact.data_hash
+            ),
+        });
+    }
+
+    RuntimeRiskLedgerVerificationReport {
+        schema: RUNTIME_RISK_LEDGER_SCHEMA_VERSION.to_string(),
+        entry_count: artifact.entries.len(),
+        head_ledger_hash,
+        tail_ledger_hash,
+        artifact_data_hash: artifact.data_hash.clone(),
+        computed_data_hash,
+        valid: errors.is_empty(),
+        errors,
+    }
+}
+
+pub fn replay_runtime_risk_ledger_artifact(
+    artifact: &RuntimeRiskLedgerArtifact,
+) -> Result<RuntimeRiskReplayArtifact> {
+    let verification = verify_runtime_risk_ledger_artifact(artifact);
+    if !verification.valid {
+        let summary = verification
+            .errors
+            .iter()
+            .take(3)
+            .map(|err| format!("[{}] {}: {}", err.index, err.code, err.message))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(Error::validation(format!(
+            "runtime risk ledger integrity verification failed: {summary}"
+        )));
+    }
+
+    let steps = artifact
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| RuntimeRiskReplayStep {
+            index,
+            call_id: entry.call_id.clone(),
+            extension_id: entry.extension_id.clone(),
+            capability: entry.capability.clone(),
+            method: entry.method.clone(),
+            policy_reason: entry.policy_reason.clone(),
+            selected_action: entry.selected_action,
+            derived_state: entry.derived_state,
+            risk_score: entry.risk_score,
+            reason_codes: entry.triggers.clone(),
+            fallback_reason: entry.fallback_reason.clone(),
+            drift_detected: entry.drift_detected,
+            e_process: entry.e_process,
+            e_threshold: entry.e_threshold,
+            conformal_residual: entry.conformal_residual,
+            conformal_quantile: entry.conformal_quantile,
+            ledger_hash: entry.ledger_hash.clone(),
+            prev_ledger_hash: entry.prev_ledger_hash.clone(),
+        })
+        .collect();
+
+    Ok(RuntimeRiskReplayArtifact {
+        schema: RUNTIME_RISK_REPLAY_SCHEMA_VERSION.to_string(),
+        source_schema: artifact.schema.clone(),
+        source_data_hash: artifact.data_hash.clone(),
+        entry_count: artifact.entries.len(),
+        tail_ledger_hash: artifact.tail_ledger_hash.clone(),
+        steps,
+    })
+}
+
+fn runtime_risk_calibration_threshold_grid(config: &RuntimeRiskCalibrationConfig) -> Vec<f64> {
+    let mut thresholds = if config.threshold_grid.is_empty() {
+        RuntimeRiskCalibrationConfig::default().threshold_grid
+    } else {
+        config.threshold_grid.clone()
+    };
+    for threshold in &mut thresholds {
+        *threshold = runtime_risk_clamp01(*threshold);
+    }
+    thresholds.sort_by(f64::total_cmp);
+    thresholds.dedup_by(|left, right| left.total_cmp(right).is_eq());
+    if thresholds.is_empty() {
+        thresholds.push(runtime_risk_clamp01(config.baseline_threshold));
+    }
+    thresholds
+}
+
+const fn runtime_risk_calibration_is_positive(entry: &RuntimeRiskLedgerArtifactEntry) -> bool {
+    entry.outcome_error_code.is_some()
+        || matches!(
+            entry.selected_action,
+            RuntimeRiskActionValue::Deny | RuntimeRiskActionValue::Terminate
+        )
+        || matches!(entry.derived_state, RuntimeRiskStateLabelValue::Unsafe)
+}
+
+fn runtime_risk_calibration_candidate(
+    entries: &[RuntimeRiskLedgerArtifactEntry],
+    threshold: f64,
+    config: &RuntimeRiskCalibrationConfig,
+) -> RuntimeRiskThresholdCalibration {
+    let threshold = runtime_risk_clamp01(threshold);
+    let fp_weight = config.false_positive_weight.max(0.0);
+    let fn_weight = config.false_negative_weight.max(0.0);
+    let mut true_positive = 0.0_f64;
+    let mut false_positive = 0.0_f64;
+    let mut true_negative = 0.0_f64;
+    let mut false_negative = 0.0_f64;
+
+    for entry in entries {
+        let actual_positive = runtime_risk_calibration_is_positive(entry);
+        let predicted_positive = entry.risk_score >= threshold;
+        match (actual_positive, predicted_positive) {
+            (true, true) => true_positive += 1.0,
+            (false, true) => false_positive += 1.0,
+            (false, false) => true_negative += 1.0,
+            (true, false) => false_negative += 1.0,
+        }
+    }
+
+    let positives = true_positive + false_negative;
+    let negatives = true_negative + false_positive;
+    let false_positive_rate = if negatives == 0.0 {
+        0.0
+    } else {
+        false_positive / negatives
+    };
+    let false_negative_rate = if positives == 0.0 {
+        0.0
+    } else {
+        false_negative / positives
+    };
+
+    let false_negative_cost = false_negative * 12.0 * fn_weight;
+    let false_positive_cost = false_positive * 3.0 * fp_weight;
+    let true_positive_cost = true_positive;
+    let true_negative_cost = true_negative * 0.2;
+    let expected_loss =
+        false_negative_cost + false_positive_cost + true_positive_cost + true_negative_cost;
+
+    let objective_score = match config.objective {
+        RuntimeRiskCalibrationObjective::MinExpectedLoss => expected_loss,
+        RuntimeRiskCalibrationObjective::MinFalsePositives => {
+            (false_positive_rate * fp_weight) + (false_negative_rate * fn_weight * 0.25)
+        }
+        RuntimeRiskCalibrationObjective::BalancedAccuracy => {
+            (false_positive_rate * fp_weight) + (false_negative_rate * fn_weight)
+        }
+    };
+
+    RuntimeRiskThresholdCalibration {
+        threshold,
+        objective_score,
+        expected_loss,
+        false_positive_rate,
+        false_negative_rate,
+    }
+}
+
+pub fn calibrate_runtime_risk_from_ledger(
+    artifact: &RuntimeRiskLedgerArtifact,
+    config: &RuntimeRiskCalibrationConfig,
+) -> Result<RuntimeRiskCalibrationReport> {
+    let verification = verify_runtime_risk_ledger_artifact(artifact);
+    if !verification.valid {
+        return Err(Error::validation(
+            "runtime risk ledger failed integrity verification".to_string(),
+        ));
+    }
+    if artifact.entries.is_empty() {
+        return Err(Error::validation(
+            "runtime risk ledger calibration requires at least one entry".to_string(),
+        ));
+    }
+
+    let baseline_threshold = runtime_risk_clamp01(config.baseline_threshold);
+    let baseline =
+        runtime_risk_calibration_candidate(&artifact.entries, baseline_threshold, config);
+    let mut candidates = runtime_risk_calibration_threshold_grid(config)
+        .into_iter()
+        .map(|threshold| runtime_risk_calibration_candidate(&artifact.entries, threshold, config))
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| left.threshold.total_cmp(&right.threshold));
+
+    let mut recommended = candidates
+        .first()
+        .cloned()
+        .unwrap_or_else(|| baseline.clone());
+    for candidate in candidates.iter().skip(1) {
+        let better_score = candidate
+            .objective_score
+            .total_cmp(&recommended.objective_score)
+            .is_lt();
+        let equal_score = candidate
+            .objective_score
+            .total_cmp(&recommended.objective_score)
+            .is_eq();
+        let candidate_distance = (candidate.threshold - baseline_threshold).abs();
+        let recommended_distance = (recommended.threshold - baseline_threshold).abs();
+        let better_distance = candidate_distance.total_cmp(&recommended_distance).is_lt();
+        let equal_distance = candidate_distance.total_cmp(&recommended_distance).is_eq();
+        let better_threshold = candidate
+            .threshold
+            .total_cmp(&recommended.threshold)
+            .is_lt();
+
+        if better_score
+            || (equal_score && (better_distance || (equal_distance && better_threshold)))
+        {
+            recommended = candidate.clone();
+        }
+    }
+
+    Ok(RuntimeRiskCalibrationReport {
+        schema: RUNTIME_RISK_CALIBRATION_SCHEMA_VERSION.to_string(),
+        source_schema: artifact.schema.clone(),
+        source_data_hash: artifact.data_hash.clone(),
+        objective: config.objective,
+        baseline_threshold,
+        recommended_threshold: recommended.threshold,
+        recommended_delta: recommended.threshold - baseline_threshold,
+        baseline,
+        recommended,
+        candidates,
+    })
 }
 
 fn runtime_risk_choose_action(
@@ -2691,21 +3687,34 @@ pub struct RegisterPayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CapabilityManifest {
     pub schema: String,
     pub capabilities: Vec<CapabilityRequirement>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CapabilityRequirement {
     pub capability: String,
     #[serde(default)]
     pub methods: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub intents: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connector_classes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hostcall_classes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risk_tier: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<CapabilityScope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<CapabilityProvenance>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CapabilityScope {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paths: Option<Vec<String>>,
@@ -2713,6 +3722,30 @@ pub struct CapabilityScope {
     pub hosts: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_tools: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapabilityProvenance {
+    pub source: String,
+    pub integrity: CapabilityIntegrityAttestation,
+    pub publisher: CapabilityPublisherAttestation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapabilityIntegrityAttestation {
+    pub algorithm: String,
+    pub digest: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapabilityPublisherAttestation {
+    pub id: String,
+    pub verification: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3217,22 +4250,215 @@ fn validate_register(payload: &RegisterPayload) -> Result<()> {
     }
 
     if let Some(manifest) = &payload.capability_manifest {
-        if manifest.schema != "pi.ext.cap.v1" {
-            return Err(Error::validation(format!(
-                "Unsupported capability manifest schema: {}",
-                manifest.schema
-            )));
-        }
-
-        for req in &manifest.capabilities {
-            if req.capability.trim().is_empty() {
-                return Err(Error::validation(
-                    "Capability manifest includes empty capability",
-                ));
-            }
-        }
+        validate_capability_manifest(manifest)?;
     }
     Ok(())
+}
+
+fn capability_manifest_sha256_digest_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^[a-fA-F0-9]{64}$").expect("regex"))
+}
+
+fn is_known_v2_capability(value: &str) -> bool {
+    matches!(
+        value,
+        "read" | "write" | "exec" | "env" | "http" | "session" | "events" | "ui" | "log" | "tool"
+    )
+}
+
+fn is_known_v2_intent(value: &str) -> bool {
+    matches!(
+        value,
+        "file_read"
+            | "file_write"
+            | "process_exec"
+            | "environment_access"
+            | "network_egress"
+            | "session_state_access"
+            | "event_stream_access"
+            | "ui_interaction"
+            | "telemetry_logging"
+    )
+}
+
+fn is_known_v2_connector_class(value: &str) -> bool {
+    matches!(
+        value,
+        "tool" | "fs" | "exec" | "env" | "http" | "session" | "events" | "ui" | "log"
+    )
+}
+
+fn is_known_v2_hostcall_class(value: &str) -> bool {
+    matches!(
+        value,
+        "tool"
+            | "exec"
+            | "env"
+            | "http"
+            | "session"
+            | "events"
+            | "ui"
+            | "log"
+            | "fs.read"
+            | "fs.write"
+            | "fs.list"
+            | "fs.stat"
+            | "fs.mkdir"
+            | "fs.delete"
+    )
+}
+
+fn is_known_v2_risk_tier(value: &str) -> bool {
+    matches!(value, "low" | "medium" | "high" | "critical")
+}
+
+fn is_known_v2_provenance_source(value: &str) -> bool {
+    matches!(value, "npm" | "github" | "registry" | "local" | "builtin")
+}
+
+fn is_known_v2_publisher_verification(value: &str) -> bool {
+    matches!(
+        value,
+        "unsigned" | "self_attested" | "key_attested" | "registry_attested"
+    )
+}
+
+#[allow(clippy::too_many_lines)]
+fn validate_capability_manifest(manifest: &CapabilityManifest) -> Result<()> {
+    match manifest.schema.as_str() {
+        CAPABILITY_MANIFEST_SCHEMA_V1 => {
+            for (idx, req) in manifest.capabilities.iter().enumerate() {
+                if req.capability.trim().is_empty() {
+                    return Err(Error::validation(format!(
+                        "Capability manifest v1 entry {idx} includes empty capability"
+                    )));
+                }
+                if !req.intents.is_empty()
+                    || !req.connector_classes.is_empty()
+                    || !req.hostcall_classes.is_empty()
+                    || req.risk_tier.is_some()
+                    || req.provenance.is_some()
+                    || req
+                        .scope
+                        .as_ref()
+                        .is_some_and(|scope| scope.allowed_tools.is_some())
+                {
+                    return Err(Error::validation(format!(
+                        "Capability manifest v1 entry {idx} contains v2-only fields"
+                    )));
+                }
+            }
+            Ok(())
+        }
+        CAPABILITY_MANIFEST_SCHEMA_V2 => {
+            for (idx, req) in manifest.capabilities.iter().enumerate() {
+                let capability = req.capability.trim();
+                if capability.is_empty() {
+                    return Err(Error::validation(format!(
+                        "Capability manifest v2 entry {idx} includes empty capability"
+                    )));
+                }
+                if !is_known_v2_capability(capability) {
+                    return Err(Error::validation(format!(
+                        "Capability manifest v2 entry {idx} has unsupported capability '{capability}'"
+                    )));
+                }
+                if !req.methods.is_empty() {
+                    return Err(Error::validation(format!(
+                        "Capability manifest v2 entry {idx} must not include legacy methods"
+                    )));
+                }
+                if req.intents.is_empty() {
+                    return Err(Error::validation(format!(
+                        "Capability manifest v2 entry {idx} must include at least one intent"
+                    )));
+                }
+                for intent in &req.intents {
+                    let intent = intent.trim();
+                    if intent.is_empty() || !is_known_v2_intent(intent) {
+                        return Err(Error::validation(format!(
+                            "Capability manifest v2 entry {idx} has unsupported intent '{intent}'"
+                        )));
+                    }
+                }
+                if req.connector_classes.is_empty() {
+                    return Err(Error::validation(format!(
+                        "Capability manifest v2 entry {idx} must include at least one connector class"
+                    )));
+                }
+                for class_name in &req.connector_classes {
+                    let class_name = class_name.trim();
+                    if class_name.is_empty() || !is_known_v2_connector_class(class_name) {
+                        return Err(Error::validation(format!(
+                            "Capability manifest v2 entry {idx} has unsupported connector class '{class_name}'"
+                        )));
+                    }
+                }
+                if req.hostcall_classes.is_empty() {
+                    return Err(Error::validation(format!(
+                        "Capability manifest v2 entry {idx} must include at least one hostcall class"
+                    )));
+                }
+                for class_name in &req.hostcall_classes {
+                    let class_name = class_name.trim();
+                    if class_name.is_empty() || !is_known_v2_hostcall_class(class_name) {
+                        return Err(Error::validation(format!(
+                            "Capability manifest v2 entry {idx} has unsupported hostcall class '{class_name}'"
+                        )));
+                    }
+                }
+                if let Some(risk_tier) = req.risk_tier.as_deref() {
+                    let risk_tier = risk_tier.trim();
+                    if risk_tier.is_empty() || !is_known_v2_risk_tier(risk_tier) {
+                        return Err(Error::validation(format!(
+                            "Capability manifest v2 entry {idx} has unsupported risk_tier '{risk_tier}'"
+                        )));
+                    }
+                }
+                let Some(provenance) = req.provenance.as_ref() else {
+                    return Err(Error::validation(format!(
+                        "Capability manifest v2 entry {idx} is missing provenance"
+                    )));
+                };
+                let source = provenance.source.trim();
+                if source.is_empty() || !is_known_v2_provenance_source(source) {
+                    return Err(Error::validation(format!(
+                        "Capability manifest v2 entry {idx} has unsupported provenance source '{source}'"
+                    )));
+                }
+                let algorithm = provenance.integrity.algorithm.trim();
+                if algorithm != "sha256" {
+                    return Err(Error::validation(format!(
+                        "Capability manifest v2 entry {idx} has unsupported integrity algorithm '{algorithm}'"
+                    )));
+                }
+                let digest = provenance.integrity.digest.trim();
+                if !capability_manifest_sha256_digest_regex().is_match(digest) {
+                    return Err(Error::validation(format!(
+                        "Capability manifest v2 entry {idx} has invalid integrity digest"
+                    )));
+                }
+                let publisher_id = provenance.publisher.id.trim();
+                if publisher_id.is_empty() {
+                    return Err(Error::validation(format!(
+                        "Capability manifest v2 entry {idx} has empty publisher id"
+                    )));
+                }
+                let verification = provenance.publisher.verification.trim();
+                if verification.is_empty() || !is_known_v2_publisher_verification(verification) {
+                    return Err(Error::validation(format!(
+                        "Capability manifest v2 entry {idx} has unsupported publisher verification '{verification}'"
+                    )));
+                }
+            }
+            Ok(())
+        }
+        _ => Err(Error::validation(format!(
+            "Unsupported capability manifest schema: {}",
+            manifest.schema
+        ))),
+    }
 }
 
 fn validate_tool_call(payload: &ToolCallPayload) -> Result<()> {
@@ -3490,6 +4716,7 @@ mod wasm_host {
             let http_allowlist = Self::http_allowlist_from_manifest(manifest);
             self.http = HttpConnector::new(HttpConnectorConfig {
                 allowlist: http_allowlist,
+                enforce_allowlist: true,
                 ..Default::default()
             });
 
@@ -4387,20 +5614,32 @@ mod wasm_host {
                         CapabilityRequirement {
                             capability: "env".to_string(),
                             methods: vec!["env".to_string()],
+                            intents: Vec::new(),
+                            connector_classes: Vec::new(),
+                            hostcall_classes: Vec::new(),
+                            risk_tier: None,
                             scope: Some(CapabilityScope {
                                 env: Some(vec!["PI_TEST_ENV".to_string()]),
                                 paths: None,
                                 hosts: None,
+                                allowed_tools: None,
                             }),
+                            provenance: None,
                         },
                         CapabilityRequirement {
                             capability: "read".to_string(),
                             methods: vec!["fs".to_string()],
+                            intents: Vec::new(),
+                            connector_classes: Vec::new(),
+                            hostcall_classes: Vec::new(),
+                            risk_tier: None,
                             scope: Some(CapabilityScope {
                                 paths: Some(vec![".".to_string()]),
                                 hosts: None,
                                 env: None,
+                                allowed_tools: None,
                             }),
+                            provenance: None,
                         },
                     ],
                 }),
@@ -4423,11 +5662,17 @@ mod wasm_host {
             capabilities.push(CapabilityRequirement {
                 capability: "write".to_string(),
                 methods: vec!["fs".to_string()],
+                intents: Vec::new(),
+                connector_classes: Vec::new(),
+                hostcall_classes: Vec::new(),
+                risk_tier: None,
                 scope: Some(CapabilityScope {
                     paths: Some(vec![".".to_string()]),
                     hosts: None,
                     env: None,
+                    allowed_tools: None,
                 }),
+                provenance: None,
             });
             payload
         }
@@ -4932,6 +6177,91 @@ mod wasm_host {
 
             join.join().expect("server thread join");
         }
+
+        #[test]
+        fn wasm_host_http_denied_by_default_without_http_allowlist_scope() {
+            let dir = tempdir().expect("tempdir");
+            let cwd = dir.path().to_path_buf();
+
+            let mut state = HostState::new(strict_policy(&["http"], &[]), cwd).expect("host state");
+            state
+                .apply_registration(&registration_payload())
+                .expect("apply registration");
+
+            let call = HostCallPayload {
+                call_id: "call-http-deny-default".to_string(),
+                capability: "http".to_string(),
+                method: "http".to_string(),
+                params: json!({ "url": "https://example.com", "method": "GET" }),
+                timeout_ms: Some(500),
+                cancel_token: None,
+                context: None,
+            };
+
+            let err_json = {
+                let json = serde_json::to_string(&call).expect("serialize hostcall");
+                run_async(async { host::Host::call(&mut state, "http".to_string(), json).await })
+                    .expect_err("http should be denied without scoped allowlist")
+            };
+            let err: HostCallError = serde_json::from_str(&err_json).expect("parse error");
+            assert_eq!(err.code, HostCallErrorCode::Denied);
+            assert!(
+                err.message.contains("allowlist"),
+                "expected allowlist guidance, got: {}",
+                err.message
+            );
+        }
+
+        #[test]
+        fn wasm_host_http_denied_when_http_capability_has_no_hosts_scope() {
+            let dir = tempdir().expect("tempdir");
+            let cwd = dir.path().to_path_buf();
+
+            let mut payload = registration_payload();
+            payload
+                .capability_manifest
+                .as_mut()
+                .expect("capability manifest")
+                .capabilities
+                .push(CapabilityRequirement {
+                    capability: "http".to_string(),
+                    methods: vec!["http".to_string()],
+                    intents: Vec::new(),
+                    connector_classes: Vec::new(),
+                    hostcall_classes: Vec::new(),
+                    risk_tier: None,
+                    scope: None,
+                    provenance: None,
+                });
+
+            let mut state = HostState::new(strict_policy(&["http"], &[]), cwd).expect("host state");
+            state
+                .apply_registration(&payload)
+                .expect("apply registration");
+
+            let call = HostCallPayload {
+                call_id: "call-http-deny-empty-scope".to_string(),
+                capability: "http".to_string(),
+                method: "http".to_string(),
+                params: json!({ "url": "https://example.com", "method": "GET" }),
+                timeout_ms: Some(500),
+                cancel_token: None,
+                context: None,
+            };
+
+            let err_json = {
+                let json = serde_json::to_string(&call).expect("serialize hostcall");
+                run_async(async { host::Host::call(&mut state, "http".to_string(), json).await })
+                    .expect_err("http should be denied when hosts scope is omitted")
+            };
+            let err: HostCallError = serde_json::from_str(&err_json).expect("parse error");
+            assert_eq!(err.code, HostCallErrorCode::Denied);
+            assert!(
+                err.message.contains("allowlist"),
+                "expected allowlist guidance, got: {}",
+                err.message
+            );
+        }
     }
 }
 
@@ -5261,12 +6591,7 @@ fn validate_extension_manifest(manifest: &ExtensionManifest) -> Result<()> {
     }
 
     if let Some(capability_manifest) = &manifest.capability_manifest {
-        if capability_manifest.schema != "pi.ext.cap.v1" {
-            return Err(Error::validation(format!(
-                "Unsupported capability manifest schema: {}",
-                capability_manifest.schema
-            )));
-        }
+        validate_capability_manifest(capability_manifest)?;
     }
 
     Ok(())
@@ -7212,6 +8537,9 @@ pub async fn dispatch_host_call_shared(
     let method = call.method.clone();
     let capability = required_capability_for_host_call_static(&call).unwrap_or("internal");
     let params_hash = hostcall_params_hash(&method, &call.params);
+    let args_shape_hash = hostcall_params_shape_hash(&method, &call.params);
+    let resource_target_class = runtime_hostcall_resource_target_class(&method, &call.params);
+    let policy_profile = runtime_hostcall_policy_profile(ctx.policy.mode);
     let started_at = Instant::now();
 
     log_hostcall_start(
@@ -7254,6 +8582,12 @@ pub async fn dispatch_host_call_shared(
                 capability,
                 &method,
                 &params_hash,
+                RuntimeRiskCallMetadata {
+                    args_shape_hash: &args_shape_hash,
+                    resource_target_class: &resource_target_class,
+                    timeout_ms: call.timeout_ms,
+                    policy_profile: &policy_profile,
+                },
                 &reason,
             );
         }
@@ -7316,6 +8650,7 @@ pub async fn dispatch_host_call_shared(
             &reason,
             risk_decision,
             outcome_error_code,
+            duration_ms,
         );
     }
 
@@ -8924,6 +10259,7 @@ struct ExtensionManagerInner {
     runtime_risk_config: RuntimeRiskConfig,
     runtime_risk_states: HashMap<String, RuntimeRiskState>,
     runtime_risk_ledger: VecDeque<RuntimeRiskLedgerEntry>,
+    runtime_hostcall_telemetry: VecDeque<RuntimeHostcallTelemetryEvent>,
     runtime_risk_last_hash: Option<String>,
     /// Budget for extension operations (structured concurrency).
     extension_budget: Budget,
@@ -9184,16 +10520,7 @@ impl ExtensionManager {
     ) -> RuntimeRiskLedgerEntry {
         let prev_hash = guard.runtime_risk_last_hash.clone();
         entry.prev_ledger_hash.clone_from(&prev_hash);
-
-        // Compute hash chain over previous hash + current entry body.
-        let mut hasher = sha2::Sha256::new();
-        if let Some(prev) = prev_hash.as_deref() {
-            hasher.update(prev.as_bytes());
-        }
-        let entry_json = serde_json::to_string(&entry).unwrap_or_default();
-        hasher.update(entry_json.as_bytes());
-        let digest = hasher.finalize();
-        entry.ledger_hash = format!("{digest:x}");
+        entry.ledger_hash = runtime_risk_compute_ledger_hash(&entry, prev_hash.as_deref());
 
         guard.runtime_risk_last_hash = Some(entry.ledger_hash.clone());
         guard.runtime_risk_ledger.push_back(entry.clone());
@@ -9201,6 +10528,16 @@ impl ExtensionManager {
             let _ = guard.runtime_risk_ledger.pop_front();
         }
         entry
+    }
+
+    fn runtime_risk_push_telemetry(
+        guard: &mut ExtensionManagerInner,
+        entry: RuntimeHostcallTelemetryEvent,
+    ) {
+        guard.runtime_hostcall_telemetry.push_back(entry);
+        while guard.runtime_hostcall_telemetry.len() > guard.runtime_risk_config.ledger_limit {
+            let _ = guard.runtime_hostcall_telemetry.pop_front();
+        }
     }
 
     #[allow(clippy::needless_pass_by_value)]
@@ -9222,6 +10559,7 @@ impl ExtensionManager {
     }
 
     #[allow(
+        clippy::too_many_arguments,
         clippy::too_many_lines,
         clippy::significant_drop_tightening,
         clippy::cast_precision_loss,
@@ -9234,6 +10572,7 @@ impl ExtensionManager {
         capability: &str,
         method: &str,
         params_hash: &str,
+        meta: RuntimeRiskCallMetadata<'_>,
         policy_reason: &str,
     ) -> Option<RuntimeRiskDecision> {
         let started = Instant::now();
@@ -9246,14 +10585,45 @@ impl ExtensionManager {
         let ext_key = Self::runtime_risk_extension_key(extension_id);
         let state = guard.runtime_risk_states.entry(ext_key).or_default();
 
+        let now_ms = runtime_risk_now_ms();
+        let sequence_context = runtime_hostcall_sequence_context(state, now_ms);
+        let base = runtime_risk_base_score(capability, method, policy_reason);
+        let recent_mean = if state.recent_scores.is_empty() {
+            0.0
+        } else {
+            state.recent_scores.iter().sum::<f64>() / state.recent_scores.len() as f64
+        };
+
+        let feature_started = Instant::now();
+        let features = runtime_hostcall_extract_features(
+            base,
+            recent_mean,
+            &sequence_context,
+            capability,
+            policy_reason,
+            meta.timeout_ms,
+        );
+        let feature_extraction_latency_us =
+            u64::try_from(feature_started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        let feature_budget_exceeded =
+            feature_extraction_latency_us > RUNTIME_HOSTCALL_FEATURE_BUDGET_US;
+
         if state.quarantined {
             let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let mut triggers = vec!["quarantined".to_string()];
+            if feature_budget_exceeded {
+                triggers.push("feature_budget_exceeded".to_string());
+            }
             return Some(RuntimeRiskDecision {
                 action: RuntimeRiskAction::Terminate,
                 reason: "quarantined".to_string(),
                 capability: capability.to_string(),
                 method: method.to_string(),
                 params_hash: params_hash.to_string(),
+                args_shape_hash: meta.args_shape_hash.to_string(),
+                resource_target_class: meta.resource_target_class.to_string(),
+                policy_profile: meta.policy_profile.to_string(),
+                timeout_ms: meta.timeout_ms,
                 risk_score: 1.0,
                 posterior: RuntimeRiskPosterior {
                     safe_fast: 0.0,
@@ -9271,20 +10641,24 @@ impl ExtensionManager {
                 conformal_residual: 1.0,
                 conformal_quantile: state.previous_residual_quantile,
                 drift_detected: true,
-                triggers: vec!["quarantined".to_string()],
+                triggers,
                 fallback_reason: None,
                 elapsed_ms,
                 state_label: RuntimeRiskStateLabel::Unsafe,
+                sequence_context,
+                features,
+                feature_extraction_latency_us,
+                feature_budget_exceeded,
             });
         }
 
-        let base = runtime_risk_base_score(capability, method, policy_reason);
-        let recent_mean = if state.recent_scores.is_empty() {
-            0.0
-        } else {
-            state.recent_scores.iter().sum::<f64>() / state.recent_scores.len() as f64
-        };
         let mut risk_score = runtime_risk_clamp01((0.65 * base) + (0.35 * recent_mean));
+        risk_score = runtime_risk_clamp01(
+            risk_score
+                + (0.12 * features.recent_error_rate)
+                + (0.08 * features.burst_density_1s)
+                + (0.05 * features.prior_failure_streak_norm),
+        );
         if runtime_risk_is_dangerous(capability)
             && matches!(state.last_decision, Some(RuntimeRiskAction::Harden))
         {
@@ -9363,6 +10737,9 @@ impl ExtensionManager {
             action = RuntimeRiskAction::Terminate;
             triggers.push("unsafe_streak".to_string());
         }
+        if feature_budget_exceeded {
+            triggers.push("feature_budget_exceeded".to_string());
+        }
 
         let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let mut fallback_reason = None;
@@ -9384,6 +10761,10 @@ impl ExtensionManager {
             capability: capability.to_string(),
             method: method.to_string(),
             params_hash: params_hash.to_string(),
+            args_shape_hash: meta.args_shape_hash.to_string(),
+            resource_target_class: meta.resource_target_class.to_string(),
+            policy_profile: meta.policy_profile.to_string(),
+            timeout_ms: meta.timeout_ms,
             risk_score,
             posterior,
             expected_loss,
@@ -9396,6 +10777,10 @@ impl ExtensionManager {
             fallback_reason,
             elapsed_ms,
             state_label,
+            sequence_context,
+            features,
+            feature_extraction_latency_us,
+            feature_budget_exceeded,
         })
     }
 
@@ -9407,6 +10792,7 @@ impl ExtensionManager {
         policy_reason: &str,
         decision: &RuntimeRiskDecision,
         outcome_error_code: Option<&str>,
+        duration_ms: u64,
     ) {
         let mut guard = self.inner.lock().unwrap();
         if !guard.runtime_risk_config.enabled {
@@ -9416,76 +10802,133 @@ impl ExtensionManager {
         let alpha = guard.runtime_risk_config.alpha;
 
         let ext_key = Self::runtime_risk_extension_key(extension_id);
-        let Some(state) = guard.runtime_risk_states.get_mut(&ext_key) else {
-            return;
-        };
+        let (telemetry, entry) = {
+            let Some(state) = guard.runtime_risk_states.get_mut(&ext_key) else {
+                return;
+            };
 
-        let realized_risk = if outcome_error_code.is_some() {
-            1.0
-        } else {
-            0.0
-        };
-        let predicted =
-            runtime_risk_clamp01(decision.posterior.suspicious + decision.posterior.unsafe_);
-        let residual = (predicted - realized_risk).abs();
-
-        state.residual_window.push_back(residual);
-        while state.residual_window.len() > window_size {
-            let _ = state.residual_window.pop_front();
-        }
-        state.previous_residual_quantile =
-            runtime_risk_quantile(state.residual_window.iter().copied().collect(), 1.0 - alpha);
-
-        let denied_dangerous = outcome_error_code.is_some_and(|code| code == "denied")
-            && runtime_risk_is_dangerous(&decision.capability);
-        if decision.posterior.unsafe_ >= 0.55
-            || matches!(decision.action, RuntimeRiskAction::Terminate)
-            || denied_dangerous
-        {
-            state.consecutive_unsafe = state.consecutive_unsafe.saturating_add(1);
-        } else {
-            state.consecutive_unsafe = 0;
-        }
-        if state.consecutive_unsafe >= 3 {
-            state.quarantined = true;
-        }
-
-        // Outcome-conditioned Bayesian reinforcement.
-        if let Some(code) = outcome_error_code {
-            if code == "denied" || code == "timeout" || code == "io" {
-                state.alpha_unsafe += 0.9;
-                state.alpha_suspicious += 0.4;
+            let realized_risk = if outcome_error_code.is_some() {
+                1.0
             } else {
-                state.alpha_suspicious += 0.35;
-            }
-        } else {
-            state.alpha_safe += 0.6;
-        }
+                0.0
+            };
+            let predicted =
+                runtime_risk_clamp01(decision.posterior.suspicious + decision.posterior.unsafe_);
+            let residual = (predicted - realized_risk).abs();
 
-        let entry = RuntimeRiskLedgerEntry {
-            ts_ms: runtime_risk_now_ms(),
-            extension_id: ext_key,
-            call_id: call_id.to_string(),
-            capability: decision.capability.clone(),
-            method: decision.method.clone(),
-            params_hash: decision.params_hash.clone(),
-            policy_reason: policy_reason.to_string(),
-            risk_score: decision.risk_score,
-            posterior: decision.posterior.clone(),
-            expected_loss: decision.expected_loss.clone(),
-            selected_action: decision.action,
-            derived_state: decision.state_label,
-            triggers: decision.triggers.clone(),
-            fallback_reason: decision.fallback_reason.clone(),
-            e_process: decision.e_process,
-            e_threshold: decision.e_threshold,
-            conformal_residual: residual,
-            conformal_quantile: state.previous_residual_quantile,
-            drift_detected: decision.drift_detected,
-            outcome_error_code: outcome_error_code.map(ToString::to_string),
-            ledger_hash: String::new(),
-            prev_ledger_hash: None,
+            state.residual_window.push_back(residual);
+            while state.residual_window.len() > window_size {
+                let _ = state.residual_window.pop_front();
+            }
+            state.previous_residual_quantile =
+                runtime_risk_quantile(state.residual_window.iter().copied().collect(), 1.0 - alpha);
+
+            let denied_dangerous = outcome_error_code.is_some_and(|code| code == "denied")
+                && runtime_risk_is_dangerous(&decision.capability);
+            if decision.posterior.unsafe_ >= 0.55
+                || matches!(decision.action, RuntimeRiskAction::Terminate)
+                || denied_dangerous
+            {
+                state.consecutive_unsafe = state.consecutive_unsafe.saturating_add(1);
+            } else {
+                state.consecutive_unsafe = 0;
+            }
+            if state.consecutive_unsafe >= 3 {
+                state.quarantined = true;
+            }
+
+            // Outcome-conditioned Bayesian reinforcement.
+            if let Some(code) = outcome_error_code {
+                if code == "denied" || code == "timeout" || code == "io" {
+                    state.alpha_unsafe += 0.9;
+                    state.alpha_suspicious += 0.4;
+                } else {
+                    state.alpha_suspicious += 0.35;
+                }
+            } else {
+                state.alpha_safe += 0.6;
+            }
+
+            let ts_ms = runtime_risk_now_ms();
+            let is_error = outcome_error_code.is_some();
+            let sequence_window = window_size.max(RUNTIME_HOSTCALL_SEQUENCE_WINDOW);
+            state.sequence_counter = state.sequence_counter.saturating_add(1);
+            state.recent_call_timestamps_ms.push_back(ts_ms);
+            while state.recent_call_timestamps_ms.len() > sequence_window {
+                let _ = state.recent_call_timestamps_ms.pop_front();
+            }
+            state.recent_outcome_errors.push_back(is_error);
+            while state.recent_outcome_errors.len() > sequence_window {
+                let _ = state.recent_outcome_errors.pop_front();
+            }
+            state.consecutive_failures = if is_error {
+                state.consecutive_failures.saturating_add(1)
+            } else {
+                0
+            };
+            state.last_capability = Some(decision.capability.clone());
+            state.last_method = Some(decision.method.clone());
+            state.last_resource_target_class = Some(decision.resource_target_class.clone());
+
+            let telemetry = RuntimeHostcallTelemetryEvent {
+                schema: RUNTIME_HOSTCALL_TELEMETRY_SCHEMA_VERSION.to_string(),
+                ts_ms,
+                extension_id: ext_key.clone(),
+                call_id: call_id.to_string(),
+                capability: decision.capability.clone(),
+                method: decision.method.clone(),
+                params_hash: decision.params_hash.clone(),
+                args_shape_hash: decision.args_shape_hash.clone(),
+                resource_target_class: decision.resource_target_class.clone(),
+                policy_reason: policy_reason.to_string(),
+                policy_profile: decision.policy_profile.clone(),
+                risk_score: decision.risk_score,
+                timeout_ms: decision.timeout_ms,
+                latency_ms: duration_ms,
+                outcome: if is_error {
+                    "error".to_string()
+                } else {
+                    "success".to_string()
+                },
+                outcome_error_code: outcome_error_code.map(ToString::to_string),
+                selected_action: RuntimeRiskActionValue::from(decision.action),
+                reason_codes: decision.triggers.clone(),
+                sequence: decision.sequence_context.clone(),
+                features: decision.features.clone(),
+                extraction_latency_us: decision.feature_extraction_latency_us,
+                extraction_budget_us: RUNTIME_HOSTCALL_FEATURE_BUDGET_US,
+                extraction_budget_exceeded: decision.feature_budget_exceeded,
+                redaction_summary: "params redacted via hash-only telemetry".to_string(),
+            };
+
+            let entry = RuntimeRiskLedgerEntry {
+                ts_ms,
+                extension_id: ext_key.clone(),
+                call_id: call_id.to_string(),
+                capability: decision.capability.clone(),
+                method: decision.method.clone(),
+                params_hash: decision.params_hash.clone(),
+                policy_reason: policy_reason.to_string(),
+                risk_score: decision.risk_score,
+                posterior: decision.posterior.clone(),
+                expected_loss: decision.expected_loss.clone(),
+                selected_action: decision.action,
+                derived_state: decision.state_label,
+                triggers: decision.triggers.clone(),
+                fallback_reason: decision.fallback_reason.clone(),
+                e_process: decision.e_process,
+                e_threshold: decision.e_threshold,
+                conformal_residual: residual,
+                conformal_quantile: state.previous_residual_quantile,
+                drift_detected: decision.drift_detected,
+                outcome_error_code: outcome_error_code.map(ToString::to_string),
+                ledger_hash: String::new(),
+                prev_ledger_hash: None,
+            };
+            (telemetry, entry)
         };
+
+        Self::runtime_risk_push_telemetry(&mut guard, telemetry);
 
         let entry = Self::runtime_risk_push_ledger(&mut guard, entry);
 
@@ -9533,12 +10976,81 @@ impl ExtensionManager {
         }
     }
 
+    pub fn runtime_risk_ledger_artifact(&self) -> RuntimeRiskLedgerArtifact {
+        let entries = {
+            let guard = self.inner.lock().unwrap();
+            guard
+                .runtime_risk_ledger
+                .iter()
+                .map(RuntimeRiskLedgerArtifactEntry::from)
+                .collect::<Vec<_>>()
+        };
+        let head_ledger_hash = entries.first().map(|entry| entry.ledger_hash.clone());
+        let tail_ledger_hash = entries.last().map(|entry| entry.ledger_hash.clone());
+        let data_hash = runtime_risk_ledger_data_hash(&entries);
+        RuntimeRiskLedgerArtifact {
+            schema: RUNTIME_RISK_LEDGER_SCHEMA_VERSION.to_string(),
+            generated_at_ms: runtime_risk_now_ms(),
+            entry_count: entries.len(),
+            head_ledger_hash,
+            tail_ledger_hash,
+            data_hash,
+            entries,
+        }
+    }
+
+    pub fn runtime_hostcall_telemetry_artifact(&self) -> RuntimeHostcallTelemetryArtifact {
+        let entries = {
+            let guard = self.inner.lock().unwrap();
+            guard
+                .runtime_hostcall_telemetry
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        RuntimeHostcallTelemetryArtifact {
+            schema: RUNTIME_HOSTCALL_TELEMETRY_SCHEMA_VERSION.to_string(),
+            generated_at_ms: runtime_risk_now_ms(),
+            entry_count: entries.len(),
+            entries,
+        }
+    }
+
+    pub fn runtime_risk_verify_ledger(&self) -> RuntimeRiskLedgerVerificationReport {
+        let artifact = self.runtime_risk_ledger_artifact();
+        verify_runtime_risk_ledger_artifact(&artifact)
+    }
+
+    pub fn runtime_risk_replay_ledger(&self) -> Result<RuntimeRiskReplayArtifact> {
+        let artifact = self.runtime_risk_ledger_artifact();
+        replay_runtime_risk_ledger_artifact(&artifact)
+    }
+
+    pub fn runtime_risk_calibrate_ledger(
+        &self,
+        config: &RuntimeRiskCalibrationConfig,
+    ) -> Result<RuntimeRiskCalibrationReport> {
+        let artifact = self.runtime_risk_ledger_artifact();
+        calibrate_runtime_risk_from_ledger(&artifact, config)
+    }
+
     #[cfg(test)]
     fn runtime_risk_ledger_snapshot(&self) -> Vec<RuntimeRiskLedgerEntry> {
         self.inner
             .lock()
             .unwrap()
             .runtime_risk_ledger
+            .iter()
+            .cloned()
+            .collect()
+    }
+
+    #[cfg(test)]
+    fn runtime_hostcall_telemetry_snapshot(&self) -> Vec<RuntimeHostcallTelemetryEvent> {
+        self.inner
+            .lock()
+            .unwrap()
+            .runtime_hostcall_telemetry
             .iter()
             .cloned()
             .collect()
@@ -11162,6 +12674,170 @@ mod tests {
     }
 
     #[test]
+    fn parse_register_message_with_capability_manifest_v2() {
+        let json = r#"
+        {
+          "id": "msg-v2",
+          "version": "1.0",
+          "type": "register",
+          "payload": {
+            "name": "demo",
+            "version": "0.1.0",
+            "api_version": "1.0",
+            "capability_manifest": {
+              "schema": "pi.ext.cap.v2",
+              "capabilities": [
+                {
+                  "capability": "read",
+                  "intents": ["file_read"],
+                  "connector_classes": ["fs"],
+                  "hostcall_classes": ["fs.read"],
+                  "scope": { "paths": ["."] },
+                  "provenance": {
+                    "source": "local",
+                    "integrity": {
+                      "algorithm": "sha256",
+                      "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "publisher": {
+                      "id": "dev@example",
+                      "verification": "self_attested"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+        "#;
+        let msg = ExtensionMessage::parse_and_validate(json).expect("v2 register should parse");
+        let ExtensionBody::Register(payload) = msg.body else {
+            panic!("expected register payload");
+        };
+        let schema = payload
+            .capability_manifest
+            .expect("capability manifest")
+            .schema;
+        assert_eq!(schema, CAPABILITY_MANIFEST_SCHEMA_V2);
+    }
+
+    #[test]
+    fn parse_register_message_rejects_v2_manifest_without_provenance() {
+        let json = r#"
+        {
+          "id": "msg-v2-invalid",
+          "version": "1.0",
+          "type": "register",
+          "payload": {
+            "name": "demo",
+            "version": "0.1.0",
+            "api_version": "1.0",
+            "capability_manifest": {
+              "schema": "pi.ext.cap.v2",
+              "capabilities": [
+                {
+                  "capability": "read",
+                  "intents": ["file_read"],
+                  "connector_classes": ["fs"],
+                  "hostcall_classes": ["fs.read"]
+                }
+              ]
+            }
+          }
+        }
+        "#;
+        let err = ExtensionMessage::parse_and_validate(json).expect_err("must fail closed");
+        let msg = format!("{err}");
+        assert!(msg.contains("missing provenance"), "{msg}");
+    }
+
+    #[test]
+    fn parse_register_message_rejects_v2_manifest_unknown_requirement_field() {
+        let json = r#"
+        {
+          "id": "msg-v2-unknown-field",
+          "version": "1.0",
+          "type": "register",
+          "payload": {
+            "name": "demo",
+            "version": "0.1.0",
+            "api_version": "1.0",
+            "capability_manifest": {
+              "schema": "pi.ext.cap.v2",
+              "capabilities": [
+                {
+                  "capability": "read",
+                  "intents": ["file_read"],
+                  "connector_classes": ["fs"],
+                  "hostcall_classes": ["fs.read"],
+                  "provenance": {
+                    "source": "local",
+                    "integrity": {
+                      "algorithm": "sha256",
+                      "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "publisher": {
+                      "id": "dev@example",
+                      "verification": "self_attested"
+                    }
+                  },
+                  "unexpected_critical": true
+                }
+              ]
+            }
+          }
+        }
+        "#;
+        let err = ExtensionMessage::parse_and_validate(json).expect_err("must fail closed");
+        let msg = format!("{err}");
+        assert!(msg.contains("unknown field"), "{msg}");
+        assert!(msg.contains("unexpected_critical"), "{msg}");
+    }
+
+    #[test]
+    fn parse_register_message_rejects_v2_manifest_unknown_provenance_field() {
+        let json = r#"
+        {
+          "id": "msg-v2-provenance-unknown-field",
+          "version": "1.0",
+          "type": "register",
+          "payload": {
+            "name": "demo",
+            "version": "0.1.0",
+            "api_version": "1.0",
+            "capability_manifest": {
+              "schema": "pi.ext.cap.v2",
+              "capabilities": [
+                {
+                  "capability": "read",
+                  "intents": ["file_read"],
+                  "connector_classes": ["fs"],
+                  "hostcall_classes": ["fs.read"],
+                  "provenance": {
+                    "source": "local",
+                    "integrity": {
+                      "algorithm": "sha256",
+                      "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    },
+                    "publisher": {
+                      "id": "dev@example",
+                      "verification": "self_attested"
+                    },
+                    "sigstore_bundle": "opaque"
+                  }
+                }
+              ]
+            }
+          }
+        }
+        "#;
+        let err = ExtensionMessage::parse_and_validate(json).expect_err("must fail closed");
+        let msg = format!("{err}");
+        assert!(msg.contains("unknown field"), "{msg}");
+        assert!(msg.contains("sigstore_bundle"), "{msg}");
+    }
+
+    #[test]
     fn reject_invalid_version() {
         let json = r#"
         {
@@ -11184,6 +12860,90 @@ mod tests {
         let err = ExtensionMessage::parse_and_validate(json).unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("Unsupported extension protocol version"));
+    }
+
+    #[test]
+    fn extension_manifest_rejects_v1_with_v2_only_fields() {
+        let manifest = ExtensionManifest {
+            schema: "pi.ext.manifest.v1".to_string(),
+            extension_id: "ext.test".to_string(),
+            name: "ext".to_string(),
+            version: "0.1.0".to_string(),
+            api_version: PROTOCOL_VERSION.to_string(),
+            runtime: ExtensionRuntime::Js,
+            entrypoint: "index.js".to_string(),
+            capabilities: vec!["read".to_string()],
+            capability_manifest: Some(CapabilityManifest {
+                schema: CAPABILITY_MANIFEST_SCHEMA_V1.to_string(),
+                capabilities: vec![CapabilityRequirement {
+                    capability: "read".to_string(),
+                    methods: vec!["fs".to_string()],
+                    intents: vec!["file_read".to_string()],
+                    connector_classes: Vec::new(),
+                    hostcall_classes: Vec::new(),
+                    risk_tier: None,
+                    scope: Some(CapabilityScope {
+                        paths: Some(vec![".".to_string()]),
+                        hosts: None,
+                        env: None,
+                        allowed_tools: None,
+                    }),
+                    provenance: None,
+                }],
+            }),
+            description: None,
+        };
+
+        let err = validate_extension_manifest(&manifest).expect_err("v1 must reject v2 fields");
+        let msg = format!("{err}");
+        assert!(msg.contains("v2-only fields"), "{msg}");
+    }
+
+    #[test]
+    fn extension_manifest_accepts_capability_manifest_v2() {
+        let manifest = ExtensionManifest {
+            schema: "pi.ext.manifest.v1".to_string(),
+            extension_id: "ext.test".to_string(),
+            name: "ext".to_string(),
+            version: "0.1.0".to_string(),
+            api_version: PROTOCOL_VERSION.to_string(),
+            runtime: ExtensionRuntime::Js,
+            entrypoint: "index.js".to_string(),
+            capabilities: Vec::new(),
+            capability_manifest: Some(CapabilityManifest {
+                schema: CAPABILITY_MANIFEST_SCHEMA_V2.to_string(),
+                capabilities: vec![CapabilityRequirement {
+                    capability: "read".to_string(),
+                    methods: Vec::new(),
+                    intents: vec!["file_read".to_string()],
+                    connector_classes: vec!["fs".to_string()],
+                    hostcall_classes: vec!["fs.read".to_string()],
+                    risk_tier: Some("low".to_string()),
+                    scope: Some(CapabilityScope {
+                        paths: Some(vec![".".to_string()]),
+                        hosts: None,
+                        env: None,
+                        allowed_tools: Some(vec!["read".to_string()]),
+                    }),
+                    provenance: Some(CapabilityProvenance {
+                        source: "local".to_string(),
+                        integrity: CapabilityIntegrityAttestation {
+                            algorithm: "sha256".to_string(),
+                            digest:
+                                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                                    .to_string(),
+                        },
+                        publisher: CapabilityPublisherAttestation {
+                            id: "dev@example".to_string(),
+                            verification: "self_attested".to_string(),
+                        },
+                    }),
+                }],
+            }),
+            description: None,
+        };
+
+        validate_extension_manifest(&manifest).expect("v2 manifest should validate");
     }
 
     #[test]
@@ -12168,11 +13928,17 @@ mod tests {
             capabilities: vec![CapabilityRequirement {
                 capability: "read".to_string(),
                 methods: vec!["fs".to_string()],
+                intents: Vec::new(),
+                connector_classes: Vec::new(),
+                hostcall_classes: Vec::new(),
+                risk_tier: None,
                 scope: Some(CapabilityScope {
                     paths: Some(vec![".".to_string()]),
                     hosts: None,
                     env: None,
+                    allowed_tools: None,
                 }),
+                provenance: None,
             }],
         };
         let scopes = FsScopes::from_manifest(Some(&manifest), &project).expect("scopes");
@@ -12299,6 +14065,61 @@ mod tests {
         assert_ne!(
             hostcall_params_hash("http", &first),
             hostcall_params_hash("tool", &first)
+        );
+    }
+
+    #[test]
+    fn hostcall_params_shape_hash_ignores_scalar_value_drift() {
+        let first = json!({
+            "url": "https://example.com/a",
+            "headers": { "authorization": "Bearer abc" },
+            "retries": 3,
+            "flags": [true, false]
+        });
+        let second = json!({
+            "url": "https://another.example/path",
+            "headers": { "authorization": "Bearer xyz" },
+            "retries": 99,
+            "flags": [false, true]
+        });
+        assert_eq!(
+            hostcall_params_shape_hash("http", &first),
+            hostcall_params_shape_hash("http", &second),
+            "shape hash should remain stable when only scalar values change"
+        );
+        assert_ne!(
+            hostcall_params_shape_hash("http", &first),
+            hostcall_params_shape_hash("tool", &first),
+            "method remains part of the shape identity"
+        );
+    }
+
+    #[test]
+    fn runtime_hostcall_resource_target_class_detects_common_targets() {
+        assert_eq!(
+            runtime_hostcall_resource_target_class(
+                "http",
+                &json!({"url":"http://127.0.0.1:8080/health"})
+            ),
+            "network.private"
+        );
+        assert_eq!(
+            runtime_hostcall_resource_target_class(
+                "http",
+                &json!({"url":"https://api.example.com/v1/messages"})
+            ),
+            "network.public"
+        );
+        assert_eq!(
+            runtime_hostcall_resource_target_class(
+                "tool",
+                &json!({"name":"read","input":{"path":"README.md"}})
+            ),
+            "filesystem.tool"
+        );
+        assert_eq!(
+            runtime_hostcall_resource_target_class("tool", &json!({"name":"bash","input":{}})),
+            "subprocess.tool"
         );
     }
 
@@ -16535,6 +18356,101 @@ mod tests {
     }
 
     #[test]
+    fn shared_dispatch_policy_denial_skips_runtime_risk_ledger() {
+        let dir = tempdir().expect("tempdir");
+        let tools = ToolRegistry::new(&[], dir.path(), None);
+        let http = HttpConnector::with_defaults();
+        let policy = deny_all_policy();
+
+        let manager = ExtensionManager::new();
+        manager.set_runtime_risk_config(RuntimeRiskConfig {
+            enabled: true,
+            alpha: 0.01,
+            window_size: 64,
+            ledger_limit: 256,
+            decision_timeout_ms: 50,
+            fail_closed: true,
+        });
+
+        let ctx = HostCallContext {
+            runtime_name: "test",
+            extension_id: Some("ext.test"),
+            tools: &tools,
+            http: &http,
+            manager: Some(manager.clone()),
+            policy: &policy,
+            js_runtime: None,
+            interceptor: None,
+        };
+
+        let call = HostCallPayload {
+            call_id: "call-deny-no-risk".to_string(),
+            capability: "read".to_string(),
+            method: "tool".to_string(),
+            params: json!({ "name": "read", "input": { "path": "README.md" } }),
+            timeout_ms: None,
+            cancel_token: None,
+            context: None,
+        };
+
+        run_async(async {
+            let result = dispatch_host_call_shared(&ctx, call).await;
+            assert!(
+                result.is_error,
+                "policy deny should short-circuit execution"
+            );
+            let err = result.error.expect("expected error payload");
+            assert_eq!(err.code, HostCallErrorCode::Denied);
+
+            let ledger = manager.runtime_risk_ledger_snapshot();
+            assert!(
+                ledger.is_empty(),
+                "runtime risk ledger must remain empty when policy denies the call"
+            );
+        });
+    }
+
+    #[test]
+    fn shared_dispatch_prompt_without_manager_fails_closed() {
+        let dir = tempdir().expect("tempdir");
+        let tools = ToolRegistry::new(&[], dir.path(), None);
+        let http = HttpConnector::with_defaults();
+        let policy = ExtensionPolicy {
+            mode: ExtensionPolicyMode::Prompt,
+            max_memory_mb: 256,
+            default_caps: Vec::new(),
+            deny_caps: Vec::new(),
+            ..Default::default()
+        };
+        let ctx = test_host_call_context(&tools, &http, &policy);
+
+        let call = HostCallPayload {
+            call_id: "call-prompt-no-manager".to_string(),
+            capability: "exec".to_string(),
+            method: "exec".to_string(),
+            params: json!({ "cmd": "echo", "args": ["hi"] }),
+            timeout_ms: None,
+            cancel_token: None,
+            context: None,
+        };
+
+        run_async(async {
+            let result = dispatch_host_call_shared(&ctx, call).await;
+            assert!(
+                result.is_error,
+                "prompt flow must fail closed without manager"
+            );
+            let err = result.error.expect("expected error payload");
+            assert_eq!(err.code, HostCallErrorCode::Denied);
+            assert!(
+                err.message.contains("(shutdown)"),
+                "expected shutdown reason in fail-closed denial, got: {}",
+                err.message
+            );
+        });
+    }
+
+    #[test]
     fn shared_dispatch_runtime_risk_disabled_is_isomorphic() {
         let dir = tempdir().expect("tempdir");
         let tools = ToolRegistry::new(&[], dir.path(), None);
@@ -16700,6 +18616,437 @@ mod tests {
                 "ledger should include at least one terminate action"
             );
         });
+    }
+
+    #[test]
+    fn shared_dispatch_runtime_risk_ledger_is_tamper_evident() {
+        let dir = tempdir().expect("tempdir");
+        let tools = ToolRegistry::new(&[], dir.path(), None);
+        let http = HttpConnector::with_defaults();
+        let policy = permissive_policy();
+
+        let manager = ExtensionManager::new();
+        manager.set_runtime_risk_config(RuntimeRiskConfig {
+            enabled: true,
+            alpha: 0.01,
+            window_size: 64,
+            ledger_limit: 512,
+            decision_timeout_ms: 50,
+            fail_closed: true,
+        });
+
+        let ctx = HostCallContext {
+            runtime_name: "test",
+            extension_id: Some("ext.test"),
+            tools: &tools,
+            http: &http,
+            manager: Some(manager.clone()),
+            policy: &policy,
+            js_runtime: None,
+            interceptor: None,
+        };
+
+        run_async(async {
+            for idx in 0..3 {
+                let call = HostCallPayload {
+                    call_id: format!("call-risk-tamper-{idx}"),
+                    capability: "exec".to_string(),
+                    method: "exec".to_string(),
+                    params: json!({ "cmd": "echo", "args": [idx.to_string()] }),
+                    timeout_ms: None,
+                    cancel_token: None,
+                    context: None,
+                };
+                let _ = dispatch_host_call_shared(&ctx, call).await;
+            }
+
+            let artifact = manager.runtime_risk_ledger_artifact();
+            let verification = verify_runtime_risk_ledger_artifact(&artifact);
+            assert!(verification.valid, "baseline ledger should verify");
+
+            let mut tampered = artifact;
+            let first = tampered.entries.first_mut().expect("at least one entry");
+            first.risk_score = runtime_risk_clamp01(first.risk_score + 0.11);
+            let tampered_verification = verify_runtime_risk_ledger_artifact(&tampered);
+            assert!(
+                !tampered_verification.valid,
+                "tampered ledger should fail verification"
+            );
+            assert!(
+                tampered_verification
+                    .errors
+                    .iter()
+                    .any(|err| { err.code == "hash_mismatch" || err.code == "data_hash_mismatch" }),
+                "expected hash/data mismatch in verification errors"
+            );
+        });
+    }
+
+    #[test]
+    fn shared_dispatch_runtime_risk_ledger_replay_reconstructs_decision_path() {
+        let dir = tempdir().expect("tempdir");
+        let tools = ToolRegistry::new(&[], dir.path(), None);
+        let http = HttpConnector::with_defaults();
+        let policy = permissive_policy();
+
+        let manager = ExtensionManager::new();
+        manager.set_runtime_risk_config(RuntimeRiskConfig {
+            enabled: true,
+            alpha: 0.01,
+            window_size: 64,
+            ledger_limit: 512,
+            decision_timeout_ms: 50,
+            fail_closed: true,
+        });
+
+        let ctx = HostCallContext {
+            runtime_name: "test",
+            extension_id: Some("ext.test"),
+            tools: &tools,
+            http: &http,
+            manager: Some(manager.clone()),
+            policy: &policy,
+            js_runtime: None,
+            interceptor: None,
+        };
+
+        run_async(async {
+            for idx in 0..4 {
+                let (capability, method) = if idx % 2 == 0 {
+                    ("exec", "exec")
+                } else {
+                    ("log", "log")
+                };
+                let call = HostCallPayload {
+                    call_id: format!("call-risk-replay-{idx}"),
+                    capability: capability.to_string(),
+                    method: method.to_string(),
+                    params: json!({ "cmd": "echo", "args": [idx.to_string()], "message": "ok" }),
+                    timeout_ms: None,
+                    cancel_token: None,
+                    context: None,
+                };
+                let _ = dispatch_host_call_shared(&ctx, call).await;
+            }
+
+            let artifact = manager.runtime_risk_ledger_artifact();
+            let replay =
+                replay_runtime_risk_ledger_artifact(&artifact).expect("replay should verify");
+            assert_eq!(replay.entry_count, artifact.entries.len());
+            assert_eq!(replay.steps.len(), artifact.entries.len());
+            for (idx, (step, entry)) in replay.steps.iter().zip(artifact.entries.iter()).enumerate()
+            {
+                assert_eq!(step.index, idx);
+                assert_eq!(step.call_id, entry.call_id);
+                assert_eq!(step.extension_id, entry.extension_id);
+                assert_eq!(step.selected_action, entry.selected_action);
+                assert_eq!(step.derived_state, entry.derived_state);
+                assert_eq!(step.reason_codes, entry.triggers);
+                assert_eq!(step.ledger_hash, entry.ledger_hash);
+            }
+        });
+    }
+
+    #[test]
+    fn shared_dispatch_runtime_risk_ledger_verifies_after_ring_buffer_truncation() {
+        let ledger_limit = 32;
+        let dir = tempdir().expect("tempdir");
+        let tools = ToolRegistry::new(&[], dir.path(), None);
+        let http = HttpConnector::with_defaults();
+        let policy = permissive_policy();
+
+        let manager = ExtensionManager::new();
+        manager.set_runtime_risk_config(RuntimeRiskConfig {
+            enabled: true,
+            alpha: 0.01,
+            window_size: 32,
+            ledger_limit,
+            decision_timeout_ms: 50,
+            fail_closed: true,
+        });
+
+        let ctx = HostCallContext {
+            runtime_name: "test",
+            extension_id: Some("ext.test"),
+            tools: &tools,
+            http: &http,
+            manager: Some(manager.clone()),
+            policy: &policy,
+            js_runtime: None,
+            interceptor: None,
+        };
+
+        run_async(async {
+            for idx in 0..48 {
+                let call = HostCallPayload {
+                    call_id: format!("call-risk-truncate-{idx}"),
+                    capability: "exec".to_string(),
+                    method: "exec".to_string(),
+                    params: json!({ "cmd": "echo", "args": [idx.to_string()] }),
+                    timeout_ms: None,
+                    cancel_token: None,
+                    context: None,
+                };
+                let _ = dispatch_host_call_shared(&ctx, call).await;
+            }
+
+            let artifact = manager.runtime_risk_ledger_artifact();
+            assert_eq!(
+                artifact.entries.len(),
+                ledger_limit,
+                "ring buffer should truncate"
+            );
+            assert_eq!(artifact.entry_count, ledger_limit);
+            assert!(
+                artifact
+                    .entries
+                    .first()
+                    .is_some_and(|entry| entry.prev_ledger_hash.is_some()),
+                "truncated first entry should retain chain anchor"
+            );
+
+            let verification = verify_runtime_risk_ledger_artifact(&artifact);
+            assert!(
+                verification.valid,
+                "truncated ledger segment should still verify"
+            );
+        });
+    }
+
+    #[test]
+    fn runtime_risk_calibration_is_deterministic_for_identical_ledger() {
+        let dir = tempdir().expect("tempdir");
+        let tools = ToolRegistry::new(&[], dir.path(), None);
+        let http = HttpConnector::with_defaults();
+        let policy = permissive_policy();
+
+        let manager = ExtensionManager::new();
+        manager.set_runtime_risk_config(RuntimeRiskConfig {
+            enabled: true,
+            alpha: 0.01,
+            window_size: 64,
+            ledger_limit: 512,
+            decision_timeout_ms: 50,
+            fail_closed: true,
+        });
+
+        let ctx = HostCallContext {
+            runtime_name: "test",
+            extension_id: Some("ext.test"),
+            tools: &tools,
+            http: &http,
+            manager: Some(manager.clone()),
+            policy: &policy,
+            js_runtime: None,
+            interceptor: None,
+        };
+
+        run_async(async {
+            for idx in 0..6 {
+                let (capability, method) = if idx % 3 == 0 {
+                    ("log", "log")
+                } else {
+                    ("exec", "exec")
+                };
+                let call = HostCallPayload {
+                    call_id: format!("call-risk-calibration-{idx}"),
+                    capability: capability.to_string(),
+                    method: method.to_string(),
+                    params: json!({ "cmd": "echo", "args": [idx.to_string()], "message": "trace" }),
+                    timeout_ms: None,
+                    cancel_token: None,
+                    context: None,
+                };
+                let _ = dispatch_host_call_shared(&ctx, call).await;
+            }
+
+            let artifact = manager.runtime_risk_ledger_artifact();
+            let config = RuntimeRiskCalibrationConfig::default();
+            let first = calibrate_runtime_risk_from_ledger(&artifact, &config)
+                .expect("first calibration should succeed");
+            let second = calibrate_runtime_risk_from_ledger(&artifact, &config)
+                .expect("second calibration should succeed");
+            assert_eq!(
+                first, second,
+                "calibration output must be deterministic for identical input"
+            );
+        });
+    }
+
+    #[test]
+    fn runtime_hostcall_feature_vectors_are_deterministic_for_identical_traces() {
+        let run_trace = || {
+            let dir = tempdir().expect("tempdir");
+            let tools = ToolRegistry::new(&[], dir.path(), None);
+            let http = HttpConnector::with_defaults();
+            let policy = permissive_policy();
+
+            let manager = ExtensionManager::new();
+            manager.set_runtime_risk_config(RuntimeRiskConfig {
+                enabled: true,
+                alpha: 0.01,
+                window_size: 64,
+                ledger_limit: 512,
+                decision_timeout_ms: 50,
+                fail_closed: true,
+            });
+
+            let ctx = HostCallContext {
+                runtime_name: "test",
+                extension_id: Some("ext.test"),
+                tools: &tools,
+                http: &http,
+                manager: Some(manager.clone()),
+                policy: &policy,
+                js_runtime: None,
+                interceptor: None,
+            };
+
+            run_async(async {
+                for idx in 0..10 {
+                    let (capability, method, params) = if idx % 3 == 0 {
+                        (
+                            "exec",
+                            "exec",
+                            json!({ "cmd": "echo", "args": [idx.to_string()] }),
+                        )
+                    } else {
+                        (
+                            "log",
+                            "log",
+                            json!({ "level": "info", "message": format!("msg-{idx}") }),
+                        )
+                    };
+                    let call = HostCallPayload {
+                        call_id: format!("call-feature-det-{idx}"),
+                        capability: capability.to_string(),
+                        method: method.to_string(),
+                        params,
+                        timeout_ms: None,
+                        cancel_token: None,
+                        context: None,
+                    };
+                    let _ = dispatch_host_call_shared(&ctx, call).await;
+                }
+            });
+
+            manager
+                .runtime_hostcall_telemetry_snapshot()
+                .into_iter()
+                .map(|entry| entry.features)
+                .collect::<Vec<_>>()
+        };
+
+        let first = run_trace();
+        let second = run_trace();
+        assert_eq!(first.len(), second.len(), "trace lengths should match");
+        assert_eq!(
+            first, second,
+            "identical traces must yield identical feature vectors"
+        );
+    }
+
+    #[test]
+    fn runtime_hostcall_feature_extraction_overhead_stays_bounded() {
+        let dir = tempdir().expect("tempdir");
+        let tools = ToolRegistry::new(&[], dir.path(), None);
+        let http = HttpConnector::with_defaults();
+        let policy = permissive_policy();
+
+        let manager = ExtensionManager::new();
+        manager.set_runtime_risk_config(RuntimeRiskConfig {
+            enabled: true,
+            alpha: 0.01,
+            window_size: 64,
+            ledger_limit: 512,
+            decision_timeout_ms: 50,
+            fail_closed: true,
+        });
+
+        let ctx = HostCallContext {
+            runtime_name: "test",
+            extension_id: Some("ext.test"),
+            tools: &tools,
+            http: &http,
+            manager: Some(manager.clone()),
+            policy: &policy,
+            js_runtime: None,
+            interceptor: None,
+        };
+
+        run_async(async {
+            for idx in 0..96 {
+                let call = HostCallPayload {
+                    call_id: format!("call-feature-budget-{idx}"),
+                    capability: "log".to_string(),
+                    method: "log".to_string(),
+                    params: json!({ "level": "info", "message": format!("budget-{idx}") }),
+                    timeout_ms: None,
+                    cancel_token: None,
+                    context: None,
+                };
+                let _ = dispatch_host_call_shared(&ctx, call).await;
+            }
+        });
+
+        let telemetry = manager.runtime_hostcall_telemetry_snapshot();
+        assert!(!telemetry.is_empty(), "telemetry should not be empty");
+
+        let total_us = telemetry
+            .iter()
+            .map(|entry| u128::from(entry.extraction_latency_us))
+            .sum::<u128>();
+        let avg_us = total_us / u128::try_from(telemetry.len()).unwrap_or(1);
+        let max_us = telemetry
+            .iter()
+            .map(|entry| entry.extraction_latency_us)
+            .max()
+            .unwrap_or(0);
+        let budget = u128::from(RUNTIME_HOSTCALL_FEATURE_BUDGET_US);
+
+        assert!(
+            avg_us <= budget * 6,
+            "average extraction overhead must remain bounded: avg={avg_us}us budget={RUNTIME_HOSTCALL_FEATURE_BUDGET_US}us"
+        );
+        assert!(
+            u128::from(max_us) <= budget * 30,
+            "worst-case extraction overhead too high: max={max_us}us budget={RUNTIME_HOSTCALL_FEATURE_BUDGET_US}us"
+        );
+    }
+
+    #[test]
+    fn runtime_hostcall_telemetry_schema_is_backward_readable() {
+        let raw = json!({
+            "schema": RUNTIME_HOSTCALL_TELEMETRY_SCHEMA_VERSION,
+            "ts_ms": 1,
+            "extension_id": "ext.legacy",
+            "call_id": "legacy-1",
+            "capability": "log",
+            "method": "log",
+            "params_hash": "abc",
+            "args_shape_hash": "def",
+            "resource_target_class": "telemetry.log",
+            "policy_reason": "permissive",
+            "policy_profile": "permissive",
+            "latency_ms": 3,
+            "outcome": "success",
+            "selected_action": "allow",
+            "reason_codes": []
+        });
+        let parsed: RuntimeHostcallTelemetryEvent =
+            serde_json::from_value(raw).expect("deserialize legacy-compatible telemetry event");
+        assert_eq!(
+            parsed.features.schema,
+            RUNTIME_HOSTCALL_FEATURE_SCHEMA_VERSION
+        );
+        assert_eq!(
+            parsed.extraction_budget_us,
+            RUNTIME_HOSTCALL_FEATURE_BUDGET_US
+        );
+        assert_eq!(
+            parsed.redaction_summary,
+            "params redacted via hash-only telemetry"
+        );
     }
 
     // ========================================================================

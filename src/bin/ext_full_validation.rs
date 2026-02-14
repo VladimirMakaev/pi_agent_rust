@@ -1156,7 +1156,7 @@ fn classify_vendored(
         };
     };
 
-    let status = conformance.status.to_ascii_lowercase();
+    let status = conformance.status.trim().to_ascii_lowercase();
     if status == "pass" || status == "passed" {
         if let Some(repair_entry) = repair {
             let repair_error = repair_entry
@@ -1393,7 +1393,7 @@ fn load_sharded_conformance(
     let mut fail = 0usize;
     let mut skip = 0usize;
     for result in result_map.values() {
-        let status = result.status.to_ascii_lowercase();
+        let status = result.status.trim().to_ascii_lowercase();
         match status.as_str() {
             "pass" | "passed" => pass += 1,
             "fail" | "failed" => fail += 1,
@@ -1490,11 +1490,12 @@ fn load_scenarios(project_root: &Path) -> Result<(Option<ScenarioCounts>, Scenar
         let entry = by_ext
             .entry(result.extension_id.clone())
             .or_insert((0, 0, 0));
-        if result.status.eq_ignore_ascii_case("pass") {
+        let status = result.status.trim();
+        if status.eq_ignore_ascii_case("pass") || status.eq_ignore_ascii_case("passed") {
             entry.0 += 1;
-        } else if result.status.eq_ignore_ascii_case("fail") {
+        } else if status.eq_ignore_ascii_case("fail") || status.eq_ignore_ascii_case("failed") {
             entry.1 += 1;
-        } else if result.status.eq_ignore_ascii_case("error") {
+        } else if status.eq_ignore_ascii_case("error") || status.eq_ignore_ascii_case("errored") {
             entry.2 += 1;
         }
     }
@@ -1539,14 +1540,14 @@ fn load_provider_compat(
             let Ok(event) = serde_json::from_str::<ProviderCompatEvent>(&line) else {
                 continue;
             };
-            let status = event.status.to_ascii_lowercase();
-            let mode = event.provider_mode.to_ascii_lowercase();
+            let status = event.status.trim().to_ascii_lowercase();
+            let mode = event.provider_mode.trim().to_ascii_lowercase();
             let entry = event_state
                 .entry(event.extension_id)
                 .or_insert_with(|| (false, BTreeSet::new()));
-            if mode == "default" && status == "pass" {
+            if mode == "default" && (status == "pass" || status == "passed") {
                 entry.0 = true;
-            } else if mode != "default" && status == "fail" {
+            } else if mode != "default" && (status == "fail" || status == "failed") {
                 entry.1.insert(mode);
             }
         }

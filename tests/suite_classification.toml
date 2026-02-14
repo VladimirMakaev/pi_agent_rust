@@ -192,6 +192,7 @@ files = [
     "e2e_provider_scenarios",
     "e2e_provider_streaming",
     "e2e_rpc",
+    "e2e_runtime_risk_telemetry",
     "e2e_session_persistence",
     "e2e_soak_stability",
     "e2e_tools",
