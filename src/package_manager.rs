@@ -5198,7 +5198,7 @@ mod tests {
         let file_path = pkg.join("index.js");
         fs::write(&file_path, "export const version = 1;\n").expect("write extension file");
 
-        let manager = PackageManager::new(cwd.clone());
+        let manager = PackageManager::new(cwd);
         manager
             .verify_and_record_lock(
                 "./local-pkg",
