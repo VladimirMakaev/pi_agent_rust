@@ -11905,7 +11905,6 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
                     "__pi_exec_sync_native",
                     Func::from({
                         let process_cwd = process_cwd.clone();
-                        let allow_unsafe_sync_exec = allow_unsafe_sync_exec;
                         move |_ctx: Ctx<'_>,
                               cmd: String,
                               args_json: String,
