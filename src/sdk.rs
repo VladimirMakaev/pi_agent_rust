@@ -351,7 +351,7 @@ mod tests {
         F: std::future::Future,
     {
         let reactor = create_reactor().expect("create reactor");
-        let runtime = RuntimeBuilder::single_thread()
+        let runtime = RuntimeBuilder::current_thread()
             .with_reactor(reactor)
             .build()
             .expect("build runtime");
