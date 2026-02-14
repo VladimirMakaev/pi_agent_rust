@@ -2368,6 +2368,119 @@ fn parse_json_mode_stdout_lines(stdout: &str) -> Vec<serde_json::Value> {
         .collect()
 }
 
+fn assert_json_mode_lifecycle_shape(lines: &[serde_json::Value]) {
+    assert!(
+        !lines.is_empty(),
+        "expected JSON mode output, got empty stdout"
+    );
+    assert_eq!(
+        lines[0]["type"], "session",
+        "first line must be session header"
+    );
+    assert!(
+        lines[0]["id"].as_str().is_some_and(|s| !s.is_empty()),
+        "session header must include non-empty id"
+    );
+    assert!(
+        lines[0]["timestamp"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()),
+        "session header must include timestamp"
+    );
+    assert!(
+        lines[0]["cwd"].as_str().is_some_and(|s| !s.is_empty()),
+        "session header must include cwd"
+    );
+
+    let event_lines = &lines[1..];
+    let event_types = event_lines
+        .iter()
+        .filter_map(|value| value.get("type").and_then(serde_json::Value::as_str))
+        .collect::<Vec<_>>();
+
+    let required_order = [
+        "agent_start",
+        "turn_start",
+        "message_start",
+        "message_update",
+        "message_end",
+        "turn_end",
+        "agent_end",
+    ];
+    let mut last_index = 0usize;
+    for (idx, event_type) in required_order.iter().enumerate() {
+        let found = event_types
+            .iter()
+            .position(|value| value == event_type)
+            .unwrap_or_else(|| panic!("missing required event `{event_type}` in {event_types:?}"));
+        if idx > 0 {
+            assert!(
+                found > last_index,
+                "event `{}` must occur before `{}`; got {event_types:?}",
+                required_order[idx - 1],
+                event_type
+            );
+        }
+        last_index = found;
+    }
+    assert_eq!(
+        event_types.last().copied(),
+        Some("agent_end"),
+        "agent_end must be the final event"
+    );
+
+    let agent_start = event_lines
+        .iter()
+        .find(|value| value["type"] == "agent_start")
+        .expect("agent_start event");
+    let turn_start = event_lines
+        .iter()
+        .find(|value| value["type"] == "turn_start")
+        .expect("turn_start event");
+    let message_update = event_lines
+        .iter()
+        .find(|value| value["type"] == "message_update")
+        .expect("message_update event");
+    let agent_end = event_lines
+        .iter()
+        .find(|value| value["type"] == "agent_end")
+        .expect("agent_end event");
+
+    let session_id = agent_start["sessionId"]
+        .as_str()
+        .expect("agent_start.sessionId string");
+    assert!(
+        !session_id.is_empty(),
+        "agent_start.sessionId must be non-empty"
+    );
+    assert_eq!(
+        turn_start["sessionId"].as_str(),
+        Some(session_id),
+        "turn_start.sessionId must match agent_start.sessionId"
+    );
+    assert!(
+        turn_start["turnIndex"].as_u64().is_some(),
+        "turn_start.turnIndex must be numeric"
+    );
+    assert!(
+        turn_start["timestamp"].as_i64().is_some(),
+        "turn_start.timestamp must be numeric"
+    );
+    assert!(
+        message_update.get("assistantMessageEvent").is_some(),
+        "message_update must include assistantMessageEvent"
+    );
+    assert_eq!(
+        agent_end["sessionId"].as_str(),
+        Some(session_id),
+        "agent_end.sessionId must match agent_start.sessionId"
+    );
+    assert!(
+        agent_end["messages"].is_array(),
+        "agent_end.messages must be an array"
+    );
+}
+
 #[test]
 fn e2e_cli_json_mode_print_flag_emits_header_and_events() {
     let mut harness = CliTestHarness::new("e2e_cli_json_mode_print_flag_emits_header_and_events");
@@ -2409,28 +2522,7 @@ fn e2e_cli_json_mode_print_flag_emits_header_and_events() {
     assert_exit_code(&harness.harness, &result, 0);
 
     let lines = parse_json_mode_stdout_lines(&result.stdout);
-    assert!(
-        !lines.is_empty(),
-        "expected JSON mode output, got empty stdout"
-    );
-    assert_eq!(
-        lines[0]["type"], "session",
-        "first line must be session header"
-    );
-
-    let event_types = lines
-        .iter()
-        .skip(1)
-        .filter_map(|value| value.get("type").and_then(serde_json::Value::as_str))
-        .collect::<Vec<_>>();
-    assert!(
-        event_types.contains(&"agent_start"),
-        "missing agent_start event in JSON stream: {event_types:?}"
-    );
-    assert!(
-        event_types.contains(&"agent_end"),
-        "missing agent_end event in JSON stream: {event_types:?}"
-    );
+    assert_json_mode_lifecycle_shape(&lines);
 }
 
 #[test]
@@ -2470,28 +2562,7 @@ fn e2e_cli_json_mode_stdin_emits_header_and_events() {
     assert_exit_code(&harness.harness, &result, 0);
 
     let lines = parse_json_mode_stdout_lines(&result.stdout);
-    assert!(
-        !lines.is_empty(),
-        "expected JSON mode output with stdin, got empty stdout"
-    );
-    assert_eq!(
-        lines[0]["type"], "session",
-        "first line must be session header"
-    );
-
-    let event_types = lines
-        .iter()
-        .skip(1)
-        .filter_map(|value| value.get("type").and_then(serde_json::Value::as_str))
-        .collect::<Vec<_>>();
-    assert!(
-        event_types.contains(&"agent_start"),
-        "missing agent_start event in JSON stream: {event_types:?}"
-    );
-    assert!(
-        event_types.contains(&"agent_end"),
-        "missing agent_end event in JSON stream: {event_types:?}"
-    );
+    assert_json_mode_lifecycle_shape(&lines);
 }
 
 #[test]
