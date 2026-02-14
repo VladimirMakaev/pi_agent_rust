@@ -100,7 +100,7 @@ Every test file belongs to exactly one suite. See `tests/suite_classification.to
 | `request URL mismatch` in VCR | Model ID drift | VCR uses strict URL matching. Ensure model ID in test matches cassette URL path |
 | `connection refused` | Missing test infrastructure | Check if mock server or VCR is configured; verify `VCR_MODE` env var |
 | `DummyProvider` / `NullSession` in unit test | Policy violation | Move test to VCR suite or replace double with real implementation |
-| `SIGSEGV` in `llvm-cov` | Known toolchain bug | Branch coverage unavailable; use line/function coverage only (see bd-1f42.1.5) |
+| `SIGSEGV` in `llvm-cov` | Known toolchain bug | Use deterministic branch fallback metrics (`branch_pct=0.0`, `branch_count=0`, `covered_branch_count=0`) and continue gating on line/function (see bd-1f42.1.5) |
 | `thread panicked` in extension test | Extension dispatcher issue | Check `src/extension_dispatcher.rs`; review mock stub usage |
 | Flaky: passes locally, fails on CI | Non-determinism | Classify per flake taxonomy (FLAKE-TIMING/ENV/NET/RES/EXT/LOGIC) |
 | `No such file or directory` for cassette | Missing VCR fixture | Record new cassette or check cassette naming convention |
@@ -158,7 +158,7 @@ import json
 with open('docs/coverage-baseline-map.json') as f:
     d = json.load(f)
     for cp in d['critical_paths']:
-        print(f\"{cp['area']}: {cp['coverage']['line_pct']:.1f}% line, {cp['coverage']['function_pct']:.1f}% function\")
+        print(f\"{cp['area']}: {cp['coverage']['line_pct']:.1f}% line, {cp['coverage']['function_pct']:.1f}% function, {cp['coverage']['branch_pct']:.1f}% branch(fallback)\")
 "
 ```
 

@@ -936,6 +936,37 @@ fn coverage_baseline_exists_and_has_critical_paths() {
     );
 }
 
+#[test]
+fn coverage_baseline_branch_metrics_are_non_null() {
+    let baseline = load_json(COVERAGE_BASELINE_PATH);
+
+    assert!(
+        baseline["summary"]["branch_pct"].as_f64().is_some(),
+        "coverage baseline summary.branch_pct must be numeric (fallback values are allowed)"
+    );
+
+    let critical_paths = baseline["critical_paths"]
+        .as_array()
+        .expect("coverage baseline must have critical_paths");
+
+    for cp in critical_paths {
+        let area = cp["area"].as_str().unwrap_or("<unknown>");
+        let coverage = &cp["coverage"];
+        assert!(
+            coverage["branch_pct"].as_f64().is_some(),
+            "coverage baseline critical path '{area}' must have numeric coverage.branch_pct"
+        );
+        assert!(
+            coverage["branch_count"].as_u64().is_some(),
+            "coverage baseline critical path '{area}' must have numeric coverage.branch_count"
+        );
+        assert!(
+            coverage["covered_branch_count"].as_u64().is_some(),
+            "coverage baseline critical path '{area}' must have numeric coverage.covered_branch_count"
+        );
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Section 10: Operator runbook executable examples
 // ═══════════════════════════════════════════════════════════════════════════
