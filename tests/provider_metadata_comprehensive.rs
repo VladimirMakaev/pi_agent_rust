@@ -116,8 +116,13 @@ fn every_alias_is_lowercase_trimmed() {
 }
 
 #[test]
-fn every_provider_has_at_least_one_auth_env_key() {
+fn every_remote_provider_has_at_least_one_auth_env_key() {
+    // Local providers (e.g. ollama) legitimately have no auth env keys
+    let local_providers = ["ollama"];
     for meta in PROVIDER_METADATA {
+        if local_providers.contains(&meta.canonical_id) {
+            continue;
+        }
         assert!(
             !meta.auth_env_keys.is_empty(),
             "provider '{}' has no auth env keys",
