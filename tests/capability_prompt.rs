@@ -545,9 +545,9 @@ mod extension_ui_channel {
     #[test]
     fn list_permissions_returns_valid_map() {
         let manager = ExtensionManager::new();
-        // list_permissions returns the correct type regardless of initial state.
-        let perms: HashMap<String, HashMap<String, bool>> = manager.list_permissions();
-        // Just verify it doesn't panic and is a valid map.
+        // list_permissions returns a decision map regardless of initial state.
+        let perms = manager.list_permissions();
+        // Just verify access does not panic in environments with existing state.
         let _ = perms.len();
     }
 }

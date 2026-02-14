@@ -4329,6 +4329,12 @@ pub struct PiJsRuntimeConfig {
     pub limits: PiJsRuntimeLimits,
     /// Controls the auto-repair pipeline behavior. Default: `AutoSafe`.
     pub repair_mode: RepairMode,
+    /// UNSAFE escape hatch: enable synchronous process execution used by
+    /// `node:child_process` sync APIs (`execSync`/`spawnSync`/`execFileSync`).
+    ///
+    /// Security default is `false` so extensions cannot bypass capability/risk
+    /// mediation through direct synchronous subprocess execution.
+    pub allow_unsafe_sync_exec: bool,
 }
 
 impl PiJsRuntimeConfig {
@@ -4346,6 +4352,7 @@ impl Default for PiJsRuntimeConfig {
             env: HashMap::new(),
             limits: PiJsRuntimeLimits::default(),
             repair_mode: RepairMode::default(),
+            allow_unsafe_sync_exec: false,
         }
     }
 }
@@ -11140,6 +11147,7 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
         let process_cwd = self.config.cwd.clone();
         let process_args = self.config.args.clone();
         let env = self.config.env.clone();
+        let allow_unsafe_sync_exec = self.config.allow_unsafe_sync_exec;
         let allowed_read_roots = Arc::clone(&self.allowed_read_roots);
 
         self.context
@@ -11897,6 +11905,7 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
                     "__pi_exec_sync_native",
                     Func::from({
                         let process_cwd = process_cwd.clone();
+                        let allow_unsafe_sync_exec = allow_unsafe_sync_exec;
                         move |_ctx: Ctx<'_>,
                               cmd: String,
                               args_json: String,
@@ -11912,6 +11921,24 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
                                 cmd = %cmd,
                                 "exec_sync"
                             );
+
+                            if !allow_unsafe_sync_exec {
+                                tracing::warn!(
+                                    event = "pijs.exec_sync.denied",
+                                    cmd = %cmd,
+                                    "sync child_process execution denied by security policy"
+                                );
+                                let denied = serde_json::json!({
+                                    "stdout": "",
+                                    "stderr": "",
+                                    "status": null,
+                                    "error": "Capability 'exec' denied by policy (sync child_process APIs are disabled by default)",
+                                    "killed": false,
+                                    "pid": 0,
+                                    "code": "denied",
+                                });
+                                return Ok(denied.to_string());
+                            }
 
                             let args: Vec<String> =
                                 serde_json::from_str(&args_json).unwrap_or_default();
@@ -14961,6 +14988,19 @@ mod tests {
     }
 
     #[allow(clippy::future_not_send)]
+    async fn runtime_with_sync_exec_enabled(
+        clock: Arc<DeterministicClock>,
+    ) -> PiJsRuntime<Arc<DeterministicClock>> {
+        let config = PiJsRuntimeConfig {
+            allow_unsafe_sync_exec: true,
+            ..PiJsRuntimeConfig::default()
+        };
+        PiJsRuntime::with_clock_and_config(clock, config)
+            .await
+            .expect("create runtime")
+    }
+
+    #[allow(clippy::future_not_send)]
     async fn drain_until_idle(
         runtime: &PiJsRuntime<Arc<DeterministicClock>>,
         clock: &Arc<DeterministicClock>,
@@ -16260,6 +16300,7 @@ export default ConfigLoader;
                 env,
                 limits: PiJsRuntimeLimits::default(),
                 repair_mode: RepairMode::default(),
+                allow_unsafe_sync_exec: false,
             };
             let runtime = PiJsRuntime::with_clock_and_config(Arc::clone(&clock), config)
                 .await
@@ -16316,6 +16357,7 @@ export default ConfigLoader;
                 env: HashMap::new(),
                 limits: PiJsRuntimeLimits::default(),
                 repair_mode: RepairMode::default(),
+                allow_unsafe_sync_exec: false,
             };
             let runtime = PiJsRuntime::with_clock_and_config(Arc::clone(&clock), config)
                 .await
@@ -18263,6 +18305,7 @@ export default ConfigLoader;
                 env: HashMap::new(),
                 limits: PiJsRuntimeLimits::default(),
                 repair_mode: RepairMode::default(),
+                allow_unsafe_sync_exec: false,
             };
             let runtime = PiJsRuntime::with_clock_and_config(Arc::clone(&clock), config)
                 .await
@@ -18336,6 +18379,7 @@ export default ConfigLoader;
                 env: HashMap::new(),
                 limits: PiJsRuntimeLimits::default(),
                 repair_mode: RepairMode::default(),
+                allow_unsafe_sync_exec: false,
             };
             let runtime = PiJsRuntime::with_clock_and_config(Arc::clone(&clock), config)
                 .await
@@ -19184,12 +19228,51 @@ export default ConfigLoader;
     // ── node:child_process sync tests ──────────────────────────────────
 
     #[test]
-    fn pijs_exec_sync_runs_command_and_returns_stdout() {
+    fn pijs_exec_sync_denied_by_default_security_policy() {
         futures::executor::block_on(async {
             let clock = Arc::new(DeterministicClock::new(0));
             let runtime = PiJsRuntime::with_clock(Arc::clone(&clock))
                 .await
                 .expect("create runtime");
+
+            runtime
+                .eval(
+                    r"
+                    globalThis.syncDenied = {};
+                    import('node:child_process').then(({ execSync }) => {
+                        try {
+                            execSync('echo should-not-run');
+                            globalThis.syncDenied.threw = false;
+                        } catch (e) {
+                            globalThis.syncDenied.threw = true;
+                            globalThis.syncDenied.msg = String((e && e.message) || e || '');
+                        }
+                        globalThis.syncDenied.done = true;
+                    });
+                    ",
+                )
+                .await
+                .expect("eval execSync deny");
+
+            let r = get_global_json(&runtime, "syncDenied").await;
+            assert_eq!(r["done"], serde_json::json!(true));
+            assert_eq!(r["threw"], serde_json::json!(true));
+            assert!(
+                r["msg"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("disabled by default"),
+                "unexpected denial message: {}",
+                r["msg"]
+            );
+        });
+    }
+
+    #[test]
+    fn pijs_exec_sync_runs_command_and_returns_stdout() {
+        futures::executor::block_on(async {
+            let clock = Arc::new(DeterministicClock::new(0));
+            let runtime = runtime_with_sync_exec_enabled(Arc::clone(&clock)).await;
 
             runtime
                 .eval(
@@ -19229,9 +19312,7 @@ export default ConfigLoader;
     fn pijs_exec_sync_throws_on_nonzero_exit() {
         futures::executor::block_on(async {
             let clock = Arc::new(DeterministicClock::new(0));
-            let runtime = PiJsRuntime::with_clock(Arc::clone(&clock))
-                .await
-                .expect("create runtime");
+            let runtime = runtime_with_sync_exec_enabled(Arc::clone(&clock)).await;
 
             runtime
                 .eval(
@@ -19266,9 +19347,7 @@ export default ConfigLoader;
     fn pijs_exec_sync_empty_command_throws() {
         futures::executor::block_on(async {
             let clock = Arc::new(DeterministicClock::new(0));
-            let runtime = PiJsRuntime::with_clock(Arc::clone(&clock))
-                .await
-                .expect("create runtime");
+            let runtime = runtime_with_sync_exec_enabled(Arc::clone(&clock)).await;
 
             runtime
                 .eval(
@@ -19305,9 +19384,7 @@ export default ConfigLoader;
     fn pijs_spawn_sync_returns_result_object() {
         futures::executor::block_on(async {
             let clock = Arc::new(DeterministicClock::new(0));
-            let runtime = PiJsRuntime::with_clock(Arc::clone(&clock))
-                .await
-                .expect("create runtime");
+            let runtime = runtime_with_sync_exec_enabled(Arc::clone(&clock)).await;
 
             runtime
                 .eval(
@@ -19339,9 +19416,7 @@ export default ConfigLoader;
     fn pijs_spawn_sync_captures_nonzero_exit() {
         futures::executor::block_on(async {
             let clock = Arc::new(DeterministicClock::new(0));
-            let runtime = PiJsRuntime::with_clock(Arc::clone(&clock))
-                .await
-                .expect("create runtime");
+            let runtime = runtime_with_sync_exec_enabled(Arc::clone(&clock)).await;
 
             runtime
                 .eval(
@@ -19369,9 +19444,7 @@ export default ConfigLoader;
     fn pijs_spawn_sync_bad_command_returns_error() {
         futures::executor::block_on(async {
             let clock = Arc::new(DeterministicClock::new(0));
-            let runtime = PiJsRuntime::with_clock(Arc::clone(&clock))
-                .await
-                .expect("create runtime");
+            let runtime = runtime_with_sync_exec_enabled(Arc::clone(&clock)).await;
 
             runtime
                 .eval(
@@ -19399,9 +19472,7 @@ export default ConfigLoader;
     fn pijs_exec_file_sync_runs_binary_directly() {
         futures::executor::block_on(async {
             let clock = Arc::new(DeterministicClock::new(0));
-            let runtime = PiJsRuntime::with_clock(Arc::clone(&clock))
-                .await
-                .expect("create runtime");
+            let runtime = runtime_with_sync_exec_enabled(Arc::clone(&clock)).await;
 
             runtime
                 .eval(
@@ -19427,9 +19498,7 @@ export default ConfigLoader;
     fn pijs_exec_sync_captures_stderr() {
         futures::executor::block_on(async {
             let clock = Arc::new(DeterministicClock::new(0));
-            let runtime = PiJsRuntime::with_clock(Arc::clone(&clock))
-                .await
-                .expect("create runtime");
+            let runtime = runtime_with_sync_exec_enabled(Arc::clone(&clock)).await;
 
             runtime
                 .eval(
@@ -19462,9 +19531,7 @@ export default ConfigLoader;
     fn pijs_exec_sync_with_cwd_option() {
         futures::executor::block_on(async {
             let clock = Arc::new(DeterministicClock::new(0));
-            let runtime = PiJsRuntime::with_clock(Arc::clone(&clock))
-                .await
-                .expect("create runtime");
+            let runtime = runtime_with_sync_exec_enabled(Arc::clone(&clock)).await;
 
             runtime
                 .eval(
@@ -19495,9 +19562,7 @@ export default ConfigLoader;
     fn pijs_spawn_sync_empty_command_throws() {
         futures::executor::block_on(async {
             let clock = Arc::new(DeterministicClock::new(0));
-            let runtime = PiJsRuntime::with_clock(Arc::clone(&clock))
-                .await
-                .expect("create runtime");
+            let runtime = runtime_with_sync_exec_enabled(Arc::clone(&clock)).await;
 
             runtime
                 .eval(
@@ -19535,9 +19600,7 @@ export default ConfigLoader;
     fn pijs_spawn_sync_options_as_second_arg() {
         futures::executor::block_on(async {
             let clock = Arc::new(DeterministicClock::new(0));
-            let runtime = PiJsRuntime::with_clock(Arc::clone(&clock))
-                .await
-                .expect("create runtime");
+            let runtime = runtime_with_sync_exec_enabled(Arc::clone(&clock)).await;
 
             // spawnSync(cmd, options) with no args array — options is 2nd param
             runtime

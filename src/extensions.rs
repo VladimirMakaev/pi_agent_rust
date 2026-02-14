@@ -9706,19 +9706,9 @@ impl ExtensionManager {
     }
 
     /// List all persisted permission decisions.
-    pub fn list_permissions(&self) -> HashMap<String, HashMap<String, bool>> {
+    pub fn list_permissions(&self) -> HashMap<String, HashMap<String, PersistedDecision>> {
         let guard = self.inner.lock().unwrap();
-        guard
-            .policy_prompt_cache
-            .iter()
-            .map(|(extension_id, caps)| {
-                let mapped = caps
-                    .iter()
-                    .map(|(cap, decision)| (cap.clone(), decision.allow))
-                    .collect::<HashMap<_, _>>();
-                (extension_id.clone(), mapped)
-            })
-            .collect()
+        guard.policy_prompt_cache.clone()
     }
 
     pub fn active_tools(&self) -> Option<Vec<String>> {
