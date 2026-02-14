@@ -442,16 +442,15 @@ impl Session {
     }
 
     /// Resume a session by prompting the user to select from recent sessions.
+    #[allow(clippy::too_many_lines)]
     pub async fn resume_with_picker(
         override_dir: Option<&Path>,
         config: &Config,
         picker_input_override: Option<String>,
     ) -> Result<Self> {
+        let is_interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
         let mut picker_input_override = picker_input_override;
-        if picker_input_override.is_none()
-            && std::io::stdin().is_terminal()
-            && std::io::stdout().is_terminal()
-        {
+        if picker_input_override.is_none() && is_interactive {
             if let Some(session) = crate::session_picker::pick_session(override_dir).await {
                 return Ok(session);
             }
@@ -496,31 +495,36 @@ impl Session {
 
         entries.sort_by_key(|entry| std::cmp::Reverse(entry.last_modified_ms));
         let max_entries = 20usize.min(entries.len());
-        let entries = entries.into_iter().take(max_entries).collect::<Vec<_>>();
+        let mut entries = entries.into_iter().take(max_entries).collect::<Vec<_>>();
 
         let console = PiConsole::new();
         console.render_info("Select a session to resume:");
 
-        let mut rows: Vec<Vec<String>> = Vec::new();
-        for (idx, entry) in entries.iter().enumerate() {
-            rows.push(vec![
-                format!("{}", idx + 1),
-                entry.timestamp.clone(),
-                entry.message_count.to_string(),
-                entry.name.clone().unwrap_or_else(|| entry.id.clone()),
-                entry.path.display().to_string(),
-            ]);
-        }
-
         let headers = ["#", "Timestamp", "Messages", "Name", "Path"];
-        let row_refs: Vec<Vec<&str>> = rows
-            .iter()
-            .map(|row| row.iter().map(String::as_str).collect())
-            .collect();
-        console.render_table(&headers, &row_refs);
 
         let mut attempts = 0;
         loop {
+            if entries.is_empty() {
+                console.render_warning("No resumable sessions available. Starting a new session.");
+                return Ok(Self::create_with_dir_and_store(Some(base_dir), store_kind));
+            }
+
+            let mut rows: Vec<Vec<String>> = Vec::new();
+            for (idx, entry) in entries.iter().enumerate() {
+                rows.push(vec![
+                    format!("{}", idx + 1),
+                    entry.timestamp.clone(),
+                    entry.message_count.to_string(),
+                    entry.name.clone().unwrap_or_else(|| entry.id.clone()),
+                    entry.path.display().to_string(),
+                ]);
+            }
+            let row_refs: Vec<Vec<&str>> = rows
+                .iter()
+                .map(|row| row.iter().map(String::as_str).collect())
+                .collect();
+            console.render_table(&headers, &row_refs);
+
             attempts += 1;
             if attempts > 3 {
                 console.render_warning("No selection made. Starting a new session.");
@@ -549,9 +553,35 @@ impl Session {
             match input.parse::<usize>() {
                 Ok(index) if index > 0 && index <= entries.len() => {
                     let selected = &entries[index - 1];
-                    let mut session = Self::open(selected.path.to_string_lossy().as_ref()).await?;
-                    session.session_dir = Some(base_dir.clone());
-                    return Ok(session);
+                    match Self::open(selected.path.to_string_lossy().as_ref()).await {
+                        Ok(mut session) => {
+                            session.session_dir = Some(base_dir.clone());
+                            return Ok(session);
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                path = %selected.path.display(),
+                                error = %err,
+                                "Failed to open selected session while resuming"
+                            );
+                            entries.remove(index - 1);
+
+                            if is_interactive {
+                                console.render_warning(
+                                    "Selected session could not be opened. Pick another session.",
+                                );
+                                continue;
+                            }
+
+                            console.render_warning(
+                                "Selected session could not be opened. Starting a new session.",
+                            );
+                            return Ok(Self::create_with_dir_and_store(
+                                Some(base_dir.clone()),
+                                store_kind,
+                            ));
+                        }
+                    }
                 }
                 _ => {
                     console.render_warning("Invalid selection. Try again.");
@@ -804,13 +834,23 @@ impl Session {
         let mut candidates = by_path.into_values().collect::<Vec<_>>();
         candidates.sort_by_key(|entry| std::cmp::Reverse(entry.last_modified_ms));
 
-        if let Some(entry) = candidates.first() {
-            let mut session = Self::open(entry.path.to_string_lossy().as_ref()).await?;
-            session.session_dir = Some(base_dir);
-            Ok(session)
-        } else {
-            Ok(Self::create_with_dir_and_store(Some(base_dir), store_kind))
+        for entry in &candidates {
+            match Self::open(entry.path.to_string_lossy().as_ref()).await {
+                Ok(mut session) => {
+                    session.session_dir = Some(base_dir.clone());
+                    return Ok(session);
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        path = %entry.path.display(),
+                        error = %err,
+                        "Skipping unreadable session candidate while continuing"
+                    );
+                }
+            }
         }
+
+        Ok(Self::create_with_dir_and_store(Some(base_dir), store_kind))
     }
 
     /// Save the session to disk.
@@ -885,8 +925,10 @@ impl Session {
 
         match store_kind {
             SessionStoreKind::Jsonl => {
-                type JsonlSaveResult =
-                    std::result::Result<(Vec<SessionEntry>, u64, Option<String>), (Error, Vec<SessionEntry>)>;
+                type JsonlSaveResult = std::result::Result<
+                    (Vec<SessionEntry>, u64, Option<String>),
+                    (Error, Vec<SessionEntry>),
+                >;
                 let (tx, rx) = oneshot::channel::<JsonlSaveResult>();
 
                 let header_snapshot = self.header.clone();
@@ -894,12 +936,15 @@ impl Session {
                 let entries_to_save = std::mem::take(&mut self.entries);
 
                 thread::spawn(move || {
-                    let mut entries = entries_to_save;
+                    let entries = entries_to_save;
                     let res = || -> Result<(u64, Option<String>)> {
                         let parent = path_clone.parent().unwrap_or_else(|| Path::new("."));
                         let temp_file = tempfile::NamedTempFile::new_in(parent)?;
                         {
-                            let mut writer = std::io::BufWriter::new(temp_file.as_file());
+                            // Full-session rewrites are large JSONL streams; a larger buffer
+                            // reduces write syscall churn on slower disks.
+                            let mut writer =
+                                std::io::BufWriter::with_capacity(1 << 20, temp_file.as_file());
 
                             // Write header
                             serde_json::to_writer(&mut writer, &header_snapshot)?;
