@@ -11714,120 +11714,176 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
                                 workspace_root.join(requested)
                             };
 
-                            let checked_path = std::fs::canonicalize(&requested_abs)
-                                .map(crate::extensions::strip_unc_prefix)
-                                .or_else(|err| {
-                                    if err.kind() == std::io::ErrorKind::NotFound {
-                                        // Walk up the ancestor chain to find the nearest
-                                        // existing directory.  This handles cases where
-                                        // intermediate directories are missing (e.g.
-                                        // form/index.html where form/ doesn't exist).
-                                        let mut ancestor = requested_abs.as_path();
-                                        loop {
-                                            ancestor = match ancestor.parent() {
-                                                Some(p) if !p.as_os_str().is_empty() => p,
-                                                _ => break,
-                                            };
-                                            if let Ok(canonical_ancestor) =
-                                                std::fs::canonicalize(ancestor)
-                                                    .map(crate::extensions::strip_unc_prefix)
-                                            {
-                                                if canonical_ancestor.starts_with(&workspace_root) {
-                                                    return Ok(requested_abs.clone());
-                                                }
-                                                if let Ok(roots) = allowed_read_roots.lock() {
-                                                    for root in roots.iter() {
-                                                        if canonical_ancestor.starts_with(root) {
-                                                            return Ok(requested_abs.clone());
-                                                        }
-                                                    }
-                                                }
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    Err(err)
-                                })
-                                .map_err(|err| {
+                            #[cfg(target_os = "linux")]
+                            {
+                                use std::os::fd::AsRawFd;
+                                use std::io::Read;
+
+                                // Open first to get a handle, then verify the handle's path.
+                                // This prevents TOCTOU attacks where the path is swapped
+                                // between check and read.
+                                let mut file = std::fs::File::open(&requested_abs).map_err(|err| {
                                     rquickjs::Error::new_loading_message(
                                         &path,
-                                        format!("host read: {err}"),
+                                        format!("host read open: {err}"),
                                     )
                                 })?;
 
-                            // Allow reads from workspace root or any registered
-                            // extension root directory.
-                            let in_ext_root = allowed_read_roots.lock().is_ok_and(|roots| {
-                                roots.iter().any(|root| checked_path.starts_with(root))
-                            });
-                            let allowed = checked_path.starts_with(&workspace_root) || in_ext_root;
-                            if !allowed {
-                                return Err(rquickjs::Error::new_loading_message(
-                                    &path,
-                                    "host read denied: path outside extension root".to_string(),
-                                ));
+                                let secure_path_buf = std::fs::read_link(format!(
+                                    "/proc/self/fd/{}",
+                                    file.as_raw_fd()
+                                ))
+                                .map_err(|err| {
+                                    rquickjs::Error::new_loading_message(
+                                        &path,
+                                        format!("host read verify: {err}"),
+                                    )
+                                })?;
+                                let secure_path =
+                                    crate::extensions::strip_unc_prefix(secure_path_buf);
+
+                                let in_ext_root =
+                                    allowed_read_roots.lock().is_ok_and(|roots| {
+                                        roots.iter().any(|root| secure_path.starts_with(root))
+                                    });
+                                let allowed =
+                                    secure_path.starts_with(&workspace_root) || in_ext_root;
+
+                                if !allowed {
+                                    return Err(rquickjs::Error::new_loading_message(
+                                        &path,
+                                        "host read denied: path outside extension root"
+                                            .to_string(),
+                                    ));
+                                }
+
+                                let mut content = String::new();
+                                file.read_to_string(&mut content).map_err(|err| {
+                                    rquickjs::Error::new_loading_message(
+                                        &path,
+                                        format!("host read content: {err}"),
+                                    )
+                                })?;
+                                return Ok(content);
                             }
 
-                            match std::fs::read_to_string(&checked_path) {
-                                Ok(content) => Ok(content),
-                                Err(err)
-                                    if err.kind() == std::io::ErrorKind::NotFound
-                                        && in_ext_root
-                                        && repair_mode.should_apply() =>
-                                {
-                                    // Pattern 2 (bd-k5q5.8.3): missing asset fallback.
-                                    // Return type-appropriate empty content for known
-                                    // asset extensions. Never for .json (invalid) or
-                                    // .env (security-relevant).
-                                    let ext = checked_path
-                                        .extension()
-                                        .and_then(|e| e.to_str())
-                                        .unwrap_or("");
-                                    let fallback = match ext {
-                                        "html" | "htm" => {
-                                            "<!DOCTYPE html><html><body></body></html>"
+                            #[cfg(not(target_os = "linux"))]
+                            {
+                                let checked_path = std::fs::canonicalize(&requested_abs)
+                                    .map(crate::extensions::strip_unc_prefix)
+                                    .or_else(|err| {
+                                        if err.kind() == std::io::ErrorKind::NotFound {
+                                            // Walk up the ancestor chain to find the nearest
+                                            // existing directory.  This handles cases where
+                                            // intermediate directories are missing (e.g.
+                                            // form/index.html where form/ doesn't exist).
+                                            let mut ancestor = requested_abs.as_path();
+                                            loop {
+                                                ancestor = match ancestor.parent() {
+                                                    Some(p) if !p.as_os_str().is_empty() => p,
+                                                    _ => break,
+                                                };
+                                                if let Ok(canonical_ancestor) =
+                                                    std::fs::canonicalize(ancestor)
+                                                        .map(crate::extensions::strip_unc_prefix)
+                                                {
+                                                    if canonical_ancestor.starts_with(&workspace_root) {
+                                                        return Ok(requested_abs.clone());
+                                                    }
+                                                    if let Ok(roots) = allowed_read_roots.lock() {
+                                                        for root in roots.iter() {
+                                                            if canonical_ancestor.starts_with(root) {
+                                                                return Ok(requested_abs.clone());
+                                                            }
+                                                        }
+                                                    }
+                                                    break;
+                                                }
+                                            }
                                         }
-                                        "css" => "/* auto-repair: empty stylesheet */",
-                                        "js" | "mjs" => "// auto-repair: empty script",
-                                        "md" | "txt" | "toml" | "yaml" | "yml" => "",
-                                        // Do NOT fallback for .json (empty string is
-                                        // not valid JSON) or .env (security-relevant).
-                                        _ => {
-                                            return Err(rquickjs::Error::new_loading_message(
-                                                &path,
-                                                format!("host read: {err}"),
-                                            ));
-                                        }
-                                    };
+                                        Err(err)
+                                    })
+                                    .map_err(|err| {
+                                        rquickjs::Error::new_loading_message(
+                                            &path,
+                                            format!("host read: {err}"),
+                                        )
+                                    })?;
 
-                                    tracing::info!(
-                                        event = "pijs.repair.missing_asset",
-                                        path = %path,
-                                        ext = %ext,
-                                        "returning empty fallback for missing asset"
-                                    );
-
-                                    // Record repair event.
-                                    if let Ok(mut events) = repair_events.lock() {
-                                        events.push(ExtensionRepairEvent {
-                                            extension_id: String::new(),
-                                            pattern: RepairPattern::MissingAsset,
-                                            original_error: format!(
-                                                "ENOENT: {}",
-                                                checked_path.display()
-                                            ),
-                                            repair_action: format!("returned empty {ext} fallback"),
-                                            success: true,
-                                            timestamp_ms: 0,
-                                        });
-                                    }
-
-                                    Ok(fallback.to_string())
+                                // Allow reads from workspace root or any registered
+                                // extension root directory.
+                                let in_ext_root = allowed_read_roots.lock().is_ok_and(|roots| {
+                                    roots.iter().any(|root| checked_path.starts_with(root))
+                                });
+                                let allowed = checked_path.starts_with(&workspace_root) || in_ext_root;
+                                if !allowed {
+                                    return Err(rquickjs::Error::new_loading_message(
+                                        &path,
+                                        "host read denied: path outside extension root".to_string(),
+                                    ));
                                 }
-                                Err(err) => Err(rquickjs::Error::new_loading_message(
-                                    &path,
-                                    format!("host read: {err}"),
-                                )),
+
+                                match std::fs::read_to_string(&checked_path) {
+                                    Ok(content) => Ok(content),
+                                    Err(err)
+                                        if err.kind() == std::io::ErrorKind::NotFound
+                                            && in_ext_root
+                                            && repair_mode.should_apply() =>
+                                    {
+                                        // Pattern 2 (bd-k5q5.8.3): missing asset fallback.
+                                        // Return type-appropriate empty content for known
+                                        // asset extensions. Never for .json (invalid) or
+                                        // .env (security-relevant).
+                                        let ext = checked_path
+                                            .extension()
+                                            .and_then(|e| e.to_str())
+                                            .unwrap_or("");
+                                        let fallback = match ext {
+                                            "html" | "htm" => {
+                                                "<!DOCTYPE html><html><body></body></html>"
+                                            }
+                                            "css" => "/* auto-repair: empty stylesheet */",
+                                            "js" | "mjs" => "// auto-repair: empty script",
+                                            "md" | "txt" | "toml" | "yaml" | "yml" => "",
+                                            // Do NOT fallback for .json (empty string is
+                                            // not valid JSON) or .env (security-relevant).
+                                            _ => {
+                                                return Err(rquickjs::Error::new_loading_message(
+                                                    &path,
+                                                    format!("host read: {err}"),
+                                                ));
+                                            }
+                                        };
+
+                                        tracing::info!(
+                                            event = "pijs.repair.missing_asset",
+                                            path = %path,
+                                            ext = %ext,
+                                            "returning empty fallback for missing asset"
+                                        );
+
+                                        // Record repair event.
+                                        if let Ok(mut events) = repair_events.lock() {
+                                            events.push(ExtensionRepairEvent {
+                                                extension_id: String::new(),
+                                                pattern: RepairPattern::MissingAsset,
+                                                original_error: format!(
+                                                    "ENOENT: {}",
+                                                    checked_path.display()
+                                                ),
+                                                repair_action: format!("returned empty {ext} fallback"),
+                                                success: true,
+                                                timestamp_ms: 0,
+                                            });
+                                        }
+
+                                        Ok(fallback.to_string())
+                                    }
+                                    Err(err) => Err(rquickjs::Error::new_loading_message(
+                                        &path,
+                                        format!("host read: {err}"),
+                                    )),
+                                }
                             }
                         }
                     }),
