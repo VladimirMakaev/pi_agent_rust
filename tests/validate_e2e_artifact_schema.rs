@@ -24,6 +24,7 @@ mod common;
 use common::TestHarness;
 use common::logging::{
     find_unredacted_keys, redact_json_value, validate_jsonl, validate_jsonl_line,
+    validate_jsonl_line_v2_only, validate_jsonl_v2_only,
 };
 use serde_json::Value;
 use std::collections::HashSet;
@@ -1353,7 +1354,131 @@ fn synthetic_evidence_contract_validates_against_schema() {
 }
 
 // ============================================================================
-// § 14 — Artifact-index path cross-validation (DISC-019 / GAP-3 / bd-z5vt4)
+// § 14 — V2-only schema enforcement (DISC-021 / GAP-5 / bd-38m8w)
+// ============================================================================
+
+#[test]
+fn v2_only_enforcement_rejects_v1_log_records() {
+    let v1_record = serde_json::json!({
+        "schema": "pi.test.log.v1",
+        "type": "log",
+        "seq": 1,
+        "ts": "2026-02-13T00:00:00Z",
+        "t_ms": 0,
+        "level": "info",
+        "category": "test",
+        "message": "this should fail v2-only"
+    });
+    let line = serde_json::to_string(&v1_record).unwrap();
+    let result = validate_jsonl_line_v2_only(&line, 1);
+    assert!(
+        result.is_err(),
+        "v1 log records must be rejected by v2-only validation"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        err.message.contains("deprecated"),
+        "Error must mention deprecation: {err}"
+    );
+}
+
+#[test]
+fn v2_only_enforcement_accepts_v2_log_records() {
+    let v2_record = serde_json::json!({
+        "schema": "pi.test.log.v2",
+        "type": "log",
+        "trace_id": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+        "seq": 1,
+        "ts": "2026-02-13T00:00:00Z",
+        "t_ms": 0,
+        "level": "info",
+        "category": "test",
+        "message": "v2 record"
+    });
+    let line = serde_json::to_string(&v2_record).unwrap();
+    assert!(
+        validate_jsonl_line_v2_only(&line, 1).is_ok(),
+        "v2 log records must pass v2-only validation"
+    );
+}
+
+#[test]
+fn v2_only_enforcement_accepts_artifact_v1_records() {
+    // pi.test.artifact.v1 is the CURRENT artifact schema (not deprecated).
+    let artifact = serde_json::json!({
+        "schema": "pi.test.artifact.v1",
+        "type": "artifact",
+        "seq": 1,
+        "ts": "2026-02-13T00:00:00Z",
+        "t_ms": 100,
+        "name": "output.log",
+        "path": "/tmp/output.log"
+    });
+    let line = serde_json::to_string(&artifact).unwrap();
+    assert!(
+        validate_jsonl_line_v2_only(&line, 1).is_ok(),
+        "Artifact v1 records must pass v2-only validation (not deprecated)"
+    );
+}
+
+#[test]
+fn harness_output_passes_v2_only_enforcement() {
+    // Prove that TestHarness always emits v2-only compliant JSONL.
+    let harness = TestHarness::new("v2_only_enforcement_test");
+    harness.info("test entry");
+    harness.info_ctx("action", &[("key", "value")]);
+    let path = harness.temp_path("artifact.json");
+    std::fs::write(&path, "{}").unwrap();
+    harness.record_artifact("artifact.json", &path);
+
+    let log_output = harness.dump_logs();
+    let errors = validate_jsonl_v2_only(&log_output);
+    assert!(
+        errors.is_empty(),
+        "Harness log output must be v2-only compliant: {errors:?}"
+    );
+
+    let artifact_output = harness.dump_artifact_index();
+    let artifact_errors = validate_jsonl_v2_only(&artifact_output);
+    assert!(
+        artifact_errors.is_empty(),
+        "Harness artifact output must be v2-only compliant: {artifact_errors:?}"
+    );
+}
+
+#[test]
+fn v2_only_batch_enforcement_catches_all_v1_records() {
+    let mixed_content = [
+        r#"{"schema":"pi.test.log.v2","type":"log","trace_id":"abc","seq":1,"ts":"x","t_ms":0,"level":"info","category":"c","message":"ok"}"#,
+        r#"{"schema":"pi.test.log.v1","type":"log","seq":2,"ts":"x","t_ms":0,"level":"info","category":"c","message":"v1-bad"}"#,
+        r#"{"schema":"pi.test.artifact.v1","type":"artifact","seq":3,"ts":"x","t_ms":0,"name":"a","path":"/tmp/a"}"#,
+        r#"{"schema":"pi.test.log.v1","type":"log","seq":4,"ts":"x","t_ms":0,"level":"warn","category":"c","message":"v1-also-bad"}"#,
+    ]
+    .join("\n");
+
+    let errors = validate_jsonl_v2_only(&mixed_content);
+    assert_eq!(
+        errors.len(),
+        2,
+        "Both v1 log records must be rejected: {errors:?}"
+    );
+    assert_eq!(errors[0].line, 2);
+    assert_eq!(errors[1].line, 4);
+}
+
+#[test]
+fn backward_compat_validate_jsonl_still_accepts_v1() {
+    // Grandfathered path: validate_jsonl() (non-strict) still accepts v1.
+    let v1_record = r#"{"schema":"pi.test.log.v1","type":"log","seq":1,"ts":"x","t_ms":0,"level":"info","category":"c","message":"grandfathered"}"#;
+    let errors = validate_jsonl(v1_record);
+    assert!(
+        errors.is_empty(),
+        "Standard validate_jsonl must still accept v1 for backward compat"
+    );
+}
+
+// ============================================================================
+// § 15 — Artifact-index path cross-validation (DISC-019 / GAP-3 / bd-z5vt4)
 // ============================================================================
 
 #[test]
@@ -1376,8 +1501,7 @@ fn artifact_index_cross_validation_detects_missing_paths() {
         missing = missing,
     );
 
-    let warnings =
-        common::logging::validate_artifact_index_paths(&artifact_index, dir.path());
+    let warnings = common::logging::validate_artifact_index_paths(&artifact_index, dir.path());
 
     assert_eq!(warnings.len(), 1, "should detect exactly one missing path");
     assert_eq!(warnings[0].name, "missing_artifact");
@@ -1406,8 +1530,7 @@ fn artifact_index_cross_validation_passes_when_all_paths_exist() {
         b = file_b.display(),
     );
 
-    let warnings =
-        common::logging::validate_artifact_index_paths(&artifact_index, dir.path());
+    let warnings = common::logging::validate_artifact_index_paths(&artifact_index, dir.path());
     assert!(warnings.is_empty(), "all paths exist, no warnings expected");
 }
 
@@ -1423,8 +1546,7 @@ fn artifact_index_cross_validation_handles_relative_paths() {
         "\n",
     );
 
-    let warnings =
-        common::logging::validate_artifact_index_paths(artifact_index, dir.path());
+    let warnings = common::logging::validate_artifact_index_paths(artifact_index, dir.path());
     assert!(
         warnings.is_empty(),
         "relative path should resolve against artifact_dir"
@@ -1440,8 +1562,7 @@ fn artifact_index_cross_validation_warns_on_missing_relative_path() {
         "\n",
     );
 
-    let warnings =
-        common::logging::validate_artifact_index_paths(artifact_index, dir.path());
+    let warnings = common::logging::validate_artifact_index_paths(artifact_index, dir.path());
     assert_eq!(warnings.len(), 1);
     assert_eq!(warnings[0].name, "ghost");
     assert_eq!(warnings[0].path, "does/not/exist.log");
@@ -1460,8 +1581,7 @@ fn artifact_index_cross_validation_skips_non_artifact_records() {
         "\n",
     );
 
-    let warnings =
-        common::logging::validate_artifact_index_paths(artifact_index, dir.path());
+    let warnings = common::logging::validate_artifact_index_paths(artifact_index, dir.path());
     assert_eq!(
         warnings.len(),
         1,

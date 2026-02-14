@@ -933,6 +933,7 @@ fn is_sensitive_key(key: &str) -> bool {
     REDACTION_KEYS.iter().any(|needle| key.contains(needle))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_log_record(
     entry: &LogEntry,
     seq: usize,
@@ -1245,6 +1246,56 @@ pub fn validate_jsonl_line(line: &str, line_number: usize) -> Result<(), JsonlVa
     }
 
     Ok(())
+}
+
+/// Validate a single JSONL line, rejecting deprecated `pi.test.log.v1` records.
+///
+/// New test code MUST use v2. This function enforces that: v1 log records produce
+/// an error, while v2 log and v1 artifact records pass normally. Use the standard
+/// [`validate_jsonl_line`] for backward-compatible validation of grandfathered data.
+///
+/// See DISC-021 / bd-38m8w.
+pub fn validate_jsonl_line_v2_only(
+    line: &str,
+    line_number: usize,
+) -> Result<(), JsonlValidationError> {
+    // First, run standard validation.
+    validate_jsonl_line(line, line_number)?;
+
+    // Then reject v1 log schema.
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+        if let Some(schema) = value.get("schema").and_then(|v| v.as_str()) {
+            if schema == TEST_LOG_SCHEMA_V1 {
+                return Err(JsonlValidationError {
+                    line: line_number,
+                    field: "schema".to_string(),
+                    message: format!(
+                        "deprecated schema '{schema}': new tests must use {TEST_LOG_SCHEMA}"
+                    ),
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate every non-empty line in a JSONL string, rejecting `pi.test.log.v1`.
+///
+/// Like [`validate_jsonl`] but enforces v2-only for log records. Use this for
+/// new test code. See DISC-021 / bd-38m8w.
+pub fn validate_jsonl_v2_only(content: &str) -> Vec<JsonlValidationError> {
+    let mut errors = Vec::new();
+    for (i, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Err(err) = validate_jsonl_line_v2_only(trimmed, i + 1) {
+            errors.push(err);
+        }
+    }
+    errors
 }
 
 /// Validate every non-empty line in a JSONL string.
@@ -2283,6 +2334,66 @@ mod tests {
         // V1 records should still pass validation (backward compat).
         let record = r#"{"schema":"pi.test.log.v1","type":"log","seq":1,"ts":"2026-01-01T00:00:00.000Z","t_ms":0,"level":"info","category":"setup","message":"hello"}"#;
         assert!(validate_jsonl_line(record, 1).is_ok());
+    }
+
+    // ====================================================================
+    // V2-Only Enforcement (DISC-021 / bd-38m8w)
+    // ====================================================================
+
+    #[test]
+    fn v2_only_rejects_v1_log_schema() {
+        let record = r#"{"schema":"pi.test.log.v1","type":"log","seq":1,"ts":"2026-01-01T00:00:00.000Z","t_ms":0,"level":"info","category":"setup","message":"hello"}"#;
+        let err = validate_jsonl_line_v2_only(record, 1).unwrap_err();
+        assert_eq!(err.field, "schema");
+        assert!(
+            err.message.contains("deprecated"),
+            "Error should mention deprecated: {err}"
+        );
+    }
+
+    #[test]
+    fn v2_only_accepts_v2_log_schema() {
+        let record = r#"{"schema":"pi.test.log.v2","type":"log","trace_id":"abc","seq":1,"ts":"x","t_ms":0,"level":"info","category":"c","message":"m"}"#;
+        assert!(validate_jsonl_line_v2_only(record, 1).is_ok());
+    }
+
+    #[test]
+    fn v2_only_accepts_artifact_v1_schema() {
+        // Artifact schema is v1 and that's correct (not deprecated).
+        let record = r#"{"schema":"pi.test.artifact.v1","type":"artifact","seq":1,"ts":"x","t_ms":0,"name":"trace","path":"/tmp/t.json"}"#;
+        assert!(validate_jsonl_line_v2_only(record, 1).is_ok());
+    }
+
+    #[test]
+    fn v2_only_batch_rejects_mixed_v1_v2() {
+        let content = [
+            r#"{"schema":"pi.test.log.v2","type":"log","trace_id":"abc","seq":1,"ts":"x","t_ms":0,"level":"info","category":"c","message":"ok"}"#,
+            r#"{"schema":"pi.test.log.v1","type":"log","seq":2,"ts":"x","t_ms":0,"level":"info","category":"c","message":"bad"}"#,
+            r#"{"schema":"pi.test.artifact.v1","type":"artifact","seq":3,"ts":"x","t_ms":0,"name":"a","path":"/tmp/a"}"#,
+        ]
+        .join("\n");
+
+        let errors = validate_jsonl_v2_only(&content);
+        assert_eq!(
+            errors.len(),
+            1,
+            "Only the v1 log record should fail: {errors:?}"
+        );
+        assert_eq!(errors[0].line, 2);
+    }
+
+    #[test]
+    fn v2_only_logger_output_is_compliant() {
+        // Prove that TestLogger always produces v2-only compliant output.
+        let logger = TestLogger::new();
+        logger.info("test", "v2 check");
+        logger.record_artifact("log", "/tmp/log.txt");
+        let jsonl = logger.dump_jsonl();
+        let errors = validate_jsonl_v2_only(&jsonl);
+        assert!(
+            errors.is_empty(),
+            "Logger output must be v2-only compliant: {errors:?}"
+        );
     }
 
     #[test]
