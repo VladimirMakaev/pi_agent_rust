@@ -208,9 +208,16 @@ pub async fn run_stdio(session: AgentSession, options: RpcOptions) -> Result<()>
             match reader.read_line(&mut line) {
                 Ok(0) | Err(_) => break,
                 Ok(_) => {
-                    let send_line = std::mem::take(&mut line);
-                    if in_tx.try_send(send_line).is_err() {
-                        break;
+                    let line_to_send = std::mem::take(&mut line);
+                    // Retry loop to handle backpressure (channel full) without dropping input.
+                    // If the channel is closed (agent exited), we'll loop until process termination,
+                    // which is acceptable for this daemon thread.
+                    loop {
+                        // Clone the string for the attempt so we retain ownership for retry.
+                        if in_tx.try_send(line_to_send.clone()).is_ok() {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(10));
                     }
                 }
             }

@@ -927,28 +927,19 @@ impl Session {
             }
             #[cfg(feature = "sqlite-sessions")]
             SessionStoreKind::Sqlite => {
+                // Async save must run on the runtime to access capabilities (AgentCx).
+                crate::session_sqlite::save_session(&path_clone, &self.header, &self.entries)
+                    .await?;
+
+                // Offload blocking index update to a thread.
+                let session_dir = session_dir_clone;
                 thread::spawn(move || {
-                    let res = || -> Result<()> {
-                        futures::executor::block_on(async {
-                            crate::session_sqlite::save_session(
-                                &path_clone,
-                                &session_clone.header,
-                                &session_clone.entries,
-                            )
-                            .await
-                        })?;
-
-                        let sessions_root = session_dir_clone.unwrap_or_else(Config::sessions_dir);
-                        if let Err(err) = SessionIndex::for_sessions_root(&sessions_root)
-                            .index_session(&session_clone)
-                        {
-                            tracing::warn!("Failed to update session index: {err}");
-                        }
-                        Ok(())
-                    }();
-
-                    let cx = AgentCx::for_request();
-                    let _ = tx.send(cx.cx(), res);
+                    let sessions_root = session_dir.unwrap_or_else(Config::sessions_dir);
+                    if let Err(err) = SessionIndex::for_sessions_root(&sessions_root)
+                        .index_session(&session_clone)
+                    {
+                        tracing::warn!("Failed to update session index: {err}");
+                    }
                 });
             }
         }

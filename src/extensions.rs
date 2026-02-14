@@ -600,17 +600,27 @@ fn collect_js_like_files(path: &Path) -> Result<Vec<PathBuf>> {
 }
 
 fn collect_js_like_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let file_type = entry.file_type()?;
-        let path = entry.path();
-        if file_type.is_dir() {
-            if should_ignore_dir(&path) {
-                continue;
+    let mut stack = vec![dir.to_path_buf()];
+
+    while let Some(current_dir) = stack.pop() {
+        let entries = match fs::read_dir(&current_dir) {
+            Ok(entries) => entries,
+            Err(_) => continue, // Skip unreadable directories
+        };
+
+        for entry in entries {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            let path = entry.path();
+
+            if file_type.is_dir() {
+                if should_ignore_dir(&path) {
+                    continue;
+                }
+                stack.push(path);
+            } else if file_type.is_file() && is_js_like(&path) {
+                out.push(path);
             }
-            collect_js_like_files_recursive(&path, out)?;
-        } else if file_type.is_file() && is_js_like(&path) {
-            out.push(path);
         }
     }
     Ok(())
