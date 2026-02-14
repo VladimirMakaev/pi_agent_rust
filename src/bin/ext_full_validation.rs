@@ -5,7 +5,7 @@
     clippy::too_many_lines
 )]
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -1089,6 +1089,7 @@ fn classify_unvendored(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn classify_vendored(
     manifest_entry: Option<&ManifestEntry>,
     conformance: Option<&ShardResult>,
@@ -1482,14 +1483,15 @@ fn load_provider_compat(
             .push(failure.clone());
     }
 
-    // Include all failing cells (not only provider-specific failures listed in
-    // provider_failures) so aggregate classification can see complete provider failures.
+    // Augment provider-specific failures from events. We only treat non-default
+    // failures as provider-specific when default mode passes for that extension.
     let events_path = project_root
         .join("tests/ext_conformance/reports/provider_compat/provider_compat_events.jsonl");
     if events_path.exists() {
         let file = fs::File::open(&events_path)
             .with_context(|| format!("open {}", events_path.display()))?;
         let reader = BufReader::new(file);
+        let mut event_state: HashMap<String, (bool, BTreeSet<String>)> = HashMap::new();
         for line in reader.lines() {
             let line = line.with_context(|| format!("read {}", events_path.display()))?;
             if line.trim().is_empty() {
@@ -1498,17 +1500,29 @@ fn load_provider_compat(
             let Ok(event) = serde_json::from_str::<ProviderCompatEvent>(&line) else {
                 continue;
             };
-            if event.status != "fail" {
+            let status = event.status.to_ascii_lowercase();
+            let mode = event.provider_mode.to_ascii_lowercase();
+            let entry = event_state
+                .entry(event.extension_id)
+                .or_insert_with(|| (false, BTreeSet::new()));
+            if mode == "default" && status == "pass" {
+                entry.0 = true;
+            } else if mode != "default" && status == "fail" {
+                entry.1.insert(event.provider_mode);
+            }
+        }
+
+        for (extension_id, (default_pass, non_default_fail_modes)) in event_state {
+            if !default_pass || non_default_fail_modes.is_empty() {
                 continue;
             }
-            let extension_id = event.extension_id;
-            by_ext
-                .entry(extension_id.clone())
-                .or_default()
-                .push(ProviderFailure {
-                    extension_id,
-                    provider_mode: event.provider_mode,
+            let failures = by_ext.entry(extension_id.clone()).or_default();
+            for mode in non_default_fail_modes {
+                failures.push(ProviderFailure {
+                    extension_id: extension_id.clone(),
+                    provider_mode: mode,
                 });
+            }
         }
     }
 

@@ -9091,48 +9091,6 @@ fn check_version_constraint(version: &str, range: &str) -> bool {
     version == range
 }
 
-fn check_version_constraint(version: &str, range: &str) -> bool {
-    let range = range.trim();
-    if range == "*" || range.is_empty() {
-        return true;
-    }
-
-    let parse = |s: &str| -> Option<(u32, u32, u32)> {
-        let parts: Vec<&str> = s.split('.').collect();
-        if parts.len() < 3 { return None; }
-        let major = parts[0].parse().ok()?;
-        let minor = parts[1].parse().ok()?;
-        let patch_str = parts[2].split(['-', '+']).next()?;
-        let patch = patch_str.parse().ok()?;
-        Some((major, minor, patch))
-    };
-
-    let Some((v_major, v_minor, v_patch)) = parse(version) else {
-        return false;
-    };
-
-    if let Some(rest) = range.strip_prefix('^') {
-        let Some((r_major, _, _)) = parse(rest) else { return false; };
-        return v_major == r_major;
-    }
-
-    if let Some(rest) = range.strip_prefix('~') {
-        let Some((r_major, r_minor, _)) = parse(rest) else { return false; };
-        return v_major == r_major && v_minor == r_minor;
-    }
-
-    if let Some(rest) = range.strip_prefix(">=") {
-        let Some((r_major, r_minor, r_patch)) = parse(rest) else { return false; };
-        if v_major > r_major { return true; }
-        if v_major < r_major { return false; }
-        if v_minor > r_minor { return true; }
-        if v_minor < r_minor { return false; }
-        return v_patch >= r_patch;
-    }
-
-    version == range
-}
-
 impl ExtensionManager {
     /// Default cleanup budget for extension shutdown.
     pub const DEFAULT_CLEANUP_BUDGET: Duration = Duration::from_secs(5);
