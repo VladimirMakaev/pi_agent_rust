@@ -1578,9 +1578,13 @@ async fn run_prompt_with_retry(
             let runtime_for_events_handler = runtime_for_events.clone();
             let event_tx = out_tx.clone();
             let event_handler = move |event: AgentEvent| {
-                let serialized = if let AgentEvent::AgentEnd { error, .. } = &event {
+                let serialized = if let AgentEvent::AgentEnd {
+                    messages, error, ..
+                } = &event
+                {
                     json!({
                         "type": "agent_end",
+                        "messages": messages,
                         "error": error,
                     })
                     .to_string()
@@ -1598,8 +1602,21 @@ async fn run_prompt_with_retry(
                     if let Some((event_name, data)) = extension_event_from_agent(&event) {
                         let manager = manager.clone();
                         let runtime_handle = runtime_for_events_handler.clone();
+                        let error_tx = event_tx.clone();
+                        let ext_event_name = event_name.to_string();
                         runtime_handle.spawn(async move {
-                            let _ = manager.dispatch_event(event_name, data).await;
+                            if let Err(err) =
+                                manager.dispatch_event(event_name, data).await
+                            {
+                                let _ = error_tx.send(
+                                    json!({
+                                        "type": "extension_error",
+                                        "event": ext_event_name,
+                                        "error": err.to_string(),
+                                    })
+                                    .to_string(),
+                                );
+                            }
                         });
                     }
                 }
@@ -1660,7 +1677,15 @@ async fn run_prompt_with_retry(
                 }
             }
             Err(err) => {
-                final_error = Some(err.to_string());
+                let err_str = err.to_string();
+                // No usage/context_window from an Err (no response received),
+                // so pass None for both — text matching alone handles it.
+                if !crate::error::is_retryable_error(&err_str, None, None) {
+                    final_error = Some(err_str);
+                    final_error_hints = Some(error_hints_value(&err));
+                    break;
+                }
+                final_error = Some(err_str);
                 final_error_hints = Some(error_hints_value(&err));
             }
         }
