@@ -24786,11 +24786,16 @@ mod tests {
                 for depth in [10, 25, 50] {
                     let payload = deeply_nested_json(depth);
                     let _outcome = dispatch_hostcall_events(
-                        "prop-call", &manager, &tools, "sendMessage", payload.clone(),
-                    ).await;
-                    let _outcome = dispatch_hostcall_session(
-                        "prop-call", &manager, "append_entry", payload,
-                    ).await;
+                        "prop-call",
+                        &manager,
+                        &tools,
+                        "sendMessage",
+                        payload.clone(),
+                    )
+                    .await;
+                    let _outcome =
+                        dispatch_hostcall_session("prop-call", &manager, "append_entry", payload)
+                            .await;
                 }
             });
         }
