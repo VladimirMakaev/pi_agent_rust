@@ -879,28 +879,34 @@ impl Session {
             self.path = Some(project_session_dir.join(filename));
         }
 
-        let session_clone = self.clone();
         let session_dir_clone = self.session_dir.clone();
         let path = self.path.clone().unwrap();
         let path_clone = path.clone();
 
-        let (tx, rx) = oneshot::channel();
-
         match store_kind {
             SessionStoreKind::Jsonl => {
+                type JsonlSaveResult =
+                    std::result::Result<(Vec<SessionEntry>, u64, Option<String>), (Error, Vec<SessionEntry>)>;
+                let (tx, rx) = oneshot::channel::<JsonlSaveResult>();
+
+                let header_snapshot = self.header.clone();
+                let sessions_root = session_dir_clone.unwrap_or_else(Config::sessions_dir);
+                let entries_to_save = std::mem::take(&mut self.entries);
+
                 thread::spawn(move || {
-                    let res = || -> Result<()> {
+                    let mut entries = entries_to_save;
+                    let res = || -> Result<(u64, Option<String>)> {
                         let parent = path_clone.parent().unwrap_or_else(|| Path::new("."));
                         let temp_file = tempfile::NamedTempFile::new_in(parent)?;
                         {
                             let mut writer = std::io::BufWriter::new(temp_file.as_file());
 
                             // Write header
-                            serde_json::to_writer(&mut writer, &session_clone.header)?;
+                            serde_json::to_writer(&mut writer, &header_snapshot)?;
                             writer.write_all(b"\n")?;
 
                             // Write entries
-                            for entry in &session_clone.entries {
+                            for entry in &entries {
                                 serde_json::to_writer(&mut writer, entry)?;
                                 writer.write_all(b"\n")?;
                             }
@@ -911,17 +917,47 @@ impl Session {
                             .persist(&path_clone)
                             .map_err(|e| crate::Error::Io(Box::new(e.error)))?;
 
-                        let sessions_root = session_dir_clone.unwrap_or_else(Config::sessions_dir);
+                        let (message_count, name) = session_entry_stats(&entries);
                         if let Err(err) = SessionIndex::for_sessions_root(&sessions_root)
-                            .index_session(&session_clone)
+                            .index_session_snapshot(
+                                &path_clone,
+                                &header_snapshot,
+                                message_count,
+                                name.clone(),
+                            )
                         {
                             tracing::warn!("Failed to update session index: {err}");
                         }
-                        Ok(())
+                        Ok((message_count, name))
                     }();
                     let cx = AgentCx::for_request();
-                    let _ = tx.send(cx.cx(), res);
+                    let _ = tx.send(
+                        cx.cx(),
+                        match res {
+                            Ok((message_count, name)) => Ok((entries, message_count, name)),
+                            Err(err) => Err((err, entries)),
+                        },
+                    );
                 });
+
+                let cx = AgentCx::for_request();
+                let result = rx
+                    .recv(cx.cx())
+                    .await
+                    .map_err(|_| crate::Error::session("Save task cancelled"))?;
+
+                match result {
+                    Ok((entries, _message_count, _name)) => {
+                        self.entries = entries;
+                        self.entry_ids = entry_id_set(&self.entries);
+                        Ok(())
+                    }
+                    Err((err, entries)) => {
+                        self.entries = entries;
+                        self.entry_ids = entry_id_set(&self.entries);
+                        Err(err)
+                    }
+                }?;
             }
             #[cfg(feature = "sqlite-sessions")]
             SessionStoreKind::Sqlite => {
@@ -931,21 +967,26 @@ impl Session {
 
                 // Offload blocking index update to a thread.
                 let session_dir = session_dir_clone;
+                let header_snapshot = self.header.clone();
+                let path_snapshot = path_clone.clone();
+                let (message_count, name) = session_entry_stats(&self.entries);
                 thread::spawn(move || {
                     let sessions_root = session_dir.unwrap_or_else(Config::sessions_dir);
                     if let Err(err) = SessionIndex::for_sessions_root(&sessions_root)
-                        .index_session(&session_clone)
+                        .index_session_snapshot(
+                            &path_snapshot,
+                            &header_snapshot,
+                            message_count,
+                            name.clone(),
+                        )
                     {
                         tracing::warn!("Failed to update session index: {err}");
                     }
                 });
+
+                Ok(())?;
             }
         }
-
-        let cx = AgentCx::for_request();
-        rx.recv(cx.cx())
-            .await
-            .map_err(|_| crate::Error::session("Save task cancelled"))??;
         Ok(())
     }
 
@@ -2533,6 +2574,23 @@ fn entry_id_set(entries: &[SessionEntry]) -> HashSet<String> {
         .iter()
         .filter_map(|e| e.base_id().cloned())
         .collect()
+}
+
+fn session_entry_stats(entries: &[SessionEntry]) -> (u64, Option<String>) {
+    let mut message_count = 0u64;
+    let mut name = None;
+    for entry in entries {
+        match entry {
+            SessionEntry::Message(_) => message_count += 1,
+            SessionEntry::SessionInfo(info) => {
+                if info.name.is_some() {
+                    name.clone_from(&info.name);
+                }
+            }
+            _ => {}
+        }
+    }
+    (message_count, name)
 }
 
 fn parse_env_bool(value: &str) -> bool {
@@ -4543,11 +4601,17 @@ mod tests {
 
         /// Generate a random valid timestamp string.
         fn timestamp_strategy() -> impl Strategy<Value = String> {
-            (2020u32..2030, 1u32..13, 1u32..29, 0u32..24, 0u32..60, 0u32..60).prop_map(
-                |(y, mo, d, h, mi, s)| {
-                    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}.000Z")
-                },
+            (
+                2020u32..2030,
+                1u32..13,
+                1u32..29,
+                0u32..24,
+                0u32..60,
+                0u32..60,
             )
+                .prop_map(|(y, mo, d, h, mi, s)| {
+                    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}.000Z")
+                })
         }
 
         /// Generate a random entry ID (8 hex chars).
@@ -4595,50 +4659,56 @@ mod tests {
                 match variant {
                     0 => {
                         // Message - User
-                        "[a-zA-Z0-9 ]{1,64}".prop_map(move |text| {
-                            let mut v = base.clone();
-                            v["type"] = json!("message");
-                            v["message"] = json!({
-                                "role": "user",
-                                "content": text,
-                            });
-                            v
-                        }).boxed()
+                        "[a-zA-Z0-9 ]{1,64}"
+                            .prop_map(move |text| {
+                                let mut v = base.clone();
+                                v["type"] = json!("message");
+                                v["message"] = json!({
+                                    "role": "user",
+                                    "content": text,
+                                });
+                                v
+                            })
+                            .boxed()
                     }
                     1 => {
                         // Message - Assistant
-                        "[a-zA-Z0-9 ]{1,64}".prop_map(move |text| {
-                            let mut v = base.clone();
-                            v["type"] = json!("message");
-                            v["message"] = json!({
-                                "role": "assistant",
-                                "content": [{"type": "text", "text": text}],
-                                "api": "anthropic",
-                                "provider": "anthropic",
-                                "model": "test-model",
-                                "usage": {
-                                    "input": 10,
-                                    "output": 5,
-                                    "cacheRead": 0,
-                                    "cacheWrite": 0,
-                                    "totalTokens": 15,
-                                    "cost": {"input": 0.0, "output": 0.0, "total": 0.0}
-                                },
-                                "stopReason": "end_turn",
-                                "timestamp": 12345,
-                            });
-                            v
-                        }).boxed()
+                        "[a-zA-Z0-9 ]{1,64}"
+                            .prop_map(move |text| {
+                                let mut v = base.clone();
+                                v["type"] = json!("message");
+                                v["message"] = json!({
+                                    "role": "assistant",
+                                    "content": [{"type": "text", "text": text}],
+                                    "api": "anthropic",
+                                    "provider": "anthropic",
+                                    "model": "test-model",
+                                    "usage": {
+                                        "input": 10,
+                                        "output": 5,
+                                        "cacheRead": 0,
+                                        "cacheWrite": 0,
+                                        "totalTokens": 15,
+                                        "cost": {"input": 0.0, "output": 0.0, "total": 0.0}
+                                    },
+                                    "stopReason": "end_turn",
+                                    "timestamp": 12345,
+                                });
+                                v
+                            })
+                            .boxed()
                     }
                     2 => {
                         // ModelChange
-                        ("[a-z]{3,8}", "[a-z0-9-]{5,20}").prop_map(move |(provider, model)| {
-                            let mut v = base.clone();
-                            v["type"] = json!("model_change");
-                            v["provider"] = json!(provider);
-                            v["modelId"] = json!(model);
-                            v
-                        }).boxed()
+                        ("[a-z]{3,8}", "[a-z0-9-]{5,20}")
+                            .prop_map(move |(provider, model)| {
+                                let mut v = base.clone();
+                                v["type"] = json!("model_change");
+                                v["provider"] = json!(provider);
+                                v["modelId"] = json!(model);
+                                v
+                            })
+                            .boxed()
                     }
                     3 => {
                         // ThinkingLevelChange
@@ -4647,12 +4717,14 @@ mod tests {
                             Just("low".to_string()),
                             Just("medium".to_string()),
                             Just("high".to_string()),
-                        ].prop_map(move |level| {
+                        ]
+                        .prop_map(move |level| {
                             let mut v = base.clone();
                             v["type"] = json!("thinking_level_change");
                             v["thinkingLevel"] = json!(level);
                             v
-                        }).boxed()
+                        })
+                        .boxed()
                     }
                     4 => {
                         // Compaction
@@ -4664,7 +4736,8 @@ mod tests {
                                 v["firstKeptEntryId"] = json!(kept_id);
                                 v["tokensBefore"] = json!(tokens);
                                 v
-                            }).boxed()
+                            })
+                            .boxed()
                     }
                     5 => {
                         // Label
@@ -4677,28 +4750,33 @@ mod tests {
                                     v["label"] = json!(l);
                                 }
                                 v
-                            }).boxed()
+                            })
+                            .boxed()
                     }
                     6 => {
                         // SessionInfo
-                        prop::option::of("[a-zA-Z0-9 ]{1,32}").prop_map(move |name| {
-                            let mut v = base.clone();
-                            v["type"] = json!("session_info");
-                            if let Some(n) = name {
-                                v["name"] = json!(n);
-                            }
-                            v
-                        }).boxed()
+                        prop::option::of("[a-zA-Z0-9 ]{1,32}")
+                            .prop_map(move |name| {
+                                let mut v = base.clone();
+                                v["type"] = json!("session_info");
+                                if let Some(n) = name {
+                                    v["name"] = json!(n);
+                                }
+                                v
+                            })
+                            .boxed()
                     }
                     _ => {
                         // Custom
-                        ("[a-z_]{3,12}", bounded_json_value(2)).prop_map(move |(custom_type, data)| {
-                            let mut v = base.clone();
-                            v["type"] = json!("custom");
-                            v["customType"] = json!(custom_type);
-                            v["data"] = data;
-                            v
-                        }).boxed()
+                        ("[a-z_]{3,12}", bounded_json_value(2))
+                            .prop_map(move |(custom_type, data)| {
+                                let mut v = base.clone();
+                                v["type"] = json!("custom");
+                                v["customType"] = json!(custom_type);
+                                v["data"] = data;
+                                v
+                            })
+                            .boxed()
                     }
                 }
             })
@@ -5076,7 +5154,8 @@ mod tests {
                 "id": "testid01",
                 "timestamp": "2024-01-01T00:00:00.000Z",
                 "cwd": "/tmp/test"
-            }).to_string();
+            })
+            .to_string();
 
             let temp_dir = tempfile::tempdir().unwrap();
             let file_path = temp_dir.path().join("header_only.jsonl");
@@ -5084,9 +5163,13 @@ mod tests {
 
             let (session, diagnostics) = run_async(async {
                 Session::open_with_diagnostics(file_path.to_string_lossy().as_ref()).await
-            }).unwrap();
+            })
+            .unwrap();
 
-            assert!(session.entries.is_empty(), "header-only file should have no entries");
+            assert!(
+                session.entries.is_empty(),
+                "header-only file should have no entries"
+            );
             assert!(diagnostics.skipped_entries.is_empty(), "no lines to skip");
         }
 
@@ -5098,7 +5181,8 @@ mod tests {
                 "id": "testid01",
                 "timestamp": "2024-01-01T00:00:00.000Z",
                 "cwd": "/tmp/test"
-            }).to_string();
+            })
+            .to_string();
 
             let content = format!(
                 "{}\n{}\n{}\n{}",
@@ -5114,9 +5198,13 @@ mod tests {
 
             let (session, diagnostics) = run_async(async {
                 Session::open_with_diagnostics(file_path.to_string_lossy().as_ref()).await
-            }).unwrap();
+            })
+            .unwrap();
 
-            assert!(session.entries.is_empty(), "all-invalid file should have no entries");
+            assert!(
+                session.entries.is_empty(),
+                "all-invalid file should have no entries"
+            );
             assert_eq!(
                 diagnostics.skipped_entries.len(),
                 3,
@@ -5132,21 +5220,24 @@ mod tests {
                 "id": "testid01",
                 "timestamp": "2024-01-01T00:00:00.000Z",
                 "cwd": "/tmp/test"
-            }).to_string();
+            })
+            .to_string();
 
             let entry1 = json!({
                 "type": "message",
                 "id": "deadbeef",
                 "timestamp": "2024-01-01T00:00:00.000Z",
                 "message": {"role": "user", "content": "first"}
-            }).to_string();
+            })
+            .to_string();
 
             let entry2 = json!({
                 "type": "message",
                 "id": "deadbeef",
                 "timestamp": "2024-01-01T00:00:01.000Z",
                 "message": {"role": "user", "content": "second (duplicate id)"}
-            }).to_string();
+            })
+            .to_string();
 
             let content = format!("{header}\n{entry1}\n{entry2}");
 
@@ -5157,7 +5248,8 @@ mod tests {
             // Must not panic
             let (session, _diagnostics) = run_async(async {
                 Session::open_with_diagnostics(file_path.to_string_lossy().as_ref()).await
-            }).unwrap();
+            })
+            .unwrap();
 
             assert_eq!(session.entries.len(), 2, "both entries should be loaded");
         }
