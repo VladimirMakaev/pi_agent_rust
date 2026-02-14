@@ -103,7 +103,7 @@ pub struct AutocompleteProvider {
 
 impl AutocompleteProvider {
     #[must_use]
-    pub const fn new(cwd: PathBuf, catalog: AutocompleteCatalog) -> Self {
+    pub fn new(cwd: PathBuf, catalog: AutocompleteCatalog) -> Self {
         Self {
             cwd,
             home_dir_override: None,
@@ -418,35 +418,62 @@ impl AutocompleteProvider {
 #[derive(Debug)]
 struct FileCache {
     files: Vec<String>,
-    refreshed_at: Option<Instant>,
+    last_update_request: Option<Instant>,
+    update_rx: Option<std::sync::mpsc::Receiver<Vec<String>>>,
+    updating: bool,
 }
 
 impl FileCache {
     const TTL: Duration = Duration::from_secs(2);
 
-    const fn new() -> Self {
+    fn new() -> Self {
         Self {
             files: Vec::new(),
-            refreshed_at: None,
+            last_update_request: None,
+            update_rx: None,
+            updating: false,
         }
     }
 
     fn invalidate(&mut self) {
         self.files.clear();
-        self.refreshed_at = None;
+        self.last_update_request = None;
+        // Keep existing update_rx to avoid hanging thread, but it will be stale
     }
 
     fn refresh_if_needed(&mut self, cwd: &Path) {
-        let now = Instant::now();
-        let is_fresh = self
-            .refreshed_at
-            .is_some_and(|t| now.duration_since(t) <= Self::TTL);
-        if is_fresh && !self.files.is_empty() {
-            return;
+        // Poll for completed updates
+        if let Some(rx) = &self.update_rx {
+            match rx.try_recv() {
+                Ok(files) => {
+                    self.files = files;
+                    self.updating = false;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.updating = false;
+                    self.update_rx = None;
+                }
+            }
         }
 
-        self.files = collect_project_files(cwd);
-        self.refreshed_at = Some(now);
+        let now = Instant::now();
+        let is_fresh = self
+            .last_update_request
+            .is_some_and(|t| now.duration_since(t) <= Self::TTL);
+
+        if !is_fresh && !self.updating {
+            self.updating = true;
+            self.last_update_request = Some(now);
+            let cwd_buf = cwd.to_path_buf();
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.update_rx = Some(rx);
+
+            std::thread::spawn(move || {
+                let files = collect_project_files(&cwd_buf);
+                let _ = tx.send(files);
+            });
+        }
     }
 }
 
