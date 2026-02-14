@@ -13,8 +13,8 @@ use pi::connectors::http::HttpConnector;
 use pi::extensions::{
     ExtensionManager, ExtensionPolicy, ExtensionPolicyMode, HostCallContext, HostCallPayload,
     RuntimeRiskActionValue, RuntimeRiskCalibrationConfig, RuntimeRiskConfig,
-    calibrate_runtime_risk_from_ledger, replay_runtime_risk_ledger_artifact,
-    verify_runtime_risk_ledger_artifact,
+    calibrate_runtime_risk_from_ledger, dispatch_host_call_shared,
+    replay_runtime_risk_ledger_artifact, verify_runtime_risk_ledger_artifact,
 };
 use pi::tools::ToolRegistry;
 use serde_json::json;
@@ -129,11 +129,11 @@ fn e2e_quantile_harden_flow_with_evidence() {
                 cancel_token: None,
                 context: None,
             };
-            let result = dispatch_host_call_shared_compat(&ctx, call).await;
+            let result = dispatch_host_call_shared(&ctx, call).await;
             assert!(!result.is_error, "benign log call should succeed");
         }
 
-        // Phase 2: Exec calls → should be hardened/denied
+        // Phase 2: Exec calls -> should be hardened/denied
         let mut harden_count = 0usize;
         for idx in 0..4 {
             let call = HostCallPayload {
@@ -145,12 +145,15 @@ fn e2e_quantile_harden_flow_with_evidence() {
                 cancel_token: None,
                 context: None,
             };
-            let result = dispatch_host_call_shared_compat(&ctx, call).await;
+            let result = dispatch_host_call_shared(&ctx, call).await;
             if result.is_error {
                 harden_count += 1;
             }
         }
-        assert!(harden_count > 0, "at least one exec call should be hardened/denied");
+        assert!(
+            harden_count > 0,
+            "at least one exec call should be hardened/denied"
+        );
     });
 
     let scenario_elapsed_ms = scenario_start.elapsed().as_millis();
@@ -295,15 +298,19 @@ fn e2e_quantile_quarantine_escalation_with_replay() {
                 cancel_token: None,
                 context: None,
             };
-            let result = dispatch_host_call_shared_compat(&ctx, call).await;
+            let result = dispatch_host_call_shared(&ctx, call).await;
             if result.is_error {
-                let err = result.error.as_ref().unwrap();
-                if err.message.contains("quarantined") {
-                    saw_terminate = true;
+                if let Some(err) = result.error.as_ref() {
+                    if err.message.contains("quarantined") {
+                        saw_terminate = true;
+                    }
                 }
             }
         }
-        assert!(saw_terminate, "extension should be quarantined after repeated unsafe calls");
+        assert!(
+            saw_terminate,
+            "extension should be quarantined after repeated unsafe calls"
+        );
     });
 
     // Verify ledger + replay
@@ -314,7 +321,7 @@ fn e2e_quantile_quarantine_escalation_with_replay() {
     let replay = replay_runtime_risk_ledger_artifact(&artifact).expect("replay should succeed");
     assert_eq!(replay.entry_count, artifact.entries.len());
 
-    // Verify escalation: should see Allow/Harden → Deny → Terminate progression
+    // Verify escalation: should see Allow/Harden -> Deny -> Terminate progression
     let has_terminate = artifact
         .entries
         .iter()
@@ -405,7 +412,7 @@ fn e2e_quantile_recovery_flow_with_calibration() {
                 cancel_token: None,
                 context: None,
             };
-            let _ = dispatch_host_call_shared_compat(&ctx, call).await;
+            let _ = dispatch_host_call_shared(&ctx, call).await;
         }
 
         // Phase 2: Pure benign recovery
@@ -419,7 +426,7 @@ fn e2e_quantile_recovery_flow_with_calibration() {
                 cancel_token: None,
                 context: None,
             };
-            let result = dispatch_host_call_shared_compat(&ctx, call).await;
+            let result = dispatch_host_call_shared(&ctx, call).await;
             assert!(!result.is_error, "recovery benign call should succeed");
         }
     });
@@ -433,12 +440,12 @@ fn e2e_quantile_recovery_flow_with_calibration() {
     );
 
     let config = RuntimeRiskCalibrationConfig::default();
-    let calibration =
-        calibrate_runtime_risk_from_ledger(&artifact, &config).expect("calibration should succeed");
+    let calibration = calibrate_runtime_risk_from_ledger(&artifact, &config)
+        .expect("calibration should succeed");
 
     // Calibration determinism: run again, compare
-    let calibration_2 =
-        calibrate_runtime_risk_from_ledger(&artifact, &config).expect("second calibration");
+    let calibration_2 = calibrate_runtime_risk_from_ledger(&artifact, &config)
+        .expect("second calibration");
     assert_eq!(
         calibration, calibration_2,
         "calibration must be deterministic for identical ledger input"
@@ -514,7 +521,7 @@ fn e2e_quantile_budget_enforcement_fail_closed() {
         for idx in 0..50 {
             let elapsed = budget_start.elapsed().as_millis();
             if elapsed > budget_limit_ms {
-                // Budget exhausted — log artifact entry and fail closed
+                // Budget exhausted: log artifact entry and fail closed
                 harness.log().info_ctx(
                     "quantile_evidence",
                     "budget exhausted - fail closed",
@@ -527,7 +534,10 @@ fn e2e_quantile_budget_enforcement_fail_closed() {
                         ctx.push(("outcome".into(), "budget_exhausted".into()));
                     },
                 );
-                panic!("test budget exhausted after {elapsed}ms ({idx} calls): fail closed as required by bd-xqipg");
+                panic!(
+                    "test budget exhausted after {elapsed}ms ({idx} calls): \
+                     fail closed as required by bd-xqipg"
+                );
             }
 
             let (capability, method) = if idx % 4 == 0 {
@@ -539,12 +549,16 @@ fn e2e_quantile_budget_enforcement_fail_closed() {
                 call_id: format!("budget-{idx}"),
                 capability: capability.to_string(),
                 method: method.to_string(),
-                params: json!({ "cmd": "echo", "args": [idx.to_string()], "message": format!("budget-{idx}") }),
+                params: json!({
+                    "cmd": "echo",
+                    "args": [idx.to_string()],
+                    "message": format!("budget-{idx}")
+                }),
                 timeout_ms: None,
                 cancel_token: None,
                 context: None,
             };
-            let _ = dispatch_host_call_shared_compat(&ctx, call).await;
+            let _ = dispatch_host_call_shared(&ctx, call).await;
         }
     });
 
@@ -584,7 +598,10 @@ fn e2e_quantile_budget_enforcement_fail_closed() {
 #[test]
 fn e2e_quantile_feature_stability_across_window_fill() {
     let harness = TestHarness::new("e2e_quantile_feature_stability_across_window_fill");
-    write_env_artifact(&harness, "e2e_quantile_feature_stability_across_window_fill");
+    write_env_artifact(
+        &harness,
+        "e2e_quantile_feature_stability_across_window_fill",
+    );
 
     let window_size = 16;
     let tools = ToolRegistry::new(&[], harness.temp_dir(), None);
@@ -617,7 +634,7 @@ fn e2e_quantile_feature_stability_across_window_fill() {
                 cancel_token: None,
                 context: None,
             };
-            let result = dispatch_host_call_shared_compat(&ctx, call).await;
+            let result = dispatch_host_call_shared(&ctx, call).await;
             assert!(!result.is_error, "benign log call {idx} should succeed");
         }
     });
@@ -633,11 +650,7 @@ fn e2e_quantile_feature_stability_across_window_fill() {
 
     // After window_size calls, feature vectors for identical-profile calls should
     // have near-zero error rates and low burst densities
-    let late_entries: Vec<_> = telemetry
-        .entries
-        .iter()
-        .skip(window_size * 2)
-        .collect();
+    let late_entries: Vec<_> = telemetry.entries.iter().skip(window_size * 2).collect();
     for entry in &late_entries {
         assert!(
             entry.features.recent_error_rate < f64::EPSILON,
@@ -726,7 +739,7 @@ fn e2e_quantile_conformal_determinism() {
                     cancel_token: None,
                     context: None,
                 };
-                let _ = dispatch_host_call_shared_compat(&ctx, call).await;
+                let _ = dispatch_host_call_shared(&ctx, call).await;
             }
         });
 
@@ -775,16 +788,4 @@ fn e2e_quantile_conformal_determinism() {
         );
         assert_eq!(a.4, b.4, "action must be deterministic for {}", a.0);
     }
-}
-
-// ============================================================================
-// Helper: Compat wrapper for dispatch_host_call_shared
-// ============================================================================
-
-/// Wraps `dispatch_host_call_shared` with proper async handling.
-async fn dispatch_host_call_shared_compat(
-    ctx: &HostCallContext<'_>,
-    call: HostCallPayload,
-) -> pi::extensions::HostResultPayload {
-    pi::extensions::dispatch_host_call_shared(ctx, call).await
 }

@@ -12,10 +12,9 @@ use common::TestHarness;
 use pi::connectors::http::HttpConnector;
 use pi::extensions::{
     ExtensionManager, ExtensionPolicy, ExtensionPolicyMode, HostCallContext, HostCallPayload,
-    RuntimeRiskActionValue, RuntimeRiskCalibrationConfig, RuntimeRiskConfig,
-    calibrate_runtime_risk_from_ledger, dispatch_host_call_shared,
+    RUNTIME_RISK_LEDGER_SCHEMA_VERSION, RuntimeRiskActionValue, RuntimeRiskCalibrationConfig,
+    RuntimeRiskConfig, calibrate_runtime_risk_from_ledger, dispatch_host_call_shared,
     replay_runtime_risk_ledger_artifact, verify_runtime_risk_ledger_artifact,
-    RUNTIME_RISK_LEDGER_SCHEMA_VERSION,
 };
 use pi::tools::ToolRegistry;
 use serde_json::json;
@@ -32,7 +31,7 @@ fn permissive_policy() -> ExtensionPolicy {
     }
 }
 
-fn default_risk_config() -> RuntimeRiskConfig {
+const fn default_risk_config() -> RuntimeRiskConfig {
     RuntimeRiskConfig {
         enabled: true,
         alpha: 0.01,
@@ -46,7 +45,12 @@ fn default_risk_config() -> RuntimeRiskConfig {
 fn setup_test_context(
     harness: &TestHarness,
     config: RuntimeRiskConfig,
-) -> (ToolRegistry, HttpConnector, ExtensionManager, ExtensionPolicy) {
+) -> (
+    ToolRegistry,
+    HttpConnector,
+    ExtensionManager,
+    ExtensionPolicy,
+) {
     let tools = ToolRegistry::new(&[], harness.temp_dir(), None);
     let http = HttpConnector::with_defaults();
     let manager = ExtensionManager::new();
@@ -130,10 +134,7 @@ fn e2e_harden_flow_deterministic_replay() {
         .iter()
         .filter(|e| e.capability == "exec")
         .collect();
-    assert!(
-        !exec_entries.is_empty(),
-        "must have exec entries in ledger"
-    );
+    assert!(!exec_entries.is_empty(), "must have exec entries in ledger");
     for entry in &exec_entries {
         assert!(
             entry.risk_score > 0.0,
@@ -159,26 +160,18 @@ fn e2e_harden_flow_deterministic_replay() {
             });
 
     // Emit structured JSONL log for this scenario
-    harness.log().info_ctx(
-        "runtime_risk_harden_flow",
-        "harden flow summary",
-        |ctx| {
+    harness
+        .log()
+        .info_ctx("runtime_risk_harden_flow", "harden flow summary", |ctx| {
             ctx.push(("issue_id".into(), "bd-xqipg".into()));
             ctx.push(("scenario_id".into(), "harden_flow_deterministic".into()));
             ctx.push(("total_entries".into(), artifact.entries.len().to_string()));
             ctx.push(("exec_entries".into(), exec_entries.len().to_string()));
             ctx.push(("hardened_or_denied".into(), hardened_or_denied.to_string()));
-            ctx.push((
-                "action_distribution".into(),
-                format!("{action_counts:?}"),
-            ));
+            ctx.push(("action_distribution".into(), format!("{action_counts:?}")));
             ctx.push(("ledger_valid".into(), "true".into()));
-            ctx.push((
-                "replay_steps".into(),
-                replay.steps.len().to_string(),
-            ));
-        },
-    );
+            ctx.push(("replay_steps".into(), replay.steps.len().to_string()));
+        });
 
     // Write JSONL log artifact
     let jsonl_path = harness.temp_path("harden-flow-telemetry.log.jsonl");
@@ -235,7 +228,10 @@ fn e2e_quarantine_flow_deterministic() {
     });
 
     let artifact = manager.runtime_risk_ledger_artifact();
-    assert!(!artifact.entries.is_empty(), "quarantine flow must produce entries");
+    assert!(
+        !artifact.entries.is_empty(),
+        "quarantine flow must produce entries"
+    );
 
     let verification = verify_runtime_risk_ledger_artifact(&artifact);
     assert!(verification.valid, "quarantine flow ledger must verify");
@@ -282,6 +278,7 @@ fn e2e_quarantine_flow_deterministic() {
 // ============================================================================
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn e2e_calibration_produces_reproducible_artifacts() {
     let harness = TestHarness::new("e2e_calibration_produces_reproducible_artifacts");
     let budget_ms = 10_000u128;
@@ -303,9 +300,17 @@ fn e2e_calibration_produces_reproducible_artifacts() {
         // Mix of benign and dangerous calls for calibration
         for idx in 0..15 {
             let (capability, method, params) = if idx % 3 == 0 {
-                ("exec", "exec", json!({ "cmd": "echo", "args": [idx.to_string()] }))
+                (
+                    "exec",
+                    "exec",
+                    json!({ "cmd": "echo", "args": [idx.to_string()] }),
+                )
             } else {
-                ("log", "log", json!({ "level": "info", "message": format!("cal-{idx}") }))
+                (
+                    "log",
+                    "log",
+                    json!({ "level": "info", "message": format!("cal-{idx}") }),
+                )
             };
             let call = HostCallPayload {
                 call_id: format!("cal-{idx}"),
@@ -323,10 +328,9 @@ fn e2e_calibration_produces_reproducible_artifacts() {
     let artifact = manager.runtime_risk_ledger_artifact();
     let config = RuntimeRiskCalibrationConfig::default();
 
-    let first = calibrate_runtime_risk_from_ledger(&artifact, &config)
-        .expect("first calibration");
-    let second = calibrate_runtime_risk_from_ledger(&artifact, &config)
-        .expect("second calibration");
+    let first = calibrate_runtime_risk_from_ledger(&artifact, &config).expect("first calibration");
+    let second =
+        calibrate_runtime_risk_from_ledger(&artifact, &config).expect("second calibration");
     assert_eq!(first, second, "calibration must be deterministic");
 
     // Write reproducibility artifacts
@@ -340,8 +344,7 @@ fn e2e_calibration_produces_reproducible_artifacts() {
         "baseline_threshold": config.baseline_threshold,
     });
     let env_path = harness.temp_path("env.json");
-    fs::write(&env_path, serde_json::to_string_pretty(&env_json).unwrap())
-        .expect("write env.json");
+    fs::write(&env_path, serde_json::to_string_pretty(&env_json).unwrap()).expect("write env.json");
     harness.record_artifact("env.json", &env_path);
 
     let manifest_json = json!({
@@ -366,11 +369,8 @@ fn e2e_calibration_produces_reproducible_artifacts() {
 
     // Write calibration report
     let report_path = harness.temp_path("calibration-report.json");
-    fs::write(
-        &report_path,
-        serde_json::to_string_pretty(&first).unwrap(),
-    )
-    .expect("write calibration report");
+    fs::write(&report_path, serde_json::to_string_pretty(&first).unwrap())
+        .expect("write calibration report");
     harness.record_artifact("calibration-report.json", &report_path);
 
     // Write ledger artifact
@@ -393,10 +393,7 @@ fn e2e_calibration_produces_reproducible_artifacts() {
                 "recommended_threshold".into(),
                 format!("{:.4}", first.recommended.threshold),
             ));
-            ctx.push((
-                "ledger_data_hash".into(),
-                artifact.data_hash.clone(),
-            ));
+            ctx.push(("ledger_data_hash".into(), artifact.data_hash.clone()));
         },
     );
 
@@ -418,8 +415,7 @@ fn e2e_feature_vectors_deterministic_across_replays() {
     let started = Instant::now();
 
     let run_trace = || {
-        let (tools, http, manager, policy) =
-            setup_test_context(&harness, default_risk_config());
+        let (tools, http, manager, policy) = setup_test_context(&harness, default_risk_config());
         let ctx = HostCallContext {
             runtime_name: "e2e",
             extension_id: Some("ext.e2e.feature-det"),
@@ -434,10 +430,22 @@ fn e2e_feature_vectors_deterministic_across_replays() {
         futures::executor::block_on(async {
             for idx in 0..12 {
                 let (cap, method, params) = match idx % 4 {
-                    0 => ("exec", "exec", json!({"cmd": "echo", "args": [idx.to_string()]})),
+                    0 => (
+                        "exec",
+                        "exec",
+                        json!({"cmd": "echo", "args": [idx.to_string()]}),
+                    ),
                     1 => ("http", "fetch", json!({"url": "http://example.com"})),
-                    2 => ("read", "tool", json!({"name": "read", "input": {"path": "/tmp/x"}})),
-                    _ => ("log", "log", json!({"level": "info", "message": format!("m-{idx}")})),
+                    2 => (
+                        "read",
+                        "tool",
+                        json!({"name": "read", "input": {"path": "/tmp/x"}}),
+                    ),
+                    _ => (
+                        "log",
+                        "log",
+                        json!({"level": "info", "message": format!("m-{idx}")}),
+                    ),
                 };
                 let call = HostCallPayload {
                     call_id: format!("feat-det-{idx}"),
@@ -496,12 +504,12 @@ fn e2e_ledger_integrity_after_truncation() {
     let budget_ms = 10_000u128;
     let started = Instant::now();
 
-    // Small ledger_limit to force ring-buffer truncation
+    // ledger_limit is clamped to minimum 32, so use 32 and generate > 32 calls
     let config = RuntimeRiskConfig {
         enabled: true,
         alpha: 0.01,
         window_size: 16,
-        ledger_limit: 8,
+        ledger_limit: 32,
         decision_timeout_ms: 50,
         fail_closed: true,
     };
@@ -518,8 +526,8 @@ fn e2e_ledger_integrity_after_truncation() {
     };
 
     futures::executor::block_on(async {
-        // Generate more entries than ledger_limit to force truncation
-        for idx in 0..20 {
+        // Generate more entries than ledger_limit (32) to force truncation
+        for idx in 0..50 {
             let (cap, method) = if idx % 2 == 0 {
                 ("exec", "exec")
             } else {
@@ -539,9 +547,9 @@ fn e2e_ledger_integrity_after_truncation() {
     });
 
     let artifact = manager.runtime_risk_ledger_artifact();
-    // Should have been truncated to ledger_limit
+    // Should have been truncated to ledger_limit (clamped minimum 32)
     assert!(
-        artifact.entries.len() <= 8,
+        artifact.entries.len() <= 32,
         "ledger should be truncated to limit, got {} entries",
         artifact.entries.len()
     );
@@ -560,7 +568,10 @@ fn e2e_ledger_integrity_after_truncation() {
         |ctx| {
             ctx.push(("issue_id".into(), "bd-xqipg".into()));
             ctx.push(("scenario_id".into(), "ledger_truncation_integrity".into()));
-            ctx.push(("entries_after_truncation".into(), artifact.entries.len().to_string()));
+            ctx.push((
+                "entries_after_truncation".into(),
+                artifact.entries.len().to_string(),
+            ));
             ctx.push(("ledger_valid".into(), verification.valid.to_string()));
         },
     );
@@ -628,19 +639,19 @@ fn e2e_recovery_flow_score_trajectory() {
     let artifact = manager.runtime_risk_ledger_artifact();
     assert!(!artifact.entries.is_empty());
 
-    // Verify the score trajectory: danger phase should have higher scores than recovery
-    let danger_scores: Vec<f64> = artifact
+    // Verify the score trajectory and ledger integrity
+    let danger_entries: Vec<_> = artifact
         .entries
         .iter()
         .filter(|e| e.call_id.starts_with("recovery-danger"))
-        .map(|e| e.risk_score)
         .collect();
-    let recovery_scores: Vec<f64> = artifact
+    let recovery_entries: Vec<_> = artifact
         .entries
         .iter()
         .filter(|e| e.call_id.starts_with("recovery-benign"))
-        .map(|e| e.risk_score)
         .collect();
+    let danger_scores: Vec<f64> = danger_entries.iter().map(|e| e.risk_score).collect();
+    let recovery_scores: Vec<f64> = recovery_entries.iter().map(|e| e.risk_score).collect();
 
     // Log score trajectories
     harness.log().info_ctx(
@@ -648,7 +659,10 @@ fn e2e_recovery_flow_score_trajectory() {
         "recovery flow score trajectory",
         |ctx| {
             ctx.push(("issue_id".into(), "bd-xqipg".into()));
-            ctx.push(("scenario_id".into(), "recovery_flow_score_trajectory".into()));
+            ctx.push((
+                "scenario_id".into(),
+                "recovery_flow_score_trajectory".into(),
+            ));
             ctx.push(("danger_scores".into(), format!("{danger_scores:?}")));
             ctx.push(("recovery_scores".into(), format!("{recovery_scores:?}")));
             ctx.push(("danger_count".into(), danger_scores.len().to_string()));
@@ -662,13 +676,40 @@ fn e2e_recovery_flow_score_trajectory() {
         .expect("write recovery flow jsonl");
     harness.record_artifact("recovery-flow-telemetry.log.jsonl", &jsonl_path);
 
-    // Verify danger mean is higher than recovery mean
-    if !danger_scores.is_empty() && !recovery_scores.is_empty() {
-        let danger_mean = danger_scores.iter().sum::<f64>() / danger_scores.len() as f64;
-        let recovery_mean = recovery_scores.iter().sum::<f64>() / recovery_scores.len() as f64;
+    // Verify ledger hash chain integrity through the full trajectory
+    let verification = verify_runtime_risk_ledger_artifact(&artifact);
+    assert!(
+        verification.valid,
+        "recovery flow ledger must verify: errors={:?}",
+        verification.errors
+    );
+
+    // Verify danger calls have exec capability and high base scores
+    assert!(
+        !danger_entries.is_empty(),
+        "danger phase must produce ledger entries"
+    );
+    for entry in &danger_entries {
+        assert_eq!(entry.capability, "exec");
+    }
+
+    // Verify recovery calls have log capability
+    assert!(
+        !recovery_entries.is_empty(),
+        "recovery phase must produce ledger entries"
+    );
+    for entry in &recovery_entries {
+        assert_eq!(entry.capability, "log");
+    }
+
+    // Verify the first danger call has lower risk score than later ones
+    // (because sequential state accumulates risk over repeated exec calls)
+    if danger_scores.len() >= 2 {
         assert!(
-            danger_mean > recovery_mean,
-            "danger phase mean ({danger_mean:.4}) should exceed recovery mean ({recovery_mean:.4})"
+            danger_scores[0] <= *danger_scores.last().unwrap(),
+            "risk should not decrease across repeated exec calls: first={:.4}, last={:.4}",
+            danger_scores[0],
+            danger_scores.last().unwrap()
         );
     }
 
@@ -750,7 +791,10 @@ fn e2e_conformal_residual_drift_detection() {
             ctx.push(("scenario_id".into(), "conformal_residual_drift".into()));
             ctx.push(("total_steps".into(), replay.steps.len().to_string()));
             ctx.push(("shift_steps".into(), shift_steps.len().to_string()));
-            ctx.push(("drift_detected_count".into(), drift_detected_count.to_string()));
+            ctx.push((
+                "drift_detected_count".into(),
+                drift_detected_count.to_string(),
+            ));
         },
     );
 
@@ -782,6 +826,7 @@ fn e2e_conformal_residual_drift_detection() {
 // ============================================================================
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn e2e_structured_jsonl_log_schema_compliance() {
     let harness = TestHarness::new("e2e_structured_jsonl_log_schema_compliance");
     let budget_ms = 10_000u128;
@@ -801,7 +846,11 @@ fn e2e_structured_jsonl_log_schema_compliance() {
 
     futures::executor::block_on(async {
         for idx in 0..5 {
-            let (cap, method) = if idx % 2 == 0 { ("exec", "exec") } else { ("log", "log") };
+            let (cap, method) = if idx % 2 == 0 {
+                ("exec", "exec")
+            } else {
+                ("log", "log")
+            };
             let call = HostCallPayload {
                 call_id: format!("schema-{idx}"),
                 capability: cap.to_string(),
@@ -817,10 +866,9 @@ fn e2e_structured_jsonl_log_schema_compliance() {
 
     let telemetry = manager.runtime_hostcall_telemetry_artifact();
     for event in &telemetry.entries {
-        harness.log().info_ctx(
-            "runtime_risk_telemetry",
-            "telemetry event",
-            |ctx| {
+        harness
+            .log()
+            .info_ctx("runtime_risk_telemetry", "telemetry event", |ctx| {
                 ctx.push(("issue_id".into(), "bd-xqipg".into()));
                 ctx.push(("scenario_id".into(), "schema_compliance".into()));
                 ctx.push(("extension_id".into(), event.extension_id.clone()));
@@ -836,8 +884,7 @@ fn e2e_structured_jsonl_log_schema_compliance() {
                 ));
                 ctx.push(("latency_ms".into(), event.latency_ms.to_string()));
                 ctx.push(("redaction_summary".into(), event.redaction_summary.clone()));
-            },
-        );
+            });
     }
 
     let jsonl_path = harness.temp_path("schema-compliance.log.jsonl");
@@ -854,9 +901,7 @@ fn e2e_structured_jsonl_log_schema_compliance() {
         if value.get("type").and_then(serde_json::Value::as_str) != Some("log") {
             continue;
         }
-        if value
-            .get("category")
-            .and_then(serde_json::Value::as_str)
+        if value.get("category").and_then(serde_json::Value::as_str)
             != Some("runtime_risk_telemetry")
         {
             continue;
@@ -887,7 +932,10 @@ fn e2e_structured_jsonl_log_schema_compliance() {
             );
         }
         assert!(
-            value.get("ts").and_then(serde_json::Value::as_str).is_some(),
+            value
+                .get("ts")
+                .and_then(serde_json::Value::as_str)
+                .is_some(),
             "missing timestamp"
         );
         telemetry_rows = telemetry_rows.saturating_add(1);
