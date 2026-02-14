@@ -806,160 +806,8 @@ impl PiApp {
                 self.scroll_to_last_match("Available commands:");
                 None
             }
-            SlashCommand::Login => {
-                if self.agent_state != AgentState::Idle {
-                    self.status_message = Some("Cannot login while processing".to_string());
-                    return None;
-                }
-
-                let args = args.trim();
-                if args.is_empty() {
-                    let auth_path = crate::config::Config::auth_path();
-                    match crate::auth::AuthStorage::load(auth_path) {
-                        Ok(auth) => {
-                            let listing =
-                                format_login_provider_listing(&auth, &self.available_models);
-                            self.messages.push(ConversationMessage {
-                                role: MessageRole::System,
-                                content: listing,
-                                thinking: None,
-                                collapsed: false,
-                            });
-                            self.scroll_to_last_match("Available login providers:");
-                        }
-                        Err(err) => {
-                            self.status_message =
-                                Some(format!("Unable to load auth status: {err}"));
-                        }
-                    }
-                    return None;
-                }
-
-                let requested_provider = args.split_whitespace().next().unwrap_or(args).to_string();
-                let provider = normalize_auth_provider_input(&requested_provider);
-
-                if let Some(prompt) = api_key_login_prompt(&provider) {
-                    self.messages.push(ConversationMessage {
-                        role: MessageRole::System,
-                        content: prompt.to_string(),
-                        thinking: None,
-                        collapsed: false,
-                    });
-                    self.scroll_to_bottom();
-                    self.pending_oauth = Some(PendingOAuth {
-                        provider,
-                        kind: PendingLoginKind::ApiKey,
-                        verifier: String::new(),
-                        oauth_config: None,
-                    });
-                    self.input_mode = InputMode::SingleLine;
-                    self.set_input_height(3);
-                    self.input.focus();
-                    return None;
-                }
-
-                // Look up OAuth config: built-in (anthropic) or extension-registered.
-                let oauth_result = if provider == "anthropic" {
-                    crate::auth::start_anthropic_oauth().map(|info| (info, None))
-                } else {
-                    // Check extension providers for OAuth config.
-                    let ext_oauth = self
-                        .available_models
-                        .iter()
-                        .find(|m| {
-                            let model_provider = m.model.provider.as_str();
-                            let canonical =
-                                crate::provider_metadata::canonical_provider_id(model_provider)
-                                    .unwrap_or(model_provider);
-                            canonical == provider
-                        })
-                        .and_then(|m| m.oauth_config.clone());
-                    if let Some(config) = ext_oauth {
-                        crate::auth::start_extension_oauth(&provider, &config)
-                            .map(|info| (info, Some(config)))
-                    } else {
-                        self.status_message = Some(format!(
-                            "Login not supported for {provider} (no built-in flow or OAuth config)"
-                        ));
-                        return None;
-                    }
-                };
-
-                match oauth_result {
-                    Ok((info, ext_config)) => {
-                        let mut message = format!(
-                            "OAuth login: {}\n\nOpen this URL:\n{}\n",
-                            info.provider, info.url
-                        );
-                        if let Some(instructions) = info.instructions {
-                            message.push('\n');
-                            message.push_str(&instructions);
-                            message.push('\n');
-                        }
-                        message.push_str(
-                            "\nPaste the callback URL or authorization code into Pi to continue.",
-                        );
-
-                        self.messages.push(ConversationMessage {
-                            role: MessageRole::System,
-                            content: message,
-                            thinking: None,
-                            collapsed: false,
-                        });
-                        self.scroll_to_bottom();
-                        self.pending_oauth = Some(PendingOAuth {
-                            provider: info.provider,
-                            kind: PendingLoginKind::OAuth,
-                            verifier: info.verifier,
-                            oauth_config: ext_config,
-                        });
-                        self.input_mode = InputMode::SingleLine;
-                        self.set_input_height(3);
-                        self.input.focus();
-                        None
-                    }
-                    Err(err) => {
-                        self.status_message = Some(format!("OAuth login failed: {err}"));
-                        None
-                    }
-                }
-            }
-            SlashCommand::Logout => {
-                if self.agent_state != AgentState::Idle {
-                    self.status_message = Some("Cannot logout while processing".to_string());
-                    return None;
-                }
-
-                let requested_provider = if args.is_empty() {
-                    self.model_entry.model.provider.clone()
-                } else {
-                    args.split_whitespace().next().unwrap_or(args).to_string()
-                };
-                let requested_provider = requested_provider.trim().to_ascii_lowercase();
-                let provider = normalize_auth_provider_input(&requested_provider);
-
-                let auth_path = crate::config::Config::auth_path();
-                match crate::auth::AuthStorage::load(auth_path) {
-                    Ok(mut auth) => {
-                        let removed = remove_provider_credentials(&mut auth, &requested_provider);
-                        if let Err(err) = auth.save() {
-                            self.status_message = Some(err.to_string());
-                            return None;
-                        }
-                        if removed {
-                            self.status_message =
-                                Some(format!("Removed stored credentials for {provider}."));
-                        } else {
-                            self.status_message =
-                                Some(format!("No stored credentials for {provider}."));
-                        }
-                    }
-                    Err(err) => {
-                        self.status_message = Some(err.to_string());
-                    }
-                }
-                None
-            }
+            SlashCommand::Login => self.handle_slash_login(args),
+            SlashCommand::Logout => self.handle_slash_logout(args),
             SlashCommand::Clear => {
                 self.messages.clear();
                 self.current_response.clear();
@@ -1733,6 +1581,154 @@ impl PiApp {
     }
 
     #[allow(clippy::too_many_lines)]
+    pub(super) fn handle_slash_login(&mut self, args: &str) -> Option<Cmd> {
+        if self.agent_state != AgentState::Idle {
+            self.status_message = Some("Cannot login while processing".to_string());
+            return None;
+        }
+
+        let args = args.trim();
+        if args.is_empty() {
+            let auth_path = crate::config::Config::auth_path();
+            match crate::auth::AuthStorage::load(auth_path) {
+                Ok(auth) => {
+                    let listing = format_login_provider_listing(&auth, &self.available_models);
+                    self.messages.push(ConversationMessage {
+                        role: MessageRole::System,
+                        content: listing,
+                        thinking: None,
+                        collapsed: false,
+                    });
+                    self.scroll_to_last_match("Available login providers:");
+                }
+                Err(err) => {
+                    self.status_message = Some(format!("Unable to load auth status: {err}"));
+                }
+            }
+            return None;
+        }
+
+        let requested_provider = args.split_whitespace().next().unwrap_or(args).to_string();
+        let provider = normalize_auth_provider_input(&requested_provider);
+
+        if let Some(prompt) = api_key_login_prompt(&provider) {
+            self.messages.push(ConversationMessage {
+                role: MessageRole::System,
+                content: prompt.to_string(),
+                thinking: None,
+                collapsed: false,
+            });
+            self.scroll_to_bottom();
+            self.pending_oauth = Some(PendingOAuth {
+                provider,
+                kind: PendingLoginKind::ApiKey,
+                verifier: String::new(),
+                oauth_config: None,
+            });
+            self.input_mode = InputMode::SingleLine;
+            self.set_input_height(3);
+            self.input.focus();
+            return None;
+        }
+
+        // Look up OAuth config: built-in (anthropic) or extension-registered.
+        let oauth_result = if provider == "anthropic" {
+            crate::auth::start_anthropic_oauth().map(|info| (info, None))
+        } else {
+            // Check extension providers for OAuth config.
+            let ext_oauth = self
+                .available_models
+                .iter()
+                .find(|m| {
+                    let model_provider = m.model.provider.as_str();
+                    let canonical = crate::provider_metadata::canonical_provider_id(model_provider)
+                        .unwrap_or(model_provider);
+                    canonical == provider
+                })
+                .and_then(|m| m.oauth_config.clone());
+            if let Some(config) = ext_oauth {
+                crate::auth::start_extension_oauth(&provider, &config)
+                    .map(|info| (info, Some(config)))
+            } else {
+                self.status_message = Some(format!(
+                    "Login not supported for {provider} (no built-in flow or OAuth config)"
+                ));
+                return None;
+            }
+        };
+
+        match oauth_result {
+            Ok((info, ext_config)) => {
+                let mut message =
+                    format!("OAuth login: {}\n\nOpen this URL:\n{}\n", info.provider, info.url);
+                if let Some(instructions) = info.instructions {
+                    message.push('\n');
+                    message.push_str(&instructions);
+                    message.push('\n');
+                }
+                message.push_str("\nPaste the callback URL or authorization code into Pi to continue.");
+
+                self.messages.push(ConversationMessage {
+                    role: MessageRole::System,
+                    content: message,
+                    thinking: None,
+                    collapsed: false,
+                });
+                self.scroll_to_bottom();
+                self.pending_oauth = Some(PendingOAuth {
+                    provider: info.provider,
+                    kind: PendingLoginKind::OAuth,
+                    verifier: info.verifier,
+                    oauth_config: ext_config,
+                });
+                self.input_mode = InputMode::SingleLine;
+                self.set_input_height(3);
+                self.input.focus();
+                None
+            }
+            Err(err) => {
+                self.status_message = Some(format!("OAuth login failed: {err}"));
+                None
+            }
+        }
+    }
+
+    pub(super) fn handle_slash_logout(&mut self, args: &str) -> Option<Cmd> {
+        if self.agent_state != AgentState::Idle {
+            self.status_message = Some("Cannot logout while processing".to_string());
+            return None;
+        }
+
+        let requested_provider = if args.is_empty() {
+            self.model_entry.model.provider.clone()
+        } else {
+            args.split_whitespace().next().unwrap_or(args).to_string()
+        };
+        let requested_provider = requested_provider.trim().to_ascii_lowercase();
+        let provider = normalize_auth_provider_input(&requested_provider);
+
+        let auth_path = crate::config::Config::auth_path();
+        match crate::auth::AuthStorage::load(auth_path) {
+            Ok(mut auth) => {
+                let removed = remove_provider_credentials(&mut auth, &requested_provider);
+                if let Err(err) = auth.save() {
+                    self.status_message = Some(err.to_string());
+                    return None;
+                }
+                if removed {
+                    self.status_message = Some(format!("Removed stored credentials for {provider}."));
+                } else {
+                    self.status_message = Some(format!("No stored credentials for {provider}."));
+                }
+            }
+            Err(err) => {
+                self.status_message = Some(err.to_string());
+            }
+        }
+        None
+    }
+
+    #[allow(clippy::too_many_lines)]
     pub(super) fn handle_slash_fork(&mut self, args: &str) -> Option<Cmd> {
         if self.agent_state != AgentState::Idle {
             self.status_message = Some("Cannot fork while processing a request".to_string());
@@ -1772,8 +1768,7 @@ impl PiApp {
             candidates.last().expect("candidates is non-empty").clone()
         } else if let Ok(index) = args.parse::<usize>() {
             if index == 0 || index > candidates.len() {
-                self.status_message =
-                    Some(format!("Invalid index: {index} (1-{})", candidates.len()));
+                self.status_message = Some(format!("Invalid index: {index} (1-{})", candidates.len()));
                 return None;
             }
             candidates[index - 1].clone()
@@ -1788,10 +1783,8 @@ impl PiApp {
                 return None;
             }
             if matches.len() > 1 {
-                self.status_message = Some(format!(
-                    "Ambiguous id \"{args}\" (matches {})",
-                    matches.len()
-                ));
+                self.status_message =
+                    Some(format!("Ambiguous id \"{args}\" (matches {})", matches.len()));
                 return None;
             }
             matches[0].clone()
@@ -1830,8 +1823,7 @@ impl PiApp {
                     .await
                     .unwrap_or(false);
                 if cancelled {
-                    let _ =
-                        event_tx.try_send(PiMsg::System("Fork cancelled by extension".to_string()));
+                    let _ = event_tx.try_send(PiMsg::System("Fork cancelled by extension".to_string()));
                     return;
                 }
             }
@@ -1840,8 +1832,8 @@ impl PiApp {
                 let guard = match session.lock(&cx).await {
                     Ok(guard) => guard,
                     Err(err) => {
-                        let _ = event_tx
-                            .try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
+                        let _ =
+                            event_tx.try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
                         return;
                     }
                 };
@@ -1887,8 +1879,8 @@ impl PiApp {
                 let mut agent_guard = match agent.lock(&cx).await {
                     Ok(guard) => guard,
                     Err(err) => {
-                        let _ = event_tx
-                            .try_send(PiMsg::AgentError(format!("Failed to lock agent: {err}")));
+                        let _ =
+                            event_tx.try_send(PiMsg::AgentError(format!("Failed to lock agent: {err}")));
                         return;
                     }
                 };
@@ -1899,8 +1891,8 @@ impl PiApp {
                 let mut guard = match session.lock(&cx).await {
                     Ok(guard) => guard,
                     Err(err) => {
-                        let _ = event_tx
-                            .try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
+                        let _ =
+                            event_tx.try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
                         return;
                     }
                 };
@@ -1911,8 +1903,8 @@ impl PiApp {
                 let guard = match session.lock(&cx).await {
                     Ok(guard) => guard,
                     Err(err) => {
-                        let _ = event_tx
-                            .try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
+                        let _ =
+                            event_tx.try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
                         return;
                     }
                 };
@@ -1991,8 +1983,8 @@ impl PiApp {
                     Ok(guard) => guard,
                     Err(err) => {
                         is_compacting.store(false, Ordering::SeqCst);
-                        let _ = event_tx
-                            .try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
+                        let _ =
+                            event_tx.try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
                         return;
                     }
                 };
@@ -2020,9 +2012,8 @@ impl PiApp {
                     .unwrap_or(false);
                 if cancelled {
                     is_compacting.store(false, Ordering::SeqCst);
-                    let _ = event_tx.try_send(PiMsg::System(
-                        "Compaction cancelled by extension".to_string(),
-                    ));
+                    let _ = event_tx
+                        .try_send(PiMsg::System("Compaction cancelled by extension".to_string()));
                     return;
                 }
             }
@@ -2052,8 +2043,7 @@ impl PiApp {
                 Ok(result) => result,
                 Err(err) => {
                     is_compacting.store(false, Ordering::SeqCst);
-                    let _ =
-                        event_tx.try_send(PiMsg::AgentError(format!("Compaction failed: {err}")));
+                    let _ = event_tx.try_send(PiMsg::AgentError(format!("Compaction failed: {err}")));
                     return;
                 }
             };
@@ -2065,8 +2055,8 @@ impl PiApp {
                     Ok(guard) => guard,
                     Err(err) => {
                         is_compacting.store(false, Ordering::SeqCst);
-                        let _ = event_tx
-                            .try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
+                        let _ =
+                            event_tx.try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
                         return;
                     }
                 };
@@ -2087,8 +2077,8 @@ impl PiApp {
                     Ok(guard) => guard,
                     Err(err) => {
                         is_compacting.store(false, Ordering::SeqCst);
-                        let _ = event_tx
-                            .try_send(PiMsg::AgentError(format!("Failed to lock agent: {err}")));
+                        let _ =
+                            event_tx.try_send(PiMsg::AgentError(format!("Failed to lock agent: {err}")));
                         return;
                     }
                 };
@@ -2100,8 +2090,8 @@ impl PiApp {
                     Ok(guard) => guard,
                     Err(err) => {
                         is_compacting.store(false, Ordering::SeqCst);
-                        let _ = event_tx
-                            .try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
+                        let _ =
+                            event_tx.try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
                         return;
                     }
                 };
@@ -2187,173 +2177,6 @@ impl PiApp {
         None
     }
 
-    #[allow(clippy::too_many_lines)]
-    pub(super) fn handle_slash_share(&mut self, args: &str) -> Option<Cmd> {
-        if self.agent_state != AgentState::Idle {
-            self.status_message = Some("Cannot share while processing".to_string());
-            return None;
-        }
-
-        let is_public = parse_share_is_public(args);
-
-        self.agent_state = AgentState::Processing;
-        self.status_message = Some("Sharing session... (Esc to cancel)".to_string());
-
-        let (abort_handle, abort_signal) = AbortHandle::new();
-        self.abort_handle = Some(abort_handle);
-
-        let event_tx = self.event_tx.clone();
-        let runtime_handle = self.runtime_handle.clone();
-        let session = Arc::clone(&self.session);
-        let cwd = self.cwd.clone();
-        let gh_path_override = self.config.gh_path.clone();
-
-        runtime_handle.spawn(async move {
-            let gh = gh_path_override
-                .as_ref()
-                .filter(|value| !value.trim().is_empty())
-                .cloned()
-                .unwrap_or_else(|| "gh".to_string());
-
-            let auth_args = vec![OsString::from("auth"), OsString::from("status")];
-            match run_command_output(&gh, &auth_args, &cwd, &abort_signal) {
-                Ok(output) => {
-                    if !output.status.success() {
-                        let details = format_command_output(&output);
-                        let message = format!(
-                            "`gh` is not authenticated.\n\
-                             Run `gh auth login` to authenticate, then retry `/share`.\n\n\
-                             {details}"
-                        );
-                        let _ = event_tx.try_send(PiMsg::AgentError(message));
-                        return;
-                    }
-                }
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                    let message = "GitHub CLI `gh` not found.\n\
-                             Install it from https://cli.github.com, then run `gh auth login`."
-                        .to_string();
-                    let _ = event_tx.try_send(PiMsg::AgentError(message));
-                    return;
-                }
-                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {
-                    let _ = event_tx.try_send(PiMsg::System("Share cancelled".to_string()));
-                    return;
-                }
-                Err(err) => {
-                    let _ = event_tx.try_send(PiMsg::AgentError(format!(
-                        "Failed to run `gh auth status`: {err}"
-                    )));
-                    return;
-                }
-            }
-
-            if abort_signal.is_aborted() {
-                let _ = event_tx.try_send(PiMsg::System("Share cancelled".to_string()));
-                return;
-            }
-
-            let cx = Cx::for_request();
-            let (html, session_name) = match session.lock(&cx).await {
-                Ok(guard) => (guard.to_html(), guard.get_name()),
-                Err(err) => {
-                    let _ = event_tx
-                        .try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
-                    return;
-                }
-            };
-
-            if abort_signal.is_aborted() {
-                let _ = event_tx.try_send(PiMsg::System("Share cancelled".to_string()));
-                return;
-            }
-
-            let gist_desc = share_gist_description(session_name.as_deref());
-
-            let temp_file = match tempfile::Builder::new()
-                .prefix("pi-share-")
-                .suffix(".html")
-                .tempfile()
-            {
-                Ok(file) => file,
-                Err(err) => {
-                    let _ = event_tx.try_send(PiMsg::AgentError(format!(
-                        "Failed to create temp file: {err}"
-                    )));
-                    return;
-                }
-            };
-            let temp_path = temp_file.into_temp_path();
-            if let Err(err) = std::fs::write(&temp_path, html.as_bytes()) {
-                let _ = event_tx.try_send(PiMsg::AgentError(format!(
-                    "Failed to write temp file: {err}"
-                )));
-                return;
-            }
-
-            let gist_args = vec![
-                OsString::from("gist"),
-                OsString::from("create"),
-                OsString::from(format!("--public={is_public}")),
-                OsString::from("--desc"),
-                OsString::from(&gist_desc),
-                temp_path.as_os_str().to_os_string(),
-            ];
-            let output = match run_command_output(&gh, &gist_args, &cwd, &abort_signal) {
-                Ok(output) => output,
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                    let message = "GitHub CLI `gh` not found.\n\
-                             Install it from https://cli.github.com, then run `gh auth login`."
-                        .to_string();
-                    let _ = event_tx.try_send(PiMsg::AgentError(message));
-                    return;
-                }
-                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {
-                    let _ = event_tx.try_send(PiMsg::System("Share cancelled".to_string()));
-                    return;
-                }
-                Err(err) => {
-                    let _ = event_tx.try_send(PiMsg::AgentError(format!(
-                        "Failed to run `gh gist create`: {err}"
-                    )));
-                    return;
-                }
-            };
-
-            if !output.status.success() {
-                let details = format_command_output(&output);
-                let _ = event_tx.try_send(PiMsg::AgentError(format!(
-                    "`gh gist create` failed.\n\n{details}"
-                )));
-                return;
-            }
-
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let Some((gist_url, gist_id)) = parse_gist_url_and_id(&stdout) else {
-                let details = format_command_output(&output);
-                let _ = event_tx.try_send(PiMsg::AgentError(format!(
-                    "Failed to parse gist URL from `gh gist create` output.\n\n{details}"
-                )));
-                return;
-            };
-
-            let share_url = crate::session::get_share_viewer_url(&gist_id);
-            drop(temp_path);
-
-            // Copy viewer URL to clipboard (best-effort).
-            #[cfg(feature = "clipboard")]
-            {
-                let _ = ClipboardProvider::new()
-                    .and_then(|mut ctx: ClipboardContext| ctx.set_contents(share_url.clone()));
-            }
-
-            let privacy = if is_public { "public" } else { "private" };
-            let message =
-                format!("Created {privacy} gist\nShare URL: {share_url}\nGist: {gist_url}");
-            let _ = event_tx.try_send(PiMsg::System(message));
-        });
-        None
-    }
 }
 
 #[cfg(test)]

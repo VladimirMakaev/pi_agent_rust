@@ -162,27 +162,78 @@ fn resolve_provider_route(entry: &ModelEntry) -> Result<(ProviderRouteKind, Stri
     Ok((route, canonical_provider.to_string(), effective_api))
 }
 
-/// Suggest provider names similar to `input` by checking substring
-/// containment and prefix matching against all canonical IDs and aliases.
+/// Levenshtein edit distance between two byte slices. Uses a single-row
+/// buffer so memory is O(min(a,b)).
+fn edit_distance(a: &[u8], b: &[u8]) -> usize {
+    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    let mut row: Vec<usize> = (0..=short.len()).collect();
+    for (i, &lb) in long.iter().enumerate() {
+        let mut prev = i;
+        row[0] = i + 1;
+        for (j, &sb) in short.iter().enumerate() {
+            let cost = usize::from(lb != sb);
+            let val = (row[j + 1] + 1).min(row[j] + 1).min(prev + cost);
+            prev = row[j + 1];
+            row[j + 1] = val;
+        }
+    }
+    row[short.len()]
+}
+
+/// Maximum edit distance allowed for a fuzzy suggestion, scaled by the
+/// length of the input so very short inputs don't produce false positives.
+fn max_edit_distance(input_len: usize) -> usize {
+    match input_len {
+        0..=2 => 0,
+        3..=5 => 1,
+        6..=9 => 2,
+        _ => 3,
+    }
+}
+
+/// Suggest provider names similar to `input` by checking prefix matching,
+/// substring containment, and Levenshtein edit distance against all
+/// canonical IDs and aliases.
 fn suggest_similar_providers(input: &str) -> Vec<String> {
     let needle = input.to_lowercase();
+    let needle_bytes = needle.as_bytes();
+    let threshold = max_edit_distance(needle.len());
     let mut matches: Vec<(usize, String)> = Vec::new();
 
     for meta in PROVIDER_METADATA {
         let names: Vec<&str> = std::iter::once(meta.canonical_id)
             .chain(meta.aliases.iter().copied())
             .collect();
+        let mut matched = false;
         for name in &names {
             let haystack = name.to_lowercase();
-            // Exact prefix match (highest quality)
+            // Tier 0: exact prefix match (highest quality)
             if haystack.starts_with(&needle) || needle.starts_with(&haystack) {
                 matches.push((0, meta.canonical_id.to_string()));
+                matched = true;
                 break;
             }
-            // Substring containment
+            // Tier 1: substring containment
             if haystack.contains(&needle) || needle.contains(&haystack) {
                 matches.push((1, meta.canonical_id.to_string()));
+                matched = true;
                 break;
+            }
+        }
+        if matched {
+            continue;
+        }
+        // Tier 2: edit distance (typo correction)
+        if threshold > 0 {
+            let mut best_dist = usize::MAX;
+            for name in &names {
+                let haystack = name.to_lowercase();
+                let dist = edit_distance(needle_bytes, haystack.as_bytes());
+                best_dist = best_dist.min(dist);
+            }
+            if best_dist <= threshold {
+                // Encode distance in the sort key so closer matches rank higher
+                matches.push((2_usize.wrapping_add(best_dist), meta.canonical_id.to_string()));
             }
         }
     }
@@ -1504,6 +1555,57 @@ export default function init(pi) {
         assert!(
             suggestions.len() <= 3,
             "expected at most 3 suggestions: {suggestions:?}"
+        );
+    }
+
+    #[test]
+    fn edit_distance_basic_cases() {
+        assert_eq!(edit_distance(b"", b""), 0);
+        assert_eq!(edit_distance(b"abc", b"abc"), 0);
+        assert_eq!(edit_distance(b"abc", b"ab"), 1);
+        assert_eq!(edit_distance(b"abc", b"axc"), 1);
+        assert_eq!(edit_distance(b"abc", b"abcd"), 1);
+        assert_eq!(edit_distance(b"kitten", b"sitting"), 3);
+        assert_eq!(edit_distance(b"", b"hello"), 5);
+    }
+
+    #[test]
+    fn suggest_similar_providers_finds_typo_with_edit_distance() {
+        // "anthropick" is edit distance 1 from "anthropic"
+        let suggestions = suggest_similar_providers("anthropick");
+        assert!(
+            suggestions.contains(&"anthropic".to_string()),
+            "expected anthropic for typo 'anthropick': {suggestions:?}"
+        );
+    }
+
+    #[test]
+    fn suggest_similar_providers_finds_typo_missing_char() {
+        // "openai" with missing letter: "opnai" → edit distance 1
+        let suggestions = suggest_similar_providers("opnai");
+        assert!(
+            suggestions.contains(&"openai".to_string()),
+            "expected openai for typo 'opnai': {suggestions:?}"
+        );
+    }
+
+    #[test]
+    fn suggest_similar_providers_finds_transposed_chars() {
+        // "gogle" → "google" edit distance 1 (missing 'o')
+        let suggestions = suggest_similar_providers("gogle");
+        assert!(
+            suggestions.contains(&"google".to_string()),
+            "expected google for typo 'gogle': {suggestions:?}"
+        );
+    }
+
+    #[test]
+    fn suggest_similar_providers_no_false_positives_for_short_input() {
+        // Very short input should not match via edit distance (threshold=0)
+        let suggestions = suggest_similar_providers("xy");
+        assert!(
+            suggestions.is_empty(),
+            "expected no suggestions for 'xy': {suggestions:?}"
         );
     }
 
