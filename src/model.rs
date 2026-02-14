@@ -1323,7 +1323,7 @@ mod tests {
             Just("[]".to_string()),
             Just("{}".to_string()),
             Just("cafe\u{0301}".to_string()),
-            Just("emoji 😀".to_string()),
+            Just("emoji \u{1F600}".to_string()),
         ]
     }
 

@@ -2116,7 +2116,9 @@ impl From<Message> for SessionMessage {
                 content: user.content,
                 timestamp: Some(user.timestamp),
             },
-            Message::Assistant(assistant) => Self::Assistant { message: assistant },
+            Message::Assistant(assistant) => Self::Assistant {
+                message: Arc::try_unwrap(assistant).unwrap_or_else(|a| (*a).clone()),
+            },
             Message::ToolResult(result) => Self::ToolResult {
                 tool_call_id: result.tool_call_id,
                 tool_name: result.tool_name,
@@ -2234,7 +2236,7 @@ pub(crate) fn session_message_to_model(message: &SessionMessage) -> Option<Messa
             content: content.clone(),
             timestamp: timestamp.unwrap_or_else(|| chrono::Utc::now().timestamp_millis()),
         })),
-        SessionMessage::Assistant { message } => Some(Message::Assistant(message.clone())),
+        SessionMessage::Assistant { message } => Some(Message::assistant(message.clone())),
         SessionMessage::ToolResult {
             tool_call_id,
             tool_name,

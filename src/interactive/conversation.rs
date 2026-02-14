@@ -227,7 +227,7 @@ pub(super) fn last_assistant_message(
     messages: &[ModelMessage],
 ) -> Option<&crate::model::AssistantMessage> {
     messages.iter().rev().find_map(|msg| match msg {
-        ModelMessage::Assistant(assistant) => Some(assistant),
+        ModelMessage::Assistant(assistant) => Some(assistant.as_ref()),
         _ => None,
     })
 }
@@ -507,7 +507,7 @@ mod tests {
                 content: UserContent::Text("hello".to_string()),
                 timestamp: 0,
             }),
-            ModelMessage::Assistant(AssistantMessage {
+            ModelMessage::assistant(AssistantMessage {
                 content: vec![ContentBlock::Text(TextContent::new("hi".to_string()))],
                 api: "openai-completions".to_string(),
                 provider: "openai".to_string(),

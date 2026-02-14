@@ -657,7 +657,7 @@ impl Agent {
 
                 if abort.as_ref().is_some_and(AbortSignal::is_aborted) {
                     let abort_message = self.build_abort_message(last_assistant.clone());
-                    let message = Message::Assistant(abort_message.clone());
+                    let message = Message::assistant(abort_message.clone());
                     if !matches!(self.messages.last(), Some(Message::Assistant(_))) {
                         self.messages.push(message.clone());
                         new_messages.push(message.clone());
@@ -698,7 +698,7 @@ impl Agent {
                     .await?;
                 last_assistant = Some(assistant_message.clone());
 
-                let assistant_event_message = Message::Assistant(assistant_message.clone());
+                let assistant_event_message = Message::assistant(assistant_message.clone());
                 new_messages.push(assistant_event_message.clone());
 
                 if matches!(
@@ -902,22 +902,23 @@ impl Agent {
                     futures::future::Either::Left(((), _event_fut)) => {
                         let last_partial = if added_partial {
                             match self.messages.last() {
-                                Some(Message::Assistant(a)) => Some(a.clone()),
+                                Some(Message::Assistant(a)) => Some((**a).clone()),
                                 _ => None,
                             }
                         } else {
                             None
                         };
-                        let abort_message = self.build_abort_message(last_partial);
+                        let abort_arc = Arc::new(self.build_abort_message(last_partial));
                         on_event(AgentEvent::MessageUpdate {
-                            message: Message::Assistant(abort_message.clone()),
+                            message: Message::Assistant(Arc::clone(&abort_arc)),
                             assistant_message_event: Box::new(AssistantMessageEvent::Error {
                                 reason: StopReason::Aborted,
-                                error: abort_message.clone(),
+                                error: Arc::clone(&abort_arc),
                             }),
                         });
                         return Ok(self.finalize_assistant_message(
-                            abort_message,
+                            Arc::try_unwrap(abort_arc)
+                                .unwrap_or_else(|a| (*a).clone()),
                             on_event,
                             added_partial,
                         ));
@@ -1227,7 +1228,7 @@ impl Agent {
         // retains the partial content.
         if added_partial {
             if let Some(Message::Assistant(last_msg)) = self.messages.last() {
-                let mut final_msg = last_msg.clone();
+                let mut final_msg = (**last_msg).clone();
                 final_msg.stop_reason = StopReason::Error;
                 final_msg.error_message = Some("Stream ended without Done event".to_string());
                 return Ok(self.finalize_assistant_message(final_msg, on_event, true));
@@ -1238,12 +1239,11 @@ impl Agent {
 
     /// Update the partial assistant message in `self.messages`.
     ///
-    /// Takes ownership of `partial` and moves it into the message list (one move,
-    /// zero deep-copies). The caller should clone *before* calling if it needs the
-    /// partial for event emission.
+    /// Takes an `Arc<AssistantMessage>` and moves it into the message list
+    /// (one Arc move, zero deep-copies).
     fn update_partial_message(
         &mut self,
-        partial: AssistantMessage,
+        partial: Arc<AssistantMessage>,
         added_partial: &mut bool,
     ) -> bool {
         if *added_partial {
@@ -1269,29 +1269,30 @@ impl Agent {
         on_event: &Arc<dyn Fn(AgentEvent) + Send + Sync>,
         added_partial: bool,
     ) -> AssistantMessage {
+        let arc = Arc::new(message);
         if added_partial {
             if let Some(last @ Message::Assistant(_)) = self.messages.last_mut() {
-                *last = Message::Assistant(message.clone());
+                *last = Message::Assistant(Arc::clone(&arc));
             } else {
                 // Defensive: added_partial is true but last message isn't Assistant.
                 // Push as new message rather than overwriting an unrelated message.
                 tracing::warn!("finalize_assistant_message: expected last message to be Assistant");
-                self.messages.push(Message::Assistant(message.clone()));
+                self.messages.push(Message::Assistant(Arc::clone(&arc)));
                 on_event(AgentEvent::MessageStart {
-                    message: Message::Assistant(message.clone()),
+                    message: Message::Assistant(Arc::clone(&arc)),
                 });
             }
         } else {
-            self.messages.push(Message::Assistant(message.clone()));
+            self.messages.push(Message::Assistant(Arc::clone(&arc)));
             on_event(AgentEvent::MessageStart {
-                message: Message::Assistant(message.clone()),
+                message: Message::Assistant(Arc::clone(&arc)),
             });
         }
 
         on_event(AgentEvent::MessageEnd {
-            message: Message::Assistant(message.clone()),
+            message: Message::Assistant(Arc::clone(&arc)),
         });
-        message
+        Arc::try_unwrap(arc).unwrap_or_else(|a| (*a).clone())
     }
 
     async fn execute_tool_calls(
