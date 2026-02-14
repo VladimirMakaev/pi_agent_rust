@@ -8,8 +8,8 @@ mod common;
 
 use pi::extension_preflight::{
     ExtensionTrustState, ExtensionTrustTracker, InstallRecommendation, InstallTimeRiskReport,
-    TrustTransitionError, TrustTransitionKind, TRUST_LIFECYCLE_SCHEMA,
-    classify_extension_source, initial_trust_state, is_hostcall_allowed_for_trust,
+    TRUST_LIFECYCLE_SCHEMA, TrustTransitionError, TrustTransitionKind, classify_extension_source,
+    initial_trust_state, is_hostcall_allowed_for_trust,
 };
 use pi::extensions::ExtensionPolicy;
 
@@ -98,7 +98,10 @@ fn trust_state_serde_names_stable() {
 
 #[test]
 fn trust_state_display_strings() {
-    assert_eq!(format!("{}", ExtensionTrustState::Quarantined), "quarantined");
+    assert_eq!(
+        format!("{}", ExtensionTrustState::Quarantined),
+        "quarantined"
+    );
     assert_eq!(format!("{}", ExtensionTrustState::Restricted), "restricted");
     assert_eq!(format!("{}", ExtensionTrustState::Trusted), "trusted");
 }

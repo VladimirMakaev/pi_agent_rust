@@ -2569,8 +2569,9 @@ impl ExtensionTrustTracker {
     #[must_use]
     pub fn from_risk_report(report: &InstallTimeRiskReport) -> Self {
         let state = match report.recommendation {
-            InstallRecommendation::Block => ExtensionTrustState::Quarantined,
-            InstallRecommendation::Review => ExtensionTrustState::Quarantined,
+            InstallRecommendation::Block | InstallRecommendation::Review => {
+                ExtensionTrustState::Quarantined
+            }
             InstallRecommendation::Allow => ExtensionTrustState::Trusted,
         };
         Self::new(&report.extension_id, state)
@@ -2722,7 +2723,7 @@ impl ExtensionTrustTracker {
 /// Determine the initial trust state for a newly installed extension
 /// based on its install-time risk report.
 #[must_use]
-pub fn initial_trust_state(report: &InstallTimeRiskReport) -> ExtensionTrustState {
+pub const fn initial_trust_state(report: &InstallTimeRiskReport) -> ExtensionTrustState {
     match report.recommendation {
         InstallRecommendation::Block | InstallRecommendation::Review => {
             ExtensionTrustState::Quarantined
@@ -2738,6 +2739,7 @@ pub fn initial_trust_state(report: &InstallTimeRiskReport) -> ExtensionTrustStat
 /// Registration-only operations (register tool/slash_command) are always
 /// allowed.
 #[must_use]
+#[allow(clippy::match_same_arms)] // Explicit dangerous-category arm kept for documentation
 pub fn is_hostcall_allowed_for_trust(
     trust_state: ExtensionTrustState,
     hostcall_category: &str,

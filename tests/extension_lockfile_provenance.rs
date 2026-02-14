@@ -6,10 +6,10 @@
 mod common;
 
 use pi::package_manager::{
-    PackageEntryTrustState, PackageLockAction, PackageLockEntry,
-    PackageLockfile, PackageResolvedProvenance, PackageSourceKind, PACKAGE_LOCK_SCHEMA,
-    PACKAGE_TRUST_AUDIT_SCHEMA, digest_package_path, evaluate_lock_transition,
-    read_package_lockfile, sort_lock_entries, write_package_lockfile_atomic,
+    PACKAGE_LOCK_SCHEMA, PACKAGE_TRUST_AUDIT_SCHEMA, PackageEntryTrustState, PackageLockAction,
+    PackageLockEntry, PackageLockfile, PackageResolvedProvenance, PackageSourceKind,
+    digest_package_path, evaluate_lock_transition, read_package_lockfile, sort_lock_entries,
+    write_package_lockfile_atomic,
 };
 
 // ============================================================================
@@ -220,7 +220,10 @@ fn update_unpinned_git_allows_provenance_change() {
     let candidate = git_entry("owner/repo", "commit_b", "digest_new");
     let result = evaluate_lock_transition(Some(&existing), &candidate, PackageLockAction::Update);
     let plan = result.unwrap();
-    assert!(plan.reason_codes.contains(&"provenance_changed".to_string()));
+    assert!(
+        plan.reason_codes
+            .contains(&"provenance_changed".to_string())
+    );
     assert!(plan.reason_codes.contains(&"digest_changed".to_string()));
     assert_eq!(plan.to_state, "trusted");
 }
@@ -306,7 +309,10 @@ fn digest_normalizes_cr() {
 
     let d_unix = digest_package_path(&unix).unwrap();
     let d_windows = digest_package_path(&windows).unwrap();
-    assert_eq!(d_unix, d_windows, "CR normalization should produce identical digests");
+    assert_eq!(
+        d_unix, d_windows,
+        "CR normalization should produce identical digests"
+    );
 }
 
 // ============================================================================
@@ -375,10 +381,7 @@ fn lockfile_output_is_byte_deterministic() {
 
     let lockfile = PackageLockfile {
         schema: PACKAGE_LOCK_SCHEMA.to_string(),
-        entries: vec![
-            npm_entry("b", "1.0.0", "d2"),
-            npm_entry("a", "1.0.0", "d1"),
-        ],
+        entries: vec![npm_entry("b", "1.0.0", "d2"), npm_entry("a", "1.0.0", "d1")],
     };
 
     write_package_lockfile_atomic(&path1, &lockfile).unwrap();
@@ -386,7 +389,10 @@ fn lockfile_output_is_byte_deterministic() {
 
     let bytes1 = std::fs::read(&path1).unwrap();
     let bytes2 = std::fs::read(&path2).unwrap();
-    assert_eq!(bytes1, bytes2, "Identical lockfiles must produce identical bytes");
+    assert_eq!(
+        bytes1, bytes2,
+        "Identical lockfiles must produce identical bytes"
+    );
 }
 
 // ============================================================================
@@ -395,7 +401,10 @@ fn lockfile_output_is_byte_deterministic() {
 
 #[test]
 fn trust_state_serde_roundtrip() {
-    for state in [PackageEntryTrustState::Trusted, PackageEntryTrustState::Rejected] {
+    for state in [
+        PackageEntryTrustState::Trusted,
+        PackageEntryTrustState::Rejected,
+    ] {
         let json = serde_json::to_string(&state).unwrap();
         let back: PackageEntryTrustState = serde_json::from_str(&json).unwrap();
         assert_eq!(back, state);
@@ -452,7 +461,11 @@ fn digest_mismatch_includes_both_digests() {
     let candidate = npm_entry("ext", "1.0.0", "actual_hash");
     let err = evaluate_lock_transition(Some(&existing), &candidate, PackageLockAction::Install)
         .unwrap_err();
-    assert!(err.reason.contains("expected_hash"), "reason: {}", err.reason);
+    assert!(
+        err.reason.contains("expected_hash"),
+        "reason: {}",
+        err.reason
+    );
     assert!(err.reason.contains("actual_hash"), "reason: {}", err.reason);
 }
 
