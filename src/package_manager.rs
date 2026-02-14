@@ -660,9 +660,10 @@ impl PackageManager {
                     "npm",
                     [
                         "install",
-                        spec,
                         "--prefix",
                         install_root.to_string_lossy().as_ref(),
+                        "--",
+                        spec,
                     ],
                     None,
                 )?;
@@ -687,7 +688,7 @@ impl PackageManager {
 
     fn uninstall_npm(&self, name: &str, scope: PackageScope) -> Result<()> {
         if scope == PackageScope::User {
-            run_command("npm", ["uninstall", "-g", name], None)?;
+            run_command("npm", ["uninstall", "-g", "--", name], None)?;
             return Ok(());
         }
 
@@ -703,9 +704,10 @@ impl PackageManager {
             "npm",
             [
                 "uninstall",
-                name,
                 "--prefix",
                 install_root.to_string_lossy().as_ref(),
+                "--",
+                name,
             ],
             None,
         )?;
@@ -743,7 +745,12 @@ impl PackageManager {
 
         run_command(
             "git",
-            ["clone", &clone_url, target_dir.to_string_lossy().as_ref()],
+            [
+                "clone",
+                "--",
+                &clone_url,
+                target_dir.to_string_lossy().as_ref(),
+            ],
             None,
         )?;
 

@@ -549,34 +549,6 @@ where
     }
 
     fn process_choice(&mut self, choice: OpenAIChoice) {
-        // Handle finish reason
-        if let Some(reason) = choice.finish_reason {
-            self.partial.stop_reason = match reason.as_str() {
-                "length" => StopReason::Length,
-                "tool_calls" => StopReason::ToolUse,
-                "content_filter" | "error" => StopReason::Error,
-                _ => StopReason::Stop,
-            };
-
-            // Finalize tool call arguments
-            self.finalize_tool_call_arguments();
-
-            // Emit ToolCallEnd for each accumulated tool call
-            for tc in &self.tool_calls {
-                if let Some(ContentBlock::ToolCall(tool_call)) =
-                    self.partial.content.get(tc.content_index)
-                {
-                    self.pending_events.push_back(StreamEvent::ToolCallEnd {
-                        content_index: tc.content_index,
-                        tool_call: tool_call.clone(),
-                        partial: self.partial.clone(),
-                    });
-                }
-            }
-
-            return; // Done event handled by [DONE] message
-        }
-
         let delta = choice.delta;
         if delta.content.is_some() || delta.tool_calls.is_some() {
             self.ensure_started();
@@ -586,12 +558,19 @@ where
         if let Some(content) = delta.content {
             // Update partial content
             let last_is_text = matches!(self.partial.content.last(), Some(ContentBlock::Text(_)));
-            if !last_is_text {
+            let content_index = if !last_is_text {
+                let idx = self.partial.content.len();
                 self.partial
                     .content
                     .push(ContentBlock::Text(TextContent::new("")));
-            }
-            let content_index = self.partial.content.len() - 1;
+                self.pending_events.push_back(StreamEvent::TextStart {
+                    content_index: idx,
+                    partial: self.partial.clone(),
+                });
+                idx
+            } else {
+                self.partial.content.len() - 1
+            };
 
             if let Some(ContentBlock::Text(t)) = self.partial.content.get_mut(content_index) {
                 t.text.push_str(&content);
@@ -675,6 +654,42 @@ where
                             partial: self.partial.clone(),
                         });
                     }
+                }
+            }
+        }
+
+        // Handle finish reason (MUST happen after delta processing to capture final chunks)
+        if let Some(reason) = choice.finish_reason {
+            self.partial.stop_reason = match reason.as_str() {
+                "length" => StopReason::Length,
+                "tool_calls" => StopReason::ToolUse,
+                "content_filter" | "error" => StopReason::Error,
+                _ => StopReason::Stop,
+            };
+
+            // If we ended with a text block, emit TextEnd.
+            if let Some(ContentBlock::Text(t)) = self.partial.content.last() {
+                let content_index = self.partial.content.len() - 1;
+                self.pending_events.push_back(StreamEvent::TextEnd {
+                    content_index,
+                    content: t.text.clone(),
+                    partial: self.partial.clone(),
+                });
+            }
+
+            // Finalize tool call arguments
+            self.finalize_tool_call_arguments();
+
+            // Emit ToolCallEnd for each accumulated tool call
+            for tc in &self.tool_calls {
+                if let Some(ContentBlock::ToolCall(tool_call)) =
+                    self.partial.content.get(tc.content_index)
+                {
+                    self.pending_events.push_back(StreamEvent::ToolCallEnd {
+                        content_index: tc.content_index,
+                        tool_call: tool_call.clone(),
+                        partial: self.partial.clone(),
+                    });
                 }
             }
         }

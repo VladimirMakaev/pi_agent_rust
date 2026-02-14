@@ -101,6 +101,159 @@ pub(super) fn parse_share_is_public(args: &str) -> bool {
         .any(|w| w.eq_ignore_ascii_case("public"))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── parse_gist_url_and_id ───────────────────────────────────────────
+
+    #[test]
+    fn parse_gist_url_simple() {
+        let (url, id) = parse_gist_url_and_id(
+            "https://gist.github.com/user/abc123def456",
+        )
+        .unwrap();
+        assert_eq!(url, "https://gist.github.com/user/abc123def456");
+        assert_eq!(id, "abc123def456");
+    }
+
+    #[test]
+    fn parse_gist_url_from_gh_output() {
+        let output = "- Creating gist...\nhttps://gist.github.com/octocat/12345abcde\n";
+        let (url, id) = parse_gist_url_and_id(output).unwrap();
+        assert_eq!(url, "https://gist.github.com/octocat/12345abcde");
+        assert_eq!(id, "12345abcde");
+    }
+
+    #[test]
+    fn parse_gist_url_ignores_non_gist_urls() {
+        assert!(parse_gist_url_and_id("https://github.com/user/repo").is_none());
+        assert!(parse_gist_url_and_id("https://example.com/gist").is_none());
+    }
+
+    #[test]
+    fn parse_gist_url_empty_input() {
+        assert!(parse_gist_url_and_id("").is_none());
+    }
+
+    #[test]
+    fn parse_gist_url_no_urls() {
+        assert!(parse_gist_url_and_id("just some plain text").is_none());
+    }
+
+    #[test]
+    fn parse_gist_url_strips_quotes() {
+        let (url, id) = parse_gist_url_and_id(
+            "\"https://gist.github.com/user/deadbeef\"",
+        )
+        .unwrap();
+        assert_eq!(url, "https://gist.github.com/user/deadbeef");
+        assert_eq!(id, "deadbeef");
+    }
+
+    #[test]
+    fn parse_gist_url_trailing_punctuation() {
+        let (_, id) = parse_gist_url_and_id(
+            "Created: https://gist.github.com/user/aaa111,",
+        )
+        .unwrap();
+        assert_eq!(id, "aaa111");
+    }
+
+    // ── format_command_output ───────────────────────────────────────────
+
+    #[test]
+    fn format_output_both_empty() {
+        let output = std::process::Output {
+            status: std::process::ExitStatus::default(),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        };
+        assert_eq!(format_command_output(&output), "(no output)");
+    }
+
+    #[test]
+    fn format_output_only_stdout() {
+        let output = std::process::Output {
+            status: std::process::ExitStatus::default(),
+            stdout: b"hello world".to_vec(),
+            stderr: Vec::new(),
+        };
+        assert_eq!(format_command_output(&output), "stdout:\nhello world");
+    }
+
+    #[test]
+    fn format_output_only_stderr() {
+        let output = std::process::Output {
+            status: std::process::ExitStatus::default(),
+            stdout: Vec::new(),
+            stderr: b"error msg".to_vec(),
+        };
+        assert_eq!(format_command_output(&output), "stderr:\nerror msg");
+    }
+
+    #[test]
+    fn format_output_both_present() {
+        let output = std::process::Output {
+            status: std::process::ExitStatus::default(),
+            stdout: b"out".to_vec(),
+            stderr: b"err".to_vec(),
+        };
+        assert_eq!(
+            format_command_output(&output),
+            "stdout:\nout\n\nstderr:\nerr"
+        );
+    }
+
+    #[test]
+    fn format_output_trims_whitespace() {
+        let output = std::process::Output {
+            status: std::process::ExitStatus::default(),
+            stdout: b"  trimmed  \n".to_vec(),
+            stderr: Vec::new(),
+        };
+        assert_eq!(format_command_output(&output), "stdout:\ntrimmed");
+    }
+
+    // ── share_gist_description ──────────────────────────────────────────
+
+    #[test]
+    fn gist_description_with_name() {
+        assert_eq!(
+            share_gist_description(Some("my-session")),
+            "Pi session: my-session"
+        );
+    }
+
+    #[test]
+    fn gist_description_without_name() {
+        let desc = share_gist_description(None);
+        assert!(desc.starts_with("Pi session "));
+        assert!(desc.contains('T'));
+    }
+
+    // ── parse_share_is_public ───────────────────────────────────────────
+
+    #[test]
+    fn parse_share_is_public_true() {
+        assert!(parse_share_is_public("public"));
+        assert!(parse_share_is_public("PUBLIC"));
+        assert!(parse_share_is_public("Public"));
+    }
+
+    #[test]
+    fn parse_share_is_public_false() {
+        assert!(!parse_share_is_public(""));
+        assert!(!parse_share_is_public("private"));
+    }
+
+    #[test]
+    fn parse_share_is_public_with_extra_args() {
+        assert!(parse_share_is_public("some-flag public other"));
+        assert!(!parse_share_is_public("some-flag other"));
+    }
+}
+
 impl PiApp {
     #[allow(clippy::too_many_lines)]
     pub(super) fn handle_slash_share(&mut self, args: &str) -> Option<Cmd> {

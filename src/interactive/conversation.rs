@@ -244,3 +244,289 @@ pub(super) fn add_usage(total: &mut Usage, delta: &Usage) {
     total.cost.cache_write += delta.cost.cache_write;
     total.cost.total += delta.cost.total;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{
+        AssistantMessage, ContentBlock, ImageContent, TextContent, ThinkingContent, ToolCallContent,
+        UserContent,
+    };
+    use std::collections::HashMap;
+
+    // ── user_content_to_text ────────────────────────────────────────────
+
+    #[test]
+    fn user_content_text_variant() {
+        let content = UserContent::Text("hello world".to_string());
+        assert_eq!(user_content_to_text(&content), "hello world");
+    }
+
+    #[test]
+    fn user_content_blocks_variant() {
+        let content = UserContent::Blocks(vec![
+            ContentBlock::Text(TextContent::new("first".to_string())),
+            ContentBlock::Text(TextContent::new("second".to_string())),
+        ]);
+        let result = user_content_to_text(&content);
+        assert!(result.contains("first"));
+        assert!(result.contains("second"));
+    }
+
+    // ── assistant_content_to_text ───────────────────────────────────────
+
+    #[test]
+    fn assistant_content_text_only() {
+        let blocks = vec![ContentBlock::Text(TextContent::new(
+            "response".to_string(),
+        ))];
+        let (text, thinking) = assistant_content_to_text(&blocks);
+        assert_eq!(text, "response");
+        assert!(thinking.is_none());
+    }
+
+    #[test]
+    fn assistant_content_with_thinking() {
+        let blocks = vec![
+            ContentBlock::Thinking(ThinkingContent {
+                thinking: "hmm let me think".to_string(),
+                signature: None,
+            }),
+            ContentBlock::Text(TextContent::new("answer".to_string())),
+        ];
+        let (text, thinking) = assistant_content_to_text(&blocks);
+        assert_eq!(text, "answer");
+        assert_eq!(thinking.unwrap(), "hmm let me think");
+    }
+
+    #[test]
+    fn assistant_content_empty_thinking_returns_none() {
+        let blocks = vec![
+            ContentBlock::Thinking(ThinkingContent {
+                thinking: "  ".to_string(),
+                signature: None,
+            }),
+            ContentBlock::Text(TextContent::new("text".to_string())),
+        ];
+        let (_, thinking) = assistant_content_to_text(&blocks);
+        assert!(thinking.is_none());
+    }
+
+    #[test]
+    fn assistant_content_tool_call_ignored() {
+        let blocks = vec![
+            ContentBlock::ToolCall(ToolCallContent {
+                id: "tc_1".to_string(),
+                name: "bash".to_string(),
+                input: serde_json::json!({"cmd": "ls"}),
+            }),
+            ContentBlock::Text(TextContent::new("done".to_string())),
+        ];
+        let (text, _) = assistant_content_to_text(&blocks);
+        assert_eq!(text, "done");
+    }
+
+    // ── split_content_blocks_for_input ──────────────────────────────────
+
+    #[test]
+    fn split_content_separates_text_and_images() {
+        let blocks = vec![
+            ContentBlock::Text(TextContent::new("prompt".to_string())),
+            ContentBlock::Image(ImageContent {
+                data: "base64data".to_string(),
+                mime_type: "image/png".to_string(),
+            }),
+        ];
+        let (text, images) = split_content_blocks_for_input(&blocks);
+        assert!(text.contains("prompt"));
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].mime_type, "image/png");
+    }
+
+    #[test]
+    fn split_content_ignores_thinking_and_tool_calls() {
+        let blocks = vec![
+            ContentBlock::Thinking(ThinkingContent {
+                thinking: "ignored".to_string(),
+                signature: None,
+            }),
+            ContentBlock::ToolCall(ToolCallContent {
+                id: "tc_1".to_string(),
+                name: "bash".to_string(),
+                input: serde_json::json!({}),
+            }),
+        ];
+        let (text, images) = split_content_blocks_for_input(&blocks);
+        assert!(text.is_empty());
+        assert!(images.is_empty());
+    }
+
+    // ── build_content_blocks_for_input ──────────────────────────────────
+
+    #[test]
+    fn build_content_text_only() {
+        let blocks = build_content_blocks_for_input("hello", &[]);
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(&blocks[0], ContentBlock::Text(t) if t.text == "hello"));
+    }
+
+    #[test]
+    fn build_content_empty_text_omitted() {
+        let blocks = build_content_blocks_for_input("  ", &[]);
+        assert!(blocks.is_empty());
+    }
+
+    #[test]
+    fn build_content_text_and_images() {
+        let images = vec![ImageContent {
+            data: "abc".to_string(),
+            mime_type: "image/jpeg".to_string(),
+        }];
+        let blocks = build_content_blocks_for_input("prompt", &images);
+        assert_eq!(blocks.len(), 2);
+        assert!(matches!(&blocks[0], ContentBlock::Text(_)));
+        assert!(matches!(&blocks[1], ContentBlock::Image(_)));
+    }
+
+    // ── tool_content_blocks_to_text ─────────────────────────────────────
+
+    #[test]
+    fn tool_content_text_blocks() {
+        let blocks = vec![ContentBlock::Text(TextContent::new("output".to_string()))];
+        let result = tool_content_blocks_to_text(&blocks, true);
+        assert_eq!(result, "output");
+    }
+
+    #[test]
+    fn tool_content_hidden_images_counted() {
+        let blocks = vec![
+            ContentBlock::Image(ImageContent {
+                data: "a".to_string(),
+                mime_type: "image/png".to_string(),
+            }),
+            ContentBlock::Image(ImageContent {
+                data: "b".to_string(),
+                mime_type: "image/png".to_string(),
+            }),
+        ];
+        let result = tool_content_blocks_to_text(&blocks, false);
+        assert!(result.contains("[2 image(s) hidden]"));
+    }
+
+    #[test]
+    fn tool_content_tool_call_rendered() {
+        let blocks = vec![ContentBlock::ToolCall(ToolCallContent {
+            id: "tc_1".to_string(),
+            name: "read".to_string(),
+            input: serde_json::json!({}),
+        })];
+        let result = tool_content_blocks_to_text(&blocks, true);
+        assert!(result.contains("[tool call: read]"));
+    }
+
+    // ── add_usage ───────────────────────────────────────────────────────
+
+    #[test]
+    fn add_usage_accumulates() {
+        let mut total = Usage::default();
+        let delta = Usage {
+            input: 100,
+            output: 50,
+            cache_read: 10,
+            cache_write: 5,
+            total_tokens: 165,
+            ..Usage::default()
+        };
+        add_usage(&mut total, &delta);
+        assert_eq!(total.input, 100);
+        assert_eq!(total.output, 50);
+        assert_eq!(total.total_tokens, 165);
+    }
+
+    #[test]
+    fn add_usage_saturating() {
+        let mut total = Usage {
+            input: u32::MAX - 10,
+            ..Usage::default()
+        };
+        let delta = Usage {
+            input: 100,
+            ..Usage::default()
+        };
+        add_usage(&mut total, &delta);
+        assert_eq!(total.input, u32::MAX);
+    }
+
+    // ── extension_model_from_entry ──────────────────────────────────────
+
+    #[test]
+    fn extension_model_json_structure() {
+        use crate::models::{Model, ModelCost, ModelEntry};
+        use crate::model::InputType;
+
+        let entry = ModelEntry {
+            model: Model {
+                id: "gpt-4".to_string(),
+                name: "GPT-4".to_string(),
+                api: "openai-chat".to_string(),
+                provider: "openai".to_string(),
+                base_url: "https://api.openai.com/v1".to_string(),
+                reasoning: true,
+                input: vec![InputType::Text],
+                cost: ModelCost {
+                    input: 0.03,
+                    output: 0.06,
+                    cache_read: 0.0,
+                    cache_write: 0.0,
+                },
+                context_window: 128_000,
+                max_tokens: 4096,
+                headers: HashMap::new(),
+            },
+            api_key: Some("sk-test".to_string()),
+            headers: HashMap::new(),
+            auth_header: true,
+            compat: None,
+            oauth_config: None,
+        };
+        let json = extension_model_from_entry(&entry);
+        assert_eq!(json["provider"], "openai");
+        assert_eq!(json["id"], "gpt-4");
+        assert_eq!(json["reasoning"], true);
+        assert_eq!(json["contextWindow"], 128_000);
+        assert_eq!(json["apiKeyPresent"], true);
+    }
+
+    // ── last_assistant_message ───────────────────────────────────────────
+
+    #[test]
+    fn last_assistant_message_found() {
+        let messages = vec![
+            ModelMessage::user("hello"),
+            ModelMessage::Assistant(AssistantMessage {
+                content: vec![ContentBlock::Text(TextContent::new("hi".to_string()))],
+                api: None,
+                provider: None,
+                model: None,
+                usage: Usage::default(),
+                stop_reason: None,
+                error_message: None,
+                timestamp: None,
+            }),
+        ];
+        let result = last_assistant_message(&messages);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn last_assistant_message_none_when_empty() {
+        let messages: Vec<ModelMessage> = Vec::new();
+        assert!(last_assistant_message(&messages).is_none());
+    }
+
+    #[test]
+    fn last_assistant_message_none_when_no_assistant() {
+        let messages = vec![ModelMessage::user("hello")];
+        assert!(last_assistant_message(&messages).is_none());
+    }
+}

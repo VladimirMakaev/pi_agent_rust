@@ -331,12 +331,19 @@ where
                         // Accumulate text into partial
                         let last_is_text =
                             matches!(self.partial.content.last(), Some(ContentBlock::Text(_)));
-                        if !last_is_text {
+                        let content_index = if !last_is_text {
+                            let idx = self.partial.content.len();
                             self.partial
                                 .content
                                 .push(ContentBlock::Text(TextContent::new("")));
-                        }
-                        let content_index = self.partial.content.len() - 1;
+                            self.pending_events.push_back(StreamEvent::TextStart {
+                                content_index: idx,
+                                partial: self.partial.clone(),
+                            });
+                            idx
+                        } else {
+                            self.partial.content.len() - 1
+                        };
 
                         if let Some(ContentBlock::Text(t)) =
                             self.partial.content.get_mut(content_index)
@@ -398,6 +405,18 @@ where
                         // These are for input, not output
                     }
                 }
+            }
+        }
+
+        // Emit TextEnd if we have a finish reason and the last block was text
+        if candidate.finish_reason.is_some() {
+            if let Some(ContentBlock::Text(t)) = self.partial.content.last() {
+                let content_index = self.partial.content.len() - 1;
+                self.pending_events.push_back(StreamEvent::TextEnd {
+                    content_index,
+                    content: t.text.clone(),
+                    partial: self.partial.clone(),
+                });
             }
         }
 

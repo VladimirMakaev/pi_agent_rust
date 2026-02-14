@@ -231,3 +231,121 @@ pub(super) fn split_diff_prefix(line: &str) -> (&str, &str) {
 pub(super) fn pretty_json(value: &Value) -> String {
     serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::TextContent;
+
+    // ── split_diff_prefix ───────────────────────────────────────────────
+
+    #[test]
+    fn split_diff_prefix_removal_line() {
+        let (prefix, content) = split_diff_prefix("-  3 let x = 1;");
+        assert_eq!(prefix, "-  3 ");
+        assert_eq!(content, "let x = 1;");
+    }
+
+    #[test]
+    fn split_diff_prefix_addition_line() {
+        let (prefix, content) = split_diff_prefix("+  3 let x = 2;");
+        assert_eq!(prefix, "+  3 ");
+        assert_eq!(content, "let x = 2;");
+    }
+
+    #[test]
+    fn split_diff_prefix_double_digit_line_number() {
+        let (prefix, content) = split_diff_prefix("- 12 old text");
+        assert_eq!(prefix, "- 12 ");
+        assert_eq!(content, "old text");
+    }
+
+    #[test]
+    fn split_diff_prefix_short_line() {
+        let (prefix, content) = split_diff_prefix("+");
+        assert_eq!(prefix, "+");
+        assert_eq!(content, "");
+    }
+
+    #[test]
+    fn split_diff_prefix_empty() {
+        let (prefix, content) = split_diff_prefix("");
+        assert_eq!(prefix, "");
+        assert_eq!(content, "");
+    }
+
+    #[test]
+    fn split_diff_prefix_context_line() {
+        let (prefix, content) = split_diff_prefix("  5 unchanged");
+        assert_eq!(prefix, "  5 ");
+        assert_eq!(content, "unchanged");
+    }
+
+    // ── pretty_json ─────────────────────────────────────────────────────
+
+    #[test]
+    fn pretty_json_object() {
+        let value = serde_json::json!({"key": "value"});
+        let output = pretty_json(&value);
+        assert!(output.contains("\"key\""));
+        assert!(output.contains("\"value\""));
+        assert!(output.contains('\n'));
+    }
+
+    #[test]
+    fn pretty_json_string() {
+        let value = serde_json::json!("hello");
+        assert_eq!(pretty_json(&value), "\"hello\"");
+    }
+
+    #[test]
+    fn pretty_json_null() {
+        let value = serde_json::json!(null);
+        assert_eq!(pretty_json(&value), "null");
+    }
+
+    // ── format_tool_output ──────────────────────────────────────────────
+
+    #[test]
+    fn format_tool_output_text_only() {
+        let blocks = vec![ContentBlock::Text(TextContent::new("Success".to_string()))];
+        let result = format_tool_output(&blocks, None, true);
+        assert_eq!(result, Some("Success".to_string()));
+    }
+
+    #[test]
+    fn format_tool_output_empty_returns_none() {
+        let blocks: Vec<ContentBlock> = Vec::new();
+        assert!(format_tool_output(&blocks, None, true).is_none());
+    }
+
+    #[test]
+    fn format_tool_output_with_diff_in_details() {
+        let blocks = vec![ContentBlock::Text(TextContent::new(
+            "Successfully replaced text in foo.rs.".to_string(),
+        ))];
+        let details = serde_json::json!({"diff": "-old\n+new"});
+        let result = format_tool_output(&blocks, Some(&details), true).unwrap();
+        assert!(result.contains("Diff:"));
+        assert!(result.contains("-old"));
+        assert!(result.contains("+new"));
+    }
+
+    #[test]
+    fn format_tool_output_empty_content_shows_details_json() {
+        let blocks: Vec<ContentBlock> = Vec::new();
+        let details = serde_json::json!({"status": "ok"});
+        let result = format_tool_output(&blocks, Some(&details), true).unwrap();
+        assert!(result.contains("status"));
+        assert!(result.contains("ok"));
+    }
+
+    #[test]
+    fn format_tool_output_empty_diff_ignored() {
+        let blocks = vec![ContentBlock::Text(TextContent::new("Done".to_string()))];
+        let details = serde_json::json!({"diff": "  "});
+        let result = format_tool_output(&blocks, Some(&details), true).unwrap();
+        assert!(!result.contains("Diff:"));
+        assert_eq!(result, "Done");
+    }
+}

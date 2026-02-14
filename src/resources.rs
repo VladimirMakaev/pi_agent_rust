@@ -697,91 +697,72 @@ pub fn load_skills(options: LoadSkillsOptions) -> LoadSkillsResult {
     }
 }
 
-#[allow(clippy::needless_pass_by_value)] // Recursive function that clones arguments
 fn load_skills_from_dir(
     dir: PathBuf,
     source: String,
     include_root_files: bool,
 ) -> LoadSkillsResult {
-    let mut visited_dirs = HashSet::new();
-    load_skills_from_dir_inner(dir, source, include_root_files, &mut visited_dirs)
-}
-
-#[allow(clippy::needless_pass_by_value)] // Recursive function that clones arguments
-fn load_skills_from_dir_inner(
-    dir: PathBuf,
-    source: String,
-    include_root_files: bool,
-    visited_dirs: &mut HashSet<PathBuf>,
-) -> LoadSkillsResult {
     let mut skills = Vec::new();
     let mut diagnostics = Vec::new();
+    let mut visited_dirs = HashSet::new();
+    let mut stack = vec![(dir, source, include_root_files)];
 
-    if !dir.exists() {
-        return LoadSkillsResult {
-            skills,
-            diagnostics,
-        };
-    }
-
-    // Prevent unbounded recursion for symlink cycles (e.g. `a/loop -> a`).
-    let canonical_dir = fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
-    if !visited_dirs.insert(canonical_dir) {
-        return LoadSkillsResult {
-            skills,
-            diagnostics,
-        };
-    }
-
-    let Ok(entries) = fs::read_dir(&dir) else {
-        return LoadSkillsResult {
-            skills,
-            diagnostics,
-        };
-    };
-
-    for entry in entries.flatten() {
-        let file_name = entry.file_name();
-        let file_name = file_name.to_string_lossy();
-
-        if file_name.starts_with('.') || file_name == "node_modules" {
+    while let Some((current_dir, current_source, current_include_root)) = stack.pop() {
+        if !current_dir.exists() {
             continue;
         }
 
-        let full_path = entry.path();
-        let file_type = entry.file_type();
+        // Prevent unbounded recursion for symlink cycles.
+        let canonical_dir = fs::canonicalize(&current_dir).unwrap_or_else(|_| current_dir.clone());
+        if !visited_dirs.insert(canonical_dir) {
+            continue;
+        }
 
-        let (is_dir, is_file) = match file_type {
-            Ok(ft) if ft.is_symlink() => match fs::metadata(&full_path) {
-                Ok(meta) => (meta.is_dir(), meta.is_file()),
+        let Ok(entries) = fs::read_dir(&current_dir) else {
+            continue;
+        };
+
+        for entry in entries.flatten() {
+            let file_name = entry.file_name();
+            let file_name = file_name.to_string_lossy();
+
+            if file_name.starts_with('.') || file_name == "node_modules" {
+                continue;
+            }
+
+            let full_path = entry.path();
+            let file_type = entry.file_type();
+
+            let (is_dir, is_file) = match file_type {
+                Ok(ft) if ft.is_symlink() => match fs::metadata(&full_path) {
+                    Ok(meta) => (meta.is_dir(), meta.is_file()),
+                    Err(_) => continue,
+                },
+                Ok(ft) => (ft.is_dir(), ft.is_file()),
                 Err(_) => continue,
-            },
-            Ok(ft) => (ft.is_dir(), ft.is_file()),
-            Err(_) => continue,
-        };
+            };
 
-        if is_dir {
-            let sub = load_skills_from_dir_inner(full_path, source.clone(), false, visited_dirs);
-            skills.extend(sub.skills);
-            diagnostics.extend(sub.diagnostics);
-            continue;
-        }
+            if is_dir {
+                stack.push((full_path, current_source.clone(), false));
+                continue;
+            }
 
-        if !is_file {
-            continue;
-        }
+            if !is_file {
+                continue;
+            }
 
-        let is_root_md = include_root_files && file_name.ends_with(".md");
-        let is_skill_md = !include_root_files && file_name == "SKILL.md";
-        if !is_root_md && !is_skill_md {
-            continue;
-        }
+            let is_root_md = current_include_root && file_name.ends_with(".md");
+            let is_skill_md = !current_include_root && file_name == "SKILL.md";
+            if !is_root_md && !is_skill_md {
+                continue;
+            }
 
-        let result = load_skill_from_file(&full_path, source.clone());
-        if let Some(skill) = result.skill {
-            skills.push(skill);
+            let result = load_skill_from_file(&full_path, current_source.clone());
+            if let Some(skill) = result.skill {
+                skills.push(skill);
+            }
+            diagnostics.extend(result.diagnostics);
         }
-        diagnostics.extend(result.diagnostics);
     }
 
     LoadSkillsResult {
