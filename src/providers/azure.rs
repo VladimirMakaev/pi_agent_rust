@@ -245,10 +245,11 @@ impl Provider for AzureOpenAIProvider {
                             if msg.data == "[DONE]" {
                                 state.done = true;
                                 let reason = state.partial.stop_reason;
+                                let message = std::mem::take(&mut state.partial);
                                 return Some((
                                     Ok(StreamEvent::Done {
                                         reason,
-                                        message: state.partial.clone(),
+                                        message,
                                     }),
                                     state,
                                 ));
@@ -271,10 +272,11 @@ impl Provider for AzureOpenAIProvider {
                         None => {
                             state.done = true;
                             let reason = state.partial.stop_reason;
+                            let message = std::mem::take(&mut state.partial);
                             return Some((
                                 Ok(StreamEvent::Done {
                                     reason,
-                                    message: state.partial.clone(),
+                                    message,
                                 }),
                                 state,
                             ));
@@ -1085,7 +1087,7 @@ mod tests {
                     let reason = state.partial.stop_reason;
                     out.push(StreamEvent::Done {
                         reason,
-                        message: state.partial.clone(),
+                        message: std::mem::take(&mut state.partial),
                     });
                     break;
                 }

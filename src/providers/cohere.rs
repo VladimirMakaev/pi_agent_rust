@@ -523,7 +523,7 @@ where
         let reason = self.partial.stop_reason;
         self.pending_events.push_back(StreamEvent::Done {
             reason,
-            message: self.partial.clone(),
+            message: std::mem::take(&mut self.partial),
         });
         self.finished = true;
     }

@@ -259,10 +259,11 @@ impl Provider for AnthropicProvider {
                         None => {
                             state.done = true;
                             let reason = state.partial.stop_reason;
+                            let message = std::mem::take(&mut state.partial);
                             return Some((
                                 Ok(StreamEvent::Done {
                                     reason,
-                                    message: state.partial.clone(),
+                                    message,
                                 }),
                                 state,
                             ));
@@ -357,7 +358,7 @@ where
                 let reason = self.partial.stop_reason;
                 Ok(Some(StreamEvent::Done {
                     reason,
-                    message: self.partial.clone(),
+                    message: std::mem::take(&mut self.partial),
                 }))
             }
             AnthropicStreamEvent::Error { error } => {
@@ -365,7 +366,7 @@ where
                 self.partial.error_message = Some(error.message);
                 Ok(Some(StreamEvent::Error {
                     reason: StopReason::Error,
-                    error: self.partial.clone(),
+                    error: std::mem::take(&mut self.partial),
                 }))
             }
             AnthropicStreamEvent::Ping => Ok(None),

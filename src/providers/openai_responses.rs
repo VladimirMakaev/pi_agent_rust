@@ -494,7 +494,7 @@ where
                 self.partial.error_message = Some(message);
                 self.pending_events.push_back(StreamEvent::Error {
                     reason: StopReason::Error,
-                    error: self.partial.clone(),
+                    error: std::mem::take(&mut self.partial),
                 });
                 self.finished = true;
             }

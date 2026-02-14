@@ -348,10 +348,12 @@ impl Provider for VertexProvider {
                         None => {
                             // Stream ended naturally.
                             state.finished = true;
+                            let reason = state.partial.stop_reason;
+                            let message = std::mem::take(&mut state.partial);
                             return Some((
                                 Ok(StreamEvent::Done {
-                                    reason: state.partial.stop_reason,
-                                    message: state.partial.clone(),
+                                    reason,
+                                    message,
                                 }),
                                 state,
                             ));
@@ -959,7 +961,7 @@ mod tests {
                         state.finished = true;
                         out.push(StreamEvent::Done {
                             reason: state.partial.stop_reason,
-                            message: state.partial.clone(),
+                            message: std::mem::take(&mut state.partial),
                         });
                     }
                     break;
