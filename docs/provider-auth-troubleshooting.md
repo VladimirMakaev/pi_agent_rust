@@ -599,6 +599,34 @@ When an auth failure occurs, operators can safely debug using these surfaces:
 
 5. **Provider-specific env check**: `echo $PROVIDER_API_KEY | wc -c` confirms a key is set without revealing its value
 
+### CI artifact retention and replay for auth failures
+
+When auth regressions fail in CI, debug from retained artifacts instead of rerunning blindly.
+
+Required references:
+- Artifact contract: `docs/provider_e2e_artifact_contract.json`
+- Replay runbook: `docs/ci-operator-runbook.md`
+
+Minimal replay path:
+
+```bash
+# Reproduce all failures captured by a prior CI run
+./scripts/e2e/run_all.sh --rerun-from tests/e2e_results/<timestamp>/summary.json
+
+# Replay retention and replay-contract checks directly
+cargo test --test ci_artifact_retention -- --nocapture
+cargo test --test e2e_replay_bundles -- --nocapture
+cargo test --test e2e_replay_bundle_validation -- --nocapture
+```
+
+Auth-specific triage sequence:
+1. Open `tests/e2e_results/<timestamp>/replay_bundle.json` and run `one_command_replay`.
+2. For each failed provider suite, run `failed_suites[].targeted_replay`.
+3. Confirm `failure_digest.json` contains auth-class root cause and replay pointers.
+4. Verify redaction remained intact in retained logs (`test-log.jsonl`, `artifact-index.jsonl`) by checking:
+   - `tests/e2e_artifact_retention_triage.rs::log_redacts_api_keys`
+   - `tests/e2e_artifact_retention_triage.rs::log_redacts_authorization_headers`
+
 ### Anti-patterns (what NOT to do)
 
 | Anti-pattern | Why it's dangerous | Safe alternative |

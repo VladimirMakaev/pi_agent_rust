@@ -847,6 +847,56 @@ CI_E2E_TESTS=1 cargo test e2e_cross_provider_parity -- --nocapture
 CI_E2E_TESTS=1 cargo test e2e_live_harness -- --nocapture
 ```
 
+## CI artifact retention and replay triage workflow (bd-3uqg.9.4.3)
+
+Provider changes are not complete unless CI failures are reproducible from retained artifacts.
+Use this contract and replay flow for every provider-facing PR:
+
+### Required artifact outputs
+
+Source of truth: `docs/provider_e2e_artifact_contract.json`
+
+Per-suite artifacts (required):
+- `output.log`
+- `result.json`
+- `test-log.jsonl` (`pi.test.log.v2`)
+- `artifact-index.jsonl` (`pi.test.artifact.v1`)
+
+Per-run artifacts (required):
+- `summary.json`
+- `environment.json`
+- `evidence_contract.json`
+- `replay_bundle.json`
+- `failure_digest.json` (for each failed suite)
+
+### Validation commands
+
+```bash
+# Contract and retention checks
+cargo test --test ci_artifact_retention -- --nocapture
+
+# Replay-bundle shape and command validity
+cargo test --test e2e_replay_bundles -- --nocapture
+cargo test --test e2e_replay_bundle_validation -- --nocapture
+
+# Generate a fresh CI-style artifact set
+./scripts/e2e/run_all.sh --profile ci
+```
+
+### Triage and replay sequence
+
+1. Start from `tests/e2e_results/<timestamp>/summary.json` and inspect `failed_names` / `failed_unit_names`.
+2. Read `tests/e2e_results/<timestamp>/replay_bundle.json` and run `one_command_replay`.
+3. For each failing suite, open `failed_suites[].digest_path` (`failure_digest.json`) and run:
+   - `remediation_pointer.suite_replay_command`
+   - `remediation_pointer.targeted_test_replay_command`
+4. Record root cause class and remediation in the bead thread before merging.
+5. If auth-related failures are involved, cross-check redaction tests:
+   - `tests/e2e_artifact_retention_triage.rs::log_redacts_api_keys`
+   - `tests/e2e_artifact_retention_triage.rs::log_redacts_authorization_headers`
+
+Operator reference: `docs/ci-operator-runbook.md`.
+
 ## Contributor checklist (new provider or major provider update)
 
 ### Phase 1: Metadata registration
