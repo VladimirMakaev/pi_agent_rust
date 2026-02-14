@@ -591,7 +591,9 @@
       }
     },
     {
-      "aliases": [],
+      "aliases": [
+        "nanogpt"
+      ],
       "auth_env_keys": [
         "NANO_GPT_API_KEY"
       ],
@@ -621,7 +623,9 @@
       }
     },
     {
-      "aliases": [],
+      "aliases": [
+        "novita"
+      ],
       "auth_env_keys": [
         "NOVITA_API_KEY"
       ],
@@ -1061,7 +1065,10 @@
       }
     },
     {
-      "aliases": [],
+      "aliases": [
+        "zhipu",
+        "glm"
+      ],
       "auth_env_keys": [
         "ZHIPU_API_KEY"
       ],
@@ -1339,6 +1346,6 @@
     }
   ],
   "schema_version": "1.0",
-  "total_aliases": 30,
+  "total_aliases": 34,
   "total_providers": 87
 }

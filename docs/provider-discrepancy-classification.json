@@ -39,7 +39,7 @@
       "alias_mismatch": 5,
       "naming_convention": 2,
       "api_architecture_deviation": 2,
-      "ux_discoverability": 5,
+      "ux_discoverability": 6,
       "test_evidence_gap": 1,
       "logging_schema_drift": 3,
       "infrastructure": 1,
@@ -48,8 +48,8 @@
     },
     "by_severity": {
       "none": 7,
-      "low": 7,
-      "medium": 6,
+      "low": 9,
+      "medium": 5,
       "high": 0,
       "p0_blocker": 0
     },
