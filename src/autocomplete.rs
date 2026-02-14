@@ -980,7 +980,8 @@ mod tests {
 
         let mut provider =
             AutocompleteProvider::new(tmp.path().to_path_buf(), AutocompleteCatalog::default());
-        // Trigger a refresh and query.
+        // Pre-populate the file cache (refresh_if_needed is async).
+        provider.file_cache.files = walk_project_files(tmp.path());
         let resp = provider.suggest("@ma", 3);
         assert!(resp.items.iter().any(|item| item.insert == "@src/main.rs"));
     }
@@ -1629,10 +1630,14 @@ mod tests {
 
         let mut provider =
             AutocompleteProvider::new(tmp1.path().to_path_buf(), AutocompleteCatalog::default());
+        // Pre-populate cache (refresh_if_needed is async).
+        provider.file_cache.files = walk_project_files(tmp1.path());
         let resp = provider.suggest("@on", 3);
         assert!(resp.items.iter().any(|i| i.insert == "@one.txt"));
 
         provider.set_cwd(tmp2.path().to_path_buf());
+        // Re-populate after cwd change (invalidate clears the cache).
+        provider.file_cache.files = walk_project_files(tmp2.path());
         let resp = provider.suggest("@tw", 3);
         assert!(resp.items.iter().any(|i| i.insert == "@two.txt"));
         // Old file should no longer appear
@@ -1701,6 +1706,8 @@ mod tests {
 
         let mut provider =
             AutocompleteProvider::new(tmp.path().to_path_buf(), AutocompleteCatalog::default());
+        // Pre-populate cache (refresh_if_needed is async).
+        provider.file_cache.files = walk_project_files(tmp.path());
         let result = provider.resolve_file_ref("README.md");
         assert_eq!(result, Some("README.md".to_string()));
     }
@@ -1720,6 +1727,8 @@ mod tests {
 
         let mut provider =
             AutocompleteProvider::new(tmp.path().to_path_buf(), AutocompleteCatalog::default());
+        // Pre-populate cache (refresh_if_needed is async).
+        provider.file_cache.files = walk_project_files(tmp.path());
         let result = provider.resolve_file_ref("./foo.txt");
         assert_eq!(result, Some("foo.txt".to_string()));
     }
@@ -1806,6 +1815,8 @@ mod tests {
 
         let mut provider =
             AutocompleteProvider::new(tmp.path().to_path_buf(), AutocompleteCatalog::default());
+        // Pre-populate the file cache (refresh_if_needed is async).
+        provider.file_cache.files = walk_project_files(tmp.path());
         // Just "@" with no query
         let resp = provider.suggest("@", 1);
         assert!(resp.items.len() >= 2);

@@ -1836,9 +1836,9 @@ mod tests {
         ];
         let settings = ResolvedCompactionSettings {
             enabled: true,
+            context_window_tokens: 100_000,
             reserve_tokens: 1000,
             keep_recent_tokens: 100,
-            ..Default::default()
         };
         let prep = prepare_compaction(&entries, settings);
         assert!(prep.is_some());
@@ -1860,9 +1860,9 @@ mod tests {
         ];
         let settings = ResolvedCompactionSettings {
             enabled: true,
+            context_window_tokens: 100_000,
             reserve_tokens: 1000,
             keep_recent_tokens: 100,
-            ..Default::default()
         };
         let prep = prepare_compaction(&entries, settings);
         assert!(prep.is_some());
@@ -1950,9 +1950,9 @@ mod tests {
 
         let settings = ResolvedCompactionSettings {
             enabled: true,
+            context_window_tokens: 15,
             reserve_tokens: 0,
             keep_recent_tokens: 100,
-            ..Default::default()
         };
 
         let prep = prepare_compaction(&entries, settings).expect("should compact");
@@ -2009,9 +2009,9 @@ mod tests {
 
         let settings = ResolvedCompactionSettings {
             enabled: true,
+            context_window_tokens: 200,
             reserve_tokens: 0,
             keep_recent_tokens: 150,
-            ..Default::default()
         };
 
         // We use prepare_compaction as the entry point
