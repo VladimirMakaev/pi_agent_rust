@@ -493,14 +493,16 @@ impl SessionTransport {
         RpcTransportClient::connect(options).map(Self::RpcSubprocess)
     }
 
-    pub const fn as_in_process_mut(&mut self) -> Option<&mut AgentSessionHandle> {
+    #[allow(clippy::missing_const_for_fn)]
+    pub fn as_in_process_mut(&mut self) -> Option<&mut AgentSessionHandle> {
         match self {
             Self::InProcess(handle) => Some(handle.as_mut()),
             Self::RpcSubprocess(_) => None,
         }
     }
 
-    pub const fn as_rpc_mut(&mut self) -> Option<&mut RpcTransportClient> {
+    #[allow(clippy::missing_const_for_fn)]
+    pub fn as_rpc_mut(&mut self) -> Option<&mut RpcTransportClient> {
         match self {
             Self::InProcess(_) => None,
             Self::RpcSubprocess(client) => Some(client),
@@ -1694,14 +1696,18 @@ mod tests {
         };
         listeners.notify_tool_end("bash", &output, false);
 
-        let s = starts.lock().expect("lock");
-        assert_eq!(s.len(), 1);
-        assert_eq!(s[0].0, "bash");
+        {
+            let s = starts.lock().expect("lock");
+            assert_eq!(s.len(), 1);
+            assert_eq!(s[0].0, "bash");
+        }
 
-        let e = ends.lock().expect("lock");
-        assert_eq!(e.len(), 1);
-        assert_eq!(e[0].0, "bash");
-        assert!(!e[0].1);
+        {
+            let e = ends.lock().expect("lock");
+            assert_eq!(e.len(), 1);
+            assert_eq!(e[0].0, "bash");
+            assert!(!e[0].1);
+        }
     }
 
     #[test]
