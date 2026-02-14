@@ -1,6 +1,7 @@
 //! Error types for the Pi application.
 
 use crate::provider_metadata::{canonical_provider_id, provider_auth_env_keys};
+use std::sync::OnceLock;
 use thiserror::Error;
 
 /// Result type alias using our error type.
@@ -866,6 +867,109 @@ impl From<sqlmodel_core::Error> for Error {
     fn from(value: sqlmodel_core::Error) -> Self {
         Self::Sqlite(Box::new(value))
     }
+}
+
+// ─── Context overflow detection ─────────────────────────────────────────
+
+/// All 15 pi-mono overflow substring patterns (case-insensitive).
+const OVERFLOW_PATTERNS: &[&str] = &[
+    "prompt is too long",
+    "input is too long for requested model",
+    "exceeds the context window",
+    // "input token count.*exceeds the maximum" handled by regex below
+    // "maximum prompt length is \\d+" handled by regex below
+    "reduce the length of the messages",
+    // "maximum context length is \\d+ tokens" handled by regex below
+    // "exceeds the limit of \\d+" handled by regex below
+    "exceeds the available context size",
+    "greater than the context length",
+    "context window exceeds limit",
+    "exceeded model token limit",
+    // "context[_ ]length[_ ]exceeded" handled by regex below
+    "too many tokens",
+    "token limit exceeded",
+];
+
+static OVERFLOW_RE: OnceLock<regex::RegexSet> = OnceLock::new();
+static RETRYABLE_RE: OnceLock<regex::Regex> = OnceLock::new();
+
+/// Check whether an error message indicates the prompt exceeded the context
+/// window. Matches the 15 pi-mono overflow patterns plus Cerebras/Mistral
+/// status code pattern.
+///
+/// Also detects "silent" overflow when `usage_input_tokens` exceeds
+/// `context_window`.
+pub fn is_context_overflow(
+    error_message: &str,
+    usage_input_tokens: Option<u64>,
+    context_window: Option<u32>,
+) -> bool {
+    // Silent overflow: usage exceeds context window.
+    if let (Some(input_tokens), Some(window)) = (usage_input_tokens, context_window) {
+        if input_tokens > u64::from(window) {
+            return true;
+        }
+    }
+
+    let lower = error_message.to_lowercase();
+
+    // Simple substring checks.
+    if OVERFLOW_PATTERNS
+        .iter()
+        .any(|pattern| lower.contains(pattern))
+    {
+        return true;
+    }
+
+    // Regex patterns for the remaining pi-mono checks.
+    let re = OVERFLOW_RE.get_or_init(|| {
+        regex::RegexSet::new([
+            r"input token count.*exceeds the maximum",
+            r"maximum prompt length is \d+",
+            r"maximum context length is \d+ tokens",
+            r"exceeds the limit of \d+",
+            r"context[_ ]length[_ ]exceeded",
+            // Cerebras/Mistral: "4XX (no body)" pattern.
+            r"^4(00|13)\s*(status code)?\s*\(no body\)",
+        ])
+        .expect("overflow regex set")
+    });
+
+    re.is_match(&lower)
+}
+
+// ─── Retryable error classification ─────────────────────────────────────
+
+/// Check whether an error is retryable (transient). Matches pi-mono's
+/// `_isRetryableError()` logic:
+///
+/// 1. Error message must be non-empty.
+/// 2. Must NOT be context overflow (those need compaction, not retry).
+/// 3. Must match a retryable pattern (rate limit, server error, etc.).
+pub fn is_retryable_error(
+    error_message: &str,
+    usage_input_tokens: Option<u64>,
+    context_window: Option<u32>,
+) -> bool {
+    if error_message.is_empty() {
+        return false;
+    }
+
+    // Context overflow is NOT retryable.
+    if is_context_overflow(error_message, usage_input_tokens, context_window) {
+        return false;
+    }
+
+    let lower = error_message.to_lowercase();
+
+    let re = RETRYABLE_RE.get_or_init(|| {
+        regex::Regex::new(
+            r"overloaded|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server error|internal error|connection.?error|connection.?refused|other side closed|fetch failed|upstream.?connect|reset before headers|terminated|retry delay",
+        )
+        .expect("retryable regex")
+    });
+
+    re.is_match(&lower)
 }
 
 #[cfg(test)]
@@ -1998,5 +2102,321 @@ mod tests {
     fn e2e_empty_message_no_diagnostic() {
         let err = Error::provider("openai", "");
         assert!(err.auth_diagnostic().is_none());
+    }
+
+    // ─── Context overflow detection tests ────────────────────────────
+
+    #[test]
+    fn overflow_prompt_is_too_long() {
+        assert!(is_context_overflow("prompt is too long: 150000 tokens", None, None));
+    }
+
+    #[test]
+    fn overflow_input_too_long_for_model() {
+        assert!(is_context_overflow(
+            "input is too long for requested model",
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn overflow_exceeds_context_window() {
+        assert!(is_context_overflow("exceeds the context window", None, None));
+    }
+
+    #[test]
+    fn overflow_input_token_count_exceeds_maximum() {
+        assert!(is_context_overflow(
+            "input token count of 50000 exceeds the maximum of 32000",
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn overflow_maximum_prompt_length() {
+        assert!(is_context_overflow(
+            "maximum prompt length is 32000",
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn overflow_reduce_length_of_messages() {
+        assert!(is_context_overflow(
+            "reduce the length of the messages",
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn overflow_maximum_context_length() {
+        assert!(is_context_overflow(
+            "maximum context length is 128000 tokens",
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn overflow_exceeds_limit_of() {
+        assert!(is_context_overflow(
+            "exceeds the limit of 200000",
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn overflow_exceeds_available_context_size() {
+        assert!(is_context_overflow(
+            "exceeds the available context size",
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn overflow_greater_than_context_length() {
+        assert!(is_context_overflow(
+            "greater than the context length",
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn overflow_context_window_exceeds_limit() {
+        assert!(is_context_overflow(
+            "context window exceeds limit",
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn overflow_exceeded_model_token_limit() {
+        assert!(is_context_overflow(
+            "exceeded model token limit",
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn overflow_context_length_exceeded_underscore() {
+        assert!(is_context_overflow("context_length_exceeded", None, None));
+    }
+
+    #[test]
+    fn overflow_context_length_exceeded_space() {
+        assert!(is_context_overflow("context length exceeded", None, None));
+    }
+
+    #[test]
+    fn overflow_too_many_tokens() {
+        assert!(is_context_overflow("too many tokens", None, None));
+    }
+
+    #[test]
+    fn overflow_token_limit_exceeded() {
+        assert!(is_context_overflow("token limit exceeded", None, None));
+    }
+
+    #[test]
+    fn overflow_cerebras_400_no_body() {
+        assert!(is_context_overflow("400 (no body)", None, None));
+    }
+
+    #[test]
+    fn overflow_cerebras_413_no_body() {
+        assert!(is_context_overflow("413 (no body)", None, None));
+    }
+
+    #[test]
+    fn overflow_mistral_status_code_pattern() {
+        assert!(is_context_overflow(
+            "413 status code (no body)",
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn overflow_case_insensitive() {
+        assert!(is_context_overflow("PROMPT IS TOO LONG", None, None));
+        assert!(is_context_overflow("Token Limit Exceeded", None, None));
+    }
+
+    #[test]
+    fn overflow_silent_usage_exceeds_window() {
+        assert!(is_context_overflow(
+            "some error",
+            Some(250_000),
+            Some(200_000),
+        ));
+    }
+
+    #[test]
+    fn overflow_usage_within_window() {
+        assert!(!is_context_overflow(
+            "some error",
+            Some(100_000),
+            Some(200_000),
+        ));
+    }
+
+    #[test]
+    fn overflow_no_usage_info() {
+        assert!(!is_context_overflow("some error", None, None));
+    }
+
+    #[test]
+    fn overflow_negative_not_matched() {
+        assert!(!is_context_overflow("rate limit exceeded", None, None));
+        assert!(!is_context_overflow("server error 500", None, None));
+        assert!(!is_context_overflow("authentication error", None, None));
+        assert!(!is_context_overflow("", None, None));
+    }
+
+    // ─── Retryable error classification tests ────────────────────────
+
+    #[test]
+    fn retryable_rate_limit() {
+        assert!(is_retryable_error("429 rate limit exceeded", None, None));
+    }
+
+    #[test]
+    fn retryable_too_many_requests() {
+        assert!(is_retryable_error("too many requests", None, None));
+    }
+
+    #[test]
+    fn retryable_overloaded() {
+        assert!(is_retryable_error("API overloaded", None, None));
+    }
+
+    #[test]
+    fn retryable_server_500() {
+        assert!(is_retryable_error("HTTP 500 internal server error", None, None));
+    }
+
+    #[test]
+    fn retryable_server_502() {
+        assert!(is_retryable_error("502 bad gateway", None, None));
+    }
+
+    #[test]
+    fn retryable_server_503() {
+        assert!(is_retryable_error("503 service unavailable", None, None));
+    }
+
+    #[test]
+    fn retryable_server_504() {
+        assert!(is_retryable_error("504 gateway timeout", None, None));
+    }
+
+    #[test]
+    fn retryable_service_unavailable() {
+        assert!(is_retryable_error("service unavailable", None, None));
+    }
+
+    #[test]
+    fn retryable_server_error() {
+        assert!(is_retryable_error("server error", None, None));
+    }
+
+    #[test]
+    fn retryable_internal_error() {
+        assert!(is_retryable_error("internal error occurred", None, None));
+    }
+
+    #[test]
+    fn retryable_connection_error() {
+        assert!(is_retryable_error("connection error", None, None));
+    }
+
+    #[test]
+    fn retryable_connection_refused() {
+        assert!(is_retryable_error("connection refused", None, None));
+    }
+
+    #[test]
+    fn retryable_other_side_closed() {
+        assert!(is_retryable_error("other side closed", None, None));
+    }
+
+    #[test]
+    fn retryable_fetch_failed() {
+        assert!(is_retryable_error("fetch failed", None, None));
+    }
+
+    #[test]
+    fn retryable_upstream_connect() {
+        assert!(is_retryable_error("upstream connect error", None, None));
+    }
+
+    #[test]
+    fn retryable_reset_before_headers() {
+        assert!(is_retryable_error("reset before headers", None, None));
+    }
+
+    #[test]
+    fn retryable_terminated() {
+        assert!(is_retryable_error("request terminated", None, None));
+    }
+
+    #[test]
+    fn retryable_retry_delay() {
+        assert!(is_retryable_error("retry delay 30s", None, None));
+    }
+
+    #[test]
+    fn not_retryable_context_overflow() {
+        // Context overflow should NOT be retried.
+        assert!(!is_retryable_error("prompt is too long", None, None));
+        assert!(!is_retryable_error(
+            "exceeds the context window",
+            None,
+            None,
+        ));
+        assert!(!is_retryable_error("too many tokens", None, None));
+    }
+
+    #[test]
+    fn not_retryable_auth_errors() {
+        assert!(!is_retryable_error("invalid api key", None, None));
+        assert!(!is_retryable_error("unauthorized access", None, None));
+        assert!(!is_retryable_error("permission denied", None, None));
+    }
+
+    #[test]
+    fn not_retryable_empty_message() {
+        assert!(!is_retryable_error("", None, None));
+    }
+
+    #[test]
+    fn not_retryable_generic_error() {
+        assert!(!is_retryable_error("something went wrong", None, None));
+    }
+
+    #[test]
+    fn not_retryable_silent_overflow() {
+        // Even if the message looks retryable, if usage > context window,
+        // it's overflow, not retryable.
+        assert!(!is_retryable_error(
+            "500 server error",
+            Some(250_000),
+            Some(200_000),
+        ));
+    }
+
+    #[test]
+    fn retryable_case_insensitive() {
+        assert!(is_retryable_error("RATE LIMIT", None, None));
+        assert!(is_retryable_error("Service Unavailable", None, None));
     }
 }

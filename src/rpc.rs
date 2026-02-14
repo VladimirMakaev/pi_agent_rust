@@ -1635,6 +1635,25 @@ async fn run_prompt_with_retry(
                     if message.stop_reason == StopReason::Aborted {
                         break;
                     }
+                    // Check if this error is retryable. Context overflow and
+                    // auth failures should NOT be retried.
+                    if let Some(ref err_msg) = final_error {
+                        let context_window = if let Ok(guard) = session.lock(&cx).await {
+                            guard.session.lock(&cx).await.map_or(None, |inner| {
+                                current_model_entry(&inner, &options)
+                                    .map(|e| e.model.context_window)
+                            })
+                        } else {
+                            None
+                        };
+                        if !crate::error::is_retryable_error(
+                            err_msg,
+                            Some(message.usage.input),
+                            context_window,
+                        ) {
+                            break;
+                        }
+                    }
                 } else {
                     success = true;
                     break;
