@@ -1351,3 +1351,121 @@ fn synthetic_evidence_contract_validates_against_schema() {
         "assertion_failure"
     );
 }
+
+// ============================================================================
+// § 14 — Artifact-index path cross-validation (DISC-019 / GAP-3 / bd-z5vt4)
+// ============================================================================
+
+#[test]
+fn artifact_index_cross_validation_detects_missing_paths() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let existing_file = dir.path().join("output.log");
+    std::fs::write(&existing_file, "test output").expect("write test file");
+
+    let existing = existing_file.display();
+    let missing = dir.path().join("nonexistent.log").display().to_string();
+
+    let artifact_index = format!(
+        concat!(
+            r#"{{"schema":"pi.test.artifact.v1","type":"artifact","seq":1,"ts":"x","t_ms":100,"name":"output","path":"{existing}"}}"#,
+            "\n",
+            r#"{{"schema":"pi.test.artifact.v1","type":"artifact","seq":2,"ts":"x","t_ms":200,"name":"missing_artifact","path":"{missing}"}}"#,
+            "\n",
+        ),
+        existing = existing,
+        missing = missing,
+    );
+
+    let warnings =
+        common::logging::validate_artifact_index_paths(&artifact_index, dir.path());
+
+    assert_eq!(warnings.len(), 1, "should detect exactly one missing path");
+    assert_eq!(warnings[0].name, "missing_artifact");
+    assert!(
+        warnings[0].path.contains("nonexistent.log"),
+        "warning path should reference the missing file"
+    );
+}
+
+#[test]
+fn artifact_index_cross_validation_passes_when_all_paths_exist() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let file_a = dir.path().join("result.json");
+    let file_b = dir.path().join("test-log.jsonl");
+    std::fs::write(&file_a, "{}").expect("write file a");
+    std::fs::write(&file_b, "").expect("write file b");
+
+    let artifact_index = format!(
+        concat!(
+            r#"{{"schema":"pi.test.artifact.v1","type":"artifact","seq":1,"ts":"x","t_ms":0,"name":"result","path":"{a}"}}"#,
+            "\n",
+            r#"{{"schema":"pi.test.artifact.v1","type":"artifact","seq":2,"ts":"x","t_ms":0,"name":"test_log","path":"{b}"}}"#,
+            "\n",
+        ),
+        a = file_a.display(),
+        b = file_b.display(),
+    );
+
+    let warnings =
+        common::logging::validate_artifact_index_paths(&artifact_index, dir.path());
+    assert!(warnings.is_empty(), "all paths exist, no warnings expected");
+}
+
+#[test]
+fn artifact_index_cross_validation_handles_relative_paths() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let sub = dir.path().join("artifacts");
+    std::fs::create_dir_all(&sub).expect("create subdir");
+    std::fs::write(sub.join("output.log"), "data").expect("write file");
+
+    let artifact_index = concat!(
+        r#"{"schema":"pi.test.artifact.v1","type":"artifact","seq":1,"ts":"x","t_ms":0,"name":"output","path":"artifacts/output.log"}"#,
+        "\n",
+    );
+
+    let warnings =
+        common::logging::validate_artifact_index_paths(artifact_index, dir.path());
+    assert!(
+        warnings.is_empty(),
+        "relative path should resolve against artifact_dir"
+    );
+}
+
+#[test]
+fn artifact_index_cross_validation_warns_on_missing_relative_path() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+
+    let artifact_index = concat!(
+        r#"{"schema":"pi.test.artifact.v1","type":"artifact","seq":1,"ts":"x","t_ms":0,"name":"ghost","path":"does/not/exist.log"}"#,
+        "\n",
+    );
+
+    let warnings =
+        common::logging::validate_artifact_index_paths(artifact_index, dir.path());
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0].name, "ghost");
+    assert_eq!(warnings[0].path, "does/not/exist.log");
+    assert_eq!(warnings[0].line, 1);
+}
+
+#[test]
+fn artifact_index_cross_validation_skips_non_artifact_records() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+
+    // Mix a v2 log record (should be skipped) with an artifact record
+    let artifact_index = concat!(
+        r#"{"schema":"pi.test.log.v2","type":"log","trace_id":"abc","seq":1,"ts":"x","t_ms":0,"level":"info","category":"c","message":"m"}"#,
+        "\n",
+        r#"{"schema":"pi.test.artifact.v1","type":"artifact","seq":2,"ts":"x","t_ms":0,"name":"missing","path":"nope.log"}"#,
+        "\n",
+    );
+
+    let warnings =
+        common::logging::validate_artifact_index_paths(artifact_index, dir.path());
+    assert_eq!(
+        warnings.len(),
+        1,
+        "only the artifact record should be checked"
+    );
+    assert_eq!(warnings[0].name, "missing");
+}
