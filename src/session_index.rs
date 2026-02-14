@@ -555,6 +555,9 @@ mod tests {
     use crate::model::UserContent;
     use crate::session::{EntryBase, MessageEntry, SessionInfoEntry, SessionMessage};
     use pretty_assertions::assert_eq;
+    use proptest::prelude::*;
+    use proptest::string::string_regex;
+    use std::collections::HashMap;
     use std::fs;
     use std::time::Duration;
 
@@ -615,6 +618,62 @@ mod tests {
                     .map_err(|err| Error::session(format!("get meta value: {err}")))
             })
             .expect("read meta.last_sync_epoch_ms")
+    }
+
+    #[derive(Debug, Clone)]
+    struct ArbitraryMetaRow {
+        id: String,
+        cwd: String,
+        timestamp: String,
+        message_count: i64,
+        last_modified_ms: i64,
+        size_bytes: i64,
+        name: Option<String>,
+    }
+
+    fn ident_strategy() -> impl Strategy<Value = String> {
+        string_regex("[a-z0-9_-]{1,16}").expect("valid identifier regex")
+    }
+
+    fn cwd_strategy() -> impl Strategy<Value = String> {
+        prop_oneof![
+            Just("cwd-a".to_string()),
+            Just("cwd-b".to_string()),
+            string_regex("[a-z0-9_./-]{1,20}").expect("valid cwd regex"),
+        ]
+    }
+
+    fn timestamp_strategy() -> impl Strategy<Value = String> {
+        string_regex("[0-9TZ:.-]{10,32}").expect("valid timestamp regex")
+    }
+
+    fn optional_name_strategy() -> impl Strategy<Value = Option<String>> {
+        prop::option::of(string_regex("[A-Za-z0-9 _.:-]{0,32}").expect("valid name regex"))
+    }
+
+    fn arbitrary_meta_row_strategy() -> impl Strategy<Value = ArbitraryMetaRow> {
+        (
+            ident_strategy(),
+            cwd_strategy(),
+            timestamp_strategy(),
+            any::<i64>(),
+            any::<i64>(),
+            any::<i64>(),
+            optional_name_strategy(),
+        )
+            .prop_map(
+                |(id, cwd, timestamp, message_count, last_modified_ms, size_bytes, name)| {
+                    ArbitraryMetaRow {
+                        id,
+                        cwd,
+                        timestamp,
+                        message_count,
+                        last_modified_ms,
+                        size_bytes,
+                        name,
+                    }
+                },
+            )
     }
 
     #[test]
@@ -1388,5 +1447,132 @@ mod tests {
             matches!(err, Error::Session(ref msg) if msg.contains("Read session entry line")),
             "Expected entry line read error, got {err:?}"
         );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 128, .. ProptestConfig::default() })]
+
+        #[test]
+        fn proptest_list_sessions_handles_arbitrary_sql_rows(
+            rows in prop::collection::vec(arbitrary_meta_row_strategy(), 1..16)
+        ) {
+            let harness = TestHarness::new("proptest_list_sessions_handles_arbitrary_sql_rows");
+            let root = harness.temp_path("sessions");
+            fs::create_dir_all(&root).expect("create root dir");
+            let index = SessionIndex::for_sessions_root(&root);
+
+            let expected_by_path: HashMap<String, ArbitraryMetaRow> = rows
+                .iter()
+                .cloned()
+                .enumerate()
+                .map(|(idx, row)| (format!("/tmp/pi-session-index-{idx}.jsonl"), row))
+                .collect();
+
+            index
+                .with_lock(|conn| {
+                    init_schema(conn)?;
+                    conn.execute_sync("DELETE FROM sessions", &[])
+                        .map_err(|err| Error::session(format!("delete sessions: {err}")))?;
+
+                    for (idx, row) in rows.iter().enumerate() {
+                        let path = format!("/tmp/pi-session-index-{idx}.jsonl");
+                        conn.execute_sync(
+                            "INSERT INTO sessions (path,id,cwd,timestamp,message_count,last_modified_ms,size_bytes,name)
+                             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                            &[
+                                Value::Text(path),
+                                Value::Text(row.id.clone()),
+                                Value::Text(row.cwd.clone()),
+                                Value::Text(row.timestamp.clone()),
+                                Value::BigInt(row.message_count),
+                                Value::BigInt(row.last_modified_ms),
+                                Value::BigInt(row.size_bytes),
+                                row.name.clone().map_or(Value::Null, Value::Text),
+                            ],
+                        )
+                        .map_err(|err| Error::session(format!("insert session row {idx}: {err}")))?;
+                    }
+
+                    Ok(())
+                })
+                .expect("seed session rows");
+
+            let listed = index.list_sessions(None).expect("list all sessions");
+            prop_assert_eq!(listed.len(), rows.len());
+            for pair in listed.windows(2) {
+                prop_assert!(pair[0].last_modified_ms >= pair[1].last_modified_ms);
+            }
+
+            for meta in &listed {
+                let expected = expected_by_path
+                    .get(&meta.path)
+                    .expect("expected row should exist");
+                prop_assert_eq!(&meta.id, &expected.id);
+                prop_assert_eq!(&meta.cwd, &expected.cwd);
+                prop_assert_eq!(&meta.timestamp, &expected.timestamp);
+                prop_assert_eq!(meta.message_count, u64::try_from(expected.message_count).unwrap_or(0));
+                prop_assert_eq!(meta.size_bytes, u64::try_from(expected.size_bytes).unwrap_or(0));
+                prop_assert_eq!(&meta.name, &expected.name);
+            }
+
+            let filtered = index
+                .list_sessions(Some("cwd-a"))
+                .expect("list cwd-a sessions");
+            let expected_filtered = rows.iter().filter(|row| row.cwd == "cwd-a").count();
+            prop_assert_eq!(filtered.len(), expected_filtered);
+            prop_assert!(filtered.iter().all(|meta| meta.cwd == "cwd-a"));
+            for pair in filtered.windows(2) {
+                prop_assert!(pair[0].last_modified_ms >= pair[1].last_modified_ms);
+            }
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 128, .. ProptestConfig::default() })]
+
+        #[test]
+        fn proptest_index_session_snapshot_roundtrip_metadata(
+            id in ident_strategy(),
+            cwd in cwd_strategy(),
+            timestamp in timestamp_strategy(),
+            message_count in any::<u64>(),
+            name in optional_name_strategy(),
+            content in prop::collection::vec(any::<u8>(), 0..256)
+        ) {
+            let harness = TestHarness::new("proptest_index_session_snapshot_roundtrip_metadata");
+            let root = harness.temp_path("sessions");
+            fs::create_dir_all(root.join("project")).expect("create project dir");
+            let index = SessionIndex::for_sessions_root(&root);
+
+            let path = root.join("project").join(format!("{id}.jsonl"));
+            fs::write(&path, &content).expect("write session payload");
+
+            let mut header = make_header(&id, &cwd);
+            header.timestamp = timestamp.clone();
+            index
+                .index_session_snapshot(&path, &header, message_count, name.clone())
+                .expect("index snapshot");
+
+            let listed = index
+                .list_sessions(Some(&cwd))
+                .expect("list sessions for cwd");
+            prop_assert_eq!(listed.len(), 1);
+
+            let meta = &listed[0];
+            let expected_count = i64::try_from(message_count).unwrap_or(i64::MAX) as u64;
+            prop_assert_eq!(meta.id, id);
+            prop_assert_eq!(meta.cwd, cwd);
+            prop_assert_eq!(meta.timestamp, timestamp);
+            prop_assert_eq!(meta.path, path.display().to_string());
+            prop_assert_eq!(meta.message_count, expected_count);
+            prop_assert_eq!(meta.size_bytes, content.len() as u64);
+            prop_assert_eq!(meta.name, name);
+            prop_assert!(meta.last_modified_ms >= 0);
+
+            let other_cwd = index
+                .list_sessions(Some("definitely-not-this-cwd"))
+                .expect("list sessions for unmatched cwd");
+            prop_assert!(other_cwd.is_empty());
+        }
     }
 }
