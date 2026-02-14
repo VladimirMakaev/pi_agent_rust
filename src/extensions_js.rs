@@ -137,8 +137,10 @@ fn parse_truthy_flag(value: &str) -> bool {
 }
 
 fn is_compat_scan_mode(env: &HashMap<String, String>) -> bool {
-    env.get("PI_EXT_COMPAT_SCAN")
-        .is_some_and(|value| parse_truthy_flag(value))
+    cfg!(feature = "ext-conformance")
+        || env
+            .get("PI_EXT_COMPAT_SCAN")
+            .is_some_and(|value| parse_truthy_flag(value))
         || std::env::var("PI_EXT_COMPAT_SCAN").is_ok_and(|value| parse_truthy_flag(&value))
 }
 
@@ -12337,6 +12339,8 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
                     Func::from({
                         let process_cwd = process_cwd.clone();
                         let allowed_read_roots = Arc::clone(&allowed_read_roots);
+                        let configured_repair_mode = repair_mode;
+                        let repair_events = Arc::clone(&repair_events);
                         move |path: String| -> rquickjs::Result<String> {
                             let workspace_root =
                                 crate::extensions::safe_canonicalize(Path::new(&process_cwd));
@@ -12360,7 +12364,7 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
                                     Ok(file) => file,
                                     Err(err)
                                         if err.kind() == std::io::ErrorKind::NotFound
-                                            && repair_mode.should_apply() =>
+                                            && configured_repair_mode.should_apply() =>
                                     {
                                         // Pattern 2 (bd-k5q5.8.3): missing asset fallback.
                                         // Linux uses fd-based TOCTOU-safe reads; when the file
@@ -12584,7 +12588,7 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
                                     Err(err)
                                         if err.kind() == std::io::ErrorKind::NotFound
                                             && in_ext_root
-                                            && repair_mode.should_apply() =>
+                                            && configured_repair_mode.should_apply() =>
                                     {
                                         // Pattern 2 (bd-k5q5.8.3): missing asset fallback.
                                         // Return type-appropriate empty content for known
