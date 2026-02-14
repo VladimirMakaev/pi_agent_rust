@@ -688,6 +688,23 @@ async fn run(mut cli: cli::Cli, runtime_handle: RuntimeHandle) -> Result<()> {
     if !resources.extensions().is_empty() {
         let resolved_ext_policy =
             config.resolve_extension_policy_with_metadata(cli.extension_policy.as_deref());
+        let resolved_repair_policy =
+            config.resolve_repair_policy_with_metadata(cli.repair_policy.as_deref());
+        let effective_repair_policy = if resolved_repair_policy.source == "default" {
+            // Compatibility-first default for extension-heavy workloads:
+            // if the user did not choose a repair policy explicitly, prefer
+            // aggressive deterministic repairs while capability policy stays enforced.
+            pi::extensions::RepairPolicyMode::AutoStrict
+        } else {
+            resolved_repair_policy.effective_mode
+        };
+        tracing::info!(
+            event = "pi.extension_repair_policy.resolved",
+            requested = %resolved_repair_policy.requested_mode,
+            source = resolved_repair_policy.source,
+            effective = ?effective_repair_policy,
+            "Resolved extension repair policy for runtime"
+        );
         maybe_print_extension_policy_migration_notice(&resolved_ext_policy);
         agent_session
             .enable_extensions_with_policy(
@@ -696,6 +713,7 @@ async fn run(mut cli: cli::Cli, runtime_handle: RuntimeHandle) -> Result<()> {
                 Some(&config),
                 resources.extensions(),
                 Some(resolved_ext_policy.policy),
+                Some(effective_repair_policy),
             )
             .await
             .map_err(anyhow::Error::new)?;

@@ -20,11 +20,12 @@ use crate::extension_tools::collect_extension_tool_wrappers;
 use crate::extensions::{
     EXTENSION_EVENT_TIMEOUT_MS, ExtensionDeliverAs, ExtensionEventName, ExtensionHostActions,
     ExtensionLoadSpec, ExtensionManager, ExtensionPolicy, ExtensionRegion, ExtensionSendMessage,
-    ExtensionSendUserMessage, JsExtensionRuntimeHandle, resolve_extension_load_spec,
+    ExtensionSendUserMessage, JsExtensionRuntimeHandle, RepairPolicyMode,
+    resolve_extension_load_spec,
 };
 #[cfg(feature = "wasm-host")]
 use crate::extensions::{WasmExtensionHost, WasmExtensionLoadSpec};
-use crate::extensions_js::PiJsRuntimeConfig;
+use crate::extensions_js::{PiJsRuntimeConfig, RepairMode};
 use crate::model::{
     AssistantMessage, AssistantMessageEvent, ContentBlock, CustomMessage, ImageContent, Message,
     StopReason, StreamEvent, TextContent, ToolCall, ToolResultMessage, Usage, UserContent,
@@ -3823,6 +3824,15 @@ mod turn_event_tests {
 }
 
 impl AgentSession {
+    const fn runtime_repair_mode_from_policy_mode(mode: RepairPolicyMode) -> RepairMode {
+        match mode {
+            RepairPolicyMode::Off => RepairMode::Off,
+            RepairPolicyMode::Suggest => RepairMode::Suggest,
+            RepairPolicyMode::AutoSafe => RepairMode::AutoSafe,
+            RepairPolicyMode::AutoStrict => RepairMode::AutoStrict,
+        }
+    }
+
     pub fn new(
         agent: Agent,
         session: Arc<Mutex<Session>>,
@@ -3977,8 +3987,15 @@ impl AgentSession {
         config: Option<&crate::config::Config>,
         extension_entries: &[std::path::PathBuf],
     ) -> Result<()> {
-        self.enable_extensions_with_policy(enabled_tools, cwd, config, extension_entries, None)
-            .await
+        self.enable_extensions_with_policy(
+            enabled_tools,
+            cwd,
+            config,
+            extension_entries,
+            None,
+            None,
+        )
+        .await
     }
 
     #[allow(clippy::too_many_lines)]
@@ -3989,6 +4006,7 @@ impl AgentSession {
         config: Option<&crate::config::Config>,
         extension_entries: &[std::path::PathBuf],
         policy: Option<ExtensionPolicy>,
+        repair_policy: Option<RepairPolicyMode>,
     ) -> Result<()> {
         let manager = ExtensionManager::new();
         manager.set_cwd(cwd.display().to_string());
@@ -4029,6 +4047,11 @@ impl AgentSession {
         }
 
         let resolved_policy = policy.unwrap_or_default();
+        let resolved_repair_policy = repair_policy
+            .or_else(|| config.map(|cfg| cfg.resolve_repair_policy(None)))
+            .unwrap_or(RepairPolicyMode::AutoSafe);
+        let runtime_repair_mode =
+            Self::runtime_repair_mode_from_policy_mode(resolved_repair_policy);
         let tools = Arc::new(ToolRegistry::new(enabled_tools, cwd, config));
 
         if let Some(cfg) = config {
@@ -4055,6 +4078,7 @@ impl AgentSession {
                     ),
                     ..Default::default()
                 },
+                repair_mode: runtime_repair_mode,
                 ..Default::default()
             },
             Arc::clone(&tools),
