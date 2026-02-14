@@ -297,6 +297,7 @@ impl PiApp {
                 self.current_tool = None;
                 self.abort_handle = None;
                 self.status_message = status;
+                self.message_render_cache.clear();
                 self.scroll_to_bottom();
                 self.input.focus();
             }

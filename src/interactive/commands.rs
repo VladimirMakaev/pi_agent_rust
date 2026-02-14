@@ -864,6 +864,7 @@ impl PiApp {
                 self.pending_tool_output = None;
                 self.abort_handle = None;
                 self.autocomplete.close();
+                self.message_render_cache.clear();
                 self.status_message = Some("Conversation cleared".to_string());
                 self.scroll_to_bottom();
                 None
@@ -1049,6 +1050,7 @@ impl PiApp {
                     }
 
                     self.messages.clear();
+                    self.message_render_cache.clear();
                     self.total_usage = Usage::default();
                     self.current_response.clear();
                     self.current_thinking.clear();
@@ -1059,6 +1061,7 @@ impl PiApp {
                     self.session_picker = None;
                     self.tree_ui = None;
                     self.autocomplete.close();
+                    self.message_render_cache.clear();
 
                     self.status_message = Some(format!(
                         "Started new session\nModel set to {}\nThinking level: off",

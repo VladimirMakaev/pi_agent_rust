@@ -448,102 +448,123 @@ impl PiApp {
         format!("\n  {}\n", self.styles.muted.render(&footer))
     }
 
-    /// Build the conversation content string for the viewport.
-    #[allow(clippy::too_many_lines)]
-    pub fn build_conversation_content(&self) -> String {
+    /// Render a single conversation message to a string (uncached path).
+    fn render_single_message(&self, msg: &ConversationMessage) -> String {
         let mut output = String::new();
+        match msg.role {
+            MessageRole::User => {
+                let _ = write!(
+                    output,
+                    "\n  {} {}\n",
+                    self.styles.accent_bold.render("You:"),
+                    msg.content
+                );
+            }
+            MessageRole::Assistant => {
+                let _ = write!(
+                    output,
+                    "\n  {}\n",
+                    self.styles.success_bold.render("Assistant:")
+                );
 
-        for msg in &self.messages {
-            match msg.role {
-                MessageRole::User => {
-                    let _ = write!(
-                        output,
-                        "\n  {} {}\n",
-                        self.styles.accent_bold.render("You:"),
-                        msg.content
-                    );
+                // Render thinking if present
+                if self.thinking_visible {
+                    if let Some(thinking) = &msg.thinking {
+                        let truncated = truncate(thinking, 100);
+                        let _ = writeln!(
+                            output,
+                            "  {}",
+                            self.styles
+                                .muted_italic
+                                .render(&format!("Thinking: {truncated}"))
+                        );
+                    }
                 }
-                MessageRole::Assistant => {
+
+                // Render markdown content
+                let rendered = glamour::Renderer::new()
+                    .with_style_config(self.markdown_style.clone())
+                    .with_word_wrap(self.term_width.saturating_sub(6).max(40))
+                    .render(&msg.content);
+                for line in rendered.lines() {
+                    let _ = writeln!(output, "  {line}");
+                }
+            }
+            MessageRole::Tool => {
+                // Per-message collapse: global toggle overrides, then per-message.
+                let show_expanded = self.tools_expanded && !msg.collapsed;
+                if show_expanded {
+                    let rendered = render_tool_message(&msg.content, &self.styles);
+                    let _ = write!(output, "\n  {rendered}\n");
+                } else {
+                    let header = msg.content.lines().next().unwrap_or("Tool output");
+                    let line_count =
+                        memchr::memchr_iter(b'\n', msg.content.as_bytes()).count() + 1;
+                    let summary = format!(
+                        "\u{25b6} {} ({line_count} lines, collapsed)",
+                        header.trim_end()
+                    );
                     let _ = write!(
                         output,
                         "\n  {}\n",
-                        self.styles.success_bold.render("Assistant:")
+                        self.styles.muted_italic.render(&summary)
                     );
-
-                    // Render thinking if present
-                    if self.thinking_visible {
-                        if let Some(thinking) = &msg.thinking {
-                            let truncated = truncate(thinking, 100);
-                            let _ = writeln!(
-                                output,
-                                "  {}",
-                                self.styles
-                                    .muted_italic
-                                    .render(&format!("Thinking: {truncated}"))
-                            );
-                        }
-                    }
-
-                    // Render markdown content
-                    let rendered = glamour::Renderer::new()
-                        .with_style_config(self.markdown_style.clone())
-                        .with_word_wrap(self.term_width.saturating_sub(6).max(40))
-                        .render(&msg.content);
-                    for line in rendered.lines() {
-                        let _ = writeln!(output, "  {line}");
-                    }
-                }
-                MessageRole::Tool => {
-                    // Per-message collapse: global toggle overrides, then per-message.
-                    let show_expanded = self.tools_expanded && !msg.collapsed;
-                    if show_expanded {
-                        let rendered = render_tool_message(&msg.content, &self.styles);
-                        let _ = write!(output, "\n  {rendered}\n");
-                    } else {
-                        let header = msg.content.lines().next().unwrap_or("Tool output");
-                        let line_count =
-                            memchr::memchr_iter(b'\n', msg.content.as_bytes()).count() + 1;
-                        let summary = format!(
-                            "\u{25b6} {} ({line_count} lines, collapsed)",
-                            header.trim_end()
-                        );
-                        let _ = write!(
-                            output,
-                            "\n  {}\n",
-                            self.styles.muted_italic.render(&summary)
-                        );
-                        // Show preview when per-message collapsed (not global).
-                        if self.tools_expanded && msg.collapsed {
-                            for (i, line) in msg.content.lines().skip(1).enumerate() {
-                                if i >= TOOL_COLLAPSE_PREVIEW_LINES {
-                                    let remaining = line_count
-                                        .saturating_sub(1)
-                                        .saturating_sub(TOOL_COLLAPSE_PREVIEW_LINES);
-                                    let _ = writeln!(
-                                        output,
-                                        "  {}",
-                                        self.styles
-                                            .muted
-                                            .render(&format!("  ... {remaining} more lines"))
-                                    );
-                                    break;
-                                }
+                    // Show preview when per-message collapsed (not global).
+                    if self.tools_expanded && msg.collapsed {
+                        for (i, line) in msg.content.lines().skip(1).enumerate() {
+                            if i >= TOOL_COLLAPSE_PREVIEW_LINES {
+                                let remaining = line_count
+                                    .saturating_sub(1)
+                                    .saturating_sub(TOOL_COLLAPSE_PREVIEW_LINES);
                                 let _ = writeln!(
                                     output,
                                     "  {}",
-                                    self.styles.muted.render(&format!("  {line}"))
+                                    self.styles
+                                        .muted
+                                        .render(&format!("  ... {remaining} more lines"))
                                 );
+                                break;
                             }
+                            let _ = writeln!(
+                                output,
+                                "  {}",
+                                self.styles.muted.render(&format!("  {line}"))
+                            );
                         }
                     }
                 }
-                MessageRole::System => {
-                    let _ = write!(output, "\n  {}\n", self.styles.warning.render(&msg.content));
-                }
+            }
+            MessageRole::System => {
+                let _ = write!(output, "\n  {}\n", self.styles.warning.render(&msg.content));
+            }
+        }
+        output
+    }
+
+    /// Build the conversation content string for the viewport.
+    ///
+    /// Uses `MessageRenderCache` to avoid re-rendering unchanged messages
+    /// every frame. Streaming content (current_response) always renders fresh.
+    pub fn build_conversation_content(&self) -> String {
+        let mut output = String::new();
+
+        for (index, msg) in self.messages.iter().enumerate() {
+            let key = MessageRenderCache::compute_key(
+                msg,
+                self.thinking_visible,
+                self.tools_expanded,
+            );
+
+            if let Some(cached) = self.message_render_cache.get(index, &key) {
+                output.push_str(&cached);
+            } else {
+                let rendered = self.render_single_message(msg);
+                self.message_render_cache.put(index, key, rendered.clone());
+                output.push_str(&rendered);
             }
         }
 
-        // Add current streaming response
+        // Add current streaming response (always render fresh, never cached)
         if !self.current_response.is_empty() || !self.current_thinking.is_empty() {
             let _ = write!(
                 output,

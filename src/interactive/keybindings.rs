@@ -755,6 +755,7 @@ impl PiApp {
             // =========================================================
             AppAction::ToggleThinking => {
                 self.thinking_visible = !self.thinking_visible;
+                self.message_render_cache.invalidate_all();
                 let content = self.build_conversation_content();
                 let effective = self.view_effective_conversation_height().max(1);
                 self.conversation_viewport.height = effective;
@@ -778,6 +779,7 @@ impl PiApp {
                         }
                     }
                 }
+                self.message_render_cache.invalidate_all();
                 let content = self.build_conversation_content();
                 let effective = self.view_effective_conversation_height().max(1);
                 self.conversation_viewport.height = effective;

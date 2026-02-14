@@ -367,6 +367,7 @@ impl PiApp {
                 ) {
                     self.config.hide_thinking_block = Some(next);
                     self.thinking_visible = !next;
+                    self.message_render_cache.invalidate_all();
                     self.scroll_to_bottom();
                     self.status_message =
                         Some(format!("Updated hideThinkingBlock: {}", bool_label(next)));
@@ -500,6 +501,7 @@ impl PiApp {
                     ),
                 );
                 self.memory_monitor.next_collapse_index = 0;
+                self.message_render_cache.clear();
             }
             self.memory_monitor.truncated = true;
             self.memory_monitor.resample_now();
