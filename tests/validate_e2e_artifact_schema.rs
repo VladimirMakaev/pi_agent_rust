@@ -1,0 +1,1004 @@
+//! Structured log/artifact schema validation for provider e2e workflows (bd-3uqg.14.3.3).
+//!
+//! Validates that provider e2e and quality-gate claims include enforceable
+//! structured logging artifacts tied to executable schemas, not prose-only
+//! assertions. Cross-references:
+//! - JSONL schema definitions (pi.test.log.v2, pi.test.artifact.v1)
+//! - Correlation ID model (trace_id, span_id, parent_span_id)
+//! - Redaction completeness (10 sensitive key patterns)
+//! - Artifact contract (docs/provider_e2e_artifact_contract.json)
+//! - Scenario matrix required artifacts
+//! - Evidence contract, failure digest, replay bundle schemas
+//!
+//! Run:
+//! ```bash
+//! cargo test --test validate_e2e_artifact_schema
+//! ```
+
+#![allow(clippy::too_many_lines)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::items_after_statements)]
+
+mod common;
+
+use common::TestHarness;
+use common::logging::{
+    find_unredacted_keys, redact_json_value, validate_jsonl, validate_jsonl_line,
+};
+use serde_json::Value;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+
+fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn load_text(path: &Path) -> Option<String> {
+    std::fs::read_to_string(path).ok()
+}
+
+fn load_json(path: &Path) -> Option<Value> {
+    let text = load_text(path)?;
+    serde_json::from_str(&text).ok()
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Section 1: Artifact contract schema exists and is well-formed
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn artifact_contract_exists() {
+    let path = repo_root().join("docs/provider_e2e_artifact_contract.json");
+    assert!(
+        path.exists(),
+        "Provider e2e artifact contract must exist at docs/provider_e2e_artifact_contract.json"
+    );
+}
+
+#[test]
+fn artifact_contract_is_valid_json() {
+    let path = repo_root().join("docs/provider_e2e_artifact_contract.json");
+    let content = load_text(&path).expect("read artifact contract");
+    let parsed: Result<Value, _> = serde_json::from_str(&content);
+    assert!(parsed.is_ok(), "Artifact contract must be valid JSON");
+}
+
+#[test]
+fn artifact_contract_has_schema_field() {
+    let path = repo_root().join("docs/provider_e2e_artifact_contract.json");
+    let contract = load_json(&path).expect("parse artifact contract");
+    let schema = contract["schema"].as_str().unwrap_or("");
+    assert_eq!(
+        schema, "pi.qa.provider_e2e_artifact_contract.v1",
+        "Contract must use schema pi.qa.provider_e2e_artifact_contract.v1"
+    );
+}
+
+#[test]
+fn artifact_contract_defines_jsonl_schemas() {
+    let path = repo_root().join("docs/provider_e2e_artifact_contract.json");
+    let contract = load_json(&path).expect("parse artifact contract");
+    let schemas = contract["jsonl_schemas"]
+        .as_object()
+        .expect("jsonl_schemas must be object");
+
+    let expected = ["pi.test.log.v1", "pi.test.log.v2", "pi.test.artifact.v1"];
+    for schema in &expected {
+        assert!(
+            schemas.contains_key(*schema),
+            "Contract must define schema: {schema}"
+        );
+    }
+}
+
+#[test]
+fn artifact_contract_defines_redaction_policy() {
+    let path = repo_root().join("docs/provider_e2e_artifact_contract.json");
+    let contract = load_json(&path).expect("parse artifact contract");
+    let policy = &contract["redaction_policy"];
+    assert!(policy.is_object(), "Contract must define redaction_policy");
+
+    let keys = policy["sensitive_keys"]
+        .as_array()
+        .expect("sensitive_keys array");
+    assert!(
+        keys.len() >= 10,
+        "Redaction policy must list at least 10 sensitive key patterns"
+    );
+}
+
+#[test]
+fn artifact_contract_defines_correlation_model() {
+    let path = repo_root().join("docs/provider_e2e_artifact_contract.json");
+    let contract = load_json(&path).expect("parse artifact contract");
+    let model = &contract["correlation_model"];
+    assert!(model.is_object(), "Contract must define correlation_model");
+    assert!(
+        model["trace_id"].is_object(),
+        "Correlation model must define trace_id"
+    );
+    assert!(
+        model["span_id"].is_object(),
+        "Correlation model must define span_id"
+    );
+}
+
+#[test]
+fn artifact_contract_defines_per_suite_artifacts() {
+    let path = repo_root().join("docs/provider_e2e_artifact_contract.json");
+    let contract = load_json(&path).expect("parse artifact contract");
+    let suite = &contract["per_suite_artifacts"];
+    assert!(
+        suite.is_object(),
+        "Contract must define per_suite_artifacts"
+    );
+
+    let required = suite["required"]
+        .as_array()
+        .expect("required artifacts array");
+    let names: Vec<&str> = required.iter().filter_map(|a| a["name"].as_str()).collect();
+    assert!(
+        names.contains(&"test-log.jsonl"),
+        "Per-suite artifacts must require test-log.jsonl"
+    );
+    assert!(
+        names.contains(&"artifact-index.jsonl"),
+        "Per-suite artifacts must require artifact-index.jsonl"
+    );
+}
+
+#[test]
+fn artifact_contract_defines_per_run_artifacts() {
+    let path = repo_root().join("docs/provider_e2e_artifact_contract.json");
+    let contract = load_json(&path).expect("parse artifact contract");
+    let run = &contract["per_run_artifacts"];
+    assert!(run.is_object(), "Contract must define per_run_artifacts");
+
+    let required = run["required"].as_array().expect("required run artifacts");
+    let names: Vec<&str> = required.iter().filter_map(|a| a["name"].as_str()).collect();
+    assert!(
+        names.contains(&"evidence_contract.json"),
+        "Per-run artifacts must require evidence_contract.json"
+    );
+    assert!(
+        names.contains(&"environment.json"),
+        "Per-run artifacts must require environment.json"
+    );
+}
+
+#[test]
+fn artifact_contract_documents_gaps() {
+    let path = repo_root().join("docs/provider_e2e_artifact_contract.json");
+    let contract = load_json(&path).expect("parse artifact contract");
+    let gaps = contract["gaps_identified"]
+        .as_array()
+        .expect("gaps_identified array");
+    assert!(
+        !gaps.is_empty(),
+        "Contract must document identified gaps with severity"
+    );
+    for gap in gaps {
+        assert!(gap["id"].is_string(), "Each gap must have an id");
+        assert!(gap["severity"].is_string(), "Each gap must have a severity");
+        assert!(
+            gap["recommendation"].is_string(),
+            "Each gap must have a recommendation"
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Section 2: JSONL schema validation is executable (not prose-only)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn validate_jsonl_line_accepts_valid_v2_record() {
+    let record = serde_json::json!({
+        "schema": "pi.test.log.v2",
+        "type": "log",
+        "trace_id": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+        "seq": 1,
+        "ts": "2026-02-13T00:00:00Z",
+        "t_ms": 0,
+        "level": "info",
+        "category": "test",
+        "message": "test entry"
+    });
+    let line = serde_json::to_string(&record).unwrap();
+    assert!(
+        validate_jsonl_line(&line, 1).is_ok(),
+        "Valid v2 record must pass validation"
+    );
+}
+
+#[test]
+fn validate_jsonl_line_rejects_missing_trace_id_in_v2() {
+    let record = serde_json::json!({
+        "schema": "pi.test.log.v2",
+        "type": "log",
+        "seq": 1,
+        "ts": "2026-02-13T00:00:00Z",
+        "t_ms": 0,
+        "level": "info",
+        "category": "test",
+        "message": "no trace_id"
+    });
+    let line = serde_json::to_string(&record).unwrap();
+    let result = validate_jsonl_line(&line, 1);
+    assert!(
+        result.is_err(),
+        "v2 record without trace_id must fail validation"
+    );
+}
+
+#[test]
+fn validate_jsonl_line_accepts_valid_artifact_record() {
+    let record = serde_json::json!({
+        "schema": "pi.test.artifact.v1",
+        "type": "artifact",
+        "seq": 1,
+        "ts": "2026-02-13T00:00:00Z",
+        "t_ms": 100,
+        "name": "test-output.json",
+        "path": "/tmp/test-output.json"
+    });
+    let line = serde_json::to_string(&record).unwrap();
+    assert!(
+        validate_jsonl_line(&line, 1).is_ok(),
+        "Valid artifact record must pass validation"
+    );
+}
+
+#[test]
+fn validate_jsonl_line_rejects_unknown_schema() {
+    let record = serde_json::json!({
+        "schema": "pi.test.unknown.v99",
+        "type": "log",
+        "seq": 1
+    });
+    let line = serde_json::to_string(&record).unwrap();
+    let result = validate_jsonl_line(&line, 1);
+    assert!(result.is_err(), "Unknown schema must fail validation");
+}
+
+#[test]
+fn validate_jsonl_line_rejects_non_numeric_seq() {
+    let record = serde_json::json!({
+        "schema": "pi.test.log.v2",
+        "type": "log",
+        "trace_id": "aaaa",
+        "seq": "not-a-number",
+        "ts": "2026-02-13T00:00:00Z",
+        "t_ms": 0,
+        "level": "info",
+        "category": "test",
+        "message": "bad seq"
+    });
+    let line = serde_json::to_string(&record).unwrap();
+    let result = validate_jsonl_line(&line, 1);
+    assert!(
+        result.is_err(),
+        "Non-numeric seq field must fail validation"
+    );
+}
+
+#[test]
+fn validate_jsonl_batch_catches_all_errors() {
+    let content = [
+        r#"{"schema":"pi.test.log.v2","type":"log","trace_id":"abc","seq":1,"ts":"2026-01-01T00:00:00Z","t_ms":0,"level":"info","category":"t","message":"ok"}"#,
+        r#"{"schema":"pi.test.unknown.v1","type":"bad"}"#,
+        r"not valid json at all",
+        r#"{"schema":"pi.test.log.v2","type":"log","seq":2}"#,
+    ].join("\n");
+
+    let errors = validate_jsonl(&content);
+    assert!(
+        errors.len() >= 2,
+        "Batch validation must catch multiple errors, got {}",
+        errors.len()
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Section 3: Harness produces schema-compliant JSONL
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn harness_log_output_passes_schema_validation() {
+    let harness = TestHarness::new("schema_validation_test");
+    harness.info("first entry");
+    harness.info("second entry");
+    harness.info_ctx("with context", &[("key", "value")]);
+
+    let output = harness.dump_logs();
+    let errors = validate_jsonl(&output);
+    assert!(
+        errors.is_empty(),
+        "Harness JSONL output must pass schema validation. Errors: {errors:?}"
+    );
+}
+
+#[test]
+fn harness_artifact_index_passes_schema_validation() {
+    let harness = TestHarness::new("artifact_index_schema_test");
+    let path = harness.temp_path("data.json");
+    std::fs::write(&path, r#"{"ok": true}"#).unwrap();
+    harness.record_artifact("data.json", &path);
+
+    let index = harness.dump_artifact_index();
+    let errors = validate_jsonl(&index);
+    assert!(
+        errors.is_empty(),
+        "Artifact index JSONL must pass schema validation. Errors: {errors:?}"
+    );
+}
+
+#[test]
+fn harness_logs_use_v2_schema() {
+    let harness = TestHarness::new("v2_schema_test");
+    harness.info("check version");
+
+    let output = harness.dump_logs();
+    for line in output.lines().filter(|l| !l.is_empty()) {
+        let parsed: Value = serde_json::from_str(line).expect("valid JSON");
+        let schema = parsed["schema"].as_str().unwrap_or("");
+        assert_eq!(
+            schema, "pi.test.log.v2",
+            "All new harness logs must use pi.test.log.v2, got {schema}"
+        );
+    }
+}
+
+#[test]
+fn harness_logs_have_monotonic_seq() {
+    let harness = TestHarness::new("monotonic_seq_test");
+    harness.info("one");
+    harness.info("two");
+    harness.info("three");
+
+    let output = harness.dump_logs();
+    let mut prev_seq = 0u64;
+    for line in output.lines().filter(|l| !l.is_empty()) {
+        let parsed: Value = serde_json::from_str(line).expect("valid JSON");
+        let seq = parsed["seq"].as_u64().expect("seq is number");
+        assert!(
+            seq > prev_seq,
+            "seq must be monotonically increasing: got {seq} after {prev_seq}"
+        );
+        prev_seq = seq;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Section 4: Correlation ID enforcement
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn harness_logs_contain_trace_id() {
+    let harness = TestHarness::new("trace_id_test");
+    harness.info("check trace_id");
+
+    let output = harness.dump_logs();
+    let first_line = output.lines().next().expect("at least one line");
+    let parsed: Value = serde_json::from_str(first_line).expect("valid JSON");
+    let trace_id = parsed["trace_id"]
+        .as_str()
+        .expect("trace_id must be string");
+    assert!(!trace_id.is_empty(), "trace_id must be non-empty");
+}
+
+#[test]
+fn trace_id_is_consistent_within_logger() {
+    let harness = TestHarness::new("trace_id_consistency_test");
+    harness.info("first");
+    harness.info("second");
+    harness.info("third");
+
+    let output = harness.dump_logs();
+    let trace_ids: HashSet<String> = output
+        .lines()
+        .filter(|l| !l.is_empty())
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter_map(|v| v["trace_id"].as_str().map(String::from))
+        .collect();
+
+    assert_eq!(
+        trace_ids.len(),
+        1,
+        "All logs from same harness must share one trace_id, got {trace_ids:?}"
+    );
+}
+
+#[test]
+fn different_harnesses_have_different_trace_ids() {
+    let h1 = TestHarness::new("trace_unique_1");
+    h1.info("from h1");
+    let h2 = TestHarness::new("trace_unique_2");
+    h2.info("from h2");
+
+    let get_trace_id = |harness: &TestHarness| -> String {
+        let output = harness.dump_logs();
+        let first = output.lines().next().unwrap();
+        let parsed: Value = serde_json::from_str(first).unwrap();
+        parsed["trace_id"].as_str().unwrap().to_string()
+    };
+
+    let id1 = get_trace_id(&h1);
+    let id2 = get_trace_id(&h2);
+    assert_ne!(
+        id1, id2,
+        "Different harness instances must have distinct trace_ids"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Section 5: Redaction enforcement
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn redaction_covers_all_sensitive_key_patterns() {
+    let sensitive_keys = [
+        "api_key",
+        "api-key",
+        "authorization",
+        "bearer",
+        "cookie",
+        "credential",
+        "password",
+        "private_key",
+        "secret",
+        "token",
+    ];
+
+    for key in &sensitive_keys {
+        let harness = TestHarness::new(format!("redact_{key}"));
+        harness.info_ctx("test", &[(key, "super-secret-value-12345")]);
+        let output = harness.dump_logs();
+        assert!(
+            !output.contains("super-secret-value-12345"),
+            "Sensitive key '{key}' must be redacted from log output"
+        );
+        assert!(
+            output.contains("[REDACTED]"),
+            "Redacted key '{key}' must show [REDACTED] placeholder"
+        );
+    }
+}
+
+#[test]
+fn deep_json_redaction_handles_nested_objects() {
+    let mut value = serde_json::json!({
+        "request": {
+            "headers": {
+                "Authorization": "Bearer secret123",
+                "Content-Type": "application/json"
+            },
+            "body": {
+                "nested": {
+                    "api_key": "sk-secret-key"
+                }
+            }
+        }
+    });
+
+    redact_json_value(&mut value);
+
+    let text = serde_json::to_string(&value).unwrap();
+    assert!(
+        !text.contains("secret123"),
+        "Nested authorization must be redacted"
+    );
+    assert!(
+        !text.contains("sk-secret-key"),
+        "Nested api_key must be redacted"
+    );
+    assert!(
+        text.contains("application/json"),
+        "Non-sensitive fields must be preserved"
+    );
+}
+
+#[test]
+fn find_unredacted_keys_detects_all_leaks() {
+    let value = serde_json::json!({
+        "headers": {
+            "Authorization": "Bearer leaked-token",
+            "x-api-key": "sk-ant-leaked",
+            "Content-Type": "text/plain"
+        },
+        "body": {
+            "password": "p@ssw0rd",
+            "username": "safe-value"
+        }
+    });
+
+    let unredacted = find_unredacted_keys(&value);
+    assert!(
+        unredacted.len() >= 3,
+        "Must detect at least 3 unredacted sensitive keys, found: {unredacted:?}"
+    );
+}
+
+#[test]
+fn find_unredacted_keys_passes_when_all_redacted() {
+    let value = serde_json::json!({
+        "headers": {
+            "Authorization": "[REDACTED]",
+            "api_key": "[REDACTED]"
+        },
+        "body": {
+            "password": "[REDACTED]",
+            "data": "safe"
+        }
+    });
+
+    let unredacted = find_unredacted_keys(&value);
+    assert!(
+        unredacted.is_empty(),
+        "Properly redacted data must pass: {unredacted:?}"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Section 6: Scenario matrix artifact requirements are enforceable
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn scenario_matrix_required_suite_artifacts_match_contract() {
+    let matrix_path = repo_root().join("docs/e2e_scenario_matrix.json");
+    let matrix = load_json(&matrix_path).expect("load scenario matrix");
+
+    let contract_path = repo_root().join("docs/provider_e2e_artifact_contract.json");
+    let contract = load_json(&contract_path).expect("load artifact contract");
+
+    let matrix_artifacts: HashSet<String> = matrix["ci_policy"]["required_suite_artifacts"]
+        .as_array()
+        .unwrap_or(&Vec::new())
+        .iter()
+        .filter_map(|v| v.as_str().map(String::from))
+        .collect();
+
+    let contract_artifacts: HashSet<String> = contract["per_suite_artifacts"]["required"]
+        .as_array()
+        .unwrap_or(&Vec::new())
+        .iter()
+        .filter_map(|v| v["name"].as_str().map(String::from))
+        .collect();
+
+    // Contract must cover all matrix requirements
+    for artifact in &matrix_artifacts {
+        assert!(
+            contract_artifacts.contains(artifact),
+            "Contract must define artifact '{artifact}' required by scenario matrix"
+        );
+    }
+}
+
+#[test]
+fn scenario_matrix_required_run_artifacts_match_contract() {
+    let matrix_path = repo_root().join("docs/e2e_scenario_matrix.json");
+    let matrix = load_json(&matrix_path).expect("load scenario matrix");
+
+    let contract_path = repo_root().join("docs/provider_e2e_artifact_contract.json");
+    let contract = load_json(&contract_path).expect("load artifact contract");
+
+    let matrix_artifacts: HashSet<String> = matrix["ci_policy"]["required_run_artifacts"]
+        .as_array()
+        .unwrap_or(&Vec::new())
+        .iter()
+        .filter_map(|v| v.as_str().map(String::from))
+        .collect();
+
+    let contract_artifacts: HashSet<String> = contract["per_run_artifacts"]["required"]
+        .as_array()
+        .unwrap_or(&Vec::new())
+        .iter()
+        .filter_map(|v| v["name"].as_str().map(String::from))
+        .collect();
+
+    for artifact in &matrix_artifacts {
+        assert!(
+            contract_artifacts.contains(artifact),
+            "Contract must define run artifact '{artifact}' required by scenario matrix"
+        );
+    }
+}
+
+#[test]
+fn scenario_matrix_every_workflow_has_expected_artifacts() {
+    let matrix_path = repo_root().join("docs/e2e_scenario_matrix.json");
+    let matrix = load_json(&matrix_path).expect("load scenario matrix");
+
+    let rows = matrix["rows"].as_array().expect("rows array");
+    let required_suite = matrix["ci_policy"]["required_suite_artifacts"]
+        .as_array()
+        .unwrap_or(&Vec::new())
+        .iter()
+        .filter_map(|v| v.as_str().map(String::from))
+        .collect::<HashSet<_>>();
+
+    for row in rows {
+        let wf_id = row["workflow_id"].as_str().unwrap_or("unknown");
+        let expected = row["expected_artifacts"]
+            .as_array()
+            .unwrap_or(&Vec::new())
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect::<HashSet<_>>();
+
+        // Each workflow must include all required suite artifacts
+        for required in &required_suite {
+            assert!(
+                expected.contains(required),
+                "Workflow '{wf_id}' must list required artifact '{required}'"
+            );
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Section 7: Replay bundle schema validation
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn replay_bundle_has_required_fields() {
+    let path = repo_root().join("tests/full_suite_gate/replay_bundle.json");
+    if let Some(bundle) = load_json(&path) {
+        let required_fields = [
+            "schema",
+            "generated_at",
+            "correlation_id",
+            "source_summary_path",
+            "one_command_replay",
+            "environment",
+            "summary",
+        ];
+        for field in &required_fields {
+            assert!(
+                bundle.get(*field).is_some(),
+                "replay_bundle must have field: {field}"
+            );
+        }
+
+        // Validate environment sub-fields
+        let env_fields = ["profile", "rustc_version", "git_sha", "git_branch", "os"];
+        let env = &bundle["environment"];
+        for field in &env_fields {
+            assert!(
+                env.get(*field).is_some(),
+                "replay_bundle.environment must have field: {field}"
+            );
+        }
+    }
+    // If replay_bundle doesn't exist, that's OK - it's generated during full runs
+}
+
+#[test]
+fn replay_bundle_schema_version_is_v1() {
+    let path = repo_root().join("tests/full_suite_gate/replay_bundle.json");
+    if let Some(bundle) = load_json(&path) {
+        let schema = bundle["schema"].as_str().unwrap_or("");
+        assert_eq!(
+            schema, "pi.e2e.replay_bundle.v1",
+            "Replay bundle must use schema pi.e2e.replay_bundle.v1"
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Section 8: Evidence contract and failure digest schema validation
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn failure_digest_schema_defined_in_runner_script() {
+    let script_path = repo_root().join("scripts/e2e/run_all.sh");
+    let content = load_text(&script_path).expect("run_all.sh must exist");
+
+    // Failure digest must define these fields in the script
+    let required = [
+        "schema",
+        "suite",
+        "root_cause_class",
+        "impacted_scenario_ids",
+        "first_failing_assertion",
+        "remediation_pointer",
+    ];
+
+    for field in &required {
+        assert!(
+            content.contains(field),
+            "run_all.sh must define failure_digest field: {field}"
+        );
+    }
+}
+
+#[test]
+fn failure_digest_root_cause_taxonomy_is_complete() {
+    let script_path = repo_root().join("scripts/e2e/run_all.sh");
+    let content = load_text(&script_path).expect("run_all.sh must exist");
+
+    // Contract-defined root cause taxonomy
+    let taxonomy = [
+        "timeout",
+        "assertion_failure",
+        "permission_denied",
+        "network_io",
+        "missing_file",
+        "panic",
+    ];
+
+    for cause in &taxonomy {
+        assert!(
+            content.contains(cause),
+            "run_all.sh must classify root cause: {cause}"
+        );
+    }
+}
+
+#[test]
+fn evidence_contract_referenced_in_runner() {
+    let script_path = repo_root().join("scripts/e2e/run_all.sh");
+    let content = load_text(&script_path).expect("run_all.sh must exist");
+    assert!(
+        content.contains("evidence_contract"),
+        "run_all.sh must generate evidence_contract.json"
+    );
+    assert!(
+        content.contains("environment.json"),
+        "run_all.sh must generate environment.json"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Section 9: CI workflow enforces artifact schemas
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn ci_workflow_captures_jsonl_artifacts() {
+    let ci_path = repo_root().join(".github/workflows/ci.yml");
+    let content = load_text(&ci_path).expect("CI workflow must exist");
+
+    assert!(
+        content.contains("**/*.jsonl"),
+        "CI must capture JSONL artifacts (test-log.jsonl, artifact-index.jsonl)"
+    );
+    assert!(
+        content.contains("**/*.json"),
+        "CI must capture JSON artifacts (result.json, evidence_contract.json)"
+    );
+}
+
+#[test]
+fn ci_workflow_has_correlation_id_support() {
+    let ci_path = repo_root().join(".github/workflows/ci.yml");
+    let content = load_text(&ci_path).expect("CI workflow must exist");
+    assert!(
+        content.contains("CORRELATION_ID") || content.contains("correlation_id"),
+        "CI workflow must support correlation IDs for cross-shard tracing"
+    );
+}
+
+#[test]
+fn ci_workflow_artifact_upload_covers_provider_tests() {
+    let ci_path = repo_root().join(".github/workflows/ci.yml");
+    let content = load_text(&ci_path).expect("CI workflow must exist");
+    assert!(
+        content.contains("provider-test-artifacts") || content.contains("provider_test_artifacts"),
+        "CI must upload provider test artifacts"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Section 10: Provider-specific artifact validation
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn artifact_contract_defines_provider_variants() {
+    let path = repo_root().join("docs/provider_e2e_artifact_contract.json");
+    let contract = load_json(&path).expect("parse artifact contract");
+    let variants = contract["provider_specific_requirements"]["provider_variants"]
+        .as_object()
+        .expect("provider_variants must be object");
+
+    let expected_providers = ["anthropic", "openai", "google", "cohere", "azure"];
+    for provider in &expected_providers {
+        assert!(
+            variants.contains_key(*provider),
+            "Contract must define variant for provider: {provider}"
+        );
+    }
+}
+
+#[test]
+fn artifact_contract_provider_variants_have_credential_source() {
+    let path = repo_root().join("docs/provider_e2e_artifact_contract.json");
+    let contract = load_json(&path).expect("parse artifact contract");
+    let variants = contract["provider_specific_requirements"]["provider_variants"]
+        .as_object()
+        .expect("provider_variants");
+
+    for (provider, variant) in variants {
+        assert!(
+            variant["credential_source"].is_string(),
+            "Provider '{provider}' variant must have credential_source"
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Section 11: Cross-reference validation (tests exist that enforce schemas)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_infrastructure_has_jsonl_validation_function() {
+    let logging_path = repo_root().join("tests/common/logging.rs");
+    let content = load_text(&logging_path).expect("logging.rs must exist");
+    assert!(
+        content.contains("fn validate_jsonl_line"),
+        "tests/common/logging.rs must define validate_jsonl_line()"
+    );
+    assert!(
+        content.contains("fn validate_jsonl"),
+        "tests/common/logging.rs must define validate_jsonl()"
+    );
+}
+
+#[test]
+fn test_infrastructure_has_redaction_functions() {
+    let logging_path = repo_root().join("tests/common/logging.rs");
+    let content = load_text(&logging_path).expect("logging.rs must exist");
+    assert!(
+        content.contains("fn redact_json_value"),
+        "tests/common/logging.rs must define redact_json_value()"
+    );
+    assert!(
+        content.contains("fn find_unredacted_keys"),
+        "tests/common/logging.rs must define find_unredacted_keys()"
+    );
+}
+
+#[test]
+fn existing_artifact_retention_tests_cover_provider_workflows() {
+    let test_files = [
+        "tests/e2e_artifact_retention_triage.rs",
+        "tests/ci_artifact_retention.rs",
+        "tests/e2e_replay_bundles.rs",
+    ];
+
+    for file in &test_files {
+        let path = repo_root().join(file);
+        assert!(path.exists(), "Artifact validation test must exist: {file}");
+    }
+}
+
+#[test]
+fn provider_e2e_test_files_use_test_harness() {
+    let provider_test_files = [
+        "tests/e2e_provider_failure_injection.rs",
+        "tests/e2e_cross_provider_parity.rs",
+    ];
+
+    for file in &provider_test_files {
+        let path = repo_root().join(file);
+        if path.exists() {
+            let content = load_text(&path).unwrap_or_default();
+            assert!(
+                content.contains("TestHarness"),
+                "{file} must use TestHarness for structured artifact output"
+            );
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Section 12: Comprehensive validation report
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn comprehensive_artifact_schema_validation_report() {
+    let harness = TestHarness::new("artifact_schema_validation_report");
+
+    let mut checks: Vec<Value> = Vec::new();
+
+    // Check 1: Contract exists
+    let contract_exists = repo_root()
+        .join("docs/provider_e2e_artifact_contract.json")
+        .exists();
+    checks.push(serde_json::json!({
+        "check": "artifact_contract_exists",
+        "status": if contract_exists { "pass" } else { "fail" },
+    }));
+
+    // Check 2: Schema validation function exists
+    let logging_path = repo_root().join("tests/common/logging.rs");
+    let logging = load_text(&logging_path).unwrap_or_default();
+    let has_validator = logging.contains("fn validate_jsonl_line");
+    checks.push(serde_json::json!({
+        "check": "jsonl_schema_validator_exists",
+        "status": if has_validator { "pass" } else { "fail" },
+    }));
+
+    // Check 3: Redaction functions exist
+    let has_redaction =
+        logging.contains("fn redact_json_value") && logging.contains("fn find_unredacted_keys");
+    checks.push(serde_json::json!({
+        "check": "redaction_functions_exist",
+        "status": if has_redaction { "pass" } else { "fail" },
+    }));
+
+    // Check 4: Scenario matrix defines required artifacts
+    let matrix_path = repo_root().join("docs/e2e_scenario_matrix.json");
+    let matrix_ok = load_json(&matrix_path).is_some_and(|m| {
+        m["ci_policy"]["required_suite_artifacts"]
+            .as_array()
+            .is_some_and(|a| a.len() >= 4)
+    });
+    checks.push(serde_json::json!({
+        "check": "scenario_matrix_required_artifacts",
+        "status": if matrix_ok { "pass" } else { "fail" },
+    }));
+
+    // Check 5: CI captures JSONL artifacts
+    let ci_path = repo_root().join(".github/workflows/ci.yml");
+    let ci = load_text(&ci_path).unwrap_or_default();
+    let ci_captures = ci.contains("**/*.jsonl") && ci.contains("**/*.json");
+    checks.push(serde_json::json!({
+        "check": "ci_captures_structured_artifacts",
+        "status": if ci_captures { "pass" } else { "fail" },
+    }));
+
+    // Check 6: Replay bundle exists with valid schema
+    let replay_ok = load_json(&repo_root().join("tests/full_suite_gate/replay_bundle.json"))
+        .is_some_and(|b| b["schema"].as_str() == Some("pi.e2e.replay_bundle.v1"));
+    checks.push(serde_json::json!({
+        "check": "replay_bundle_schema_valid",
+        "status": if replay_ok { "pass" } else { "skip" },
+    }));
+
+    // Check 7: Harness produces valid JSONL
+    let h = TestHarness::new("inner_validation");
+    h.info("test");
+    let valid_jsonl = validate_jsonl(&h.dump_logs()).is_empty();
+    checks.push(serde_json::json!({
+        "check": "harness_produces_valid_jsonl",
+        "status": if valid_jsonl { "pass" } else { "fail" },
+    }));
+
+    // Check 8: Correlation IDs in CI
+    let ci_corr = ci.contains("CORRELATION_ID") || ci.contains("correlation_id");
+    checks.push(serde_json::json!({
+        "check": "ci_correlation_id_support",
+        "status": if ci_corr { "pass" } else { "fail" },
+    }));
+
+    let passed = checks.iter().filter(|c| c["status"] == "pass").count();
+    let total = checks.len();
+    let skipped = checks.iter().filter(|c| c["status"] == "skip").count();
+
+    let report = serde_json::json!({
+        "schema": "pi.qa.artifact_schema_validation_report.v1",
+        "bead": "bd-3uqg.14.3.3",
+        "total_checks": total,
+        "passed": passed,
+        "skipped": skipped,
+        "failed": total - passed - skipped,
+        "checks": checks,
+    });
+
+    let report_path = harness.temp_path("artifact_schema_validation_report.json");
+    std::fs::write(&report_path, serde_json::to_string_pretty(&report).unwrap())
+        .expect("write report");
+    harness.record_artifact("artifact_schema_validation_report.json", &report_path);
+
+    eprintln!("\n=== Artifact Schema Validation Report ===");
+    eprintln!("  Passed: {passed}/{total}");
+    eprintln!("  Skipped: {skipped}");
+    eprintln!("  Failed: {}", total - passed - skipped);
+    eprintln!("  Report: {}", report_path.display());
+
+    assert!(
+        passed >= total - skipped - 1,
+        "At least {}/{total} checks must pass (excluding skips), got {passed}",
+        total - skipped - 1
+    );
+}
