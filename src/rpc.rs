@@ -134,6 +134,21 @@ fn is_extension_command(message: &str, expanded: &str) -> bool {
     message.trim_start().starts_with('/') && message == expanded
 }
 
+fn try_send_line_with_backpressure(tx: &mpsc::Sender<String>, mut line: String) -> bool {
+    loop {
+        match tx.try_send(line) {
+            Ok(()) => return true,
+            Err(mpsc::SendError::Full(unsent)) => {
+                line = unsent;
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(mpsc::SendError::Disconnected(_) | mpsc::SendError::Cancelled(_)) => {
+                return false;
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 struct RpcSharedState {
     steering: VecDeque<Message>,
@@ -215,14 +230,9 @@ pub async fn run_stdio(mut session: AgentSession, options: RpcOptions) -> Result
                 Ok(_) => {
                     let line_to_send = std::mem::take(&mut line);
                     // Retry loop to handle backpressure (channel full) without dropping input.
-                    // If the channel is closed (agent exited), we'll loop until process termination,
-                    // which is acceptable for this daemon thread.
-                    loop {
-                        // Clone the string for the attempt so we retain ownership for retry.
-                        if in_tx.try_send(line_to_send.clone()).is_ok() {
-                            break;
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    // Stop when the receiver side has closed so this thread does not spin forever.
+                    if !try_send_line_with_backpressure(&in_tx, line_to_send) {
+                        break;
                     }
                 }
             }
@@ -3560,6 +3570,27 @@ mod tests {
     #[test]
     fn is_extension_command_leading_whitespace() {
         assert!(is_extension_command("  /cmd", "  /cmd"));
+    }
+
+    // -----------------------------------------------------------------------
+    // try_send_line_with_backpressure
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn try_send_line_with_backpressure_enqueues_when_capacity_available() {
+        let (tx, _rx) = mpsc::channel::<String>(1);
+        assert!(try_send_line_with_backpressure(&tx, "line".to_string()));
+        assert!(matches!(
+            tx.try_send("next".to_string()),
+            Err(mpsc::SendError::Full(_))
+        ));
+    }
+
+    #[test]
+    fn try_send_line_with_backpressure_stops_when_receiver_closed() {
+        let (tx, rx) = mpsc::channel::<String>(1);
+        drop(rx);
+        assert!(!try_send_line_with_backpressure(&tx, "line".to_string()));
     }
 
     // -----------------------------------------------------------------------

@@ -85,12 +85,12 @@ impl SseParser {
         }
     }
 
-    /// Feed data to the parser and extract any complete events.
-    ///
-    /// Returns a vector of parsed events. Events are delimited by blank lines.
-    pub fn feed(&mut self, data: &str) -> Vec<SseEvent> {
+    /// Feed data to the parser and emit any complete events to `emit`.
+    fn feed_into<F>(&mut self, data: &str, mut emit: F)
+    where
+        F: FnMut(SseEvent),
+    {
         self.buffer.push_str(data);
-        let mut events = Vec::with_capacity(4);
 
         let mut buffer = std::mem::take(&mut self.buffer);
 
@@ -146,7 +146,7 @@ impl SseParser {
                     if self.current.event.is_empty() {
                         self.current.event = Cow::Borrowed("message");
                     }
-                    events.push(std::mem::take(&mut self.current));
+                    emit(std::mem::take(&mut self.current));
                     self.current = SseEvent::default();
                     self.has_data = false;
                 }
@@ -159,6 +159,14 @@ impl SseParser {
             buffer.drain(..start);
         }
         self.buffer = buffer;
+    }
+
+    /// Feed data to the parser and extract any complete events.
+    ///
+    /// Returns a vector of parsed events. Events are delimited by blank lines.
+    pub fn feed(&mut self, data: &str) -> Vec<SseEvent> {
+        let mut events = Vec::with_capacity(4);
+        self.feed_into(data, |event| events.push(event));
         events
     }
 
@@ -221,6 +229,12 @@ impl<S> SseStream<S>
 where
     S: futures::Stream<Item = Result<Vec<u8>, std::io::Error>> + Unpin,
 {
+    fn feed_to_pending(&mut self, s: &str) {
+        let parser = &mut self.parser;
+        let pending = &mut self.pending_events;
+        parser.feed_into(s, |event| pending.push_back(event));
+    }
+
     fn feed_valid_prefix(&mut self, bytes: &[u8]) {
         if bytes.is_empty() {
             return;
@@ -228,15 +242,13 @@ where
         let Ok(s) = std::str::from_utf8(bytes) else {
             return;
         };
-        let events = self.parser.feed(s);
-        self.pending_events.extend(events);
+        self.feed_to_pending(s);
     }
 
     fn process_chunk_without_utf8_tail(&mut self, bytes: Vec<u8>) -> Result<(), std::io::Error> {
         match std::str::from_utf8(&bytes) {
             Ok(s) => {
-                let events = self.parser.feed(s);
-                self.pending_events.extend(events);
+                self.feed_to_pending(s);
                 Ok(())
             }
             Err(err) => {
@@ -265,8 +277,7 @@ where
 
         match std::str::from_utf8(&utf8_buffer) {
             Ok(s) => {
-                let events = self.parser.feed(s);
-                self.pending_events.extend(events);
+                self.feed_to_pending(s);
                 utf8_buffer.clear();
             }
             Err(err) => {

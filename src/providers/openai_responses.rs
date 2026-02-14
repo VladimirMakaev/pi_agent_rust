@@ -1393,6 +1393,17 @@ mod tests {
                 content: None,
                 reason: None,
             },
+            StreamEvent::TextEnd {
+                content_index,
+                content,
+                ..
+            } => EventSummary {
+                kind: "text_end".to_string(),
+                content_index: Some(*content_index),
+                delta: None,
+                content: Some(content.clone()),
+                reason: None,
+            },
             StreamEvent::Done { reason, .. } => EventSummary {
                 kind: "done".to_string(),
                 content_index: None,
