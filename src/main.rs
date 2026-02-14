@@ -1960,9 +1960,6 @@ async fn run_print_mode(
     if mode != "text" && mode != "json" {
         bail!("Unknown mode: {mode}");
     }
-    if initial.is_none() && messages.is_empty() {
-        bail!("No input provided. Use: pi -p \"your message\" or pipe input via stdin");
-    }
 
     if mode == "json" {
         let cx = pi::agent_cx::AgentCx::for_request();
@@ -1972,6 +1969,13 @@ async fn run_print_mode(
             .await
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         println!("{}", serde_json::to_string(&session.header)?);
+    }
+    if initial.is_none() && messages.is_empty() {
+        if mode == "json" {
+            io::stdout().flush()?;
+            return Ok(());
+        }
+        bail!("No input provided. Use: pi -p \"your message\" or pipe input via stdin");
     }
 
     let mut last_message: Option<AssistantMessage> = None;
@@ -2038,20 +2042,23 @@ async fn run_print_mode(
     }
 
     let Some(last_message) = last_message else {
+        if mode == "json" {
+            io::stdout().flush()?;
+            return Ok(());
+        }
         bail!("No messages were sent");
     };
 
-    if matches!(
-        last_message.stop_reason,
-        StopReason::Error | StopReason::Aborted
-    ) {
-        let message = last_message
-            .error_message
-            .unwrap_or_else(|| "Request error".to_string());
-        bail!(message);
-    }
-
     if mode == "text" {
+        if matches!(
+            last_message.stop_reason,
+            StopReason::Error | StopReason::Aborted
+        ) {
+            let message = last_message
+                .error_message
+                .unwrap_or_else(|| "Request error".to_string());
+            bail!(message);
+        }
         let mut markdown = String::new();
         for block in &last_message.content {
             if let ContentBlock::Text(text) = block {

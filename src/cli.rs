@@ -2,6 +2,247 @@
 
 use clap::{Parser, Subcommand};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtensionCliFlag {
+    pub name: String,
+    pub value: Option<String>,
+}
+
+impl ExtensionCliFlag {
+    pub fn display_name(&self) -> String {
+        format!("--{}", self.name)
+    }
+}
+
+#[derive(Debug)]
+pub struct ParsedCli {
+    pub cli: Cli,
+    pub extension_flags: Vec<ExtensionCliFlag>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LongOptionSpec {
+    takes_value: bool,
+    optional_value: bool,
+}
+
+const ROOT_SUBCOMMANDS: &[&str] = &[
+    "install",
+    "remove",
+    "update",
+    "update-index",
+    "search",
+    "info",
+    "list",
+    "config",
+    "doctor",
+];
+
+fn known_long_option(name: &str) -> Option<LongOptionSpec> {
+    let (takes_value, optional_value) = match name {
+        "version"
+        | "continue"
+        | "resume"
+        | "no-session"
+        | "print"
+        | "verbose"
+        | "no-tools"
+        | "no-extensions"
+        | "explain-extension-policy"
+        | "explain-repair-policy"
+        | "no-skills"
+        | "no-prompt-templates"
+        | "no-themes"
+        | "list-providers" => (false, false),
+        "provider"
+        | "model"
+        | "api-key"
+        | "models"
+        | "thinking"
+        | "system-prompt"
+        | "append-system-prompt"
+        | "session"
+        | "session-dir"
+        | "mode"
+        | "tools"
+        | "extension"
+        | "extension-policy"
+        | "repair-policy"
+        | "skill"
+        | "prompt-template"
+        | "theme"
+        | "theme-path"
+        | "export" => (true, false),
+        "list-models" => (true, true),
+        _ => return None,
+    };
+    Some(LongOptionSpec {
+        takes_value,
+        optional_value,
+    })
+}
+
+fn is_known_short_flag(token: &str) -> bool {
+    if !token.starts_with('-') || token.starts_with("--") {
+        return false;
+    }
+    let body = &token[1..];
+    if body.is_empty() {
+        return false;
+    }
+    body.chars()
+        .all(|ch| matches!(ch, 'v' | 'c' | 'r' | 'p' | 'e'))
+}
+
+fn preprocess_extension_flags(raw_args: &[String]) -> (Vec<String>, Vec<ExtensionCliFlag>) {
+    if raw_args.is_empty() {
+        return (vec!["pi".to_string()], Vec::new());
+    }
+
+    let mut filtered = Vec::with_capacity(raw_args.len());
+    filtered.push(raw_args[0].clone());
+
+    let mut extracted = Vec::new();
+    let mut expecting_value = false;
+    let mut in_subcommand = false;
+    let mut in_message_args = false;
+
+    let mut index = 1usize;
+    while index < raw_args.len() {
+        let token = &raw_args[index];
+
+        if token == "--" {
+            filtered.extend(raw_args[index..].iter().cloned());
+            break;
+        }
+
+        if expecting_value {
+            filtered.push(token.clone());
+            expecting_value = false;
+            index += 1;
+            continue;
+        }
+
+        if in_subcommand || in_message_args {
+            filtered.push(token.clone());
+            index += 1;
+            continue;
+        }
+
+        if token.starts_with("--") && token.len() > 2 {
+            let without_prefix = &token[2..];
+            let (name, has_inline_value) = without_prefix
+                .split_once('=')
+                .map_or((without_prefix, false), |(name, _)| (name, true));
+
+            if let Some(spec) = known_long_option(name) {
+                filtered.push(token.clone());
+                if spec.takes_value && !has_inline_value && !spec.optional_value {
+                    expecting_value = true;
+                } else if spec.takes_value && !has_inline_value && spec.optional_value {
+                    let has_value = raw_args
+                        .get(index + 1)
+                        .is_some_and(|next| !next.starts_with('-') || next == "-");
+                    expecting_value = has_value;
+                }
+                index += 1;
+                continue;
+            }
+
+            let (name, inline_value) = without_prefix
+                .split_once('=')
+                .map_or((without_prefix, None), |(name, value)| {
+                    (name, Some(value.to_string()))
+                });
+
+            if name.is_empty() {
+                filtered.push(token.clone());
+                index += 1;
+                continue;
+            }
+
+            let mut value = inline_value;
+            if value.is_none() {
+                let next = raw_args.get(index + 1);
+                if let Some(next) = next {
+                    if next != "--" && (!next.starts_with('-') || next == "-") {
+                        value = Some(next.clone());
+                        index += 1;
+                    }
+                }
+            }
+
+            extracted.push(ExtensionCliFlag {
+                name: name.to_string(),
+                value,
+            });
+            index += 1;
+            continue;
+        }
+
+        if token == "-e" {
+            filtered.push(token.clone());
+            expecting_value = true;
+            index += 1;
+            continue;
+        }
+
+        if is_known_short_flag(token) {
+            filtered.push(token.clone());
+            index += 1;
+            continue;
+        }
+
+        if token.starts_with('-') {
+            filtered.push(token.clone());
+            index += 1;
+            continue;
+        }
+
+        if ROOT_SUBCOMMANDS.contains(&token.as_str()) {
+            in_subcommand = true;
+        } else {
+            in_message_args = true;
+        }
+        filtered.push(token.clone());
+        index += 1;
+    }
+
+    (filtered, extracted)
+}
+
+pub fn parse_with_extension_flags(raw_args: Vec<String>) -> Result<ParsedCli, clap::Error> {
+    if raw_args.is_empty() {
+        let cli = Cli::try_parse_from(["pi"])?;
+        return Ok(ParsedCli {
+            cli,
+            extension_flags: Vec::new(),
+        });
+    }
+
+    if let Ok(cli) = Cli::try_parse_from(raw_args.clone()) {
+        return Ok(ParsedCli {
+            cli,
+            extension_flags: Vec::new(),
+        });
+    }
+
+    let (filtered_args, extension_flags) = preprocess_extension_flags(&raw_args);
+    if extension_flags.is_empty() {
+        let cli = Cli::try_parse_from(raw_args)?;
+        return Ok(ParsedCli {
+            cli,
+            extension_flags: Vec::new(),
+        });
+    }
+
+    let cli = Cli::try_parse_from(filtered_args)?;
+    Ok(ParsedCli {
+        cli,
+        extension_flags,
+    })
+}
+
 /// Pi - AI coding agent CLI
 #[derive(Parser, Debug)]
 #[allow(clippy::struct_excessive_bools)] // CLI flags are naturally boolean
@@ -178,7 +419,7 @@ pub struct Cli {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Commands};
+    use super::{Cli, Commands, parse_with_extension_flags};
     use clap::Parser;
 
     // ── 1. Basic flag parsing ────────────────────────────────────────
@@ -577,6 +818,50 @@ mod tests {
     #[test]
     fn invalid_subcommand_option_rejected() {
         let result = Cli::try_parse_from(["pi", "install", "--bogus", "npm:pkg"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn extension_flags_are_extracted_in_second_pass_parse() {
+        let parsed = parse_with_extension_flags(vec![
+            "pi".to_string(),
+            "--plan".to_string(),
+            "ship it".to_string(),
+            "--model".to_string(),
+            "gpt-4o".to_string(),
+        ])
+        .expect("parse with extension flags");
+
+        assert_eq!(parsed.cli.model.as_deref(), Some("gpt-4o"));
+        assert_eq!(parsed.extension_flags.len(), 1);
+        assert_eq!(parsed.extension_flags[0].name, "plan");
+        assert_eq!(parsed.extension_flags[0].value.as_deref(), Some("ship it"));
+    }
+
+    #[test]
+    fn extension_bool_flag_without_value_is_supported() {
+        let parsed = parse_with_extension_flags(vec![
+            "pi".to_string(),
+            "--dry-run".to_string(),
+            "--print".to_string(),
+            "hello".to_string(),
+        ])
+        .expect("parse extension bool flag");
+
+        assert!(parsed.cli.print);
+        assert_eq!(parsed.extension_flags.len(), 1);
+        assert_eq!(parsed.extension_flags[0].name, "dry-run");
+        assert!(parsed.extension_flags[0].value.is_none());
+    }
+
+    #[test]
+    fn extension_flag_parser_does_not_bypass_subcommand_validation() {
+        let result = parse_with_extension_flags(vec![
+            "pi".to_string(),
+            "install".to_string(),
+            "--bogus".to_string(),
+            "pkg".to_string(),
+        ]);
         assert!(result.is_err());
     }
 
