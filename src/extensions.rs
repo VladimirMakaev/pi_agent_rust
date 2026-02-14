@@ -22371,8 +22371,10 @@ mod tests {
             max_hostcalls_per_minute: None,
             ..Default::default()
         };
-        let mut state = ExtensionQuotaState::default();
-        state.active_subprocesses = 2;
+        let mut state = ExtensionQuotaState {
+            active_subprocesses: 2,
+            ..Default::default()
+        };
         let r = check_extension_quota(&config, &mut state, 1000, "exec");
         assert!(matches!(r, QuotaCheckResult::Exceeded { .. }));
         let r2 = check_extension_quota(&config, &mut state, 2000, "tool");
@@ -22404,12 +22406,16 @@ mod tests {
             max_hostcalls_per_minute: None,
             ..Default::default()
         };
-        let mut state = ExtensionQuotaState::default();
-        state.write_bytes_total = 1024;
+        let mut state = ExtensionQuotaState {
+            write_bytes_total: 1024,
+            ..Default::default()
+        };
         let r = check_extension_quota(&config, &mut state, 1000, "write");
         assert!(matches!(r, QuotaCheckResult::Exceeded { .. }));
-        let mut state2 = ExtensionQuotaState::default();
-        state2.write_bytes_total = 500;
+        let mut state2 = ExtensionQuotaState {
+            write_bytes_total: 500,
+            ..Default::default()
+        };
         let r2 = check_extension_quota(&config, &mut state2, 1000, "write");
         assert_eq!(r2, QuotaCheckResult::Allowed);
     }

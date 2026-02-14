@@ -32,7 +32,7 @@ fn permissive_policy() -> ExtensionPolicy {
     }
 }
 
-fn make_risk_config(window_size: usize, ledger_limit: usize) -> RuntimeRiskConfig {
+const fn make_risk_config(window_size: usize, ledger_limit: usize) -> RuntimeRiskConfig {
     RuntimeRiskConfig {
         enabled: true,
         alpha: 0.01,
@@ -753,7 +753,7 @@ fn e2e_quantile_conformal_determinism() {
                     e.risk_score,
                     e.conformal_residual,
                     e.conformal_quantile,
-                    e.selected_action.clone(),
+                    e.selected_action,
                 )
             })
             .collect::<Vec<_>>()
