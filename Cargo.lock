@@ -276,7 +276,8 @@ dependencies = [
 [[package]]
 name = "asupersync"
 version = "0.1.1"
-source = "git+https://github.com/Dicklesworthstone/asupersync.git?rev=673cf66#673cf66d7d316a53f3d7fb08a15999a97221c865"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "88eafdfdd913f7464e5329597771f95bb6fa6b0edb6e75ac8542de43c806f822"
 dependencies = [
  "base64",
  "bincode",
