@@ -1885,13 +1885,21 @@ fn rpc_emit_extension_ui_request(
 }
 
 fn rpc_parse_extension_ui_response_id(parsed: &Value) -> Option<String> {
-    parsed
+    let request_id = parsed
         .get("requestId")
         .and_then(Value::as_str)
-        .or_else(|| parsed.get("id").and_then(Value::as_str))
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(String::from)
+        .map(String::from);
+
+    request_id.or_else(|| {
+        parsed
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(String::from)
+    })
 }
 
 fn rpc_parse_extension_ui_response(
@@ -3705,6 +3713,67 @@ mod tests {
         assert!(!try_send_line_with_backpressure(&tx, "line".to_string()));
     }
 
+    #[test]
+    fn try_send_line_with_backpressure_waits_until_capacity_is_available() {
+        let (tx, rx) = mpsc::channel::<String>(1);
+        tx.try_send("occupied".to_string())
+            .expect("seed initial occupied slot");
+
+        let expected = "delayed-line".to_string();
+        let expected_for_thread = expected.clone();
+        let recv_handle = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            let deadline = Instant::now() + Duration::from_millis(300);
+            let mut received = Vec::new();
+            while received.len() < 2 && Instant::now() < deadline {
+                if let Ok(msg) = rx.try_recv() {
+                    received.push(msg);
+                } else {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+            assert_eq!(received.len(), 2, "should receive both queued lines");
+            let first = received.remove(0);
+            let second = received.remove(0);
+            assert_eq!(first, "occupied");
+            assert_eq!(second, expected_for_thread);
+        });
+
+        assert!(try_send_line_with_backpressure(&tx, expected));
+        drop(tx);
+        recv_handle.join().expect("receiver thread should finish");
+    }
+
+    #[test]
+    fn try_send_line_with_backpressure_preserves_large_payload() {
+        let (tx, rx) = mpsc::channel::<String>(1);
+        tx.try_send("busy".to_string())
+            .expect("seed initial busy slot");
+
+        let large = "x".repeat(256 * 1024);
+        let large_for_thread = large.clone();
+        let recv_handle = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            let deadline = Instant::now() + Duration::from_millis(500);
+            let mut received = Vec::new();
+            while received.len() < 2 && Instant::now() < deadline {
+                if let Ok(msg) = rx.try_recv() {
+                    received.push(msg);
+                } else {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+            assert_eq!(received.len(), 2, "should receive busy + payload lines");
+            let payload = received.remove(1);
+            assert_eq!(payload.len(), large_for_thread.len());
+            assert_eq!(payload, large_for_thread);
+        });
+
+        assert!(try_send_line_with_backpressure(&tx, large));
+        drop(tx);
+        recv_handle.join().expect("receiver thread should finish");
+    }
+
     // -----------------------------------------------------------------------
     // RpcStateSnapshot::pending_count
     // -----------------------------------------------------------------------
@@ -4193,6 +4262,42 @@ mod tests {
         assert_eq!(
             rpc_parse_extension_ui_response_id(&value),
             Some("req-1".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_ui_response_id_prefers_request_id_over_id_alias() {
+        let value = json!({"requestId": "req-1", "id": "legacy-id"});
+        assert_eq!(
+            rpc_parse_extension_ui_response_id(&value),
+            Some("req-1".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_ui_response_id_falls_back_to_id_alias_when_request_id_not_string() {
+        let value = json!({"requestId": 123, "id": "legacy-id"});
+        assert_eq!(
+            rpc_parse_extension_ui_response_id(&value),
+            Some("legacy-id".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_ui_response_id_falls_back_to_id_alias_when_request_id_blank() {
+        let value = json!({"requestId": "", "id": "legacy-id"});
+        assert_eq!(
+            rpc_parse_extension_ui_response_id(&value),
+            Some("legacy-id".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_ui_response_id_falls_back_to_id_alias_when_request_id_whitespace() {
+        let value = json!({"requestId": "   ", "id": "legacy-id"});
+        assert_eq!(
+            rpc_parse_extension_ui_response_id(&value),
+            Some("legacy-id".to_string())
         );
     }
 
