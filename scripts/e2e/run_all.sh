@@ -3461,6 +3461,7 @@ def build_mirrored_scenario_report(
     return {
         "schema": "pi.e2e.mirrored_scenarios.v1",
         "source_matrix_path": str(project_root / "docs" / "e2e_scenario_matrix.json"),
+        "source_sli_contract_path": str(project_root / "docs/perf_sli_matrix.json"),
         "summary": {
             "covered_workflow_candidates": candidate_workflows,
             "evaluated_workflows": evaluated_workflows,

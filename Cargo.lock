@@ -288,7 +288,13 @@ dependencies = [
  "parking_lot",
  "pin-project",
  "polling 2.8.0",
+ "ring",
  "rmp-serde",
+ "rusqlite",
+ "rustls",
+ "rustls-native-certs",
+ "rustls-pemfile",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "sha1",
@@ -300,6 +306,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "visibility",
+ "x509-parser",
 ]
 
 [[package]]
@@ -321,13 +328,7 @@ dependencies = [
  "parking_lot",
  "pin-project",
  "polling 3.11.0",
- "ring",
  "rmp-serde",
- "rusqlite",
- "rustls",
- "rustls-native-certs",
- "rustls-pemfile",
- "rustls-pki-types",
  "serde",
  "serde_json",
  "sha1",
@@ -340,7 +341,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "visibility",
- "x509-parser",
 ]
 
 [[package]]
@@ -412,6 +412,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47c8fbc0f831f4519fe8b810b6a7a91410ec83031b8233f730a0480029f6a23f"
 dependencies = [
  "arrayvec",
+]
+
+[[package]]
+name = "backtrace"
+version = "0.3.76"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bb531853791a215d7c62a30daf0dde835f381ab5de4589cfe7c649d2cbe92bd6"
+dependencies = [
+ "addr2line",
+ "cfg-if",
+ "libc",
+ "miniz_oxide",
+ "object",
+ "rustc-demangle",
+ "windows-link",
 ]
 
 [[package]]
@@ -658,9 +673,9 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
 name = "charmed-bubbles"
-version = "0.1.2"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a8f131b9c57160d5ae0666f6632a8c7a9c48ecd5a7115ade4233703e73e04179"
+checksum = "cfe3c4fe0fa799b849e70232a1fba936f3f969558b709e50f36650d9db73595b"
 dependencies = [
  "charmed-bubbletea",
  "charmed-harmonica",
@@ -672,9 +687,9 @@ dependencies = [
 
 [[package]]
 name = "charmed-bubbletea"
-version = "0.1.2"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e2eb6bd66986608e4ffc423beda998d81bfab8c5f4f63843a90107c6c47b819"
+checksum = "d5fbf47d60bc19491251ad01bf2e63a41432630eaa90f81c05eba3ac4cc97c1b"
 dependencies = [
  "charmed-bubbletea-macros",
  "crossterm",
@@ -685,9 +700,9 @@ dependencies = [
 
 [[package]]
 name = "charmed-bubbletea-macros"
-version = "0.1.2"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5fe3df5782011f3b1991081392a21f4da7a38d7237f5028074309ea48c7f9d4"
+checksum = "66ca6d26d4424b06f7b6e393de5cbbb155cb6dc633510d4a696747406f5cfb25"
 dependencies = [
  "darling",
  "proc-macro-error2",
@@ -698,9 +713,9 @@ dependencies = [
 
 [[package]]
 name = "charmed-glamour"
-version = "0.1.2"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51175e6411887215f03919bbe00ddaac2bf5a6b02793254aa5e9acdfe740afba"
+checksum = "3f1bb7457c2ffa52e1f66b255e9632fcd0bf43fd9f7bda652771d4044d9a96d9"
 dependencies = [
  "charmed-lipgloss",
  "lru 0.12.5",
@@ -711,15 +726,15 @@ dependencies = [
 
 [[package]]
 name = "charmed-harmonica"
-version = "0.1.2"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e05ecd9ed8a6fffce7892eb14fd3aae8670e8f31f904f62c83e2406a29e748fd"
+checksum = "52ec4913f175e36c6ab1cf7ff3d3d1153fed1f7c985027ae5800dd20204224f6"
 
 [[package]]
 name = "charmed-lipgloss"
-version = "0.1.2"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "45e10db01f5eaea11d98ca5c5cffd8cc4add7ac56d0128d91ba1f2a3757b6c5a"
+checksum = "a5986a4a6d84055da99e44a6c532fd412d636fe5c3fe17da105a7bf40287ccd1"
 dependencies = [
  "bitflags 2.10.0",
  "colored",
@@ -729,6 +744,7 @@ dependencies = [
  "thiserror 2.0.18",
  "toml 0.8.23",
  "tracing",
+ "unicode-segmentation",
  "unicode-width 0.1.14",
 ]
 
@@ -1630,6 +1646,17 @@ name = "fallible-streaming-iterator"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
+
+[[package]]
+name = "fancy-regex"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e24cb5a94bcae1e5408b0effca5cd7172ea3c5755049c5f3af4cd283a165298"
+dependencies = [
+ "bit-set",
+ "regex-automata",
+ "regex-syntax",
+]
 
 [[package]]
 name = "fancy-regex"
@@ -2822,11 +2849,11 @@ dependencies = [
 
 [[package]]
 name = "hashlink"
-version = "0.11.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea0b22561a9c04a7cb1a302c013e0259cd3b4bb619f145b32f72b8b4bcbed230"
+checksum = "7382cf6263419f2d8df38c55d7da83da5c18aef87fc7a7fc1fb1e344edfe14c1"
 dependencies = [
- "hashbrown 0.16.1",
+ "hashbrown 0.15.5",
 ]
 
 [[package]]
@@ -3260,7 +3287,7 @@ dependencies = [
  "bytecount",
  "data-encoding",
  "email_address",
- "fancy-regex",
+ "fancy-regex 0.17.0",
  "fraction",
  "getrandom 0.3.4",
  "idna",
@@ -3339,9 +3366,9 @@ dependencies = [
 
 [[package]]
 name = "libsqlite3-sys"
-version = "0.36.0"
+version = "0.31.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "95b4103cffefa72eb8428cb6b47d6627161e51c2739fc5e3b734584157bc642a"
+checksum = "ad8935b44e7c13394a179a438e0cebba0fe08fe01b54f152e29a93b5cf993fd4"
 dependencies = [
  "cc",
  "pkg-config",
@@ -3919,6 +3946,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
+name = "os_pipe"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "outref"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4043,7 +4080,7 @@ dependencies = [
  "anyhow",
  "arbitrary",
  "arboard",
- "asupersync 0.2.0",
+ "asupersync 0.1.1",
  "async-trait",
  "base64",
  "charmed-bubbles",
@@ -4749,19 +4786,25 @@ checksum = "0c6a884d2998352bb4daf0183589aec883f16a6da1f4dde84d8e2e9a5409a1ce"
 
 [[package]]
 name = "rich_rust"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a7c2ecb6193f75fc8143648beb454f8b1d3a4fbd2fe13813a504760867d91b1"
+checksum = "77a3675ba77f298090ec08e0b16484a9691f763f8d40c3bd6aa578ed8ac1019c"
 dependencies = [
+ "backtrace",
  "bitflags 2.10.0",
  "crossterm",
+ "fancy-regex 0.14.0",
  "log",
  "lru 0.16.3",
  "num-rational",
  "once_cell",
+ "os_pipe",
  "pulldown-cmark",
  "regex",
+ "serde",
  "serde_json",
+ "smallvec",
+ "stdio-override",
  "syntect",
  "time",
  "unicode-width 0.2.2",
@@ -4831,20 +4874,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "rsqlite-vfs"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a8a1f2315036ef6b1fbacd1972e8ee7688030b0a2121edfc2a6550febd41574d"
-dependencies = [
- "hashbrown 0.16.1",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "rusqlite"
-version = "0.38.0"
+version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1c93dd1c9683b438c392c492109cb702b8090b2bfc8fed6f6e4eb4523f17af3"
+checksum = "1c6d5e5acb6f6129fe3f7ba0a7fc77bca1942cb568535e18e7bc40262baf3110"
 dependencies = [
  "bitflags 2.10.0",
  "fallible-iterator",
@@ -4852,7 +4885,6 @@ dependencies = [
  "hashlink",
  "libsqlite3-sys",
  "smallvec",
- "sqlite-wasm-rs",
 ]
 
 [[package]]
@@ -5300,24 +5332,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "sqlite-wasm-rs"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f4206ed3a67690b9c29b77d728f6acc3ce78f16bf846d83c94f76400320181b"
-dependencies = [
- "cc",
- "js-sys",
- "rsqlite-vfs",
- "wasm-bindgen",
-]
-
-[[package]]
 name = "sqlmodel-core"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f0c141a6165fee6292cff249828753d3f99ab17fa772496d85dafdd5536a2f9"
+checksum = "70c9b2cdde79e76c1274b7f763f76e1de2f5afc1a2e4dee75a3dc55d97e9e0cd"
 dependencies = [
- "asupersync 0.1.1",
+ "asupersync 0.2.0",
  "regex",
  "serde",
  "serde_json",
@@ -5326,11 +5346,11 @@ dependencies = [
 
 [[package]]
 name = "sqlmodel-sqlite"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fde3965a24e2fed8ecfe1eb3257d2887c478a6872581aca89fa4a06d63611ef9"
+checksum = "c81ce58c1c04644ce0a7f49e90a9f359f4b7edfa15ff3003a1b07b518558b674"
 dependencies = [
- "asupersync 0.1.1",
+ "asupersync 0.2.0",
  "serde",
  "serde_json",
  "sqlmodel-core",
@@ -5360,6 +5380,16 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
+
+[[package]]
+name = "stdio-override"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cffa8a2e517b4e9f270c47e1c4120df90506d9451c1efa67e3698d66446d30ce"
+dependencies = [
+ "libc",
+ "winapi",
+]
 
 [[package]]
 name = "string_enum"
@@ -7366,9 +7396,9 @@ checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
 
 [[package]]
 name = "x509-parser"
-version = "0.18.1"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d43b0f71ce057da06bc0851b23ee24f3f86190b07203dd8f567d0b706a185202"
+checksum = "4569f339c0c402346d4a75a9e39cf8dad310e287eef1ff56d4c68e5067f53460"
 dependencies = [
  "asn1-rs",
  "data-encoding",

@@ -18,6 +18,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 SCHEMA = "pi.ci.parity_evidence.v1"
+COUNTING_TAXONOMY_SCHEMA = "pi.qa.counting_taxonomy.v1"
+COUNTING_TAXONOMY_CONTRACT_REL_PATH = "docs/counting-taxonomy-contract.json"
+PROVIDER_METADATA_REL_PATH = "src/provider_metadata.rs"
+EXTENSION_CATALOG_REL_PATH = "docs/extension-master-catalog.json"
+
+LOC_RAW_LABEL = "loc_raw_lines"
+LOC_LOGICAL_LABEL = "loc_logical_lines"
+PROVIDER_CANONICAL_LABEL = "provider_canonical_ids"
+PROVIDER_ALIAS_LABEL = "provider_alias_ids"
+PROVIDER_FAMILY_LABEL = "provider_families"
+EXTENSION_OFFICIAL_LABEL = "extension_official_subset"
+EXTENSION_COMMUNITY_LABEL = "extension_community_subset"
+EXTENSION_FULL_LABEL = "extension_full_corpus"
 
 PARITY_SUITES = [
     "json_mode_parity",
@@ -75,7 +88,195 @@ def parse_log(log_text: str) -> dict:
     return suites
 
 
-def build_evidence(suites: dict) -> dict:
+def project_root_from_script() -> Path:
+    # scripts/ci/generate_parity_evidence.py -> repo root is parents[2]
+    return Path(__file__).resolve().parents[2]
+
+
+def strip_rust_comments(line: str, in_block_comment: bool) -> tuple[str, bool]:
+    """Strip Rust line/block comments while preserving non-comment code."""
+    i = 0
+    out = []
+    while i < len(line):
+        if in_block_comment:
+            end = line.find("*/", i)
+            if end == -1:
+                return ("".join(out), True)
+            i = end + 2
+            in_block_comment = False
+            continue
+
+        if line.startswith("//", i):
+            break
+        if line.startswith("/*", i):
+            in_block_comment = True
+            i += 2
+            continue
+
+        out.append(line[i])
+        i += 1
+
+    return ("".join(out), in_block_comment)
+
+
+def count_rust_loc(src_root: Path) -> tuple[int, int]:
+    """Return (raw_lines, logical_lines) across src/**/*.rs."""
+    raw_lines = 0
+    logical_lines = 0
+    in_block_comment = False
+
+    for path in sorted(src_root.rglob("*.rs")):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for line in text.splitlines():
+            raw_lines += 1
+            cleaned, in_block_comment = strip_rust_comments(line, in_block_comment)
+            if cleaned.strip():
+                logical_lines += 1
+
+    return (raw_lines, logical_lines)
+
+
+def count_provider_dimensions(provider_metadata_path: Path) -> tuple[int, int, int]:
+    """Return (canonical_ids, alias_ids, families)."""
+    text = provider_metadata_path.read_text(encoding="utf-8", errors="replace")
+    canonical_ids = re.findall(r'canonical_id:\s*"([^"]+)"', text)
+    alias_blocks = re.findall(r"aliases:\s*&\[(.*?)\],", text)
+    alias_ids = []
+    for block in alias_blocks:
+        alias_ids.extend(re.findall(r'"([^"]+)"', block))
+    families = set(re.findall(r"onboarding:\s*ProviderOnboardingMode::([A-Za-z0-9_]+)", text))
+    return (len(canonical_ids), len(alias_ids), len(families))
+
+
+def count_extension_dimensions(extension_catalog_path: Path) -> tuple[int, int, int]:
+    """Return (official_subset, community_subset, full_corpus)."""
+    payload = json.loads(extension_catalog_path.read_text(encoding="utf-8"))
+    entries = payload.get("extensions", [])
+    official = 0
+    community = 0
+    for item in entries:
+        tier = item.get("source_tier")
+        if tier == "official-pi-mono":
+            official += 1
+        elif tier == "community":
+            community += 1
+    return (official, community, len(entries))
+
+
+def metric_row(metric_key: str, granularity_label: str, value: int, unit: str, source: str, command_signature: str) -> dict:
+    return {
+        "metric_key": metric_key,
+        "granularity_label": granularity_label,
+        "value": value,
+        "unit": unit,
+        "tool_provenance": {
+            "source": source,
+            "command_signature": command_signature,
+        },
+    }
+
+
+def build_counting_taxonomy(project_root: Path) -> dict:
+    src_root = project_root / "src"
+    provider_metadata_path = project_root / PROVIDER_METADATA_REL_PATH
+    extension_catalog_path = project_root / EXTENSION_CATALOG_REL_PATH
+
+    raw_loc, logical_loc = count_rust_loc(src_root)
+    canonical_providers, alias_providers, provider_families = count_provider_dimensions(
+        provider_metadata_path
+    )
+    official_extensions, community_extensions, full_corpus_extensions = count_extension_dimensions(
+        extension_catalog_path
+    )
+
+    return {
+        "schema": COUNTING_TAXONOMY_SCHEMA,
+        "contract_ref": COUNTING_TAXONOMY_CONTRACT_REL_PATH,
+        "dimensions": {
+            "loc": {
+                "comparison_mode": "side_by_side",
+                "metrics": [
+                    metric_row(
+                        "rust_loc",
+                        LOC_RAW_LABEL,
+                        raw_loc,
+                        "lines",
+                        "src/**/*.rs",
+                        "python3 scripts/ci/generate_parity_evidence.py --count-loc",
+                    ),
+                    metric_row(
+                        "rust_loc",
+                        LOC_LOGICAL_LABEL,
+                        logical_loc,
+                        "lines",
+                        "src/**/*.rs",
+                        "python3 scripts/ci/generate_parity_evidence.py --count-loc",
+                    ),
+                ],
+            },
+            "providers": {
+                "comparison_mode": "side_by_side",
+                "metrics": [
+                    metric_row(
+                        "provider_breadth",
+                        PROVIDER_CANONICAL_LABEL,
+                        canonical_providers,
+                        "count",
+                        PROVIDER_METADATA_REL_PATH,
+                        "python3 scripts/ci/generate_parity_evidence.py --count-providers",
+                    ),
+                    metric_row(
+                        "provider_breadth",
+                        PROVIDER_ALIAS_LABEL,
+                        alias_providers,
+                        "count",
+                        PROVIDER_METADATA_REL_PATH,
+                        "python3 scripts/ci/generate_parity_evidence.py --count-providers",
+                    ),
+                    metric_row(
+                        "provider_breadth",
+                        PROVIDER_FAMILY_LABEL,
+                        provider_families,
+                        "count",
+                        PROVIDER_METADATA_REL_PATH,
+                        "python3 scripts/ci/generate_parity_evidence.py --count-providers",
+                    ),
+                ],
+            },
+            "extensions": {
+                "comparison_mode": "side_by_side",
+                "metrics": [
+                    metric_row(
+                        "extension_corpus",
+                        EXTENSION_OFFICIAL_LABEL,
+                        official_extensions,
+                        "count",
+                        EXTENSION_CATALOG_REL_PATH,
+                        "python3 scripts/ci/generate_parity_evidence.py --count-extensions",
+                    ),
+                    metric_row(
+                        "extension_corpus",
+                        EXTENSION_COMMUNITY_LABEL,
+                        community_extensions,
+                        "count",
+                        EXTENSION_CATALOG_REL_PATH,
+                        "python3 scripts/ci/generate_parity_evidence.py --count-extensions",
+                    ),
+                    metric_row(
+                        "extension_corpus",
+                        EXTENSION_FULL_LABEL,
+                        full_corpus_extensions,
+                        "count",
+                        EXTENSION_CATALOG_REL_PATH,
+                        "python3 scripts/ci/generate_parity_evidence.py --count-extensions",
+                    ),
+                ],
+            },
+        },
+    }
+
+
+def build_evidence(suites: dict, project_root: Path) -> dict:
     """Build the evidence payload."""
     total_passed = sum(s["passed"] for s in suites.values())
     total_failed = sum(s["failed"] for s in suites.values())
@@ -100,6 +301,7 @@ def build_evidence(suites: dict) -> dict:
             ) if total_tests > 0 else 0.0,
         },
         "suites": suites,
+        "counting_taxonomy": build_counting_taxonomy(project_root),
     }
 
 
@@ -120,7 +322,7 @@ def main() -> int:
 
     log_text = log_path.read_text(encoding="utf-8", errors="replace")
     suites = parse_log(log_text)
-    evidence = build_evidence(suites)
+    evidence = build_evidence(suites, project_root_from_script())
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
