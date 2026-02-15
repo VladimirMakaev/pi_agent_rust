@@ -28,7 +28,7 @@ use crate::provider::ThinkingBudgets;
 use crate::providers;
 use clap::Parser;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -41,6 +41,7 @@ pub use crate::agent::{
 };
 pub use crate::config::Config;
 pub use crate::error::{Error, Result};
+pub use crate::extensions::{ExtensionManager, ExtensionPolicy, ExtensionRegion};
 pub use crate::model::{
     AssistantMessage, ContentBlock, Cost, CustomMessage, ImageContent, Message, StopReason,
     StreamEvent, TextContent, ThinkingContent, ToolCall, ToolResultMessage, Usage, UserContent,
@@ -56,6 +57,80 @@ pub use crate::tools::{Tool, ToolOutput, ToolRegistry, ToolUpdate};
 
 /// Stable alias for model-exposed tool schema definitions.
 pub type ToolDefinition = ToolDef;
+
+// ============================================================================
+// Tool Factory Functions
+// ============================================================================
+
+use crate::tools::{BashTool, EditTool, FindTool, GrepTool, LsTool, ReadTool, WriteTool};
+
+/// All built-in tool names.
+pub const BUILTIN_TOOL_NAMES: &[&str] = &["read", "bash", "edit", "write", "grep", "find", "ls"];
+
+/// Create a read tool configured for `cwd`.
+pub fn create_read_tool(cwd: &Path) -> Box<dyn Tool> {
+    Box::new(ReadTool::new(cwd))
+}
+
+/// Create a bash tool configured for `cwd`.
+pub fn create_bash_tool(cwd: &Path) -> Box<dyn Tool> {
+    Box::new(BashTool::new(cwd))
+}
+
+/// Create an edit tool configured for `cwd`.
+pub fn create_edit_tool(cwd: &Path) -> Box<dyn Tool> {
+    Box::new(EditTool::new(cwd))
+}
+
+/// Create a write tool configured for `cwd`.
+pub fn create_write_tool(cwd: &Path) -> Box<dyn Tool> {
+    Box::new(WriteTool::new(cwd))
+}
+
+/// Create a grep tool configured for `cwd`.
+pub fn create_grep_tool(cwd: &Path) -> Box<dyn Tool> {
+    Box::new(GrepTool::new(cwd))
+}
+
+/// Create a find tool configured for `cwd`.
+pub fn create_find_tool(cwd: &Path) -> Box<dyn Tool> {
+    Box::new(FindTool::new(cwd))
+}
+
+/// Create an ls tool configured for `cwd`.
+pub fn create_ls_tool(cwd: &Path) -> Box<dyn Tool> {
+    Box::new(LsTool::new(cwd))
+}
+
+/// Create all built-in tools configured for `cwd`.
+pub fn create_all_tools(cwd: &Path) -> Vec<Box<dyn Tool>> {
+    vec![
+        create_read_tool(cwd),
+        create_bash_tool(cwd),
+        create_edit_tool(cwd),
+        create_write_tool(cwd),
+        create_grep_tool(cwd),
+        create_find_tool(cwd),
+        create_ls_tool(cwd),
+    ]
+}
+
+/// Convert a [`Tool`] into its [`ToolDefinition`] schema.
+pub fn tool_to_definition(tool: &dyn Tool) -> ToolDefinition {
+    ToolDefinition {
+        name: tool.name().to_string(),
+        description: tool.description().to_string(),
+        parameters: tool.parameters(),
+    }
+}
+
+/// Return [`ToolDefinition`] schemas for all built-in tools.
+pub fn all_tool_definitions(cwd: &Path) -> Vec<ToolDefinition> {
+    create_all_tools(cwd)
+        .iter()
+        .map(|t| tool_to_definition(t.as_ref()))
+        .collect()
+}
 
 // ============================================================================
 // Streaming Callbacks and Tool Hooks
@@ -84,7 +159,7 @@ pub type OnToolEnd = Arc<dyn Fn(&str, &ToolOutput, bool) + Send + Sync>;
 /// before events are wrapped into [`AgentEvent::MessageUpdate`].
 pub type OnStreamEvent = Arc<dyn Fn(&StreamEvent) + Send + Sync>;
 
-type EventSubscriber = Arc<dyn Fn(AgentEvent) + Send + Sync>;
+pub type EventSubscriber = Arc<dyn Fn(AgentEvent) + Send + Sync>;
 type EventSubscribers = HashMap<SubscriptionId, EventSubscriber>;
 
 /// Collection of session-level event listeners.
@@ -113,7 +188,7 @@ impl EventListeners {
     }
 
     /// Register a session-level event listener.
-    fn subscribe(&self, listener: EventSubscriber) -> SubscriptionId {
+    pub fn subscribe(&self, listener: EventSubscriber) -> SubscriptionId {
         let id = SubscriptionId(self.next_id.fetch_add(1, Ordering::Relaxed));
         self.subscribers
             .lock()
@@ -123,7 +198,7 @@ impl EventListeners {
     }
 
     /// Remove a previously registered listener.
-    fn unsubscribe(&self, id: SubscriptionId) -> bool {
+    pub fn unsubscribe(&self, id: SubscriptionId) -> bool {
         self.subscribers
             .lock()
             .expect("EventListeners lock poisoned")
@@ -132,7 +207,7 @@ impl EventListeners {
     }
 
     /// Dispatch an [`AgentEvent`] to all registered subscribers.
-    fn notify(&self, event: &AgentEvent) {
+    pub fn notify(&self, event: &AgentEvent) {
         let subs = self
             .subscribers
             .lock()
@@ -143,21 +218,21 @@ impl EventListeners {
     }
 
     /// Dispatch tool-start to the typed hook (if set).
-    fn notify_tool_start(&self, tool_name: &str, args: &Value) {
+    pub fn notify_tool_start(&self, tool_name: &str, args: &Value) {
         if let Some(cb) = &self.on_tool_start {
             cb(tool_name, args);
         }
     }
 
     /// Dispatch tool-end to the typed hook (if set).
-    fn notify_tool_end(&self, tool_name: &str, output: &ToolOutput, is_error: bool) {
+    pub fn notify_tool_end(&self, tool_name: &str, output: &ToolOutput, is_error: bool) {
         if let Some(cb) = &self.on_tool_end {
             cb(tool_name, output, is_error);
         }
     }
 
     /// Dispatch a raw stream event (if hook is set).
-    fn notify_stream_event(&self, event: &StreamEvent) {
+    pub fn notify_stream_event(&self, event: &StreamEvent) {
         if let Some(cb) = &self.on_stream_event {
             cb(event);
         }
@@ -447,6 +522,15 @@ pub struct RpcExportHtmlResult {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RpcLastAssistantText {
     pub text: Option<String>,
+}
+
+/// Extension UI response payload used by RPC `extension_ui_response`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RpcExtensionUiResponse {
+    Value { value: Value },
+    Confirmed { confirmed: bool },
+    Cancelled,
 }
 
 /// Process-boundary transport options for SDK callers that prefer RPC mode.
@@ -833,13 +917,67 @@ impl RpcTransportClient {
         Ok(payload.commands)
     }
 
+    pub async fn extension_ui_response(
+        &mut self,
+        request_id: &str,
+        response: RpcExtensionUiResponse,
+    ) -> Result<bool> {
+        #[derive(Deserialize)]
+        struct ExtensionUiResolvedPayload {
+            resolved: bool,
+        }
+
+        let mut payload = Map::new();
+        payload.insert(
+            "requestId".to_string(),
+            Value::String(request_id.to_string()),
+        );
+
+        match response {
+            RpcExtensionUiResponse::Value { value } => {
+                payload.insert("value".to_string(), value);
+            }
+            RpcExtensionUiResponse::Confirmed { confirmed } => {
+                payload.insert("confirmed".to_string(), Value::Bool(confirmed));
+            }
+            RpcExtensionUiResponse::Cancelled => {
+                payload.insert("cancelled".to_string(), Value::Bool(true));
+            }
+        }
+
+        let response: Option<ExtensionUiResolvedPayload> =
+            self.request_typed("extension_ui_response", payload).await?;
+        Ok(response.is_none_or(|payload| payload.resolved))
+    }
+
     pub async fn prompt(&mut self, message: impl Into<String>) -> Result<Vec<Value>> {
+        self.prompt_with_options(message, None, None).await
+    }
+
+    pub async fn prompt_with_options(
+        &mut self,
+        message: impl Into<String>,
+        images: Option<Vec<ImageContent>>,
+        streaming_behavior: Option<&str>,
+    ) -> Result<Vec<Value>> {
         let request_id = self.next_request_id();
-        let payload = json!({
-            "type": "prompt",
-            "id": request_id,
-            "message": message.into(),
-        });
+        let mut payload = Map::new();
+        payload.insert("type".to_string(), Value::String("prompt".to_string()));
+        payload.insert("id".to_string(), Value::String(request_id.clone()));
+        payload.insert("message".to_string(), Value::String(message.into()));
+        if let Some(images) = images {
+            payload.insert(
+                "images".to_string(),
+                serde_json::to_value(images).map_err(|err| Error::Json(Box::new(err)))?,
+            );
+        }
+        if let Some(streaming_behavior) = streaming_behavior {
+            payload.insert(
+                "streamingBehavior".to_string(),
+                Value::String(streaming_behavior.to_string()),
+            );
+        }
+        let payload = Value::Object(payload);
         self.write_json_line(&payload)?;
 
         let mut saw_ack = false;
@@ -960,6 +1098,17 @@ fn rpc_error_from_response(response: &Value, command: &str) -> Error {
 }
 
 impl AgentSessionHandle {
+    /// Create a handle from a pre-built `AgentSession` with custom listeners.
+    ///
+    /// This is useful for tests and advanced embedding scenarios where
+    /// the full `create_agent_session()` flow is not needed.
+    pub const fn from_session_with_listeners(
+        session: AgentSession,
+        listeners: EventListeners,
+    ) -> Self {
+        Self { session, listeners }
+    }
+
     /// Send one user prompt through the agent loop.
     ///
     /// The `on_event` callback receives events for this prompt only.
@@ -1024,6 +1173,34 @@ impl AgentSessionHandle {
     pub const fn listeners_mut(&mut self) -> &mut EventListeners {
         &mut self.listeners
     }
+
+    // -----------------------------------------------------------------
+    // Extensions & Capability Policy
+    // -----------------------------------------------------------------
+
+    /// Whether this session has extensions loaded.
+    pub const fn has_extensions(&self) -> bool {
+        self.session.extensions.is_some()
+    }
+
+    /// Return a reference to the extension manager (if extensions are loaded).
+    pub fn extension_manager(&self) -> Option<&ExtensionManager> {
+        self.session
+            .extensions
+            .as_ref()
+            .map(ExtensionRegion::manager)
+    }
+
+    /// Return a reference to the extension region (if extensions are loaded).
+    ///
+    /// The region wraps the extension manager with lifecycle management.
+    pub const fn extension_region(&self) -> Option<&ExtensionRegion> {
+        self.session.extensions.as_ref()
+    }
+
+    // -----------------------------------------------------------------
+    // Provider & Model
+    // -----------------------------------------------------------------
 
     /// Return the active provider/model pair.
     pub fn model(&self) -> (String, String) {
@@ -1503,7 +1680,7 @@ mod tests {
         let handle = run_async(create_agent_session(options)).expect("create session");
         let provider = handle.session().agent.provider();
         assert_eq!(provider.name(), "anthropic");
-        assert_eq!(provider.model_id(), "claude-sonnet-4-20250514");
+        assert_eq!(provider.model_id(), "claude-opus-4-5");
     }
 
     #[test]
@@ -1839,5 +2016,145 @@ mod tests {
         let debug = format!("{listeners:?}");
         assert!(debug.contains("subscriber_count"));
         assert!(debug.contains("has_on_tool_start"));
+    }
+
+    // =====================================================================
+    // Extension convenience method tests
+    // =====================================================================
+
+    #[test]
+    fn has_extensions_false_by_default() {
+        let tmp = tempdir().expect("tempdir");
+        let options = SessionOptions {
+            working_directory: Some(tmp.path().to_path_buf()),
+            no_session: true,
+            ..SessionOptions::default()
+        };
+
+        let handle = run_async(create_agent_session(options)).expect("create session");
+        assert!(
+            !handle.has_extensions(),
+            "session without extension_paths should have no extensions"
+        );
+        assert!(handle.extension_manager().is_none());
+        assert!(handle.extension_region().is_none());
+    }
+
+    // =====================================================================
+    // Tool factory function tests
+    // =====================================================================
+
+    #[test]
+    fn create_read_tool_has_correct_name() {
+        let tmp = tempdir().expect("tempdir");
+        let tool = super::create_read_tool(tmp.path());
+        assert_eq!(tool.name(), "read");
+        assert!(!tool.description().is_empty());
+        let params = tool.parameters();
+        assert!(params.is_object(), "parameters should be a JSON object");
+    }
+
+    #[test]
+    fn create_bash_tool_has_correct_name() {
+        let tmp = tempdir().expect("tempdir");
+        let tool = super::create_bash_tool(tmp.path());
+        assert_eq!(tool.name(), "bash");
+        assert!(!tool.description().is_empty());
+    }
+
+    #[test]
+    fn create_edit_tool_has_correct_name() {
+        let tmp = tempdir().expect("tempdir");
+        let tool = super::create_edit_tool(tmp.path());
+        assert_eq!(tool.name(), "edit");
+    }
+
+    #[test]
+    fn create_write_tool_has_correct_name() {
+        let tmp = tempdir().expect("tempdir");
+        let tool = super::create_write_tool(tmp.path());
+        assert_eq!(tool.name(), "write");
+    }
+
+    #[test]
+    fn create_grep_tool_has_correct_name() {
+        let tmp = tempdir().expect("tempdir");
+        let tool = super::create_grep_tool(tmp.path());
+        assert_eq!(tool.name(), "grep");
+    }
+
+    #[test]
+    fn create_find_tool_has_correct_name() {
+        let tmp = tempdir().expect("tempdir");
+        let tool = super::create_find_tool(tmp.path());
+        assert_eq!(tool.name(), "find");
+    }
+
+    #[test]
+    fn create_ls_tool_has_correct_name() {
+        let tmp = tempdir().expect("tempdir");
+        let tool = super::create_ls_tool(tmp.path());
+        assert_eq!(tool.name(), "ls");
+    }
+
+    #[test]
+    fn create_all_tools_returns_seven() {
+        let tmp = tempdir().expect("tempdir");
+        let tools = super::create_all_tools(tmp.path());
+        assert_eq!(tools.len(), 7, "should create all 7 built-in tools");
+
+        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        for expected in BUILTIN_TOOL_NAMES {
+            assert!(names.contains(expected), "missing tool: {expected}");
+        }
+    }
+
+    #[test]
+    fn tool_to_definition_preserves_schema() {
+        let tmp = tempdir().expect("tempdir");
+        let tool = super::create_read_tool(tmp.path());
+        let def = super::tool_to_definition(tool.as_ref());
+        assert_eq!(def.name, "read");
+        assert!(!def.description.is_empty());
+        assert!(def.parameters.is_object());
+        assert!(
+            def.parameters.get("properties").is_some(),
+            "schema should have properties"
+        );
+    }
+
+    #[test]
+    fn all_tool_definitions_returns_seven_schemas() {
+        let tmp = tempdir().expect("tempdir");
+        let defs = super::all_tool_definitions(tmp.path());
+        assert_eq!(defs.len(), 7);
+
+        for def in &defs {
+            assert!(!def.name.is_empty());
+            assert!(!def.description.is_empty());
+            assert!(def.parameters.is_object());
+        }
+    }
+
+    #[test]
+    fn builtin_tool_names_matches_create_all() {
+        let tmp = tempdir().expect("tempdir");
+        let tools = super::create_all_tools(tmp.path());
+        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        assert_eq!(
+            names.as_slice(),
+            BUILTIN_TOOL_NAMES,
+            "create_all_tools order should match BUILTIN_TOOL_NAMES"
+        );
+    }
+
+    #[test]
+    fn tool_registry_from_factory_tools() {
+        let tmp = tempdir().expect("tempdir");
+        let tools = super::create_all_tools(tmp.path());
+        let registry = ToolRegistry::from_tools(tools);
+        assert!(registry.get("read").is_some());
+        assert!(registry.get("bash").is_some());
+        assert!(registry.get("nonexistent").is_none());
     }
 }
