@@ -31,6 +31,37 @@ Note: dependencies that specify both `version` and `path` are expected to publis
 
 Release notes are extracted from `CHANGELOG.md` on a best-effort basis; ensure the changelog contains a `##` heading with the version string for the tag you are cutting.
 
+## Distribution compatibility strategy (DROPIN-146)
+Goal: keep packaging and invocation ergonomics compatible enough for frictionless migration from upstream Pi.
+
+### Supported distribution paths
+- **Installer path (`install.sh`)**: default channel for end users; installs GitHub release binary, verifies checksums, and manages migration state.
+- **Release artifact path (GitHub Releases)**: direct binary download per OS/arch with `SHA256SUMS` verification.
+- **Source path (`cargo build --release`)**: deterministic fallback for constrained/air-gapped environments.
+
+### Executable compatibility path
+- Canonical command is `pi`.
+- If TypeScript `pi` already exists, installer supports in-place migration and preserves old command as `legacy-pi`.
+- If migration is declined (`--keep-existing-pi`), Rust Pi installs as `pi-rust` so both CLIs remain callable.
+- Pinned rollout is supported by `install.sh --version vX.Y.Z`.
+
+### Representative validation matrix
+Run this matrix before declaring distribution parity complete for a release candidate:
+
+1. Fresh Linux/macOS install (no prior `pi`):
+   - `curl .../install.sh | bash`
+   - `command -v pi && pi --version && pi --help >/dev/null`
+2. Migration host with existing TypeScript `pi`:
+   - `install.sh --adopt` (or interactive adopt path)
+   - `pi --version` returns Rust build
+   - `legacy-pi --version` still resolves to preserved TypeScript CLI
+3. Keep-existing path:
+   - `install.sh --keep-existing-pi`
+   - `pi` remains TypeScript CLI, `pi-rust --version` resolves to Rust build
+4. Pinned enterprise/CI rollout:
+   - `install.sh --version vX.Y.Z`
+   - binary checksum validation passes against release `SHA256SUMS`
+
 ## When do we call it 1.0?
 We call it `1.0.0` when:
 - CI is green on Linux/macOS/Windows (`.github/workflows/ci.yml`)
@@ -93,6 +124,7 @@ For branches opened before this gate was introduced:
 - Feature PRs merged since the previous tag satisfy the DoD evidence checklist (unit + e2e + extension + repro commands).
 - `CHANGELOG.md` updated for the version you’re tagging.
 - Benchmarks run if this release is performance-sensitive (see `BENCHMARKS.md`).
+- Distribution compatibility matrix (above) passes for all required paths.
 
 ## Post-release checklist
 - GitHub Release exists and includes expected artifacts for each platform.
