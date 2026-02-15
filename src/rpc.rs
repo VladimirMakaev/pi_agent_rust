@@ -20,9 +20,7 @@ use crate::compaction::{
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::error_hints;
-use crate::extensions::{
-    ExtensionManager, ExtensionUiRequest, ExtensionUiResponse, extension_event_from_agent,
-};
+use crate::extensions::{ExtensionManager, ExtensionUiRequest, ExtensionUiResponse};
 use crate::model::{
     ContentBlock, ImageContent, Message, StopReason, TextContent, UserContent, UserMessage,
 };

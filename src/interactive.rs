@@ -43,7 +43,7 @@ use crate::extension_events::{InputEventOutcome, apply_input_event_response};
 use crate::extensions::{
     EXTENSION_EVENT_TIMEOUT_MS, ExtensionDeliverAs, ExtensionEventName, ExtensionHostActions,
     ExtensionManager, ExtensionSendMessage, ExtensionSendUserMessage, ExtensionSession,
-    ExtensionUiRequest, ExtensionUiResponse, extension_event_from_agent,
+    ExtensionUiRequest, ExtensionUiResponse,
 };
 use crate::keybindings::{AppAction, KeyBinding, KeyBindings};
 use crate::model::{

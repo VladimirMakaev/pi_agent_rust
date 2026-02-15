@@ -337,7 +337,7 @@ impl SessionStoreV2 {
 
         self.chain_hash = chain_hash_step(&self.chain_hash, &frame.payload_sha256);
         self.total_bytes = self.total_bytes.saturating_add(line_len);
-        self.last_entry_id = Some(frame.entry_id.clone());
+        self.last_entry_id = Some(frame.entry_id);
         self.last_crc32c = crc;
 
         self.next_entry_seq = self
@@ -374,9 +374,8 @@ impl SessionStoreV2 {
     pub fn lookup_entry(&self, target_entry_seq: u64) -> Result<Option<SegmentFrame>> {
         let index_rows = self.read_index()?;
         let row = index_rows.iter().find(|r| r.entry_seq == target_entry_seq);
-        let row = match row {
-            Some(r) => r,
-            None => return Ok(None),
+        let Some(row) = row else {
+            return Ok(None);
         };
         seek_read_frame(self, row)
     }
@@ -426,7 +425,7 @@ impl SessionStoreV2 {
 
         let mut frames = Vec::new();
         let mut current_id: Option<String> = Some(leaf_entry_id.to_string());
-        while let Some(entry_id) = current_id {
+        while let Some(ref entry_id) = current_id {
             let row = id_to_row.get(entry_id.as_str());
             let row = match row {
                 Some(r) => *r,
@@ -434,7 +433,7 @@ impl SessionStoreV2 {
             };
             match seek_read_frame(self, row)? {
                 Some(frame) => {
-                    current_id = frame.parent_entry_id.clone();
+                    current_id.clone_from(&frame.parent_entry_id);
                     frames.push(frame);
                 }
                 None => break,
@@ -445,7 +444,7 @@ impl SessionStoreV2 {
     }
 
     /// Total number of entries appended so far.
-    pub fn entry_count(&self) -> u64 {
+    pub const fn entry_count(&self) -> u64 {
         self.next_entry_seq.saturating_sub(1)
     }
 
@@ -521,6 +520,7 @@ impl SessionStoreV2 {
         read_jsonl::<MigrationEvent>(&path)
     }
 
+    #[allow(clippy::too_many_lines)]
     pub fn rollback_to_checkpoint(
         &mut self,
         checkpoint_seq: u64,
@@ -641,6 +641,7 @@ impl SessionStoreV2 {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     pub fn write_manifest(
         &self,
         session_id: impl Into<String>,
@@ -649,8 +650,7 @@ impl SessionStoreV2 {
         let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let created_at = self
             .read_manifest()?
-            .map(|m| m.created_at)
-            .unwrap_or_else(|| now.clone());
+            .map_or_else(|| now.clone(), |m| m.created_at);
         let session_id = session_id.into();
         let source_format = source_format.into();
         let index_rows = self.read_index()?;
@@ -969,7 +969,7 @@ impl SessionStoreV2 {
                     ))
                 })?;
             self.last_entry_id = Some(last.entry_id.clone());
-            self.last_crc32c = last.crc32c.clone();
+            self.last_crc32c.clone_from(&last.crc32c);
 
             let mut chain = GENESIS_CHAIN_HASH.to_string();
             let mut total = 0u64;
@@ -1079,8 +1079,7 @@ fn manifest_hash_hex(manifest: &Manifest) -> Result<String> {
 pub fn v2_sidecar_path(jsonl_path: &Path) -> PathBuf {
     let stem = jsonl_path
         .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "session".to_string());
+        .map_or_else(|| "session".to_string(), |s| s.to_string_lossy().into_owned());
     let parent = jsonl_path.parent().unwrap_or_else(|| Path::new("."));
     parent.join(format!("{stem}.v2"))
 }

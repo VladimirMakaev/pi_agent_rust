@@ -30,7 +30,7 @@ use pi::compaction::ResolvedCompactionSettings;
 use pi::config::Config;
 use pi::config::SettingsScope;
 use pi::extension_index::ExtensionIndexStore;
-use pi::extensions::{ALL_CAPABILITIES, Capability, PolicyDecision, extension_event_from_agent};
+use pi::extensions::{ALL_CAPABILITIES, Capability, PolicyDecision};
 use pi::model::{AssistantMessage, ContentBlock, StopReason};
 use pi::models::{ModelEntry, ModelRegistry, default_models_path};
 use pi::package_manager::{

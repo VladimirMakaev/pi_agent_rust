@@ -36058,7 +36058,68 @@ mod tests {
         assert_eq!(mgr.kill_switch_audit_log().len(), 3);
     }
 
-    // ---- Hook bitmap tests ----
+    // ---- Hook bitmap / context cache / coalescer tests ----
+
+    struct TestNullSession;
+
+    #[async_trait]
+    impl ExtensionSession for TestNullSession {
+        async fn get_state(&self) -> Value {
+            Value::Null
+        }
+        async fn get_messages(&self) -> Vec<SessionMessage> {
+            Vec::new()
+        }
+        async fn get_entries(&self) -> Vec<Value> {
+            Vec::new()
+        }
+        async fn get_branch(&self) -> Vec<Value> {
+            Vec::new()
+        }
+        async fn set_name(&self, _name: String) -> Result<()> {
+            Ok(())
+        }
+        async fn append_message(&self, _msg: SessionMessage) -> Result<()> {
+            Ok(())
+        }
+        async fn append_custom_entry(
+            &self,
+            _custom_type: String,
+            _data: Option<Value>,
+        ) -> Result<()> {
+            Ok(())
+        }
+        async fn set_model(&self, _provider: String, _model_id: String) -> Result<()> {
+            Ok(())
+        }
+        async fn get_model(&self) -> (Option<String>, Option<String>) {
+            (None, None)
+        }
+        async fn set_thinking_level(&self, _level: String) -> Result<()> {
+            Ok(())
+        }
+        async fn get_thinking_level(&self) -> Option<String> {
+            None
+        }
+        async fn set_label(&self, _target_id: String, _label: Option<String>) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn test_register_payload(name: &str, hooks: Vec<String>) -> RegisterPayload {
+        RegisterPayload {
+            name: name.to_string(),
+            version: "0.1.0".to_string(),
+            api_version: PROTOCOL_VERSION.to_string(),
+            capabilities: Vec::new(),
+            capability_manifest: None,
+            tools: Vec::new(),
+            slash_commands: Vec::new(),
+            shortcuts: Vec::new(),
+            flags: Vec::new(),
+            event_hooks: hooks,
+        }
+    }
 
     #[test]
     fn hook_bitmap_empty_when_no_extensions_registered() {
@@ -36071,15 +36132,14 @@ mod tests {
     #[test]
     fn hook_bitmap_populated_on_register() {
         let mgr = ExtensionManager::new();
-        let payload = RegisterPayload {
-            name: "test-ext".to_string(),
-            event_hooks: vec![
+        let payload = test_register_payload(
+            "test-ext",
+            vec![
                 "startup".to_string(),
                 "message_update".to_string(),
                 "tool_call".to_string(),
             ],
-            ..Default::default()
-        };
+        );
         mgr.register(payload);
 
         assert!(mgr.has_hook_for("startup"));
@@ -36092,16 +36152,11 @@ mod tests {
     #[test]
     fn hook_bitmap_merges_across_multiple_extensions() {
         let mgr = ExtensionManager::new();
-        mgr.register(RegisterPayload {
-            name: "ext-a".to_string(),
-            event_hooks: vec!["startup".to_string()],
-            ..Default::default()
-        });
-        mgr.register(RegisterPayload {
-            name: "ext-b".to_string(),
-            event_hooks: vec!["tool_call".to_string()],
-            ..Default::default()
-        });
+        mgr.register(test_register_payload("ext-a", vec!["startup".to_string()]));
+        mgr.register(test_register_payload(
+            "ext-b",
+            vec!["tool_call".to_string()],
+        ));
 
         assert!(mgr.has_hook_for("startup"));
         assert!(mgr.has_hook_for("tool_call"));
@@ -36123,7 +36178,7 @@ mod tests {
     fn ctx_generation_increments_on_session_set() {
         let mgr = ExtensionManager::new();
         let gen_before = mgr.inner.lock().unwrap().ctx_generation;
-        mgr.set_session(Arc::new(NullSession));
+        mgr.set_session(Arc::new(TestNullSession));
         let gen_after = mgr.inner.lock().unwrap().ctx_generation;
         assert_eq!(gen_after, gen_before + 1);
     }
