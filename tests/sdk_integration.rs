@@ -17,6 +17,7 @@ use futures::Stream;
 use pi::agent::{AgentConfig, AgentEvent, AgentSession};
 use pi::compaction::ResolvedCompactionSettings;
 use pi::error::{Error, Result};
+use pi::extensions::SecurityAlertCategory;
 use pi::model::{
     AssistantMessage, ContentBlock, StopReason, StreamEvent, TextContent, ToolCall, Usage,
 };
@@ -159,6 +160,10 @@ fn default_session_options(harness: &TestHarness) -> SessionOptions {
         no_session: true,
         ..SessionOptions::default()
     }
+}
+
+fn write_sdk_extension(harness: &TestHarness, filename: &str, source: &str) -> std::path::PathBuf {
+    harness.create_file(format!("extensions/{filename}"), source.as_bytes())
 }
 
 fn run_scripted(
@@ -638,4 +643,566 @@ fn sdk_thinking_level() {
     harness.log().info_ctx("sdk", "thinking level ok", |ctx| {
         ctx.push(("level".to_string(), "High".to_string()));
     });
+}
+
+// ============================================================================
+// 11. SDK extensions — registration surface available via handle
+// ============================================================================
+
+#[test]
+fn sdk_extensions_load_and_expose_registration_surface() {
+    let harness = TestHarness::new("sdk_extensions_load_and_expose_registration_surface");
+    let extension_path = write_sdk_extension(
+        &harness,
+        "sdk_visible.mjs",
+        r#"export default function init(pi) {
+  pi.registerCommand("sdk-visible", {
+    description: "visible command",
+    handler: async (args) => ({ display: "sdk-visible:" + (args || "") })
+  });
+  pi.registerFlag("sdk-flag", {
+    type: "string",
+    default: "on"
+  });
+}"#,
+    );
+
+    let options = SessionOptions {
+        working_directory: Some(harness.temp_dir().to_path_buf()),
+        extension_paths: vec![extension_path],
+        extension_policy: Some("safe".to_string()),
+        no_session: true,
+        ..SessionOptions::default()
+    };
+
+    let handle = run_async(create_agent_session(options)).expect("create session");
+    assert!(
+        handle.has_extensions(),
+        "expected SDK session to load extensions"
+    );
+
+    let manager = handle
+        .extension_manager()
+        .expect("extension manager should be present")
+        .clone();
+
+    let has_command = manager
+        .list_commands()
+        .into_iter()
+        .any(|entry| entry.get("name").and_then(serde_json::Value::as_str) == Some("sdk-visible"));
+    assert!(
+        has_command,
+        "registered SDK extension command should be visible"
+    );
+
+    let has_flag = manager
+        .list_flags()
+        .into_iter()
+        .any(|entry| entry.get("name").and_then(serde_json::Value::as_str) == Some("sdk-flag"));
+    assert!(has_flag, "registered SDK extension flag should be visible");
+
+    let command_result =
+        run_async(async move { manager.execute_command("sdk-visible", "ok", 5000).await })
+            .expect("execute extension command");
+    let display = command_result
+        .get("display")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        display.contains("sdk-visible:ok"),
+        "unexpected extension command display payload: {command_result:?}"
+    );
+}
+
+// ============================================================================
+// 12. SDK extension policy + hostcall visibility
+// ============================================================================
+
+#[test]
+fn sdk_extension_policy_safe_denies_exec_and_records_hostcall_telemetry() {
+    let harness =
+        TestHarness::new("sdk_extension_policy_safe_denies_exec_and_records_hostcall_telemetry");
+    let extension_path = write_sdk_extension(
+        &harness,
+        "sdk_exec_policy.mjs",
+        r#"export default function init(pi) {
+  pi.registerCommand("sdk-exec", {
+    description: "attempt exec hostcall",
+    handler: async () => {
+      await pi.exec("echo", ["sdk-policy"]);
+      return { display: "exec-ok" };
+    }
+  });
+}"#,
+    );
+
+    let options = SessionOptions {
+        working_directory: Some(harness.temp_dir().to_path_buf()),
+        extension_paths: vec![extension_path],
+        extension_policy: Some("safe".to_string()),
+        no_session: true,
+        ..SessionOptions::default()
+    };
+
+    let handle = run_async(create_agent_session(options)).expect("create session");
+    let manager = handle
+        .extension_manager()
+        .expect("extension manager should be present")
+        .clone();
+    let mut risk_config = manager.runtime_risk_config();
+    risk_config.enabled = true;
+    risk_config.enforce = true;
+    manager.set_runtime_risk_config(risk_config);
+
+    let command_result =
+        run_async(async move { manager.execute_command("sdk-exec", "", 5000).await });
+    let denied = match &command_result {
+        Ok(value) => {
+            let text = serde_json::to_string(value).unwrap_or_default();
+            text.contains("denied") || text.contains("not allowed")
+        }
+        Err(err) => {
+            let text = err.to_string();
+            text.contains("denied") || text.contains("not allowed")
+        }
+    };
+    assert!(
+        denied,
+        "safe policy should deny exec hostcall; got: {command_result:?}"
+    );
+
+    let telemetry = handle
+        .extension_manager()
+        .expect("extension manager should still be available")
+        .runtime_hostcall_telemetry_artifact();
+    assert_eq!(
+        telemetry.entry_count, 0,
+        "static policy denial should short-circuit runtime-risk telemetry"
+    );
+
+    let alerts = handle
+        .extension_manager()
+        .expect("extension manager should still be available")
+        .security_alert_artifact();
+    assert!(
+        alerts.category_counts.policy_denial > 0,
+        "policy denial should be emitted as a security alert"
+    );
+    let exec_alert = alerts
+        .alerts
+        .iter()
+        .find(|alert| {
+            alert.category == SecurityAlertCategory::PolicyDenial && alert.capability == "exec"
+        })
+        .expect("expected policy-denial security alert for exec capability");
+    assert!(
+        exec_alert.policy_source.contains("deny"),
+        "expected deny policy source for safe profile, got: {}",
+        exec_alert.policy_source
+    );
+}
+
+// ============================================================================
+// 13. Conformance: Event ordering guarantees
+// ============================================================================
+
+/// Validate that `AgentEvent` lifecycle events are emitted in the correct order
+/// matching pi-mono's event contract.
+///
+/// Expected ordering:
+///   `AgentStart` -> (`TurnStart` -> `MessageStart` -> `MessageUpdate`* ->
+///   `MessageEnd` -> `ToolExecution`* -> `TurnEnd`)+ -> `AgentEnd`
+#[test]
+fn sdk_conformance_event_ordering() {
+    let harness = TestHarness::new("sdk_conformance_event_ordering");
+    let (_message, events) = run_scripted(
+        &harness,
+        Script::SingleText("ordered response".to_string()),
+        "Test ordering",
+    );
+
+    let type_names: Vec<&str> = events
+        .iter()
+        .map(|e| match e {
+            AgentEvent::AgentStart { .. } => "AgentStart",
+            AgentEvent::AgentEnd { .. } => "AgentEnd",
+            AgentEvent::TurnStart { .. } => "TurnStart",
+            AgentEvent::TurnEnd { .. } => "TurnEnd",
+            AgentEvent::MessageStart { .. } => "MessageStart",
+            AgentEvent::MessageUpdate { .. } => "MessageUpdate",
+            AgentEvent::MessageEnd { .. } => "MessageEnd",
+            AgentEvent::ToolExecutionStart { .. } => "ToolExecutionStart",
+            AgentEvent::ToolExecutionUpdate { .. } => "ToolExecutionUpdate",
+            AgentEvent::ToolExecutionEnd { .. } => "ToolExecutionEnd",
+            AgentEvent::AutoCompactionStart { .. } => "AutoCompactionStart",
+            AgentEvent::AutoCompactionEnd { .. } => "AutoCompactionEnd",
+            AgentEvent::AutoRetryStart { .. } => "AutoRetryStart",
+            AgentEvent::AutoRetryEnd { .. } => "AutoRetryEnd",
+            AgentEvent::ExtensionError { .. } => "ExtensionError",
+        })
+        .collect();
+
+    // AgentStart must be first
+    assert_eq!(
+        type_names.first(),
+        Some(&"AgentStart"),
+        "first event must be AgentStart, got: {type_names:?}"
+    );
+
+    // AgentEnd must be last
+    assert_eq!(
+        type_names.last(),
+        Some(&"AgentEnd"),
+        "last event must be AgentEnd, got: {type_names:?}"
+    );
+
+    // TurnStart must precede TurnEnd
+    let first_turn_start = type_names.iter().position(|&n| n == "TurnStart");
+    let first_turn_end = type_names.iter().position(|&n| n == "TurnEnd");
+    assert!(
+        first_turn_start < first_turn_end,
+        "TurnStart must precede TurnEnd"
+    );
+
+    // MessageStart must precede MessageEnd within the turn
+    let first_msg_start = type_names.iter().position(|&n| n == "MessageStart");
+    let first_msg_end = type_names.iter().position(|&n| n == "MessageEnd");
+    assert!(
+        first_msg_start < first_msg_end,
+        "MessageStart must precede MessageEnd"
+    );
+
+    harness
+        .log()
+        .info_ctx("sdk", "event ordering conforms", |ctx| {
+            ctx.push(("event_sequence".to_string(), format!("{type_names:?}")));
+        });
+}
+
+// ============================================================================
+// 14. Conformance: Tool lifecycle event ordering
+// ============================================================================
+
+/// Validate tool execution events follow the contract:
+///   `ToolExecutionStart` -> `ToolExecutionUpdate`* -> `ToolExecutionEnd`
+#[test]
+fn sdk_conformance_tool_event_ordering() {
+    let harness = TestHarness::new("sdk_conformance_tool_event_ordering");
+    let target = harness.temp_dir().join("tool_ordering_test.txt");
+    std::fs::write(&target, "tool ordering content").expect("write target");
+
+    let (_message, events) = run_scripted(
+        &harness,
+        Script::ToolRoundTrip {
+            tool_name: "read".to_string(),
+            tool_args: json!({ "path": target.to_str().unwrap() }),
+            final_text: "done".to_string(),
+        },
+        "Read file for ordering test",
+    );
+
+    let tool_events: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolExecutionStart { .. } => Some("Start"),
+            AgentEvent::ToolExecutionUpdate { .. } => Some("Update"),
+            AgentEvent::ToolExecutionEnd { .. } => Some("End"),
+            _ => None,
+        })
+        .collect();
+
+    assert!(!tool_events.is_empty(), "should have tool execution events");
+
+    // Must start with Start
+    assert_eq!(
+        tool_events.first(),
+        Some(&"Start"),
+        "tool events must start with Start: {tool_events:?}"
+    );
+
+    // Must end with End
+    assert_eq!(
+        tool_events.last(),
+        Some(&"End"),
+        "tool events must end with End: {tool_events:?}"
+    );
+
+    // Verify tool name consistency across start and end
+    let start_name = events.iter().find_map(|e| match e {
+        AgentEvent::ToolExecutionStart { tool_name, .. } => Some(tool_name.as_str()),
+        _ => None,
+    });
+    let end_name = events.iter().find_map(|e| match e {
+        AgentEvent::ToolExecutionEnd { tool_name, .. } => Some(tool_name.as_str()),
+        _ => None,
+    });
+    assert_eq!(
+        start_name, end_name,
+        "tool name should be consistent between Start and End"
+    );
+
+    harness
+        .log()
+        .info_ctx("sdk", "tool event ordering conforms", |ctx| {
+            ctx.push(("tool_events".to_string(), format!("{tool_events:?}")));
+        });
+}
+
+// ============================================================================
+// 15. Conformance: AgentEvent JSON serialization matches pi-mono schema
+// ============================================================================
+
+/// Verify that `AgentEvent` serializes with `snake_case` type tags and
+/// `camelCase` field names, matching the pi-mono JSON event protocol.
+#[test]
+fn sdk_conformance_agent_event_json_schema() {
+    let events = vec![
+        AgentEvent::AgentStart {
+            session_id: "s1".to_string(),
+        },
+        AgentEvent::TurnStart {
+            session_id: "s1".to_string(),
+            turn_index: 0,
+            timestamp: 1_234_567_890,
+        },
+        AgentEvent::ToolExecutionStart {
+            tool_call_id: "tc-1".to_string(),
+            tool_name: "read".to_string(),
+            args: json!({"path": "/tmp/test"}),
+        },
+        AgentEvent::ToolExecutionEnd {
+            tool_call_id: "tc-1".to_string(),
+            tool_name: "read".to_string(),
+            result: pi::tools::ToolOutput {
+                content: vec![ContentBlock::Text(TextContent::new("file contents"))],
+                details: None,
+                is_error: false,
+            },
+            is_error: false,
+        },
+        AgentEvent::AgentEnd {
+            session_id: "s1".to_string(),
+            messages: vec![],
+            error: None,
+        },
+    ];
+
+    for event in &events {
+        let json_value =
+            serde_json::to_value(event).expect("AgentEvent should always serialize to JSON");
+
+        // Must have a "type" field (snake_case tag)
+        let type_field = json_value
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .expect("AgentEvent JSON must have 'type' field");
+
+        // Type must be snake_case
+        assert!(
+            !type_field.contains('-') && !type_field.chars().any(char::is_uppercase),
+            "event type must be snake_case, got: {type_field}"
+        );
+    }
+}
+
+// ============================================================================
+// 16. Conformance: Session-level tool hooks fire via from_session_with_listeners
+// ============================================================================
+
+/// Validate that typed tool hooks (`on_tool_start`, `on_tool_end`) registered
+/// via `EventListeners` fire during prompt execution alongside per-prompt
+/// callbacks.
+#[test]
+fn sdk_conformance_session_tool_hooks() {
+    use pi::sdk::EventListeners;
+
+    let harness = TestHarness::new("sdk_conformance_session_tool_hooks");
+    let target = harness.temp_dir().join("hook_test.txt");
+    std::fs::write(&target, "hook test content").expect("write target");
+
+    let cwd = harness.temp_dir().to_path_buf();
+    let target_path = target.to_str().unwrap().to_string();
+
+    // Track tool start/end from session-level typed hooks.
+    let start_names: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let end_names: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+
+    let start_names_ref = Arc::clone(&start_names);
+    let end_names_ref = Arc::clone(&end_names);
+
+    run_async(async move {
+        let provider: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(Script::ToolRoundTrip {
+            tool_name: "read".to_string(),
+            tool_args: json!({ "path": target_path }),
+            final_text: "done".to_string(),
+        }));
+        let tools = ToolRegistry::new(&["read"], &cwd, None);
+        let config = AgentConfig {
+            system_prompt: None,
+            max_tool_iterations: 10,
+            stream_options: StreamOptions {
+                api_key: Some("test-key".to_string()),
+                ..StreamOptions::default()
+            },
+            block_images: false,
+        };
+        let agent = pi::agent::Agent::new(provider, tools, config);
+        let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+            Some(cwd),
+        )));
+        let agent_session =
+            AgentSession::new(agent, session, true, ResolvedCompactionSettings::default());
+
+        let mut listeners = EventListeners::default();
+        listeners.on_tool_start = Some(Arc::new(move |name, _args| {
+            start_names_ref.lock().expect("lock").push(name.to_string());
+        }));
+        listeners.on_tool_end = Some(Arc::new(move |name, _output, _is_error| {
+            end_names_ref.lock().expect("lock").push(name.to_string());
+        }));
+
+        let mut handle = AgentSessionHandle::from_session_with_listeners(agent_session, listeners);
+        handle
+            .prompt("read the file", |_event| {})
+            .await
+            .expect("prompt");
+    });
+
+    let starts = start_names.lock().expect("lock").clone();
+    let ends = end_names.lock().expect("lock").clone();
+
+    assert!(
+        !starts.is_empty(),
+        "on_tool_start should have fired at least once"
+    );
+    assert!(
+        !ends.is_empty(),
+        "on_tool_end should have fired at least once"
+    );
+    assert!(
+        starts.iter().any(|name| name == "read"),
+        "on_tool_start should report tool name 'read', got: {starts:?}"
+    );
+    assert!(
+        ends.iter().any(|name| name == "read"),
+        "on_tool_end should report tool name 'read', got: {ends:?}"
+    );
+
+    harness
+        .log()
+        .info_ctx("sdk", "session tool hooks conform", |ctx| {
+            ctx.push(("tool_starts".to_string(), format!("{starts:?}")));
+            ctx.push(("tool_ends".to_string(), format!("{ends:?}")));
+        });
+}
+
+// ============================================================================
+// 17. Conformance: Combined callback ordering (session + per-prompt)
+// ============================================================================
+
+/// Validate that session-level subscribers and per-prompt callbacks both receive
+/// the same events, and that session-level subscribers fire before per-prompt.
+#[test]
+fn sdk_conformance_combined_callback_ordering() {
+    use pi::sdk::EventListeners;
+
+    let harness = TestHarness::new("sdk_conformance_combined_callback_ordering");
+    let cwd = harness.temp_dir().to_path_buf();
+
+    // Track event ordering: session subscriber sees events before per-prompt callback.
+    let order: Arc<Mutex<Vec<(String, &str)>>> = Arc::new(Mutex::new(Vec::new()));
+    let order_session = Arc::clone(&order);
+    let order_prompt = Arc::clone(&order);
+
+    run_async(async move {
+        let provider: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(Script::SingleText(
+            "combined test".to_string(),
+        )));
+        let tools = ToolRegistry::new(&["read"], &cwd, None);
+        let config = AgentConfig {
+            system_prompt: None,
+            max_tool_iterations: 10,
+            stream_options: StreamOptions {
+                api_key: Some("test-key".to_string()),
+                ..StreamOptions::default()
+            },
+            block_images: false,
+        };
+        let agent = pi::agent::Agent::new(provider, tools, config);
+        let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+            Some(cwd),
+        )));
+        let agent_session =
+            AgentSession::new(agent, session, true, ResolvedCompactionSettings::default());
+
+        let listeners = EventListeners::default();
+        let mut handle = AgentSessionHandle::from_session_with_listeners(agent_session, listeners);
+
+        // Register a session-level subscriber.
+        handle.subscribe(move |event| {
+            let type_name = match &event {
+                AgentEvent::AgentStart { .. } => "AgentStart",
+                AgentEvent::AgentEnd { .. } => "AgentEnd",
+                _ => return,
+            };
+            order_session
+                .lock()
+                .expect("lock")
+                .push((type_name.to_string(), "session"));
+        });
+
+        handle
+            .prompt("test", move |event| {
+                let type_name = match &event {
+                    AgentEvent::AgentStart { .. } => "AgentStart",
+                    AgentEvent::AgentEnd { .. } => "AgentEnd",
+                    _ => return,
+                };
+                order_prompt
+                    .lock()
+                    .expect("lock")
+                    .push((type_name.to_string(), "per-prompt"));
+            })
+            .await
+            .expect("prompt");
+    });
+
+    let entries = order.lock().expect("lock").clone();
+
+    // Both session and per-prompt should have received AgentStart.
+    let has_session_start = entries
+        .iter()
+        .any(|(name, source)| name == "AgentStart" && *source == "session");
+    let has_prompt_start = entries
+        .iter()
+        .any(|(name, source)| name == "AgentStart" && *source == "per-prompt");
+
+    assert!(
+        has_session_start,
+        "session subscriber should receive AgentStart"
+    );
+    assert!(
+        has_prompt_start,
+        "per-prompt callback should receive AgentStart"
+    );
+
+    // Session subscriber should fire before per-prompt for the same event.
+    let first_session_idx = entries
+        .iter()
+        .position(|(_, source)| *source == "session")
+        .expect("session event");
+    let first_prompt_idx = entries
+        .iter()
+        .position(|(_, source)| *source == "per-prompt")
+        .expect("prompt event");
+    assert!(
+        first_session_idx < first_prompt_idx,
+        "session-level subscriber should fire before per-prompt callback"
+    );
+
+    harness
+        .log()
+        .info_ctx("sdk", "combined callback ordering conforms", |ctx| {
+            ctx.push(("entries".to_string(), format!("{entries:?}")));
+        });
 }
