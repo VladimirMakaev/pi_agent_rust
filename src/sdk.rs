@@ -1394,6 +1394,7 @@ pub async fn create_agent_session(options: SessionOptions) -> Result<AgentSessio
         system_prompt: Some(system_prompt),
         max_tool_iterations: options.max_tool_iterations,
         stream_options,
+        block_images: config.image_block_images(),
     };
 
     let tools = ToolRegistry::new(&enabled_tools, &cwd, Some(&config));
@@ -1700,6 +1701,7 @@ mod tests {
             let s = starts.lock().expect("lock");
             assert_eq!(s.len(), 1);
             assert_eq!(s[0].0, "bash");
+            drop(s);
         }
 
         {
@@ -1707,6 +1709,7 @@ mod tests {
             assert_eq!(e.len(), 1);
             assert_eq!(e[0].0, "bash");
             assert!(!e[0].1);
+            drop(e);
         }
     }
 

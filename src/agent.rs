@@ -63,6 +63,9 @@ pub struct AgentConfig {
 
     /// Default stream options.
     pub stream_options: StreamOptions,
+
+    /// Strip image blocks before sending context to providers.
+    pub block_images: bool,
 }
 
 impl Default for AgentConfig {
@@ -71,6 +74,7 @@ impl Default for AgentConfig {
             system_prompt: None,
             max_tool_iterations: 50,
             stream_options: StreamOptions::default(),
+            block_images: false,
         }
     }
 }
@@ -499,9 +503,21 @@ impl Agent {
 
     /// Build context for a completion request.
     fn build_context(&self) -> Context {
+        let mut messages = self.messages.clone();
+        if self.config.block_images {
+            let stats = filter_images_for_provider(&mut messages);
+            if stats.removed_images > 0 {
+                tracing::debug!(
+                    filtered_images = stats.removed_images,
+                    affected_messages = stats.affected_messages,
+                    "Filtered image content from outbound provider context (images.block_images=true)"
+                );
+            }
+        }
+
         Context {
             system_prompt: self.config.system_prompt.clone(),
-            messages: self.messages.clone(),
+            messages,
             tools: self.build_tool_defs(),
         }
     }
@@ -4720,6 +4736,67 @@ fn log_repair_diagnostics(events: &[crate::extensions_js::ExtensionRepairEvent])
     }
 }
 
+const BLOCK_IMAGES_PLACEHOLDER: &str = "Image reading is disabled.";
+
+#[derive(Debug, Default, Clone, Copy)]
+struct ImageFilterStats {
+    removed_images: usize,
+    affected_messages: usize,
+}
+
+fn filter_images_for_provider(messages: &mut [Message]) -> ImageFilterStats {
+    let mut stats = ImageFilterStats::default();
+    for message in messages {
+        let removed = filter_images_from_message(message);
+        if removed > 0 {
+            stats.removed_images += removed;
+            stats.affected_messages += 1;
+        }
+    }
+    stats
+}
+
+fn filter_images_from_message(message: &mut Message) -> usize {
+    match message {
+        Message::User(user) => match &mut user.content {
+            UserContent::Text(_) => 0,
+            UserContent::Blocks(blocks) => filter_image_blocks(blocks),
+        },
+        Message::Assistant(assistant) => {
+            let assistant = Arc::make_mut(assistant);
+            filter_image_blocks(&mut assistant.content)
+        }
+        Message::ToolResult(tool_result) => filter_image_blocks(&mut tool_result.content),
+        Message::Custom(_) => 0,
+    }
+}
+
+fn filter_image_blocks(blocks: &mut Vec<ContentBlock>) -> usize {
+    let mut removed = 0usize;
+    let mut filtered = Vec::with_capacity(blocks.len());
+
+    for block in blocks.drain(..) {
+        match block {
+            ContentBlock::Image(_) => {
+                removed += 1;
+                let previous_is_placeholder =
+                    filtered
+                        .last()
+                        .is_some_and(|prev| matches!(prev, ContentBlock::Text(TextContent { text, .. }) if text == BLOCK_IMAGES_PLACEHOLDER));
+                if !previous_is_placeholder {
+                    filtered.push(ContentBlock::Text(TextContent::new(
+                        BLOCK_IMAGES_PLACEHOLDER,
+                    )));
+                }
+            }
+            other => filtered.push(other),
+        }
+    }
+
+    *blocks = filtered;
+    removed
+}
+
 /// Extract tool calls from content blocks.
 fn extract_tool_calls(content: &[ContentBlock]) -> Vec<ToolCall> {
     content
@@ -4742,7 +4819,10 @@ fn extract_tool_calls(content: &[ContentBlock]) -> Vec<ToolCall> {
 mod tests {
     use super::*;
     use crate::auth::AuthCredential;
+    use async_trait::async_trait;
+    use futures::Stream;
     use std::path::Path;
+    use std::pin::Pin;
 
     fn user_message(text: &str) -> Message {
         Message::User(UserMessage {
@@ -4768,6 +4848,64 @@ mod tests {
         }) = message
         {
             assert_eq!(text, expected);
+        }
+    }
+
+    fn sample_image_block() -> ContentBlock {
+        ContentBlock::Image(ImageContent {
+            data: "aGVsbG8=".to_string(),
+            mime_type: "image/png".to_string(),
+        })
+    }
+
+    fn image_count_in_message(message: &Message) -> usize {
+        let count_images = |blocks: &[ContentBlock]| {
+            blocks
+                .iter()
+                .filter(|block| matches!(block, ContentBlock::Image(_)))
+                .count()
+        };
+        match message {
+            Message::User(UserMessage {
+                content: UserContent::Blocks(blocks),
+                ..
+            }) => count_images(blocks),
+            Message::Assistant(msg) => count_images(&msg.content),
+            Message::ToolResult(tool_result) => count_images(&tool_result.content),
+            Message::User(UserMessage {
+                content: UserContent::Text(_),
+                ..
+            })
+            | Message::Custom(_) => 0,
+        }
+    }
+
+    #[derive(Debug)]
+    struct SilentProvider;
+
+    #[async_trait]
+    #[allow(clippy::unnecessary_literal_bound)]
+    impl Provider for SilentProvider {
+        fn name(&self) -> &str {
+            "silent-provider"
+        }
+
+        fn api(&self) -> &str {
+            "test-api"
+        }
+
+        fn model_id(&self) -> &str {
+            "test-model"
+        }
+
+        async fn stream(
+            &self,
+            _context: &Context,
+            _options: &StreamOptions,
+        ) -> crate::error::Result<
+            Pin<Box<dyn Stream<Item = crate::error::Result<StreamEvent>> + Send>>,
+        > {
+            Ok(Box::pin(futures::stream::empty()))
         }
     }
 
@@ -4801,6 +4939,135 @@ mod tests {
         let config = AgentConfig::default();
         assert_eq!(config.max_tool_iterations, 50);
         assert!(config.system_prompt.is_none());
+        assert!(!config.block_images);
+    }
+
+    #[test]
+    fn filter_image_blocks_replaces_images_with_deduped_placeholder_text() {
+        let mut blocks = vec![
+            sample_image_block(),
+            sample_image_block(),
+            ContentBlock::Text(TextContent::new("tail")),
+            sample_image_block(),
+        ];
+
+        let removed = filter_image_blocks(&mut blocks);
+
+        assert_eq!(removed, 3);
+        assert!(
+            !blocks
+                .iter()
+                .any(|block| matches!(block, ContentBlock::Image(_)))
+        );
+        assert!(matches!(
+            blocks.first(),
+            Some(ContentBlock::Text(TextContent { text, .. })) if text == BLOCK_IMAGES_PLACEHOLDER
+        ));
+        assert!(matches!(
+            blocks.get(1),
+            Some(ContentBlock::Text(TextContent { text, .. })) if text == "tail"
+        ));
+        assert!(matches!(
+            blocks.get(2),
+            Some(ContentBlock::Text(TextContent { text, .. })) if text == BLOCK_IMAGES_PLACEHOLDER
+        ));
+    }
+
+    #[test]
+    fn filter_images_for_provider_filters_images_from_all_block_message_types() {
+        let mut messages = vec![
+            Message::User(UserMessage {
+                content: UserContent::Blocks(vec![
+                    ContentBlock::Text(TextContent::new("hello")),
+                    sample_image_block(),
+                ]),
+                timestamp: 0,
+            }),
+            Message::Assistant(Arc::new(AssistantMessage {
+                content: vec![sample_image_block()],
+                api: "test".to_string(),
+                provider: "test".to_string(),
+                model: "test".to_string(),
+                usage: Usage::default(),
+                stop_reason: StopReason::Stop,
+                error_message: None,
+                timestamp: 0,
+            })),
+            Message::ToolResult(ToolResultMessage {
+                tool_call_id: "tc1".to_string(),
+                tool_name: "read".to_string(),
+                content: vec![
+                    sample_image_block(),
+                    ContentBlock::Text(TextContent::new("ok")),
+                ],
+                details: None,
+                is_error: false,
+                timestamp: 0,
+            }),
+        ];
+
+        let stats = filter_images_for_provider(&mut messages);
+
+        assert_eq!(stats.removed_images, 3);
+        assert_eq!(stats.affected_messages, 3);
+        assert_eq!(
+            messages.iter().map(image_count_in_message).sum::<usize>(),
+            0,
+            "no images should remain in provider-bound context"
+        );
+    }
+
+    #[test]
+    fn build_context_strips_images_when_block_images_enabled() {
+        let mut agent = Agent::new(
+            Arc::new(SilentProvider),
+            ToolRegistry::new(&[], Path::new("."), None),
+            AgentConfig {
+                system_prompt: None,
+                max_tool_iterations: 50,
+                stream_options: StreamOptions::default(),
+                block_images: true,
+            },
+        );
+        agent.add_message(Message::User(UserMessage {
+            content: UserContent::Blocks(vec![sample_image_block()]),
+            timestamp: 0,
+        }));
+
+        let context = agent.build_context();
+        assert_eq!(context.messages.len(), 1);
+        assert_eq!(image_count_in_message(&context.messages[0]), 0);
+        assert!(matches!(
+            &context.messages[0],
+            Message::User(UserMessage {
+                content: UserContent::Blocks(blocks),
+                ..
+            }) if blocks
+                .iter()
+                .any(|block| matches!(block, ContentBlock::Text(TextContent { text, .. }) if text == BLOCK_IMAGES_PLACEHOLDER))
+        ));
+    }
+
+    #[test]
+    fn build_context_keeps_images_when_block_images_disabled() {
+        let mut agent = Agent::new(
+            Arc::new(SilentProvider),
+            ToolRegistry::new(&[], Path::new("."), None),
+            AgentConfig {
+                system_prompt: None,
+                max_tool_iterations: 50,
+                stream_options: StreamOptions::default(),
+                block_images: false,
+            },
+        );
+        agent.add_message(Message::User(UserMessage {
+            content: UserContent::Blocks(vec![sample_image_block()]),
+            timestamp: 0,
+        }));
+
+        let context = agent.build_context();
+        assert_eq!(context.messages.len(), 1);
+        assert_eq!(image_count_in_message(&context.messages[0]), 1);
     }
 
     #[test]
@@ -4982,6 +5249,7 @@ mod tests {
                 system_prompt: None,
                 max_tool_iterations: 50,
                 stream_options,
+                block_images: false,
             },
         );
 

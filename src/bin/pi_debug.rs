@@ -214,6 +214,7 @@ async fn run_debug(mut cli: cli::Cli, _runtime_handle: RuntimeHandle) -> Result<
         system_prompt: Some(system_prompt),
         max_tool_iterations: 50,
         stream_options,
+        block_images: config.image_block_images(),
     };
     let tools = ToolRegistry::new(&enabled_tools, &cwd, Some(&config));
     let session_arc = Arc::new(Mutex::new(session));

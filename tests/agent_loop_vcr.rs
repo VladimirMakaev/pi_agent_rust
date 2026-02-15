@@ -159,6 +159,7 @@ fn agent_loop_openai_vcr_basic() {
                 api_key: Some("test-key".to_string()),
                 ..Default::default()
             },
+            block_images: false,
         };
         let agent = Agent::new(Arc::new(provider), tools, agent_config);
 
@@ -339,6 +340,7 @@ fn agent_loop_anthropic_simple_text() {
                 temperature: Some(0.0),
                 ..Default::default()
             },
+            block_images: false,
         };
         let agent = Agent::new(Arc::new(provider), tools, agent_config);
 
@@ -436,6 +438,7 @@ fn agent_loop_anthropic_error_stream() {
                 temperature: Some(0.0),
                 ..Default::default()
             },
+            block_images: false,
         };
         let agent = Agent::new(Arc::new(provider), tools, agent_config);
 
@@ -516,6 +519,7 @@ fn agent_loop_anthropic_tool_call_stop() {
                 temperature: Some(0.0),
                 ..Default::default()
             },
+            block_images: false,
         };
         let agent = Agent::new(Arc::new(provider), tools, agent_config);
 

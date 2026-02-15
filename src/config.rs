@@ -564,6 +564,13 @@ impl Config {
             .unwrap_or(true)
     }
 
+    pub fn image_block_images(&self) -> bool {
+        self.images
+            .as_ref()
+            .and_then(|i| i.block_images)
+            .unwrap_or(false)
+    }
+
     pub fn terminal_show_images(&self) -> bool {
         self.terminal
             .as_ref()
@@ -2427,5 +2434,43 @@ mod tests {
                 crate::extensions::ExtensionPolicyMode::Strict
             );
         }
+    }
+
+    // ── markdown.codeBlockIndent config ───────────────────────────────
+
+    #[test]
+    fn markdown_code_block_indent_deserializes() {
+        let json = r#"{"markdown":{"codeBlockIndent":4}}"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(config.markdown.as_ref().unwrap().code_block_indent, Some(4));
+    }
+
+    #[test]
+    fn markdown_code_block_indent_camel_case_alias() {
+        let json = r#"{"markdown":{"code_block_indent":6}}"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(config.markdown.as_ref().unwrap().code_block_indent, Some(6));
+    }
+
+    #[test]
+    fn markdown_code_block_indent_absent() {
+        let json = r"{}";
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert!(config.markdown.is_none());
+    }
+
+    #[test]
+    fn markdown_code_block_indent_zero() {
+        let json = r#"{"markdown":{"codeBlockIndent":0}}"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(config.markdown.as_ref().unwrap().code_block_indent, Some(0));
+    }
+
+    #[test]
+    fn markdown_merge_prefers_other() {
+        let base: Config = serde_json::from_str(r#"{"markdown":{"codeBlockIndent":2}}"#).unwrap();
+        let other: Config = serde_json::from_str(r#"{"markdown":{"codeBlockIndent":4}}"#).unwrap();
+        let merged = Config::merge(base, other);
+        assert_eq!(merged.markdown.as_ref().unwrap().code_block_indent, Some(4));
     }
 }

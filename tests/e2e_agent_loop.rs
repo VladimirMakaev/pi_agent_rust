@@ -474,6 +474,7 @@ fn run_scenario(
                 api_key: Some("test-key".to_string()),
                 ..StreamOptions::default()
             },
+            block_images: false,
         };
         let agent = Agent::new(provider, tools, config);
         let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(

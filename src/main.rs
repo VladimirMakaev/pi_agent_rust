@@ -657,6 +657,7 @@ async fn run(mut cli: cli::Cli, runtime_handle: RuntimeHandle) -> Result<()> {
         system_prompt: Some(system_prompt),
         max_tool_iterations: 50,
         stream_options,
+        block_images: config.image_block_images(),
     };
 
     let tools = ToolRegistry::new(&enabled_tools, &cwd, Some(&config));
