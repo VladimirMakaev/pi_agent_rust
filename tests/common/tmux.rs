@@ -168,16 +168,37 @@ impl TmuxInstance {
         String::from_utf8_lossy(&output.stdout).to_string()
     }
 
+    fn try_capture_pane(&self) -> Option<String> {
+        let target = self.target_pane();
+        let output = self.tmux_output(&["capture-pane", "-t", &target, "-p", "-S", "-2000"]);
+        if output.status.success() {
+            Some(String::from_utf8_lossy(&output.stdout).to_string())
+        } else {
+            None
+        }
+    }
+
     /// Poll until the pane contains the given text, or timeout.
     pub fn wait_for_pane_contains(&self, needle: &str, timeout: Duration) -> String {
         let start = Instant::now();
+        let mut last_pane = String::new();
         loop {
-            let pane = self.capture_pane();
+            let pane = match self.try_capture_pane() {
+                Some(pane) => pane,
+                None => {
+                    if !self.session_exists() || start.elapsed() > timeout {
+                        return last_pane;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                    continue;
+                }
+            };
+            last_pane = pane.clone();
             if pane.contains(needle) {
                 return pane;
             }
             if start.elapsed() > timeout {
-                return pane;
+                return last_pane;
             }
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -187,13 +208,24 @@ impl TmuxInstance {
     pub fn wait_for_pane_contains_any(&self, needles: &[&str], timeout: Duration) -> String {
         assert!(!needles.is_empty(), "needles must not be empty");
         let start = Instant::now();
+        let mut last_pane = String::new();
         loop {
-            let pane = self.capture_pane();
+            let pane = match self.try_capture_pane() {
+                Some(pane) => pane,
+                None => {
+                    if !self.session_exists() || start.elapsed() > timeout {
+                        return last_pane;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                    continue;
+                }
+            };
+            last_pane = pane.clone();
             if needles.iter().any(|needle| pane.contains(needle)) {
                 return pane;
             }
             if start.elapsed() > timeout {
-                return pane;
+                return last_pane;
             }
             std::thread::sleep(Duration::from_millis(50));
         }
