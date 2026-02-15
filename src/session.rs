@@ -3353,6 +3353,9 @@ pub fn create_v2_sidecar_from_jsonl(jsonl_path: &Path) -> Result<SessionStoreV2>
         .ok_or_else(|| crate::Error::session("Empty JSONL session file"))?;
 
     let v2_root = session_store_v2::v2_sidecar_path(jsonl_path);
+    if v2_root.exists() {
+        std::fs::remove_dir_all(&v2_root).map_err(|e| crate::Error::Io(Box::new(e)))?;
+    }
     let mut store = SessionStoreV2::create(&v2_root, 64 * 1024 * 1024)?;
 
     for line in lines {
@@ -3367,6 +3370,272 @@ pub fn create_v2_sidecar_from_jsonl(jsonl_path: &Path) -> Result<SessionStoreV2>
     }
 
     Ok(store)
+}
+
+/// Migrate a JSONL session to V2 with full verification and event logging.
+///
+/// Returns the `MigrationEvent` that was recorded in the V2 store's migration
+/// ledger. The migration is atomic: if verification fails, the sidecar is
+/// removed and an error is returned.
+pub fn migrate_jsonl_to_v2(
+    jsonl_path: &Path,
+    correlation_id: &str,
+) -> Result<session_store_v2::MigrationEvent> {
+    let store = create_v2_sidecar_from_jsonl(jsonl_path)?;
+
+    // Verify fidelity.
+    let verification = verify_v2_against_jsonl(jsonl_path, &store)?;
+
+    if !(verification.entry_count_match
+        && verification.hash_chain_match
+        && verification.index_consistent)
+    {
+        // Verification failed — remove the sidecar.
+        let v2_root = session_store_v2::v2_sidecar_path(jsonl_path);
+        if v2_root.exists() {
+            std::fs::remove_dir_all(&v2_root)
+                .map_err(|e| crate::Error::Io(Box::new(e)))?;
+        }
+        return Err(crate::Error::session(format!(
+            "V2 migration verification failed: count={} hash={} index={}",
+            verification.entry_count_match,
+            verification.hash_chain_match,
+            verification.index_consistent,
+        )));
+    }
+
+    let event = session_store_v2::MigrationEvent {
+        schema: session_store_v2::MIGRATION_EVENT_SCHEMA.to_string(),
+        migration_id: uuid::Uuid::new_v4().to_string(),
+        phase: "forward".to_string(),
+        at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        source_path: jsonl_path.display().to_string(),
+        target_path: session_store_v2::v2_sidecar_path(jsonl_path)
+            .display()
+            .to_string(),
+        source_format: "jsonl_v3".to_string(),
+        target_format: "native_v2".to_string(),
+        verification,
+        outcome: "ok".to_string(),
+        error_class: None,
+        correlation_id: correlation_id.to_string(),
+    };
+    store.append_migration_event(event.clone())?;
+
+    Ok(event)
+}
+
+/// Verify a V2 sidecar against its source JSONL for fidelity.
+///
+/// Compares entry count, entry IDs in order, and validates the V2 store's
+/// internal integrity (checksums + hash chain).
+pub fn verify_v2_against_jsonl(
+    jsonl_path: &Path,
+    store: &SessionStoreV2,
+) -> Result<session_store_v2::MigrationVerification> {
+    // Parse all JSONL entries (skip header).
+    let contents =
+        std::fs::read_to_string(jsonl_path).map_err(|e| crate::Error::Io(Box::new(e)))?;
+    let mut lines = contents.lines();
+    let _header = lines
+        .next()
+        .ok_or_else(|| crate::Error::session("Empty JSONL session file"))?;
+
+    let mut jsonl_ids: Vec<String> = Vec::new();
+    for line in lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let entry: SessionEntry = serde_json::from_str(line)
+            .map_err(|e| crate::Error::session(format!("Bad JSONL entry: {e}")))?;
+        let id = entry
+            .base_id()
+            .cloned()
+            .ok_or_else(|| crate::Error::session("SessionEntry has no id"))?;
+        jsonl_ids.push(id);
+    }
+
+    // Read V2 store entries.
+    let frames = store.read_all_entries()?;
+    let v2_ids: Vec<String> = frames.iter().map(|f| f.entry_id.clone()).collect();
+
+    let entry_count_match = jsonl_ids.len() == v2_ids.len() && jsonl_ids == v2_ids;
+
+    // Check hash chain via validate_integrity (which also verifies checksums).
+    let index_consistent = store.validate_integrity().is_ok();
+
+    // Hash chain is validated as part of integrity validation for the store.
+    let hash_chain_match = index_consistent;
+
+    Ok(session_store_v2::MigrationVerification {
+        entry_count_match,
+        hash_chain_match,
+        index_consistent,
+    })
+}
+
+/// Remove a V2 sidecar, reverting to JSONL-only storage.
+///
+/// Logs a rollback event in the migration ledger before removing the sidecar.
+/// Returns `Ok(())` if the sidecar was removed (or didn't exist).
+pub fn rollback_v2_sidecar(jsonl_path: &Path, correlation_id: &str) -> Result<()> {
+    let v2_root = session_store_v2::v2_sidecar_path(jsonl_path);
+    if !v2_root.exists() {
+        return Ok(());
+    }
+
+    // Try to log the rollback event before deleting.
+    if let Ok(store) = SessionStoreV2::create(&v2_root, 64 * 1024 * 1024) {
+        let event = session_store_v2::MigrationEvent {
+            schema: session_store_v2::MIGRATION_EVENT_SCHEMA.to_string(),
+            migration_id: uuid::Uuid::new_v4().to_string(),
+            phase: "rollback_to_jsonl".to_string(),
+            at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            source_path: v2_root.display().to_string(),
+            target_path: jsonl_path.display().to_string(),
+            source_format: "native_v2".to_string(),
+            target_format: "jsonl_v3".to_string(),
+            verification: session_store_v2::MigrationVerification {
+                entry_count_match: true,
+                hash_chain_match: true,
+                index_consistent: true,
+            },
+            outcome: "ok".to_string(),
+            error_class: None,
+            correlation_id: correlation_id.to_string(),
+        };
+        let _ = store.append_migration_event(event);
+    }
+
+    std::fs::remove_dir_all(&v2_root).map_err(|e| crate::Error::Io(Box::new(e)))?;
+    Ok(())
+}
+
+/// Current migration state of a JSONL session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MigrationState {
+    /// No V2 sidecar exists — pure JSONL.
+    Unmigrated,
+    /// V2 sidecar exists and passes integrity validation.
+    Migrated,
+    /// V2 sidecar exists but fails integrity validation.
+    Corrupt { error: String },
+    /// V2 sidecar directory exists but is missing critical files (partial write).
+    Partial,
+}
+
+/// Query the migration state of a JSONL session file.
+pub fn migration_status(jsonl_path: &Path) -> MigrationState {
+    let v2_root = session_store_v2::v2_sidecar_path(jsonl_path);
+    if !v2_root.exists() {
+        return MigrationState::Unmigrated;
+    }
+
+    let segments_dir = v2_root.join("segments");
+    if !segments_dir.exists() {
+        return MigrationState::Partial;
+    }
+
+    let index_path = v2_root.join("index").join("offsets.jsonl");
+    if !index_path.exists() {
+        match jsonl_has_entry_lines(jsonl_path) {
+            Ok(true) => return MigrationState::Partial,
+            Ok(false) => {}
+            Err(e) => {
+                return MigrationState::Corrupt {
+                    error: e.to_string(),
+                };
+            }
+        }
+    }
+
+    // Try to open and validate.
+    match SessionStoreV2::create(&v2_root, 64 * 1024 * 1024) {
+        Ok(store) => match store.validate_integrity() {
+            Ok(()) => MigrationState::Migrated,
+            Err(e) => MigrationState::Corrupt {
+                error: e.to_string(),
+            },
+        },
+        Err(e) => MigrationState::Corrupt {
+            error: e.to_string(),
+        },
+    }
+}
+
+/// Dry-run a JSONL → V2 migration without persisting the sidecar.
+///
+/// Creates the V2 store in a temporary directory, runs verification, then
+/// cleans up. Returns the verification result so callers can inspect
+/// entry counts and integrity before committing.
+pub fn migrate_dry_run(jsonl_path: &Path) -> Result<session_store_v2::MigrationVerification> {
+    let tmp_dir =
+        tempfile::tempdir().map_err(|e| crate::Error::session(format!("tempdir: {e}")))?;
+    let tmp_v2_root = tmp_dir.path().join("dry_run.v2");
+
+    // Parse JSONL and populate a temporary V2 store.
+    let contents =
+        std::fs::read_to_string(jsonl_path).map_err(|e| crate::Error::Io(Box::new(e)))?;
+    let mut lines = contents.lines();
+    let _header = lines
+        .next()
+        .ok_or_else(|| crate::Error::session("Empty JSONL session file"))?;
+
+    let mut store = SessionStoreV2::create(&tmp_v2_root, 64 * 1024 * 1024)?;
+    for line in lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let entry: SessionEntry = serde_json::from_str(line)
+            .map_err(|e| crate::Error::session(format!("Bad JSONL entry: {e}")))?;
+        let (entry_id, parent_entry_id, entry_type, payload) =
+            session_store_v2::session_entry_to_frame_args(&entry)?;
+        store.append_entry(entry_id, parent_entry_id, entry_type, payload)?;
+    }
+
+    // Verify against source JSONL (but using the temp store).
+    verify_v2_against_jsonl(jsonl_path, &store)
+    // tmp_dir drops here → auto-cleanup
+}
+
+/// Recover from a partial or corrupted V2 migration.
+///
+/// If the sidecar is in a partial/corrupt state, removes it and optionally
+/// re-runs the migration. Returns the final migration state.
+pub fn recover_partial_migration(
+    jsonl_path: &Path,
+    correlation_id: &str,
+    re_migrate: bool,
+) -> Result<MigrationState> {
+    let status = migration_status(jsonl_path);
+    match &status {
+        MigrationState::Unmigrated | MigrationState::Migrated => Ok(status),
+        MigrationState::Partial | MigrationState::Corrupt { .. } => {
+            // Remove the broken sidecar.
+            let v2_root = session_store_v2::v2_sidecar_path(jsonl_path);
+            if v2_root.exists() {
+                std::fs::remove_dir_all(&v2_root)
+                    .map_err(|e| crate::Error::Io(Box::new(e)))?;
+            }
+
+            if re_migrate {
+                migrate_jsonl_to_v2(jsonl_path, correlation_id)?;
+                Ok(MigrationState::Migrated)
+            } else {
+                Ok(MigrationState::Unmigrated)
+            }
+        }
+    }
+}
+
+fn jsonl_has_entry_lines(jsonl_path: &Path) -> Result<bool> {
+    let contents =
+        std::fs::read_to_string(jsonl_path).map_err(|e| crate::Error::Io(Box::new(e)))?;
+    let mut lines = contents.lines();
+    if lines.next().is_none() {
+        return Err(crate::Error::session("Empty JSONL session file"));
+    }
+    Ok(lines.any(|line| !line.trim().is_empty()))
 }
 
 /// Result of single-pass load finalization (Gap F).
