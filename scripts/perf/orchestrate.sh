@@ -26,6 +26,9 @@
 #   PERF_OUTPUT_DIR           Override output directory (default: target/perf/runs/<timestamp>)
 #   PERF_PROFILE              Build profile: release, perf, debug (default: perf)
 #   PERF_PARALLELISM          Test parallelism (default: 1 for determinism)
+#   PERF_PGO_MODE             PGO mode: off, train, use, compare (default: off)
+#   PERF_PGO_PROFILE_DATA     Explicit .profdata path for profile-use mode
+#   PERF_PGO_ALLOW_FALLBACK   Fail-closed toggle when PGO data is missing/corrupt (default: 1)
 #   PERF_QUICK                Set to 1 for PR-safe subset (same as --profile quick)
 #   PERF_SKIP_CRITERION       Set to 1 to skip criterion benchmarks
 #   PERF_SKIP_BUILD           Set to 1 to skip cargo build step
@@ -47,6 +50,9 @@ CARGO_PROFILE="${PERF_PROFILE:-perf}"
 TARGET_DIR="${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}"
 OUTPUT_DIR="${PERF_OUTPUT_DIR:-$TARGET_DIR/perf/runs/$TIMESTAMP}"
 PARALLELISM="${PERF_PARALLELISM:-1}"
+PGO_MODE="${PERF_PGO_MODE:-off}"
+PGO_PROFILE_DATA="${PERF_PGO_PROFILE_DATA:-$TARGET_DIR/perf/$CARGO_PROFILE/pgo_profile/pijs_workload.profdata}"
+PGO_ALLOW_FALLBACK="${PERF_PGO_ALLOW_FALLBACK:-1}"
 CORRELATION_ID="${CI_CORRELATION_ID:-}"
 PROFILE="full"
 SKIP_BUILD="${PERF_SKIP_BUILD:-0}"
@@ -289,6 +295,8 @@ log_step "Output:         $OUTPUT_DIR"
 log_step "Correlation ID: $CORRELATION_ID"
 log_step "Git commit:     $GIT_COMMIT (dirty=$GIT_DIRTY)"
 log_step "Cargo profile:  $CARGO_PROFILE"
+log_step "PGO mode:       $PGO_MODE"
+log_step "PGO profile:    $PGO_PROFILE_DATA"
 log_step "Timestamp:      $TIMESTAMP"
 log_step "Suites:         ${SELECTED_SUITES[*]}"
 
@@ -336,6 +344,9 @@ if [[ "$SKIP_ENV_CHECK" -eq 0 ]]; then
   "cpu_cores": $cpu_cores,
   "mem_total_mb": $mem_total_mb,
   "build_profile": "$CARGO_PROFILE",
+  "pgo_mode": "$PGO_MODE",
+  "pgo_profile_data": "$PGO_PROFILE_DATA",
+  "pgo_allow_fallback": "$PGO_ALLOW_FALLBACK",
   "git_commit": "$GIT_COMMIT",
   "git_dirty": $GIT_DIRTY,
   "rust_version": "$rust_version",
@@ -537,6 +548,17 @@ collect_jsonl() {
 collect_jsonl "$TARGET_DIR/perf/extension_bench.jsonl" "extension_bench.jsonl"
 collect_jsonl "$TARGET_DIR/perf/scenario_runner.jsonl" "scenario_runner.jsonl"
 collect_jsonl "$TARGET_DIR/perf/pijs_workload.jsonl" "pijs_workload.jsonl"
+collect_jsonl "$TARGET_DIR/perf/$CARGO_PROFILE/pgo_pipeline_events.jsonl" "pgo_pipeline_events.jsonl"
+
+if [[ -d "$TARGET_DIR/perf/$CARGO_PROFILE" ]]; then
+  pgo_compare_dir="$OUTPUT_DIR/results/pgo_comparison"
+  mkdir -p "$pgo_compare_dir"
+  while IFS= read -r -d '' pgo_json; do
+    cp "$pgo_json" "$pgo_compare_dir/" 2>/dev/null || true
+    artifact_count=$((artifact_count + 1))
+    log_ok "Collected PGO comparison artifact: $(basename "$pgo_json")"
+  done < <(find "$TARGET_DIR/perf/$CARGO_PROFILE" -maxdepth 1 -type f -name "pgo_delta_*.json" -print0 2>/dev/null)
+fi
 
 # Check per-suite result directories for additional JSONL
 for suite in "${SELECTED_SUITES[@]}"; do
@@ -602,7 +624,8 @@ cat > "$OUTPUT_DIR/manifest.json" <<EOF
     "logging_contract": "pi.test.evidence_logging_contract.v1",
     "evidence_contract": "pi.qa.evidence_contract.v1",
     "bench_protocol": "pi.bench.protocol.v1",
-    "sli_matrix": "pi.perf.sli_ux_matrix.v1"
+    "sli_matrix": "pi.perf.sli_ux_matrix.v1",
+    "pgo_pipeline": "pi.perf.pgo_pipeline_summary.v1"
   },
   "output_dir": "$OUTPUT_DIR"
 }
@@ -837,6 +860,139 @@ then
   log_ok "Baseline variance/confidence written: results/baseline_variance_confidence.json"
 else
   die "Failed to generate baseline variance/confidence artifact"
+fi
+
+# ─── Phase 5c: PGO pipeline summary ────────────────────────────────────────
+
+log_phase "Phase 5c: PGO Pipeline Summary"
+
+PGO_SUMMARY_PATH="$OUTPUT_DIR/results/pgo_pipeline_summary.json"
+if OUTPUT_DIR="$OUTPUT_DIR" \
+  PROJECT_ROOT="$PROJECT_ROOT" \
+  CORRELATION_ID="$CORRELATION_ID" \
+  TIMESTAMP="$TIMESTAMP" \
+  PGO_MODE="$PGO_MODE" \
+  PGO_PROFILE_DATA="$PGO_PROFILE_DATA" \
+  PGO_ALLOW_FALLBACK="$PGO_ALLOW_FALLBACK" \
+  PGO_SUMMARY_PATH="$PGO_SUMMARY_PATH" \
+  python3 - <<'PY'
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+
+output_dir = Path(os.environ["OUTPUT_DIR"])
+correlation_id = os.environ["CORRELATION_ID"]
+timestamp = os.environ["TIMESTAMP"]
+pgo_mode_requested = os.environ["PGO_MODE"]
+pgo_profile_data = os.environ["PGO_PROFILE_DATA"]
+pgo_allow_fallback = os.environ["PGO_ALLOW_FALLBACK"]
+pgo_summary_path = Path(os.environ["PGO_SUMMARY_PATH"])
+
+manifest_path = output_dir / "manifest.json"
+events_path = output_dir / "results" / "pgo_pipeline_events.jsonl"
+comparison_dir = output_dir / "results" / "pgo_comparison"
+
+
+def load_json(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def load_jsonl(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            rows.append(payload)
+    return rows
+
+
+manifest = load_json(manifest_path)
+events = load_jsonl(events_path)
+
+comparison_artifacts = []
+if comparison_dir.exists():
+    for path in sorted(comparison_dir.glob("pgo_delta_*.json")):
+        comparison_artifacts.append(str(path))
+
+latest_mode_effective = "off"
+profile_data_state = "not_requested"
+fallback_reasons = []
+for event in events:
+    mode_effective = str(event.get("pgo_mode_effective", "")).strip()
+    if mode_effective:
+        latest_mode_effective = mode_effective
+    state = str(event.get("profile_data_state", "")).strip()
+    if state:
+        profile_data_state = state
+    fallback_reason = str(event.get("fallback_reason", "")).strip()
+    if fallback_reason:
+        fallback_reasons.append(fallback_reason)
+
+profile_path = Path(pgo_profile_data)
+if profile_data_state == "not_requested":
+    if pgo_mode_requested in {"use", "train", "compare"}:
+        if not profile_path.exists():
+            profile_data_state = "missing"
+        elif profile_path.stat().st_size == 0:
+            profile_data_state = "corrupt"
+        else:
+            profile_data_state = "present"
+
+if pgo_mode_requested == "off":
+    latest_mode_effective = "off"
+    profile_data_state = "not_requested"
+
+fallback_triggered = len(fallback_reasons) > 0 or latest_mode_effective == "baseline_fallback"
+
+summary = {
+    "schema": "pi.perf.pgo_pipeline_summary.v1",
+    "bead_id": "bd-3ar8v.5.2",
+    "generated_at": datetime.now(timezone.utc).isoformat(),
+    "run_id": str(manifest.get("timestamp", timestamp)),
+    "correlation_id": correlation_id,
+    "pgo_mode_requested": pgo_mode_requested,
+    "pgo_mode_effective": latest_mode_effective,
+    "profile_data_path": pgo_profile_data,
+    "profile_data_state": profile_data_state,
+    "fallback": {
+        "allowed": pgo_allow_fallback in {"1", "true", "TRUE"},
+        "triggered": fallback_triggered,
+        "reasons": sorted(set(fallback_reasons)),
+    },
+    "events_path": str(events_path),
+    "event_count": len(events),
+    "comparison_artifacts": comparison_artifacts,
+    "lineage": {
+        "run_id_lineage": [str(manifest.get("timestamp", timestamp)), correlation_id],
+        "source_manifest_path": str(manifest_path),
+    },
+}
+
+pgo_summary_path.parent.mkdir(parents=True, exist_ok=True)
+pgo_summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+
+manifest["pgo_pipeline_summary"] = {
+    "schema": "pi.perf.pgo_pipeline_summary.v1",
+    "path": str(pgo_summary_path),
+    "event_count": len(events),
+    "comparison_artifact_count": len(comparison_artifacts),
+}
+manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+PY
+then
+  artifact_count=$((artifact_count + 1))
+  log_ok "PGO pipeline summary written: results/pgo_pipeline_summary.json"
+else
+  die "Failed to generate PGO pipeline summary artifact"
 fi
 
 # ─── Phase 6: Generate checksums ────────────────────────────────────────────

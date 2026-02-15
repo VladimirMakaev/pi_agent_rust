@@ -176,6 +176,82 @@ def metric_row(metric_key: str, granularity_label: str, value: int, unit: str, s
     }
 
 
+def load_counting_taxonomy_contract(project_root: Path) -> dict:
+    contract_path = project_root / COUNTING_TAXONOMY_CONTRACT_REL_PATH
+    if not contract_path.exists():
+        raise ValueError(f"counting taxonomy contract not found: {contract_path}")
+    return json.loads(contract_path.read_text(encoding="utf-8"))
+
+
+def validate_counting_taxonomy(taxonomy: dict, contract: dict) -> list[str]:
+    errors = []
+
+    expected_schema = contract.get("taxonomy_schema")
+    if taxonomy.get("schema") != expected_schema:
+        errors.append(
+            f"taxonomy schema mismatch: expected {expected_schema!r}, got {taxonomy.get('schema')!r}"
+        )
+
+    dimensions = taxonomy.get("dimensions")
+    if not isinstance(dimensions, dict):
+        return errors + ["taxonomy.dimensions must be an object"]
+
+    required_dimensions = contract.get("required_dimensions", {})
+    required_metric_fields = contract.get("required_metric_fields", [])
+    required_provenance_fields = contract.get("required_tool_provenance_fields", [])
+
+    for dim_name, dim_contract in required_dimensions.items():
+        dim = dimensions.get(dim_name)
+        if not isinstance(dim, dict):
+            errors.append(f"missing taxonomy dimension: {dim_name}")
+            continue
+
+        metrics = dim.get("metrics")
+        if not isinstance(metrics, list):
+            errors.append(f"taxonomy dimension {dim_name} metrics must be an array")
+            continue
+
+        required_labels = set(dim_contract.get("required_granularity_labels", []))
+        seen_labels = set()
+
+        for idx, metric in enumerate(metrics):
+            metric_path = f"dimensions.{dim_name}.metrics[{idx}]"
+            if not isinstance(metric, dict):
+                errors.append(f"{metric_path} must be an object")
+                continue
+
+            for field in required_metric_fields:
+                if field not in metric:
+                    errors.append(f"{metric_path} missing field {field!r}")
+
+            label = metric.get("granularity_label")
+            if isinstance(label, str) and label:
+                seen_labels.add(label)
+            else:
+                errors.append(f"{metric_path}.granularity_label must be a non-empty string")
+
+            value = metric.get("value")
+            if not isinstance(value, (int, float)):
+                errors.append(f"{metric_path}.value must be numeric")
+
+            provenance = metric.get("tool_provenance")
+            if not isinstance(provenance, dict):
+                errors.append(f"{metric_path}.tool_provenance must be an object")
+            else:
+                for field in required_provenance_fields:
+                    val = provenance.get(field)
+                    if not isinstance(val, str) or not val.strip():
+                        errors.append(f"{metric_path}.tool_provenance.{field} must be non-empty")
+
+        missing_labels = sorted(required_labels - seen_labels)
+        if missing_labels:
+            errors.append(
+                f"taxonomy dimension {dim_name} missing labels: {', '.join(missing_labels)}"
+            )
+
+    return errors
+
+
 def build_counting_taxonomy(project_root: Path) -> dict:
     src_root = project_root / "src"
     provider_metadata_path = project_root / PROVIDER_METADATA_REL_PATH
@@ -188,8 +264,7 @@ def build_counting_taxonomy(project_root: Path) -> dict:
     official_extensions, community_extensions, full_corpus_extensions = count_extension_dimensions(
         extension_catalog_path
     )
-
-    return {
+    taxonomy = {
         "schema": COUNTING_TAXONOMY_SCHEMA,
         "contract_ref": COUNTING_TAXONOMY_CONTRACT_REL_PATH,
         "dimensions": {
@@ -274,6 +349,14 @@ def build_counting_taxonomy(project_root: Path) -> dict:
             },
         },
     }
+    contract = load_counting_taxonomy_contract(project_root)
+    validation_errors = validate_counting_taxonomy(taxonomy, contract)
+    if validation_errors:
+        raise ValueError(
+            "counting taxonomy validation failed: "
+            + "; ".join(validation_errors)
+        )
+    return taxonomy
 
 
 def build_evidence(suites: dict, project_root: Path) -> dict:

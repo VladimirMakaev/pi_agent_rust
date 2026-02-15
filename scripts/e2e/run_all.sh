@@ -32,6 +32,7 @@
 #                      target/agents/<CODEX_THREAD_ID> to reduce multi-agent
 #                      artifact contention.
 #   CARGO_HOME         Optional cargo home directory (checked by preflight)
+#   VERIFY_CARGO_RUNNER Cargo execution mode: auto | rch | local (default: auto)
 #   VERIFY_MIN_FREE_INODE_PCT Minimum free inode percent required (default: 5)
 
 set -euo pipefail
@@ -65,6 +66,55 @@ SHARD_NAME=""
 SHARD_INDEX=-1
 SHARD_TOTAL=1
 CORRELATION_ID="${CI_CORRELATION_ID:-}"
+CARGO_RUNNER_MODE="${VERIFY_CARGO_RUNNER:-auto}"
+CARGO_RUNNER_DESC="cargo"
+CARGO_EXEC_PREFIX=""
+CARGO_EXEC_PREFIX_JSON="[]"
+CARGO_RUNNER_ARGS=()
+
+configure_cargo_runner() {
+    case "$CARGO_RUNNER_MODE" in
+        auto)
+            if command -v rch >/dev/null 2>&1; then
+                CARGO_RUNNER_ARGS=("rch" "exec" "--")
+            else
+                CARGO_RUNNER_ARGS=()
+            fi
+            ;;
+        rch)
+            if ! command -v rch >/dev/null 2>&1; then
+                echo "VERIFY_CARGO_RUNNER=rch requested, but 'rch' is not available in PATH." >&2
+                exit 1
+            fi
+            CARGO_RUNNER_ARGS=("rch" "exec" "--")
+            ;;
+        local)
+            CARGO_RUNNER_ARGS=()
+            ;;
+        *)
+            echo "Unknown VERIFY_CARGO_RUNNER value: $CARGO_RUNNER_MODE (expected: auto|rch|local)" >&2
+            exit 1
+            ;;
+    esac
+
+    if [[ ${#CARGO_RUNNER_ARGS[@]} -gt 0 ]]; then
+        CARGO_RUNNER_DESC="${CARGO_RUNNER_ARGS[*]} cargo"
+        CARGO_EXEC_PREFIX="${CARGO_RUNNER_ARGS[*]}"
+        CARGO_EXEC_PREFIX_JSON="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${CARGO_RUNNER_ARGS[@]}" 2>/dev/null || echo '[]')"
+    else
+        CARGO_RUNNER_DESC="cargo"
+        CARGO_EXEC_PREFIX=""
+        CARGO_EXEC_PREFIX_JSON="[]"
+    fi
+}
+
+run_cargo() {
+    if [[ ${#CARGO_RUNNER_ARGS[@]} -gt 0 ]]; then
+        "${CARGO_RUNNER_ARGS[@]}" cargo "$@"
+    else
+        cargo "$@"
+    fi
+}
 
 # ─── Auto-discover targets from suite_classification.toml ─────────────────────
 
@@ -213,6 +263,7 @@ while [[ $# -gt 0 ]]; do
             echo "  VERIFY_MIN_TMP_FREE_MB Minimum free MB for tmp/cargo mounts (default: 8192)"
             echo "  CARGO_TARGET_DIR     Optional cargo target directory (checked by preflight); defaults to target/agents/<CODEX_THREAD_ID> when CODEX_THREAD_ID is set"
             echo "  CARGO_HOME           Optional cargo home directory (checked by preflight)"
+            echo "  VERIFY_CARGO_RUNNER  Cargo execution mode: auto|rch|local (default: auto)"
             echo "  VERIFY_MIN_FREE_MB   Minimum free MB for repo/artifact mounts (default: 2048)"
             echo "  VERIFY_MIN_FREE_INODE_PCT Minimum free inode percent required (default: 5)"
             echo "  CI_CORRELATION_ID    Default correlation id when --correlation-id is not provided"
@@ -224,6 +275,8 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+configure_cargo_runner
 
 if $LIST_PROFILES; then
     cat <<EOF
@@ -522,9 +575,9 @@ check_disk_headroom() {
 [preflight] Verification aborted: insufficient filesystem headroom.
 [preflight] Free space on the workspace filesystem is too low for cargo build/test artifacts.
 [preflight] Fix by freeing disk space, or moving temp/build/artifact paths to roomier mounts:
-[preflight]   TMPDIR=/dev/shm CARGO_TARGET_DIR=/dev/shm/pi_verify_target ./verify --profile quick
-[preflight]   CARGO_HOME=/dev/shm/pi_cargo ./verify --profile quick
-[preflight]   E2E_ARTIFACT_DIR=/dev/shm/pi_e2e_results/$TIMESTAMP ./verify --profile quick
+[preflight]   TMPDIR=/data/tmp CARGO_TARGET_DIR=/data/tmp/pi_verify_target ./verify --profile quick
+[preflight]   CARGO_HOME=/data/tmp/pi_cargo ./verify --profile quick
+[preflight]   E2E_ARTIFACT_DIR=/data/tmp/pi_e2e_results/$TIMESTAMP ./verify --profile quick
 [preflight] You can also tune thresholds:
 [preflight]   VERIFY_MIN_FREE_MB=1024 VERIFY_MIN_TMP_FREE_MB=2048 ./verify --profile quick
 EOF
@@ -539,7 +592,7 @@ capture_env() {
     local rustc_version cargo_version os_info git_sha git_branch
     mkdir -p "$ARTIFACT_DIR"
     rustc_version="$(rustc --version 2>/dev/null || echo 'unknown')"
-    cargo_version="$(cargo --version 2>/dev/null || echo 'unknown')"
+    cargo_version="$(run_cargo --version 2>/dev/null || echo 'unknown')"
     os_info="$(uname -srm 2>/dev/null || echo 'unknown')"
     git_sha="$(git rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
     git_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'unknown')"
@@ -553,6 +606,8 @@ capture_env() {
   "diff_from": $DIFF_JSON_VALUE,
   "rustc": "$rustc_version",
   "cargo": "$cargo_version",
+  "cargo_runner": "$CARGO_RUNNER_DESC",
+  "cargo_exec_prefix": $CARGO_EXEC_PREFIX_JSON,
   "os": "$os_info",
   "git_sha": "$git_sha",
   "git_branch": "$git_branch",
@@ -584,6 +639,8 @@ write_shard_manifest() {
   "profile": "$PROFILE",
   "artifact_dir": "$ARTIFACT_DIR",
   "correlation_id": "$CORRELATION_ID",
+  "cargo_runner": "$CARGO_RUNNER_DESC",
+  "cargo_exec_prefix": $CARGO_EXEC_PREFIX_JSON,
   "shard": {
     "kind": "$SHARD_KIND",
     "name": "$SHARD_NAME",
@@ -612,7 +669,7 @@ run_lint_gates() {
     local lint_ok=true
 
     echo "[lint] Running format check..."
-    if cargo fmt --check > "$lint_dir/fmt.log" 2>&1; then
+    if run_cargo fmt --check > "$lint_dir/fmt.log" 2>&1; then
         echo "[lint] cargo fmt: PASS"
     else
         echo "[lint] cargo fmt: FAIL (see $lint_dir/fmt.log)"
@@ -620,7 +677,7 @@ run_lint_gates() {
     fi
 
     echo "[lint] Running clippy..."
-    if cargo clippy --all-targets -- -D warnings > "$lint_dir/clippy.log" 2>&1; then
+    if run_cargo clippy --all-targets -- -D warnings > "$lint_dir/clippy.log" 2>&1; then
         echo "[lint] clippy: PASS"
     else
         echo "[lint] clippy: FAIL (see $lint_dir/clippy.log)"
@@ -649,7 +706,7 @@ run_lib_tests() {
     start_epoch=$(date +%s%N 2>/dev/null || date +%s)
 
     set +e
-    cargo test --lib -- --test-threads="$PARALLELISM" 2>&1 | tee "$log_file"
+    run_cargo test --lib -- --test-threads="$PARALLELISM" 2>&1 | tee "$log_file"
     exit_code=${PIPESTATUS[0]}
     set -e
 
@@ -706,7 +763,7 @@ build_tests() {
             continue
         fi
         echo "[build]   unit:$target"
-        if ! cargo test --test "$target" --no-run 2>>"$build_log"; then
+        if ! run_cargo test --test "$target" --no-run 2>>"$build_log"; then
             echo "[build]   unit:$target FAILED" >&2
             build_ok=false
         fi
@@ -718,7 +775,7 @@ build_tests() {
             continue
         fi
         echo "[build]   e2e:$suite"
-        if ! cargo test --test "$suite" --no-run 2>>"$build_log"; then
+        if ! run_cargo test --test "$suite" --no-run 2>>"$build_log"; then
             echo "[build]   e2e:$suite FAILED" >&2
             build_ok=false
         fi
@@ -757,7 +814,7 @@ run_unit_target() {
     export RUST_LOG="$LOG_LEVEL"
 
     set +e
-    cargo test \
+    run_cargo test \
         --test "$target" \
         -- \
         --test-threads="$PARALLELISM" \
@@ -831,7 +888,7 @@ run_suite() {
     export RUST_LOG="$LOG_LEVEL"
 
     set +e
-    cargo test \
+    run_cargo test \
         --test "$suite" \
         -- \
         --test-threads="$PARALLELISM" \
@@ -1694,9 +1751,11 @@ generate_extension_profile_matrix() {
         MATRIX_FILE="$matrix_file" \
         MATRIX_MARKDOWN="$matrix_markdown" \
         SUMMARY_FILE="$summary_file" \
+        CARGO_EXEC_PREFIX="$CARGO_EXEC_PREFIX" \
         python3 - <<'PY'
 import json
 import os
+import shlex
 import subprocess
 import sys
 from collections import Counter, defaultdict
@@ -1740,7 +1799,9 @@ def load_jsonl(path: Path) -> list[dict]:
 
 
 def explain_policy(profile: str) -> dict:
+    cargo_exec_prefix = shlex.split(os.environ.get("CARGO_EXEC_PREFIX", "").strip())
     command = [
+        *cargo_exec_prefix,
         "cargo",
         "run",
         "--quiet",
@@ -6782,6 +6843,7 @@ main() {
     echo " Profile: $PROFILE"
     echo " Artifact dir: $ARTIFACT_DIR"
     echo " Lint: $(if $SKIP_LINT; then echo 'skip'; else echo 'enabled'; fi)"
+    echo " Cargo runner: $CARGO_RUNNER_DESC"
     echo " Correlation id: $CORRELATION_ID"
     echo " Shard mode: $SHARD_KIND ($SHARD_NAME)"
     echo " Lib inline: enabled"
