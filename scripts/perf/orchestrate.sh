@@ -1917,6 +1917,7 @@ cold_load_ms = layer_absolute("cold_load_init")
 per_call_us = layer_absolute("per_call_dispatch_micro")
 
 cells = []
+required_stage_keys = ["open_ms", "append_ms", "save_ms", "index_ms"]
 operation_stage_coverage = {
     "open_ms": 0,
     "append_ms": 0,
@@ -1941,7 +1942,6 @@ for partition in required_partitions:
             if value is not None:
                 operation_stage_coverage[metric] += 1
 
-        required_stage_keys = ["open_ms", "append_ms", "save_ms"]
         missing_stage_keys = [
             metric for metric in required_stage_keys if stage_attribution.get(metric) is None
         ]
@@ -2113,7 +2113,7 @@ payload = {
     },
     "matrix_cells": cells,
     "stage_summary": {
-        "required_stage_keys": ["open_ms", "append_ms", "save_ms", "index_ms"],
+        "required_stage_keys": required_stage_keys,
         "operation_stage_coverage": operation_stage_coverage,
         "cells_with_complete_stage_breakdown": cells_with_complete_stage_breakdown,
         "cells_missing_stage_breakdown": required_cell_count

@@ -272,6 +272,30 @@ case "$test_name" in
 {"schema":"pi.ext.rust_bench.v1","runtime":"pi_agent_rust","scenario":"session_workload_matrix","extension":"core","partition":"realistic","open_ms":124.0,"append_ms":90.0,"save_ms":54.0,"index_ms":21.0,"total_ms":289.0,"protocol_schema":"pi.bench.protocol.v1","protocol_version":"1.0.0","evidence_class":"measured","confidence":"high","correlation_id":"stub-correlation","scenario_metadata":{"runtime":"pi_agent_rust","build_profile":"perf","host":{"os":"linux","arch":"x86_64","cpu_model":"stub","cpu_cores":8},"scenario_id":"realistic/session_1000000","replay_input":{"session_messages":1000000}}}
 {"schema":"pi.ext.rust_bench.v1","runtime":"pi_agent_rust","scenario":"session_workload_matrix","extension":"core","partition":"realistic","open_ms":198.0,"append_ms":146.0,"save_ms":88.0,"index_ms":33.0,"total_ms":465.0,"protocol_schema":"pi.bench.protocol.v1","protocol_version":"1.0.0","evidence_class":"measured","confidence":"high","correlation_id":"stub-correlation","scenario_metadata":{"runtime":"pi_agent_rust","build_profile":"perf","host":{"os":"linux","arch":"x86_64","cpu_model":"stub","cpu_cores":8},"scenario_id":"realistic/session_5000000","replay_input":{"session_messages":5000000}}}
 JSON
+    if [[ "${PI_FAKE_DROP_INDEX_STAGE_SAMPLE:-0}" == "1" ]]; then
+      python3 - "$target_dir/perf/scenario_runner.jsonl" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+rows = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+rewritten = []
+dropped = False
+for line in rows:
+    record = json.loads(line)
+    if (
+        not dropped
+        and record.get("scenario") == "session_workload_matrix"
+        and record.get("partition") == "matched-state"
+        and record.get("scenario_metadata", {}).get("scenario_id") == "matched-state/session_100000"
+    ):
+        record.pop("index_ms", None)
+        dropped = True
+    rewritten.append(json.dumps(record, separators=(",", ":")))
+path.write_text("\n".join(rewritten) + ("\n" if rewritten else ""), encoding="utf-8")
+PY
+    fi
     cat >"$target_dir/perf/legacy_extension_workloads.jsonl" <<'JSON'
 {"schema":"pi.ext.legacy_bench.v1","scenario":"ext_load_init/load_init_cold","extension":"hello","summary":{"p50_ms":10.0}}
 {"schema":"pi.ext.legacy_bench.v1","scenario":"ext_tool_call/hello","extension":"hello","per_call_us":20.0}
@@ -1010,6 +1034,39 @@ fn validate_phase1_matrix_validation_record(record: &Value) -> Result<(), String
         if !stage_summary.contains_key(*field) {
             return Err(format!("stage_summary missing {field}"));
         }
+    }
+    let required_stage_keys = stage_summary
+        .get("required_stage_keys")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "stage_summary.required_stage_keys must be an array".to_string())?;
+    let parsed_required_stage_keys = required_stage_keys
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .ok_or_else(|| "stage_summary.required_stage_keys entries must be strings".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let expected_required_stage_keys = vec!["open_ms", "append_ms", "save_ms", "index_ms"];
+    if parsed_required_stage_keys != expected_required_stage_keys {
+        return Err(format!(
+            "stage_summary.required_stage_keys must equal {:?}, got {:?}",
+            expected_required_stage_keys, parsed_required_stage_keys
+        ));
+    }
+    let operation_stage_coverage = stage_summary
+        .get("operation_stage_coverage")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "stage_summary.operation_stage_coverage must be an object".to_string())?;
+    for key in &expected_required_stage_keys {
+        operation_stage_coverage
+            .get(*key)
+            .and_then(Value::as_u64)
+            .ok_or_else(|| {
+                format!(
+                    "stage_summary.operation_stage_coverage.{key} must be an integer count"
+                )
+            })?;
     }
     let covered_cells = stage_summary
         .get("covered_cells")
@@ -2783,6 +2840,7 @@ fn orchestrate_script_emits_phase1_matrix_validation_contract() {
     for token in &[
         "phase1_matrix_validation.json",
         PHASE1_MATRIX_SCHEMA,
+        "required_stage_keys = [\"open_ms\", \"append_ms\", \"save_ms\", \"index_ms\"]",
         "\"required_session_message_sizes\"",
         "\"cells_with_complete_stage_breakdown\"",
         "\"primary_e2e_before_microbench\"",
@@ -2805,7 +2863,9 @@ fn orchestrate_script_emits_phase1_matrix_validation_contract() {
 }
 
 #[cfg(unix)]
-fn run_orchestrate_with_fake_toolchain() -> (std::process::Output, PathBuf) {
+fn run_orchestrate_with_fake_toolchain_with_env(
+    extra_env: &[(&str, &str)],
+) -> (std::process::Output, PathBuf) {
     let temp_root = unique_temp_dir("orchestrate-stratification");
     let bin_dir = temp_root.join("bin");
     let target_dir = temp_root.join("target");
@@ -2822,7 +2882,8 @@ fn run_orchestrate_with_fake_toolchain() -> (std::process::Output, PathBuf) {
         std::env::var("PATH").unwrap_or_default()
     );
 
-    let output = Command::new("bash")
+    let mut command = Command::new("bash");
+    command
         .arg("scripts/perf/orchestrate.sh")
         .arg("--profile")
         .arg("full")
@@ -2832,11 +2893,19 @@ fn run_orchestrate_with_fake_toolchain() -> (std::process::Output, PathBuf) {
         .env("PATH", path)
         .env("CARGO_TARGET_DIR", &target_dir)
         .env("PERF_OUTPUT_DIR", &output_dir)
-        .env("PERF_SKIP_CRITERION", "1")
-        .output()
-        .expect("run orchestrate.sh");
+        .env("PERF_SKIP_CRITERION", "1");
+    for (key, value) in extra_env {
+        command.env(key, value);
+    }
+
+    let output = command.output().expect("run orchestrate.sh");
 
     (output, temp_root)
+}
+
+#[cfg(unix)]
+fn run_orchestrate_with_fake_toolchain() -> (std::process::Output, PathBuf) {
+    run_orchestrate_with_fake_toolchain_with_env(&[])
 }
 
 #[cfg(unix)]
@@ -3090,7 +3159,7 @@ fn orchestrate_generates_phase1_matrix_validation_artifact() {
     assert_eq!(
         matrix["stage_summary"]["cells_with_complete_stage_breakdown"].as_u64(),
         Some(10),
-        "stub matrix should provide complete open/append/save attribution for every cell"
+        "stub matrix should provide complete open/append/save/index attribution for every cell"
     );
 
     let cells = matrix["matrix_cells"]
@@ -3117,6 +3186,58 @@ fn orchestrate_generates_phase1_matrix_validation_artifact() {
         seen_sizes,
         REALISTIC_SESSION_SIZES.iter().copied().collect(),
         "phase1 matrix must cover canonical 100k..5M sizes"
+    );
+
+    let _ = fs::remove_dir_all(temp_root);
+}
+
+#[cfg(unix)]
+#[test]
+fn orchestrate_phase1_matrix_treats_missing_index_as_incomplete() {
+    let (output, temp_root) =
+        run_orchestrate_with_fake_toolchain_with_env(&[("PI_FAKE_DROP_INDEX_STAGE_SAMPLE", "1")]);
+    assert!(
+        output.status.success(),
+        "orchestrate.sh should succeed with stub toolchain. stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let matrix_path = temp_root
+        .join("run")
+        .join("results")
+        .join("phase1_matrix_validation.json");
+    let matrix: Value =
+        serde_json::from_str(&fs::read_to_string(&matrix_path).expect("read matrix artifact"))
+            .expect("parse matrix artifact");
+
+    assert_eq!(
+        matrix["stage_summary"]["cells_with_complete_stage_breakdown"].as_u64(),
+        Some(9),
+        "missing index_ms in one cell must reduce complete-stage cell count"
+    );
+    assert_eq!(
+        matrix["stage_summary"]["cells_missing_stage_breakdown"].as_u64(),
+        Some(1),
+        "missing index_ms in one cell must increase missing-stage cell count"
+    );
+    assert_eq!(
+        matrix["consumption_contract"]["artifact_ready_for_phase5"].as_bool(),
+        Some(false),
+        "phase5 readiness must fail closed when any required stage metric is missing"
+    );
+
+    let matrix_cells = matrix["matrix_cells"].as_array().expect("matrix_cells array");
+    let has_missing_index_reason = matrix_cells.iter().any(|cell| {
+        cell["stage_attribution"]["index_ms"].is_null()
+            && cell["missing_reasons"].as_array().is_some_and(|reasons| {
+                reasons
+                    .iter()
+                    .any(|reason| reason.as_str() == Some("missing_stage_metrics:index_ms"))
+            })
+    });
+    assert!(
+        has_missing_index_reason,
+        "matrix_cells must record missing_stage_metrics:index_ms when index attribution is absent"
     );
 
     let _ = fs::remove_dir_all(temp_root);
