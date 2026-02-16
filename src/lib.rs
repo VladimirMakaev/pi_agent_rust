@@ -73,6 +73,7 @@ pub mod extensions_js;
 pub mod flake_classifier;
 pub mod hostcall_queue;
 pub mod hostcall_rewrite;
+pub mod hostcall_superinstructions;
 pub mod http;
 pub mod http_shim;
 pub mod interactive;

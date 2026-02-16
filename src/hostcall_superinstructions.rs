@@ -1,0 +1,472 @@
+//! Superinstruction compiler for hot typed-hostcall opcode traces.
+
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+/// Versioned schema for serialized superinstruction plans.
+pub const HOSTCALL_SUPERINSTRUCTION_SCHEMA_VERSION: &str = "pi.ext.hostcall_superinstruction.v1";
+/// Plan payload version.
+pub const HOSTCALL_SUPERINSTRUCTION_PLAN_VERSION: u16 = 1;
+
+const DEFAULT_MIN_SUPPORT: u32 = 3;
+const DEFAULT_MAX_WINDOW: usize = 4;
+const BASE_OPCODE_COST_UNITS: i64 = 10;
+const FUSED_OPCODE_FIXED_COST_UNITS: i64 = 6;
+const FUSED_OPCODE_STEP_COST_UNITS: i64 = 2;
+
+/// A fused superinstruction plan derived from repeated hostcall opcode windows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostcallSuperinstructionPlan {
+    pub schema: String,
+    pub version: u16,
+    pub plan_id: String,
+    pub trace_signature: String,
+    pub opcode_window: Vec<String>,
+    pub support_count: u32,
+    pub estimated_cost_baseline: i64,
+    pub estimated_cost_fused: i64,
+    pub expected_cost_delta: i64,
+}
+
+impl HostcallSuperinstructionPlan {
+    #[must_use]
+    pub fn width(&self) -> usize {
+        self.opcode_window.len()
+    }
+
+    #[must_use]
+    pub fn matches_trace_prefix(&self, trace: &[String]) -> bool {
+        trace.len() >= self.opcode_window.len()
+            && trace
+                .iter()
+                .zip(self.opcode_window.iter())
+                .all(|(left, right)| left == right)
+    }
+}
+
+/// Deterministic compiler for recurring opcode motifs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostcallSuperinstructionCompiler {
+    enabled: bool,
+    min_support: u32,
+    max_window: usize,
+}
+
+impl Default for HostcallSuperinstructionCompiler {
+    fn default() -> Self {
+        Self::from_env()
+    }
+}
+
+impl HostcallSuperinstructionCompiler {
+    #[must_use]
+    pub const fn new(enabled: bool, min_support: u32, max_window: usize) -> Self {
+        Self {
+            enabled,
+            min_support,
+            max_window,
+        }
+    }
+
+    #[must_use]
+    pub fn from_env() -> Self {
+        let enabled = bool_from_env("PI_HOSTCALL_SUPERINSTRUCTIONS", true);
+        let min_support = std::env::var("PI_HOSTCALL_SUPERINSTRUCTION_MIN_SUPPORT")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u32>().ok())
+            .map_or(DEFAULT_MIN_SUPPORT, |value| value.max(2));
+        let max_window = std::env::var("PI_HOSTCALL_SUPERINSTRUCTION_MAX_WINDOW")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .map_or(DEFAULT_MAX_WINDOW, |value| value.max(2));
+        Self::new(enabled, min_support, max_window)
+    }
+
+    #[must_use]
+    pub const fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    #[must_use]
+    pub const fn min_support(&self) -> u32 {
+        self.min_support
+    }
+
+    #[must_use]
+    pub const fn max_window(&self) -> usize {
+        self.max_window
+    }
+
+    /// Compile frequent opcode windows into deterministic fused plans.
+    #[must_use]
+    pub fn compile_plans(&self, traces: &[Vec<String>]) -> Vec<HostcallSuperinstructionPlan> {
+        if !self.enabled {
+            return Vec::new();
+        }
+        let mut windows: BTreeMap<Vec<String>, u32> = BTreeMap::new();
+        for trace in traces {
+            let trace_len = trace.len();
+            if trace_len < 2 {
+                continue;
+            }
+            let max_width = self.max_window.min(trace_len);
+            for width in 2..=max_width {
+                for start in 0..=trace_len - width {
+                    let window = trace[start..start + width].to_vec();
+                    if window.iter().any(|opcode| opcode.trim().is_empty()) {
+                        continue;
+                    }
+                    let entry = windows.entry(window).or_insert(0);
+                    *entry = entry.saturating_add(1);
+                }
+            }
+        }
+
+        let mut plans = windows
+            .into_iter()
+            .filter_map(|(opcode_window, support_count)| {
+                if support_count < self.min_support {
+                    return None;
+                }
+                let estimated_cost_baseline = estimated_baseline_cost(opcode_window.len());
+                let estimated_cost_fused = estimated_fused_cost(opcode_window.len());
+                let expected_cost_delta = estimated_cost_baseline.saturating_sub(estimated_cost_fused);
+                if expected_cost_delta <= 0 {
+                    return None;
+                }
+
+                let trace_signature = opcode_window_signature(&opcode_window);
+                let plan_id = format!("fuse_{trace_signature}");
+                Some(HostcallSuperinstructionPlan {
+                    schema: HOSTCALL_SUPERINSTRUCTION_SCHEMA_VERSION.to_string(),
+                    version: HOSTCALL_SUPERINSTRUCTION_PLAN_VERSION,
+                    plan_id,
+                    trace_signature,
+                    opcode_window,
+                    support_count,
+                    estimated_cost_baseline,
+                    estimated_cost_fused,
+                    expected_cost_delta,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        plans.sort_by(|left, right| {
+            right
+                .expected_cost_delta
+                .cmp(&left.expected_cost_delta)
+                .then_with(|| right.support_count.cmp(&left.support_count))
+                .then_with(|| right.width().cmp(&left.width()))
+                .then_with(|| left.opcode_window.cmp(&right.opcode_window))
+                .then_with(|| left.plan_id.cmp(&right.plan_id))
+        });
+        plans
+    }
+}
+
+/// Plan lookup/deoptimization result for a concrete trace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostcallSuperinstructionSelection {
+    pub trace_signature: String,
+    pub selected_plan_id: Option<String>,
+    pub selected_window: Option<Vec<String>>,
+    pub expected_cost_delta: i64,
+    pub deopt_reason: Option<&'static str>,
+}
+
+impl HostcallSuperinstructionSelection {
+    #[must_use]
+    pub const fn hit(&self) -> bool {
+        self.selected_plan_id.is_some()
+    }
+}
+
+/// Canonical + fused execution representation with safe fallback details.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostcallSuperinstructionExecution {
+    pub canonical_trace: Vec<String>,
+    pub fused_trace: Vec<String>,
+    pub selection: HostcallSuperinstructionSelection,
+}
+
+/// Select the best matching superinstruction plan for a trace prefix.
+#[must_use]
+pub fn select_plan_for_trace(
+    trace: &[String],
+    plans: &[HostcallSuperinstructionPlan],
+) -> HostcallSuperinstructionSelection {
+    let trace_signature = opcode_window_signature(trace);
+    if trace.is_empty() {
+        return HostcallSuperinstructionSelection {
+            trace_signature,
+            selected_plan_id: None,
+            selected_window: None,
+            expected_cost_delta: 0,
+            deopt_reason: Some("empty_trace"),
+        };
+    }
+
+    let mut matching = plans
+        .iter()
+        .filter(|plan| plan.matches_trace_prefix(trace))
+        .collect::<Vec<_>>();
+    if matching.is_empty() {
+        return HostcallSuperinstructionSelection {
+            trace_signature,
+            selected_plan_id: None,
+            selected_window: None,
+            expected_cost_delta: 0,
+            deopt_reason: Some("no_matching_plan"),
+        };
+    }
+
+    matching.sort_by(|left, right| {
+        right
+            .expected_cost_delta
+            .cmp(&left.expected_cost_delta)
+            .then_with(|| right.support_count.cmp(&left.support_count))
+            .then_with(|| right.width().cmp(&left.width()))
+            .then_with(|| left.plan_id.cmp(&right.plan_id))
+    });
+
+    let best = matching[0];
+    if matching
+        .iter()
+        .skip(1)
+        .any(|candidate| {
+            candidate.expected_cost_delta == best.expected_cost_delta
+                && candidate.support_count == best.support_count
+                && candidate.width() == best.width()
+        })
+    {
+        return HostcallSuperinstructionSelection {
+            trace_signature,
+            selected_plan_id: None,
+            selected_window: None,
+            expected_cost_delta: 0,
+            deopt_reason: Some("ambiguous_top_plan"),
+        };
+    }
+
+    HostcallSuperinstructionSelection {
+        trace_signature,
+        selected_plan_id: Some(best.plan_id.clone()),
+        selected_window: Some(best.opcode_window.clone()),
+        expected_cost_delta: best.expected_cost_delta,
+        deopt_reason: None,
+    }
+}
+
+/// Execute a trace under superinstruction selection with immediate safe fallback.
+///
+/// Semantic output always remains canonical opcode ordering.
+#[must_use]
+pub fn execute_with_superinstruction(
+    trace: &[String],
+    plans: &[HostcallSuperinstructionPlan],
+) -> HostcallSuperinstructionExecution {
+    let canonical_trace = trace.to_vec();
+    let selection = select_plan_for_trace(trace, plans);
+    if !selection.hit() {
+        return HostcallSuperinstructionExecution {
+            canonical_trace: canonical_trace.clone(),
+            fused_trace: canonical_trace,
+            selection,
+        };
+    }
+
+    let mut fused_trace = Vec::new();
+    if let Some(plan_id) = selection.selected_plan_id.as_ref() {
+        fused_trace.push(format!("@{plan_id}"));
+    }
+    let consumed = selection
+        .selected_window
+        .as_ref()
+        .map_or(0, std::vec::Vec::len)
+        .min(trace.len());
+    fused_trace.extend_from_slice(&trace[consumed..]);
+
+    HostcallSuperinstructionExecution {
+        canonical_trace,
+        fused_trace,
+        selection,
+    }
+}
+
+fn estimated_baseline_cost(width: usize) -> i64 {
+    let width_units = i64::try_from(width).unwrap_or(i64::MAX);
+    width_units.saturating_mul(BASE_OPCODE_COST_UNITS)
+}
+
+fn estimated_fused_cost(width: usize) -> i64 {
+    let width_units = i64::try_from(width).unwrap_or(i64::MAX);
+    FUSED_OPCODE_FIXED_COST_UNITS
+        .saturating_add(width_units.saturating_mul(FUSED_OPCODE_STEP_COST_UNITS))
+}
+
+fn opcode_window_signature(window: &[String]) -> String {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for opcode in window {
+        for byte in opcode.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3_u64);
+        }
+        hash ^= u64::from(b'|');
+        hash = hash.wrapping_mul(0x0100_0000_01b3_u64);
+    }
+    format!("{hash:016x}")
+}
+
+fn bool_from_env(var: &str, default: bool) -> bool {
+    std::env::var(var).ok().as_deref().map_or(default, |value| {
+        !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off" | "disabled"
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn opcode_trace(values: &[&str]) -> Vec<String> {
+        values.iter().map(ToString::to_string).collect()
+    }
+
+    fn plan(
+        plan_id: &str,
+        window: &[&str],
+        support_count: u32,
+        expected_cost_delta: i64,
+    ) -> HostcallSuperinstructionPlan {
+        HostcallSuperinstructionPlan {
+            schema: HOSTCALL_SUPERINSTRUCTION_SCHEMA_VERSION.to_string(),
+            version: HOSTCALL_SUPERINSTRUCTION_PLAN_VERSION,
+            plan_id: plan_id.to_string(),
+            trace_signature: opcode_window_signature(&opcode_trace(window)),
+            opcode_window: opcode_trace(window),
+            support_count,
+            estimated_cost_baseline: 0,
+            estimated_cost_fused: 0,
+            expected_cost_delta,
+        }
+    }
+
+    #[test]
+    fn compiler_extracts_hot_windows_deterministically() {
+        let compiler = HostcallSuperinstructionCompiler::new(true, 2, 4);
+        let traces = vec![
+            opcode_trace(&[
+                "session.get_state",
+                "session.get_messages",
+                "session.get_entries",
+                "events.list_flags",
+            ]),
+            opcode_trace(&[
+                "session.get_state",
+                "session.get_messages",
+                "session.get_entries",
+                "events.emit",
+            ]),
+            opcode_trace(&[
+                "session.get_state",
+                "session.get_messages",
+                "session.get_entries",
+                "events.get_model",
+            ]),
+        ];
+
+        let plans = compiler.compile_plans(&traces);
+        assert!(!plans.is_empty());
+        assert!(plans.iter().any(|entry| {
+            entry.opcode_window
+                == opcode_trace(&[
+                    "session.get_state",
+                    "session.get_messages",
+                    "session.get_entries",
+                ])
+        }));
+
+        let reversed = traces.iter().rev().cloned().collect::<Vec<_>>();
+        let plans_reversed = compiler.compile_plans(&reversed);
+        assert_eq!(plans, plans_reversed);
+    }
+
+    #[test]
+    fn selection_prefers_higher_delta_then_support_then_width() {
+        let trace = opcode_trace(&["tool.read", "events.list", "events.get_model"]);
+        let plans = vec![
+            plan("p_low_delta", &["tool.read", "events.list"], 8, 10),
+            plan("p_best", &["tool.read", "events.list", "events.get_model"], 7, 14),
+            plan("p_low_support", &["tool.read", "events.list", "events.get_model"], 4, 14),
+        ];
+
+        let selected = select_plan_for_trace(&trace, &plans);
+        assert_eq!(selected.selected_plan_id.as_deref(), Some("p_best"));
+        assert!(selected.deopt_reason.is_none());
+        assert!(selected.hit());
+    }
+
+    #[test]
+    fn selection_deopts_on_ambiguous_top_plan() {
+        let trace = opcode_trace(&["session.get_state", "session.get_entries"]);
+        let plans = vec![
+            plan(
+                "p_a",
+                &["session.get_state", "session.get_entries"],
+                5,
+                11,
+            ),
+            plan(
+                "p_b",
+                &["session.get_state", "session.get_entries"],
+                5,
+                11,
+            ),
+        ];
+
+        let selected = select_plan_for_trace(&trace, &plans);
+        assert!(!selected.hit());
+        assert_eq!(selected.deopt_reason, Some("ambiguous_top_plan"));
+    }
+
+    #[test]
+    fn execution_preserves_canonical_semantics_with_fused_projection() {
+        let trace = opcode_trace(&[
+            "session.get_state",
+            "session.get_messages",
+            "session.get_entries",
+            "events.list",
+        ]);
+        let plans = vec![plan(
+            "p_fuse",
+            &[
+                "session.get_state",
+                "session.get_messages",
+                "session.get_entries",
+            ],
+            6,
+            18,
+        )];
+
+        let execution = execute_with_superinstruction(&trace, &plans);
+        assert_eq!(execution.canonical_trace, trace);
+        assert_eq!(execution.fused_trace.len(), 2);
+        assert_eq!(execution.fused_trace[0], "@p_fuse");
+        assert_eq!(execution.fused_trace[1], "events.list");
+        assert!(execution.selection.hit());
+    }
+
+    #[test]
+    fn execution_deopts_immediately_on_guard_mismatch() {
+        let trace = opcode_trace(&["events.get_model", "events.set_model"]);
+        let plans = vec![plan("p_tool", &["tool.read", "tool.write"], 9, 12)];
+
+        let execution = execute_with_superinstruction(&trace, &plans);
+        assert_eq!(execution.canonical_trace, trace);
+        assert_eq!(execution.fused_trace, execution.canonical_trace);
+        assert!(!execution.selection.hit());
+        assert_eq!(execution.selection.deopt_reason, Some("no_matching_plan"));
+    }
+}
