@@ -1,6 +1,6 @@
 {
   "schema": "pi.ci.cross_platform_matrix.v1",
-  "generated_at": "2026-02-14T06:30:36.714Z",
+  "generated_at": "2026-02-16T10:15:01.816Z",
   "platform": "linux",
   "platform_details": {
     "arch": "x86_64",
@@ -143,8 +143,7 @@
       "name": "Extension test artifacts present",
       "platform": "linux",
       "policy": "required",
-      "status": "skip",
-      "reason": "VALIDATED_MANIFEST.json not found"
+      "status": "pass"
     },
     {
       "id": "evidence_bundle",
@@ -164,12 +163,12 @@
   ],
   "summary": {
     "total_checks": 10,
-    "passed": 8,
+    "passed": 9,
     "failed": 0,
-    "skipped": 2,
+    "skipped": 1,
     "unsupported": 0,
-    "required_pass": 7,
+    "required_pass": 8,
     "required_total": 8,
-    "all_required_pass": false
+    "all_required_pass": true
   }
 }

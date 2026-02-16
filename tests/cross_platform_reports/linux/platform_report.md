@@ -1,8 +1,8 @@
 # Cross-Platform CI Matrix — LINUX
 
-> Generated: 2026-02-14T06:30:36Z
+> Generated: 2026-02-16T10:15:01Z
 > OS: linux / x86_64
-> Required checks: 7/8 passed
+> Required checks: 8/8 passed
 
 ## Check Results
 
@@ -15,7 +15,7 @@
 | Conformance artifacts present | required | PASS | - |
 | E2E TUI test support (tmux) | required | PASS | - |
 | POSIX file permission support | informational | PASS | - |
-| Extension test artifacts present | required | SKIP | - |
+| Extension test artifacts present | required | PASS | - |
 | Evidence bundle index present | informational | SKIP | - |
 | Suite classification file present and valid | required | PASS | - |
 
