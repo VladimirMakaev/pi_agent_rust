@@ -1472,7 +1472,11 @@ mod proptests {
             let input = PathBuf::from(format!("/tmp/{stem}.jsonl"));
             let result = v2_sidecar_path(&input);
             let name = result.file_name().unwrap().to_str().unwrap();
-            assert!(name.ends_with(".v2"), "expected .v2 suffix, got {name}");
+            assert_eq!(
+                Path::new(name).extension().and_then(|ext| ext.to_str()),
+                Some("v2"),
+                "expected .v2 suffix, got {name}"
+            );
         }
 
         #[test]

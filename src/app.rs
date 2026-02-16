@@ -1143,6 +1143,75 @@ mod tests {
         }
 
         // ====================================================================
+        // apply_piped_stdin / normalize_cli
+        // ====================================================================
+
+        proptest! {
+            #[test]
+            fn apply_piped_stdin_trims_sets_print_and_prepends(
+                existing in prop::collection::vec("[A-Za-z0-9._/-]{1,16}", 0..4),
+                leading_ws in "[ \\t\\n\\r]{0,4}",
+                core in "[A-Za-z0-9._/-]{1,24}",
+                trailing_ws in "[ \\t\\n\\r]{0,4}",
+            ) {
+                let mut cli = cli::Cli::parse_from(["pi"]);
+                cli.args = existing.clone();
+                cli.print = false;
+
+                let raw = format!("{leading_ws}{core}{trailing_ws}");
+                apply_piped_stdin(&mut cli, Some(raw));
+
+                prop_assert!(cli.print);
+                prop_assert_eq!(cli.args.len(), existing.len() + 1);
+                prop_assert_eq!(cli.args.first().map(String::as_str), Some(core.as_str()));
+                prop_assert_eq!(&cli.args[1..], existing.as_slice());
+            }
+
+            #[test]
+            fn apply_piped_stdin_none_or_whitespace_is_noop(
+                existing in prop::collection::vec("[A-Za-z0-9._/-]{1,16}", 0..4),
+                initial_print in any::<bool>(),
+                initial_no_session in any::<bool>(),
+                whitespace in "[ \\t\\n\\r]{0,16}",
+            ) {
+                let mut cli = cli::Cli::parse_from(["pi"]);
+                cli.args = existing.clone();
+                cli.print = initial_print;
+                cli.no_session = initial_no_session;
+
+                apply_piped_stdin(&mut cli, None);
+                prop_assert_eq!(&cli.args, &existing);
+                prop_assert_eq!(cli.print, initial_print);
+                prop_assert_eq!(cli.no_session, initial_no_session);
+
+                apply_piped_stdin(&mut cli, Some(whitespace));
+                prop_assert_eq!(&cli.args, &existing);
+                prop_assert_eq!(cli.print, initial_print);
+                prop_assert_eq!(cli.no_session, initial_no_session);
+            }
+
+            #[test]
+            fn normalize_cli_lowercases_provider_and_applies_print_semantics(
+                provider in prop::option::of("[A-Za-z0-9_-]{1,20}"),
+                print in any::<bool>(),
+                initial_no_session in any::<bool>(),
+            ) {
+                let mut cli = cli::Cli::parse_from(["pi"]);
+                cli.provider = provider.clone();
+                cli.print = print;
+                cli.no_session = initial_no_session;
+
+                normalize_cli(&mut cli);
+
+                let expected_provider = provider.map(|value: String| value.to_ascii_lowercase());
+                let expected_no_session = if print { true } else { initial_no_session };
+
+                prop_assert_eq!(cli.provider, expected_provider);
+                prop_assert_eq!(cli.no_session, expected_no_session);
+            }
+        }
+
+        // ====================================================================
         // split_provider_model_spec
         // ====================================================================
 
