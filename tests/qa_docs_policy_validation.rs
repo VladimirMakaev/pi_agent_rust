@@ -1408,6 +1408,30 @@ fn run_all_emits_scenario_cell_status_artifacts() {
 }
 
 #[test]
+fn run_all_wires_reactor_comparison_evidence_tokens() {
+    let run_all = load_text("scripts/e2e/run_all.sh");
+
+    for token in [
+        "ext_stress_report_path",
+        "\"ext_stress_report\"",
+        "\"reactor_comparison\": reactor_compare_metrics",
+        "inputs.ext_stress_report_present",
+        "inputs.ext_stress_comparison_present",
+        "reactor_comparison.throughput_gain_pct",
+        "reactor_comparison.p95_delta_us",
+        "reactor_comparison.p99_delta_us",
+        "reactor_comparison.contention_proxy_improved",
+        "pi.ext.stress_comparison.v1",
+        "Reactor comparison throughput gain (%)",
+    ] {
+        assert!(
+            run_all.contains(token),
+            "scripts/e2e/run_all.sh must include reactor-comparison token: {token}"
+        );
+    }
+}
+
+#[test]
 fn ci_workflow_publishes_scenario_cell_gate_artifacts() {
     let ci = load_text(CI_WORKFLOW_PATH);
 
