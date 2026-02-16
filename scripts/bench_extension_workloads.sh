@@ -301,6 +301,13 @@ for ALLOCATOR_REQUEST in "${ALLOCATOR_SET[@]}"; do
   BASELINE_BUILD_LOG="$ALLOCATOR_BUILD_DIR/build_baseline.log"
   PGO_BUILD_LOG="$ALLOCATOR_BUILD_DIR/build_pgo.log"
   PGO_TRAIN_LOG="$ALLOCATOR_BUILD_DIR/train.log"
+  : > "$PGO_BUILD_LOG"
+  : > "$PGO_TRAIN_LOG"
+  {
+    echo "allocator_request=$ALLOCATOR_REQUEST"
+    echo "pgo_mode_requested=$BENCH_PGO_MODE"
+    echo "build_profile=$BENCH_CARGO_PROFILE"
+  } >>"$PGO_BUILD_LOG"
   PGO_PROFILE_STATE="not_requested"
   PGO_EFFECTIVE_MODE="off"
   PGO_FALLBACK_REASON=""
@@ -371,6 +378,7 @@ for ALLOCATOR_REQUEST in "${ALLOCATOR_SET[@]}"; do
         chmod +x "$PGO_BIN"
         PGO_EFFECTIVE_MODE="baseline_fallback"
         PGO_FALLBACK_REASON="${PGO_FALLBACK_REASON:-profile_use_build_failed}"
+        echo "profile-use build failed; using baseline fallback (reason=$PGO_FALLBACK_REASON)" >>"$PGO_BUILD_LOG"
       else
         echo "PGO profile-use build failed and fallback disabled" >&2
         exit 1
@@ -380,6 +388,7 @@ for ALLOCATOR_REQUEST in "${ALLOCATOR_SET[@]}"; do
       chmod +x "$PGO_BIN"
       PGO_EFFECTIVE_MODE="baseline_fallback"
       PGO_FALLBACK_REASON="${PGO_FALLBACK_REASON:-missing_profile_data}"
+      echo "profile data unavailable (state=$PGO_PROFILE_STATE); using baseline fallback (reason=$PGO_FALLBACK_REASON)" >>"$PGO_BUILD_LOG"
     else
       echo "PGO profile data unavailable (state=$PGO_PROFILE_STATE) and fallback disabled" >&2
       exit 1

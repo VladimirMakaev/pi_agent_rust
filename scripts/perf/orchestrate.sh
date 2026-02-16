@@ -67,6 +67,7 @@ GIT_DIRTY="$(git diff --quiet 2>/dev/null && echo "false" || echo "true")"
 declare -A SUITE_TARGETS=(
   [bench_schema]="bench_schema"
   [bench_scenario]="bench_scenario_runner"
+  [ext_bench_harness]="ext_bench_harness"
   [perf_bench_harness]="perf_bench_harness"
   [perf_budgets]="perf_budgets"
   [perf_regression]="perf_regression"
@@ -546,9 +547,17 @@ collect_jsonl() {
 
 # Standard JSONL output paths
 collect_jsonl "$TARGET_DIR/perf/extension_bench.jsonl" "extension_bench.jsonl"
+collect_jsonl "$TARGET_DIR/perf/ext_bench_harness.jsonl" "ext_bench_harness.jsonl"
 collect_jsonl "$TARGET_DIR/perf/scenario_runner.jsonl" "scenario_runner.jsonl"
 collect_jsonl "$TARGET_DIR/perf/pijs_workload.jsonl" "pijs_workload.jsonl"
+collect_jsonl "$TARGET_DIR/perf/legacy_extension_workloads.jsonl" "legacy_extension_workloads.jsonl"
 collect_jsonl "$TARGET_DIR/perf/$CARGO_PROFILE/pgo_pipeline_events.jsonl" "pgo_pipeline_events.jsonl"
+
+if [[ -f "$TARGET_DIR/perf/ext_bench_harness_report.json" ]]; then
+  cp "$TARGET_DIR/perf/ext_bench_harness_report.json" "$OUTPUT_DIR/results/ext_bench_harness_report.json"
+  artifact_count=$((artifact_count + 1))
+  log_ok "Collected: ext_bench_harness_report.json"
+fi
 
 if [[ -d "$TARGET_DIR/perf/$CARGO_PROFILE" ]]; then
   pgo_compare_dir="$OUTPUT_DIR/results/pgo_comparison"
@@ -625,7 +634,8 @@ cat > "$OUTPUT_DIR/manifest.json" <<EOF
     "evidence_contract": "pi.qa.evidence_contract.v1",
     "bench_protocol": "pi.bench.protocol.v1",
     "sli_matrix": "pi.perf.sli_ux_matrix.v1",
-    "pgo_pipeline": "pi.perf.pgo_pipeline_summary.v1"
+    "pgo_pipeline": "pi.perf.pgo_pipeline_summary.v1",
+    "extension_stratification": "pi.perf.extension_benchmark_stratification.v1"
   },
   "output_dir": "$OUTPUT_DIR"
 }
@@ -696,6 +706,21 @@ partition_requirements_raw = (
 )
 if not isinstance(partition_requirements_raw, list):
     partition_requirements_raw = []
+required_partition_tags_raw = (
+    perf_sli.get("reporting_contract", {})
+    .get("required_partition_tags", [])
+)
+if not isinstance(required_partition_tags_raw, list):
+    required_partition_tags_raw = []
+required_partition_tags = []
+for partition in required_partition_tags_raw:
+    partition_tag = str(partition).strip()
+    if partition_tag and partition_tag not in required_partition_tags:
+        required_partition_tags.append(partition_tag)
+if not required_partition_tags:
+    required_partition_tags = ["matched-state", "realistic"]
+required_partition_tag_set = set(required_partition_tags)
+
 partitions_by_workflow = {}
 for row in partition_requirements_raw:
     if not isinstance(row, dict):
@@ -704,7 +729,17 @@ for row in partition_requirements_raw:
     required_partitions = row.get("required_partitions", [])
     if not workflow_id or not isinstance(required_partitions, list):
         continue
-    partitions = [str(p).strip() for p in required_partitions if str(p).strip()]
+    partitions = []
+    for partition in required_partitions:
+        partition_tag = str(partition).strip()
+        if not partition_tag:
+            continue
+        if partition_tag not in required_partition_tag_set:
+            raise ValueError(
+                f"workflow {workflow_id} defines unsupported partition tag: {partition_tag}"
+            )
+        if partition_tag not in partitions:
+            partitions.append(partition_tag)
     if partitions:
         partitions_by_workflow[workflow_id] = partitions
 
@@ -771,7 +806,21 @@ for mapping in workflow_sli_mapping:
         confidence = "low"
 
     evidence_state = "measured" if sample_count > 0 else "no_data"
-    required_partitions = partitions_by_workflow.get(workflow_id, ["realistic"])
+    explicit_partitions = partitions_by_workflow.get(workflow_id)
+    if explicit_partitions is None:
+        required_partitions = list(required_partition_tags)
+    else:
+        missing_partitions = required_partition_tag_set.difference(explicit_partitions)
+        if missing_partitions:
+            missing_csv = ", ".join(sorted(missing_partitions))
+            raise ValueError(
+                f"workflow {workflow_id} missing required workload partitions: {missing_csv}"
+            )
+        required_partitions = [
+            partition
+            for partition in required_partition_tags
+            if partition in explicit_partitions
+        ]
 
     lineage_source = {
         "workflow_id": workflow_id,
@@ -993,6 +1042,453 @@ then
   log_ok "PGO pipeline summary written: results/pgo_pipeline_summary.json"
 else
   die "Failed to generate PGO pipeline summary artifact"
+fi
+
+# ─── Phase 5d: Extension benchmark stratification ───────────────────────────
+
+log_phase "Phase 5d: Extension Benchmark Stratification"
+
+STRATIFICATION_PATH="$OUTPUT_DIR/results/extension_benchmark_stratification.json"
+if OUTPUT_DIR="$OUTPUT_DIR" \
+  PROJECT_ROOT="$PROJECT_ROOT" \
+  CORRELATION_ID="$CORRELATION_ID" \
+  TIMESTAMP="$TIMESTAMP" \
+  STRATIFICATION_PATH="$STRATIFICATION_PATH" \
+  python3 - <<'PY'
+import json
+import os
+import re
+from datetime import datetime, timezone
+from pathlib import Path
+
+output_dir = Path(os.environ["OUTPUT_DIR"])
+project_root = Path(os.environ["PROJECT_ROOT"])
+correlation_id = os.environ["CORRELATION_ID"]
+timestamp = os.environ["TIMESTAMP"]
+stratification_path = Path(os.environ["STRATIFICATION_PATH"])
+
+manifest_path = output_dir / "manifest.json"
+baseline_path = output_dir / "results" / "baseline_variance_confidence.json"
+scenario_runner_path = output_dir / "results" / "scenario_runner.jsonl"
+workload_path = output_dir / "results" / "pijs_workload.jsonl"
+ext_bench_path = output_dir / "results" / "ext_bench_harness.jsonl"
+ext_bench_report_path = output_dir / "results" / "ext_bench_harness_report.json"
+legacy_path = output_dir / "results" / "legacy_extension_workloads.jsonl"
+perf_comparison_path = output_dir / "results" / "perf_reports" / "perf_comparison.json"
+perf_sli_path = project_root / "docs" / "perf_sli_matrix.json"
+
+
+def load_json(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def load_jsonl(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    rows: list[dict] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            rows.append(payload)
+    return rows
+
+
+def parse_float(value):
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        match = re.search(r"-?\d+(?:\.\d+)?", value)
+        if match:
+            return float(match.group(0))
+    return None
+
+
+def mean(values: list[float]):
+    if not values:
+        return None
+    return sum(values) / float(len(values))
+
+
+def suite_status(name: str, suite_map: dict[str, dict]) -> str:
+    row = suite_map.get(name)
+    if isinstance(row, dict):
+        status = str(row.get("status", "")).strip().lower()
+        return status if status else "unknown"
+    return "missing"
+
+
+def suite_log_paths(name: str) -> dict[str, str]:
+    suite_dir = output_dir / "results" / name
+    return {
+        "stdout": str(suite_dir / "stdout.log"),
+        "stderr": str(suite_dir / "stderr.log"),
+    }
+
+
+manifest = load_json(manifest_path)
+run_id = str(manifest.get("timestamp", timestamp))
+suite_results = manifest.get("suite_results", [])
+if not isinstance(suite_results, list):
+    suite_results = []
+suite_result_by_name = {
+    str(row.get("suite", "")).strip(): row
+    for row in suite_results
+    if isinstance(row, dict) and str(row.get("suite", "")).strip()
+}
+
+scenario_runner_records = load_jsonl(scenario_runner_path)
+workload_records = load_jsonl(workload_path)
+ext_bench_records = load_jsonl(ext_bench_path)
+legacy_records = load_jsonl(legacy_path)
+
+comparison_rows = []
+if perf_comparison_path.exists():
+    comparison_payload = load_json(perf_comparison_path)
+    rows = comparison_payload.get("rows", [])
+    if isinstance(rows, list):
+        comparison_rows = [row for row in rows if isinstance(row, dict)]
+
+# ── Absolute metrics by layer ───────────────────────────────────────────────
+
+cold_samples_ms: list[float] = []
+for record in ext_bench_records:
+    if str(record.get("scenario", "")).strip() != "cold_load":
+        continue
+    if record.get("success") is False:
+        continue
+    stats = record.get("stats", {})
+    if not isinstance(stats, dict):
+        continue
+    p95_us = parse_float(stats.get("p95_us"))
+    if p95_us is not None:
+        cold_samples_ms.append(p95_us / 1000.0)
+
+if not cold_samples_ms:
+    for record in scenario_runner_records:
+        if str(record.get("scenario", "")).strip() != "cold_start":
+            continue
+        stats = record.get("stats", {})
+        if not isinstance(stats, dict):
+            continue
+        p95_ms = parse_float(stats.get("p95_ms"))
+        if p95_ms is not None:
+            cold_samples_ms.append(p95_ms)
+
+per_call_samples_us: list[float] = []
+for record in scenario_runner_records:
+    scenario = str(record.get("scenario", "")).strip()
+    if scenario not in {"tool_call", "event_dispatch"}:
+        continue
+    per_call_us = parse_float(record.get("per_call_us"))
+    if per_call_us is not None:
+        per_call_samples_us.append(per_call_us)
+
+if not per_call_samples_us:
+    for record in workload_records:
+        per_call_us = parse_float(record.get("per_call_us"))
+        if per_call_us is not None:
+            per_call_samples_us.append(per_call_us)
+
+full_e2e_samples_ms: list[float] = []
+perf_regression_row = suite_result_by_name.get("perf_regression")
+if isinstance(perf_regression_row, dict):
+    elapsed_ms = parse_float(perf_regression_row.get("elapsed_ms"))
+    if elapsed_ms is not None:
+        full_e2e_samples_ms.append(elapsed_ms)
+for record in workload_records:
+    elapsed_ms = parse_float(record.get("elapsed_ms"))
+    if elapsed_ms is not None:
+        full_e2e_samples_ms.append(elapsed_ms)
+
+cold_abs_ms = mean(cold_samples_ms)
+per_call_abs_us = mean(per_call_samples_us)
+full_e2e_abs_ms = mean(full_e2e_samples_ms)
+
+# ── Relative ratios (Rust vs Node/Bun) by layer ────────────────────────────
+
+def comparison_row(metric_substr: str, category_substr: str | None = None):
+    metric_substr = metric_substr.lower()
+    category_substr = category_substr.lower() if category_substr else None
+    for row in comparison_rows:
+        metric = str(row.get("metric", "")).lower()
+        category = str(row.get("category", "")).lower()
+        if metric_substr in metric and (
+            category_substr is None or category_substr in category
+        ):
+            return row
+    return None
+
+
+legacy_cold_samples_ms: list[float] = []
+legacy_tool_samples_us: list[float] = []
+for record in legacy_records:
+    scenario = str(record.get("scenario", "")).strip()
+    if scenario == "ext_load_init/load_init_cold":
+        summary = record.get("summary", {})
+        if isinstance(summary, dict):
+            p50_ms = parse_float(summary.get("p50_ms"))
+            if p50_ms is not None:
+                legacy_cold_samples_ms.append(p50_ms)
+    if scenario == "ext_tool_call/hello":
+        per_call_us = parse_float(record.get("per_call_us"))
+        if per_call_us is not None:
+            legacy_tool_samples_us.append(per_call_us)
+
+legacy_cold_ms = mean(legacy_cold_samples_ms)
+legacy_tool_us = mean(legacy_tool_samples_us)
+
+cold_node_ratio = None
+per_call_node_ratio = None
+full_e2e_node_ratio = None
+
+cold_ratio_row = comparison_row("rust-to-ts ratio", "load time")
+if isinstance(cold_ratio_row, dict):
+    cold_node_ratio = parse_float(cold_ratio_row.get("rust_value"))
+if cold_node_ratio is None and cold_abs_ms is not None and legacy_cold_ms is not None and legacy_cold_ms > 0:
+    cold_node_ratio = cold_abs_ms / legacy_cold_ms
+
+per_call_row = comparison_row("hello per-call latency", "tool call")
+if isinstance(per_call_row, dict):
+    rust_value = parse_float(per_call_row.get("rust_value"))
+    legacy_value = parse_float(per_call_row.get("legacy_value"))
+    if rust_value is not None and legacy_value and legacy_value > 0:
+        per_call_node_ratio = rust_value / legacy_value
+if per_call_node_ratio is None and per_call_abs_us is not None and legacy_tool_us is not None and legacy_tool_us > 0:
+    per_call_node_ratio = per_call_abs_us / legacy_tool_us
+
+full_e2e_row = comparison_row("200 iters x 1 tool", "e2e process")
+if isinstance(full_e2e_row, dict):
+    rust_value = parse_float(full_e2e_row.get("rust_value"))
+    legacy_value = parse_float(full_e2e_row.get("legacy_value"))
+    if rust_value is not None and legacy_value and legacy_value > 0:
+        full_e2e_node_ratio = rust_value / legacy_value
+
+# Bun coverage is still missing in existing benchmark sources; emit explicit proxy/missing state.
+def bun_ratio_from_node(node_ratio):
+    if node_ratio is None:
+        return (None, "missing")
+    return (node_ratio, "node_proxy")
+
+
+def build_layer(
+    layer_id: str,
+    display_name: str,
+    scenario_tags: list[str],
+    expected_suites: list[str],
+    metric_name: str,
+    absolute_value,
+    absolute_unit: str,
+    node_ratio,
+    node_ratio_basis: str,
+    source_artifacts: list[Path],
+    interpretation: str,
+) -> dict:
+    bun_ratio, bun_ratio_basis = bun_ratio_from_node(node_ratio)
+    suite_statuses = {name: suite_status(name, suite_result_by_name) for name in expected_suites}
+    absolute_present = absolute_value is not None
+    relative_present = node_ratio is not None and bun_ratio is not None
+    suites_with_data = [name for name, status in suite_statuses.items() if status != "missing"]
+    all_ran_suites_passed = all(
+        status == "pass" for status in suite_statuses.values() if status != "missing"
+    )
+
+    if absolute_present and relative_present and all_ran_suites_passed and suites_with_data:
+        confidence = "high"
+        evidence_state = "measured"
+    elif absolute_present and (node_ratio is not None or bun_ratio is not None):
+        confidence = "medium"
+        evidence_state = "inferred"
+    elif absolute_present:
+        confidence = "low"
+        evidence_state = "absolute_only"
+    else:
+        confidence = "low"
+        evidence_state = "no_data"
+
+    return {
+        "layer_id": layer_id,
+        "display_name": display_name,
+        "scenario_tags": scenario_tags,
+        "expected_suites": expected_suites,
+        "suite_status": suite_statuses,
+        "absolute_metrics": {
+            "metric_name": metric_name,
+            "value": absolute_value,
+            "unit": absolute_unit,
+        },
+        "relative_metrics": {
+            "rust_vs_node_ratio": node_ratio,
+            "rust_vs_node_ratio_basis": node_ratio_basis,
+            "rust_vs_bun_ratio": bun_ratio,
+            "rust_vs_bun_ratio_basis": bun_ratio_basis,
+        },
+        "confidence": confidence,
+        "evidence_state": evidence_state,
+        "interpretation": interpretation,
+        "lineage": {
+            "run_id_lineage": [run_id, correlation_id],
+            "source_artifacts": [str(path) for path in source_artifacts if path.exists()],
+            "suite_logs": {suite: suite_log_paths(suite) for suite in expected_suites},
+            "source_manifest_path": str(manifest_path),
+        },
+    }
+
+
+layers = [
+    build_layer(
+        "cold_load_init",
+        "Cold-load and initialization",
+        ["cold-load", "init", "extension-runtime", "microbench"],
+        ["ext_bench_harness", "bench_scenario"],
+        "cold_load_p95",
+        cold_abs_ms,
+        "ms",
+        cold_node_ratio,
+        "direct_or_derived",
+        [ext_bench_path, ext_bench_report_path, scenario_runner_path],
+        "Cold-load wins are attribution-only and must not be promoted as global UX claims.",
+    ),
+    build_layer(
+        "per_call_dispatch_micro",
+        "Per-call dispatch microbench",
+        ["per-call", "dispatch", "hostcall", "microbench"],
+        ["bench_scenario", "perf_bench_harness"],
+        "dispatch_per_call",
+        per_call_abs_us,
+        "us",
+        per_call_node_ratio,
+        "direct_or_derived",
+        [scenario_runner_path, workload_path],
+        "Per-call improvements are diagnostic and cannot substitute for full-session outcomes.",
+    ),
+    build_layer(
+        "full_e2e_long_session",
+        "Full end-to-end long-session workload",
+        ["full-e2e", "long-session", "user-facing", "release-facing"],
+        ["perf_regression", "perf_comparison"],
+        "long_session_elapsed",
+        full_e2e_abs_ms,
+        "ms",
+        full_e2e_node_ratio,
+        "direct_or_derived",
+        [workload_path, perf_comparison_path],
+        "Full E2E evidence is the release-facing signal and must gate global speed claims.",
+    ),
+]
+
+perf_sli = load_json(perf_sli_path) if perf_sli_path.exists() else {}
+required_partition_tags = (
+    perf_sli.get("reporting_contract", {}).get("required_partition_tags", [])
+)
+if not isinstance(required_partition_tags, list):
+    required_partition_tags = []
+required_partition_tags = [str(tag).strip() for tag in required_partition_tags if str(tag).strip()]
+if not required_partition_tags:
+    required_partition_tags = ["matched-state", "realistic"]
+
+partition_coverage = {tag: False for tag in required_partition_tags}
+if baseline_path.exists():
+    baseline_payload = load_json(baseline_path)
+    records = baseline_payload.get("records", [])
+    if isinstance(records, list):
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            partition = str(record.get("workload_partition", "")).strip()
+            if partition in partition_coverage:
+                partition_coverage[partition] = True
+
+layer_coverage = {
+    layer["layer_id"]: (
+        layer["absolute_metrics"]["value"] is not None
+        and layer["relative_metrics"]["rust_vs_node_ratio"] is not None
+        and layer["relative_metrics"]["rust_vs_bun_ratio"] is not None
+    )
+    for layer in layers
+}
+
+invalidity_reasons = []
+if not layer_coverage.get("full_e2e_long_session", False) and (
+    layer_coverage.get("cold_load_init", False)
+    or layer_coverage.get("per_call_dispatch_micro", False)
+):
+    invalidity_reasons.append("microbench_only_claim")
+
+if not all(partition_coverage.values()):
+    invalidity_reasons.append("global_claim_missing_partition_coverage")
+
+for layer_id, covered in layer_coverage.items():
+    if not covered:
+        invalidity_reasons.append(f"missing_layer_coverage:{layer_id}")
+
+global_claim_valid = len(invalidity_reasons) == 0
+
+payload = {
+    "schema": "pi.perf.extension_benchmark_stratification.v1",
+    "bead_id": "bd-3ar8v.4.11",
+    "generated_at": datetime.now(timezone.utc).isoformat(),
+    "run_id": run_id,
+    "correlation_id": correlation_id,
+    "profile": str(manifest.get("profile", "unknown")),
+    "execution_contract": {
+        "orchestrator": "scripts/perf/orchestrate.sh",
+        "layer_definition_version": "1.0.0",
+        "required_layers": [
+            "cold_load_init",
+            "per_call_dispatch_micro",
+            "full_e2e_long_session",
+        ],
+        "full_coverage_profiles": ["full", "ci"],
+        "lineage_contract": "all layers must share run_id + correlation_id lineage",
+    },
+    "layers": layers,
+    "claim_integrity": {
+        "anti_conflation": {
+            "cold_load_wins_do_not_imply_per_call_or_e2e": True,
+            "per_call_wins_do_not_imply_full_e2e": True,
+            "full_e2e_is_release_facing_primary_signal": True,
+        },
+        "cherry_pick_guard": {
+            "requires_all_layers_for_global_claim": True,
+            "layer_coverage": layer_coverage,
+            "global_claim_valid": global_claim_valid,
+            "invalidity_reasons": sorted(set(invalidity_reasons)),
+        },
+        "required_partition_tags": required_partition_tags,
+        "partition_coverage": partition_coverage,
+        "policy_ref": "docs/perf_sli_matrix.json#ci_enforcement.fail_closed_conditions",
+    },
+    "lineage": {
+        "run_id_lineage": [run_id, correlation_id],
+        "source_manifest_path": str(manifest_path),
+        "source_baseline_confidence_path": str(baseline_path) if baseline_path.exists() else None,
+        "source_sli_contract_path": str(perf_sli_path) if perf_sli_path.exists() else None,
+    },
+}
+
+stratification_path.parent.mkdir(parents=True, exist_ok=True)
+stratification_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+manifest["extension_benchmark_stratification"] = {
+    "schema": "pi.perf.extension_benchmark_stratification.v1",
+    "path": str(stratification_path),
+    "layer_count": len(layers),
+    "global_claim_valid": global_claim_valid,
+    "invalidity_reason_count": len(sorted(set(invalidity_reasons))),
+}
+manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+PY
+then
+  artifact_count=$((artifact_count + 1))
+  log_ok "Extension benchmark stratification written: results/extension_benchmark_stratification.json"
+else
+  die "Failed to generate extension benchmark stratification artifact"
 fi
 
 # ─── Phase 6: Generate checksums ────────────────────────────────────────────

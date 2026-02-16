@@ -311,11 +311,11 @@
     "benchmark_script_references": [
       {
         "path": "scripts/e2e/run_all.sh",
-        "role": "Primary benchmark/e2e orchestrator that emits partition-aware evidence metadata."
+        "role": "Top-level e2e entrypoint that anchors perf SLI contract paths in emitted evidence artifacts."
       },
       {
-        "path": "scripts/e2e/run_runtime_risk_telemetry.sh",
-        "role": "Runtime-risk telemetry script that consumes partition-tagged benchmark outputs."
+        "path": "scripts/perf/orchestrate.sh",
+        "role": "Partition-aware benchmark orchestrator that emits workload-partition-tagged confidence records from scenario partition requirements."
       }
     ],
     "partition_definitions": {
