@@ -59,7 +59,7 @@ impl Provider for ScriptedProvider {
 
     async fn stream(
         &self,
-        context: &Context,
+        context: &Context<'_>,
         _options: &StreamOptions,
     ) -> pi::error::Result<
         Pin<Box<dyn futures::Stream<Item = pi::error::Result<pi::model::StreamEvent>> + Send>>,
@@ -94,7 +94,7 @@ impl Provider for ScriptedProvider {
     }
 }
 
-fn extract_prompt_text(context: &Context) -> String {
+fn extract_prompt_text(context: &Context<'_>) -> String {
     let Some(Message::User(UserMessage { content, .. })) = context.messages.first() else {
         return "<missing user prompt>".to_string();
     };
@@ -1328,7 +1328,7 @@ fn compact_returns_error_when_provider_stops_with_error() {
 
         async fn stream(
             &self,
-            _context: &Context,
+            _context: &Context<'_>,
             _options: &StreamOptions,
         ) -> pi::error::Result<
             Pin<Box<dyn futures::Stream<Item = pi::error::Result<pi::model::StreamEvent>> + Send>>,

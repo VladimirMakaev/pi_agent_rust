@@ -55,11 +55,11 @@ fn cohere_api_key(mode: VcrMode) -> String {
     }
 }
 
-fn build_context(scenario: &Scenario) -> Context {
+fn build_context(scenario: &Scenario) -> Context<'static> {
     Context {
-        system_prompt: Some(SYSTEM_PROMPT.to_string()),
-        messages: scenario.messages.clone(),
-        tools: scenario.tools.clone(),
+        system_prompt: Some(SYSTEM_PROMPT.to_string().into()),
+        messages: scenario.messages.clone().into(),
+        tools: scenario.tools.clone().into(),
     }
 }
 

@@ -1574,6 +1574,36 @@ fn full_suite_gate_has_remediation_for_each_gate() {
 }
 
 #[test]
+fn full_suite_gate_contains_sorted_coverage_path_ordering_guards() {
+    let gate = load_text(FULL_SUITE_GATE_PATH);
+    for token in [
+        "must be sorted by normalized path order",
+        "perf3x_bead_coverage_contract_fails_closed_on_unsorted_unit_evidence_paths",
+        "perf3x_bead_coverage_contract_fails_closed_on_unsorted_e2e_evidence_paths",
+        "perf3x_bead_coverage_contract_fails_closed_on_unsorted_log_evidence_paths",
+    ] {
+        assert!(
+            gate.contains(token),
+            "full suite gate must include sorted-coverage guard token: {token}"
+        );
+    }
+}
+
+#[test]
+fn full_suite_gate_contains_canonical_coverage_row_ordering_guards() {
+    let gate = load_text(FULL_SUITE_GATE_PATH);
+    for token in [
+        "coverage_rows must be sorted by canonical bead id order",
+        "perf3x_bead_coverage_contract_fails_closed_on_misordered_rows",
+    ] {
+        assert!(
+            gate.contains(token),
+            "full suite gate must include canonical row-order guard token: {token}"
+        );
+    }
+}
+
+#[test]
 fn ci_workflow_has_failure_output_guidance() {
     let ci = load_text(CI_WORKFLOW_PATH);
     // CI should produce structured output on failure

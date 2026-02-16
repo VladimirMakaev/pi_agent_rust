@@ -681,12 +681,12 @@ fn user_text(text: &str) -> Message {
     })
 }
 
-fn simple_context(prompt: &str) -> Context {
-    Context {
-        system_prompt: Some("You are a test harness. Respond concisely.".to_string()),
-        messages: vec![user_text(prompt)],
-        tools: vec![],
-    }
+fn simple_context(prompt: &str) -> Context<'static> {
+    Context::owned(
+        Some("You are a test harness. Respond concisely.".to_string()),
+        vec![user_text(prompt)],
+        vec![],
+    )
 }
 
 /// Build stream options with API key set via `api_key` field.
@@ -703,7 +703,7 @@ fn simple_options(api_key: &str) -> StreamOptions {
 /// Collect all stream events from a provider, logging each one.
 async fn collect_stream(
     provider: &dyn Provider,
-    context: &Context,
+    context: &Context<'_>,
     options: &StreamOptions,
     harness: &TestHarness,
 ) -> (Vec<StreamEvent>, Option<String>) {
@@ -1016,13 +1016,11 @@ mod openai {
 mod azure_openai {
     use super::*;
 
-    fn azure_tool_context(prompt: &str) -> Context {
-        Context {
-            system_prompt: Some(
-                "You are a test harness assistant. Use tools when explicitly asked.".to_string(),
-            ),
-            messages: vec![user_text(prompt)],
-            tools: vec![pi::provider::ToolDef {
+    fn azure_tool_context(prompt: &str) -> Context<'static> {
+        Context::owned(
+            Some("You are a test harness assistant. Use tools when explicitly asked.".to_string()),
+            vec![user_text(prompt)],
+            vec![pi::provider::ToolDef {
                 name: "list_dir".to_string(),
                 description: "List files in a directory".to_string(),
                 parameters: serde_json::json!({
@@ -1034,7 +1032,7 @@ mod azure_openai {
                     "additionalProperties": false
                 }),
             }],
-        }
+        )
     }
 
     #[test]

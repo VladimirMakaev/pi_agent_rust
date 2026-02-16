@@ -350,7 +350,7 @@ impl Provider for SlowStreamProvider {
 
     async fn stream(
         &self,
-        _context: &Context,
+        _context: &Context<'_>,
         _options: &StreamOptions,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         self.stream_calls.fetch_add(1, Ordering::SeqCst);
@@ -407,7 +407,7 @@ impl Provider for TruncatingProvider {
 
     async fn stream(
         &self,
-        _context: &Context,
+        _context: &Context<'_>,
         _options: &StreamOptions,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         let mut events: Vec<Option<StreamEvent>> = Vec::new();
@@ -460,7 +460,7 @@ impl Provider for ErrorMidStreamProvider {
 
     async fn stream(
         &self,
-        _context: &Context,
+        _context: &Context<'_>,
         _options: &StreamOptions,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         let mut events: Vec<Result<StreamEvent>> = Vec::new();
@@ -550,7 +550,7 @@ impl Provider for FlakyTimeoutThenSuccessProvider {
 
     async fn stream(
         &self,
-        _context: &Context,
+        _context: &Context<'_>,
         _options: &StreamOptions,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         let call_index = self.stream_calls.fetch_add(1, Ordering::SeqCst);
@@ -612,7 +612,7 @@ impl Provider for StreamContractViolationProvider {
 
     async fn stream(
         &self,
-        _context: &Context,
+        _context: &Context<'_>,
         _options: &StreamOptions,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         self.stream_calls.fetch_add(1, Ordering::SeqCst);
@@ -740,7 +740,7 @@ impl Provider for ScriptedReliabilityProvider {
 
     async fn stream(
         &self,
-        _context: &Context,
+        _context: &Context<'_>,
         _options: &StreamOptions,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         let call_index = self.stream_calls.fetch_add(1, Ordering::SeqCst);
@@ -789,7 +789,7 @@ impl Provider for ToolCallThenHangProvider {
 
     async fn stream(
         &self,
-        _context: &Context,
+        _context: &Context<'_>,
         _options: &StreamOptions,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         let call_index = self.stream_calls.fetch_add(1, Ordering::SeqCst);
@@ -1302,7 +1302,7 @@ fn pre_abort_skips_provider_entirely() {
             }
             async fn stream(
                 &self,
-                _ctx: &Context,
+                _ctx: &Context<'_>,
                 _opts: &StreamOptions,
             ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
                 self.calls.fetch_add(1, Ordering::SeqCst);
@@ -2200,7 +2200,7 @@ fn empty_stream_returns_error() {
             }
             async fn stream(
                 &self,
-                _ctx: &Context,
+                _ctx: &Context<'_>,
                 _opts: &StreamOptions,
             ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
                 Ok(Box::pin(futures::stream::empty()))

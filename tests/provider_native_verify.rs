@@ -1183,9 +1183,9 @@ async fn run_canonical_scenario(
     harness: &TestHarness,
 ) -> bool {
     let context = Context {
-        system_prompt: Some(SYSTEM_PROMPT.to_string()),
-        messages: scenario.messages.clone(),
-        tools: scenario.tools.clone(),
+        system_prompt: Some(SYSTEM_PROMPT.to_string().into()),
+        messages: scenario.messages.clone().into(),
+        tools: scenario.tools.clone().into(),
     };
 
     let options = StreamOptions {

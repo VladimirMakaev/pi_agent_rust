@@ -55,15 +55,15 @@ async fn load_extension(source: &str) -> (tempfile::TempDir, ExtensionManager) {
     (dir, manager)
 }
 
-fn basic_context() -> Context {
-    Context {
-        system_prompt: Some("system".to_string()),
-        messages: vec![Message::User(UserMessage {
+fn basic_context() -> Context<'static> {
+    Context::owned(
+        Some("system".to_string()),
+        vec![Message::User(UserMessage {
             content: UserContent::Text("hello".to_string()),
             timestamp: 0,
         })],
-        tools: Vec::new(),
-    }
+        Vec::new(),
+    )
 }
 
 fn basic_options() -> StreamOptions {
@@ -82,7 +82,7 @@ fn make_runtime() -> asupersync::runtime::Runtime {
 /// Collect all stream events into a Vec.
 async fn collect_events(
     provider: &dyn pi::provider::Provider,
-    ctx: &Context,
+    ctx: &Context<'_>,
     opts: &StreamOptions,
 ) -> Vec<Result<StreamEvent, pi::error::Error>> {
     let mut stream = provider.stream(ctx, opts).await.expect("stream");
@@ -732,9 +732,9 @@ fn stream_simple_context_passes_system_prompt_and_messages() {
             .expect("echo-provider entry");
 
         let provider = create_provider(entry, Some(&manager)).expect("create provider");
-        let ctx = Context {
-            system_prompt: Some("test system prompt".to_string()),
-            messages: vec![
+        let ctx = Context::owned(
+            Some("test system prompt".to_string()),
+            vec![
                 Message::User(UserMessage {
                     content: UserContent::Text("msg1".to_string()),
                     timestamp: 0,
@@ -744,8 +744,8 @@ fn stream_simple_context_passes_system_prompt_and_messages() {
                     timestamp: 1,
                 }),
             ],
-            tools: Vec::new(),
-        };
+            Vec::new(),
+        );
         let opts = StreamOptions {
             api_key: Some("sk-test".to_string()),
             session_id: Some("sess-123".to_string()),
@@ -781,14 +781,14 @@ fn stream_simple_context_without_system_prompt() {
             .expect("echo-provider entry");
 
         let provider = create_provider(entry, Some(&manager)).expect("create provider");
-        let ctx = Context {
-            system_prompt: None,
-            messages: vec![Message::User(UserMessage {
+        let ctx = Context::owned(
+            None,
+            vec![Message::User(UserMessage {
                 content: UserContent::Text("hello".to_string()),
                 timestamp: 0,
             })],
-            tools: Vec::new(),
-        };
+            Vec::new(),
+        );
         let opts = basic_options();
         let events = collect_events(provider.as_ref(), &ctx, &opts).await;
 

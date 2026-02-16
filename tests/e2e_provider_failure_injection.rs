@@ -70,15 +70,15 @@ fn make_entry(provider: &str, model_id: &str, base_url: &str) -> ModelEntry {
     }
 }
 
-fn simple_context() -> Context {
-    Context {
-        system_prompt: Some("You are a test model.".to_string()),
-        messages: vec![Message::User(UserMessage {
+fn simple_context() -> Context<'static> {
+    Context::owned(
+        Some("You are a test model.".to_string()),
+        vec![Message::User(UserMessage {
             content: UserContent::Text("Say hello.".to_string()),
             timestamp: 0,
         })],
-        tools: Vec::new(),
-    }
+        Vec::new(),
+    )
 }
 
 fn make_response(status: u16, content_type: &str, body: &[u8]) -> MockHttpResponse {
@@ -95,7 +95,7 @@ fn make_sse_response(body: &str) -> MockHttpResponse {
 
 fn collect_events(
     provider: Arc<dyn pi::provider::Provider>,
-    context: Context,
+    context: Context<'static>,
     options: StreamOptions,
 ) -> Result<Vec<StreamEvent>, String> {
     common::run_async(async move {

@@ -62,25 +62,27 @@ fn request_header(headers: &[(String, String)], key: &str) -> Option<String> {
         .map(|(_, value)| value.clone())
 }
 
-fn simple_context() -> Context {
+fn simple_context() -> Context<'static> {
     Context {
-        system_prompt: Some("You are a deterministic test model.".to_string()),
+        system_prompt: Some("You are a deterministic test model.".to_string().into()),
         messages: vec![Message::User(UserMessage {
             content: UserContent::Text("Say hello.".to_string()),
             timestamp: 0,
-        })],
-        tools: Vec::new(),
+        })]
+        .into(),
+        tools: Vec::new().into(),
     }
 }
 
-fn tool_context() -> Context {
+fn tool_context() -> Context<'static> {
     Context {
-        system_prompt: Some("You are a deterministic test model.".to_string()),
+        system_prompt: Some("You are a deterministic test model.".to_string().into()),
         messages: vec![Message::User(UserMessage {
             content: UserContent::Text("Call the echo tool with text='hello'.".to_string()),
             timestamp: 0,
-        })],
-        tools: vec![echo_tool()],
+        })]
+        .into(),
+        tools: vec![echo_tool()].into(),
     }
 }
 
@@ -621,7 +623,7 @@ fn validate_event_sequence(events: &[StreamEvent]) -> Result<(), String> {
 /// Collect stream events from a provider, returning collected events or an error string.
 fn collect_events(
     provider: Arc<dyn pi::provider::Provider>,
-    context: Context,
+    context: Context<'static>,
     options: StreamOptions,
 ) -> Result<Vec<StreamEvent>, String> {
     common::run_async(async move {
@@ -1631,7 +1633,7 @@ fn e2e_multi_turn_conversation() {
 
         // Turn 2: build context with previous messages
         let turn2_context = Context {
-            system_prompt: Some("You are a deterministic test model.".to_string()),
+            system_prompt: Some("You are a deterministic test model.".to_string().into()),
             messages: vec![
                 Message::User(UserMessage {
                     content: UserContent::Text("Say hello.".to_string()),
@@ -1641,8 +1643,9 @@ fn e2e_multi_turn_conversation() {
                     content: UserContent::Text("Now say goodbye.".to_string()),
                     timestamp: 1,
                 }),
-            ],
-            tools: Vec::new(),
+            ]
+            .into(),
+            tools: Vec::new().into(),
         };
 
         let events2 = collect_events(Arc::clone(&provider), turn2_context, options)
@@ -1720,7 +1723,7 @@ fn e2e_multi_turn_conversation() {
         let (text1, _, _) = summarize_events(&events1);
 
         let turn2_context = Context {
-            system_prompt: Some("You are a deterministic test model.".to_string()),
+            system_prompt: Some("You are a deterministic test model.".to_string().into()),
             messages: vec![
                 Message::User(UserMessage {
                     content: UserContent::Text("Say hello.".to_string()),
@@ -1730,8 +1733,9 @@ fn e2e_multi_turn_conversation() {
                     content: UserContent::Text("Now say goodbye.".to_string()),
                     timestamp: 1,
                 }),
-            ],
-            tools: Vec::new(),
+            ]
+            .into(),
+            tools: Vec::new().into(),
         };
 
         let events2 = collect_events(Arc::clone(&provider), turn2_context, options)

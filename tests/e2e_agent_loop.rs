@@ -92,7 +92,7 @@ impl ScriptedProvider {
         ]))
     }
 
-    fn context_tool_results(context: &Context) -> Vec<&ToolResultMessage> {
+    fn context_tool_results<'a>(context: &'a Context<'a>) -> Vec<&'a ToolResultMessage> {
         context
             .messages
             .iter()
@@ -122,7 +122,7 @@ impl Provider for ScriptedProvider {
 
     async fn stream(
         &self,
-        context: &Context,
+        context: &Context<'_>,
         _options: &StreamOptions,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         let call_index = self.stream_calls.fetch_add(1, Ordering::SeqCst);
@@ -192,29 +192,23 @@ impl Provider for ScriptedProvider {
                 ))
             }
             Scenario::MultiTool { file_path, content } => {
+                // Turn 0: write the file
                 if call_index == 0 {
                     return Ok(self.stream_done(self.assistant_message(
                         StopReason::ToolUse,
-                        vec![
-                            ContentBlock::ToolCall(ToolCall {
-                                id: "write-1".to_string(),
-                                name: "write".to_string(),
-                                arguments: json!({
-                                    "path": file_path,
-                                    "content": content,
-                                }),
-                                thought_signature: None,
+                        vec![ContentBlock::ToolCall(ToolCall {
+                            id: "write-1".to_string(),
+                            name: "write".to_string(),
+                            arguments: json!({
+                                "path": file_path,
+                                "content": content,
                             }),
-                            ContentBlock::ToolCall(ToolCall {
-                                id: "read-1".to_string(),
-                                name: "read".to_string(),
-                                arguments: json!({ "path": file_path }),
-                                thought_signature: None,
-                            }),
-                        ],
+                            thought_signature: None,
+                        })],
                         40,
                     )));
                 }
+                // Turn 1: verify write succeeded, then read the file back
                 if call_index == 1 {
                     let results = Self::context_tool_results(context);
                     let Some(write_result) = results
@@ -225,6 +219,25 @@ impl Provider for ScriptedProvider {
                     else {
                         return Err(Error::api("multi_tool expected write-1 result"));
                     };
+                    if write_result.is_error {
+                        return Err(Error::api(
+                            "multi_tool expected successful write result",
+                        ));
+                    }
+                    return Ok(self.stream_done(self.assistant_message(
+                        StopReason::ToolUse,
+                        vec![ContentBlock::ToolCall(ToolCall {
+                            id: "read-1".to_string(),
+                            name: "read".to_string(),
+                            arguments: json!({ "path": file_path }),
+                            thought_signature: None,
+                        })],
+                        30,
+                    )));
+                }
+                // Turn 2: verify read succeeded and contains expected content
+                if call_index == 2 {
+                    let results = Self::context_tool_results(context);
                     let Some(read_result) = results
                         .iter()
                         .rev()
@@ -233,9 +246,9 @@ impl Provider for ScriptedProvider {
                     else {
                         return Err(Error::api("multi_tool expected read-1 result"));
                     };
-                    if write_result.is_error || read_result.is_error {
+                    if read_result.is_error {
                         return Err(Error::api(
-                            "multi_tool expected successful write/read results",
+                            "multi_tool expected successful read result",
                         ));
                     }
                     let read_text = read_result
@@ -618,11 +631,13 @@ fn multi_tool() {
             content: "alpha-beta-gamma".to_string(),
         },
         "Write then read a file and summarize.",
-        6,
+        8,
     );
 
     assert_eq!(outcome.message.stop_reason, StopReason::Stop);
     assert!(assistant_text(&outcome.message).contains("multi-tool complete"));
+    // Write and read are now in separate turns (parallel execution means
+    // dependent tools must be in different turns).
     assert_eq!(outcome.capture.tool_starts, 2);
     assert_eq!(outcome.capture.tool_ends, 2);
     assert!(outcome.total_tokens > 0);

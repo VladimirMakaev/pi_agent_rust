@@ -119,7 +119,7 @@ fn request_header(headers: &[(String, String)], key: &str) -> Option<String> {
 
 fn drive_provider_stream_to_done(
     provider: Arc<dyn pi::provider::Provider>,
-    context: Context,
+    context: Context<'static>,
     options: StreamOptions,
 ) {
     common::run_async(async move {
@@ -836,11 +836,12 @@ fn schema_compat_overrides_flow_through_factory_for_openai_completions() {
 
     let provider = create_provider(&entry, None).expect("create compat completions provider");
     let context = Context {
-        system_prompt: Some("You are concise.".to_string()),
+        system_prompt: Some("You are concise.".to_string().into()),
         messages: vec![Message::User(UserMessage {
             content: UserContent::Text("Ping".to_string()),
             timestamp: 0,
-        })],
+        })]
+        .into(),
         tools: vec![ToolDef {
             name: "search".to_string(),
             description: "Search docs".to_string(),
@@ -851,7 +852,8 @@ fn schema_compat_overrides_flow_through_factory_for_openai_completions() {
                 },
                 "required": ["q"]
             }),
-        }],
+        }]
+        .into(),
     };
     let options = StreamOptions {
         api_key: entry.api_key.clone(),
@@ -976,8 +978,9 @@ fn schema_compat_headers_respect_precedence_for_openai_responses() {
         messages: vec![Message::User(UserMessage {
             content: UserContent::Text("Ping".to_string()),
             timestamp: 0,
-        })],
-        tools: Vec::new(),
+        })]
+        .into(),
+        tools: Vec::new().into(),
     };
     let options = StreamOptions {
         api_key: entry.api_key.clone(),
@@ -1108,11 +1111,12 @@ fn bedrock_provider_uses_bearer_auth_and_converse_payload() {
     entry.model.api = "bedrock-converse-stream".to_string();
     let provider = create_provider(&entry, None).expect("amazon-bedrock provider");
     let context = Context {
-        system_prompt: Some("Be concise.".to_string()),
+        system_prompt: Some("Be concise.".to_string().into()),
         messages: vec![Message::User(UserMessage {
             content: UserContent::Text("Ping".to_string()),
             timestamp: 0,
-        })],
+        })]
+        .into(),
         tools: vec![ToolDef {
             name: "search".to_string(),
             description: "Search docs".to_string(),
@@ -1123,7 +1127,8 @@ fn bedrock_provider_uses_bearer_auth_and_converse_payload() {
                 },
                 "required": ["q"]
             }),
-        }],
+        }]
+        .into(),
     };
     let options = StreamOptions {
         api_key: Some("bedrock-test-token".to_string()),
@@ -1267,12 +1272,13 @@ fn wave_a_openai_compat_streams_use_chat_completions_path_and_bearer_auth() {
 
         let api_key = format!("wave-a-token-{index}");
         let context = Context {
-            system_prompt: Some("Be concise.".to_string()),
+            system_prompt: Some("Be concise.".to_string().into()),
             messages: vec![Message::User(UserMessage {
                 content: UserContent::Text("Ping".to_string()),
                 timestamp: 0,
-            })],
-            tools: Vec::new(),
+            })]
+            .into(),
+            tools: Vec::new().into(),
         };
         let options = StreamOptions {
             api_key: Some(api_key.clone()),
@@ -1377,12 +1383,13 @@ fn wave_b1_alibaba_cn_openai_compat_streams_use_chat_completions_path_and_bearer
 
     let api_key = "wave-b1-alibaba-cn-token".to_string();
     let context = Context {
-        system_prompt: Some("Be concise.".to_string()),
+        system_prompt: Some("Be concise.".to_string().into()),
         messages: vec![Message::User(UserMessage {
             content: UserContent::Text("Ping".to_string()),
             timestamp: 0,
-        })],
-        tools: Vec::new(),
+        })]
+        .into(),
+        tools: Vec::new().into(),
     };
     let options = StreamOptions {
         api_key: Some(api_key.clone()),
@@ -1437,12 +1444,13 @@ fn wave_b1_anthropic_compat_streams_use_messages_path_and_x_api_key() {
 
         let api_key = format!("wave-b1-anthropic-token-{index}");
         let context = Context {
-            system_prompt: Some("Be concise.".to_string()),
+            system_prompt: Some("Be concise.".to_string().into()),
             messages: vec![Message::User(UserMessage {
                 content: UserContent::Text("Ping".to_string()),
                 timestamp: 0,
-            })],
-            tools: Vec::new(),
+            })]
+            .into(),
+            tools: Vec::new().into(),
         };
         let options = StreamOptions {
             api_key: Some(api_key.clone()),
@@ -1589,12 +1597,13 @@ fn wave_b2_openai_compat_streams_use_chat_completions_path_and_bearer_auth() {
 
         let api_key = format!("wave-b2-openai-token-{index}");
         let context = Context {
-            system_prompt: Some("Be concise.".to_string()),
+            system_prompt: Some("Be concise.".to_string().into()),
             messages: vec![Message::User(UserMessage {
                 content: UserContent::Text("Ping".to_string()),
                 timestamp: 0,
-            })],
-            tools: Vec::new(),
+            })]
+            .into(),
+            tools: Vec::new().into(),
         };
         let options = StreamOptions {
             api_key: Some(api_key.clone()),
@@ -1715,12 +1724,13 @@ fn wave_b3_openai_compat_streams_use_chat_completions_path_and_bearer_auth() {
 
         let api_key = format!("wave-b3-openai-token-{index}");
         let context = Context {
-            system_prompt: Some("Be concise.".to_string()),
+            system_prompt: Some("Be concise.".to_string().into()),
             messages: vec![Message::User(UserMessage {
                 content: UserContent::Text("Ping".to_string()),
                 timestamp: 0,
-            })],
-            tools: Vec::new(),
+            })]
+            .into(),
+            tools: Vec::new().into(),
         };
         let options = StreamOptions {
             api_key: Some(api_key.clone()),
@@ -1881,12 +1891,13 @@ fn special_routing_default_streams_cover_success_paths() {
 
         let api_key = format!("special-openai-token-{index}");
         let context = Context {
-            system_prompt: Some("Be concise.".to_string()),
+            system_prompt: Some("Be concise.".to_string().into()),
             messages: vec![Message::User(UserMessage {
                 content: UserContent::Text("Ping".to_string()),
                 timestamp: 0,
-            })],
-            tools: Vec::new(),
+            })]
+            .into(),
+            tools: Vec::new().into(),
         };
         let options = StreamOptions {
             api_key: Some(api_key.clone()),
@@ -1935,12 +1946,13 @@ fn special_routing_default_streams_cover_success_paths() {
 
     let api_key = "special-zenmux-token".to_string();
     let context = Context {
-        system_prompt: Some("Be concise.".to_string()),
+        system_prompt: Some("Be concise.".to_string().into()),
         messages: vec![Message::User(UserMessage {
             content: UserContent::Text("Ping".to_string()),
             timestamp: 0,
-        })],
-        tools: Vec::new(),
+        })]
+        .into(),
+        tools: Vec::new().into(),
     };
     let options = StreamOptions {
         api_key: Some(api_key.clone()),
@@ -1989,12 +2001,13 @@ fn special_routing_metadata_api_overrides_change_route_kind() {
         assert_eq!(provider.api(), "openai-responses");
 
         let context = Context {
-            system_prompt: Some("Be concise.".to_string()),
+            system_prompt: Some("Be concise.".to_string().into()),
             messages: vec![Message::User(UserMessage {
                 content: UserContent::Text("Ping".to_string()),
                 timestamp: 0,
-            })],
-            tools: Vec::new(),
+            })]
+            .into(),
+            tools: Vec::new().into(),
         };
         let options = StreamOptions {
             api_key: Some("override-token".to_string()),
@@ -2029,12 +2042,13 @@ fn special_routing_metadata_api_overrides_change_route_kind() {
     assert_eq!(provider.name(), "zenmux");
 
     let context = Context {
-        system_prompt: Some("Be concise.".to_string()),
+        system_prompt: Some("Be concise.".to_string().into()),
         messages: vec![Message::User(UserMessage {
             content: UserContent::Text("Ping".to_string()),
             timestamp: 0,
-        })],
-        tools: Vec::new(),
+        })]
+        .into(),
+        tools: Vec::new().into(),
     };
     let options = StreamOptions {
         api_key: Some("override-zenmux-token".to_string()),

@@ -17,15 +17,15 @@ use pi::provider::{Context, Provider, StreamOptions};
 use pi::vcr::{Cassette, Interaction, RecordedRequest, RecordedResponse, VcrMode, VcrRecorder};
 use serde_json::json;
 
-fn context_for(prompt: &str) -> Context {
-    Context {
-        system_prompt: None,
-        messages: vec![Message::User(UserMessage {
+fn context_for(prompt: &str) -> Context<'static> {
+    Context::owned(
+        None,
+        vec![Message::User(UserMessage {
             content: UserContent::Text(prompt.to_string()),
             timestamp: 0,
         })],
-        tools: Vec::new(),
-    }
+        Vec::new(),
+    )
 }
 
 fn options_with_key(key: &str) -> StreamOptions {

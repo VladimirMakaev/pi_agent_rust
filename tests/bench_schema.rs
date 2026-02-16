@@ -988,6 +988,9 @@ fn validate_phase1_matrix_validation_record(record: &Value) -> Result<(), String
             // may have null metrics when the underlying data is missing.
             if status == "pass" {
                 let _ = require_positive_metric(primary, "matrix cell primary_e2e", field)?;
+            } else {
+                let _ =
+                    require_nullable_positive_metric(primary, "matrix cell primary_e2e", field)?;
             }
         }
     }
@@ -1073,6 +1076,10 @@ fn validate_phase1_matrix_validation_record(record: &Value) -> Result<(), String
     if primary_status == "pass" {
         for field in &["wall_clock_ms", "rust_vs_node_ratio", "rust_vs_bun_ratio"] {
             let _ = require_positive_metric(primary_outcomes, "primary_outcomes", field)?;
+        }
+    } else {
+        for field in &["wall_clock_ms", "rust_vs_node_ratio", "rust_vs_bun_ratio"] {
+            let _ = require_nullable_positive_metric(primary_outcomes, "primary_outcomes", field)?;
         }
     }
     let ordering_policy = primary_outcomes
@@ -1348,6 +1355,30 @@ fn require_positive_metric(
         ));
     }
     Ok(value)
+}
+
+fn require_nullable_positive_metric(
+    obj: &serde_json::Map<String, Value>,
+    context: &str,
+    field: &str,
+) -> Result<Option<f64>, String> {
+    let Some(raw_value) = obj.get(field) else {
+        return Err(format!(
+            "{context}.{field} must be null or a positive finite number"
+        ));
+    };
+    if raw_value.is_null() {
+        return Ok(None);
+    }
+    let value = raw_value
+        .as_f64()
+        .ok_or_else(|| format!("{context}.{field} must be null or a positive finite number"))?;
+    if !value.is_finite() || value <= 0.0 {
+        return Err(format!(
+            "{context}.{field} must be null or a positive finite number, got: {value}"
+        ));
+    }
+    Ok(Some(value))
 }
 
 fn require_non_empty_string_field(
@@ -2043,6 +2074,33 @@ fn phase1_matrix_validator_rejects_non_positive_primary_outcomes_ratio() {
     assert!(
         err.contains("primary_outcomes.rust_vs_bun_ratio"),
         "expected primary_outcomes ratio positivity failure, got: {err}"
+    );
+}
+
+#[test]
+fn phase1_matrix_validator_rejects_non_numeric_fail_cell_primary_e2e_metric() {
+    let mut malformed = phase1_matrix_validation_golden_fixture();
+    malformed["matrix_cells"][0]["status"] = json!("fail");
+    malformed["matrix_cells"][0]["primary_e2e"]["rust_vs_node_ratio"] = json!("unknown");
+
+    let err = validate_phase1_matrix_validation_record(&malformed).expect_err("fixture must fail");
+    assert!(
+        err.contains("matrix cell primary_e2e.rust_vs_node_ratio"),
+        "expected fail-cell primary_e2e type failure, got: {err}"
+    );
+}
+
+#[test]
+fn phase1_matrix_validator_rejects_non_numeric_fail_primary_outcomes_metric() {
+    let mut malformed = phase1_matrix_validation_golden_fixture();
+    malformed["primary_outcomes"]["status"] = json!("fail");
+    malformed["primary_outcomes"]["wall_clock_ms"] = json!("n/a");
+    malformed["consumption_contract"]["artifact_ready_for_phase5"] = json!(false);
+
+    let err = validate_phase1_matrix_validation_record(&malformed).expect_err("fixture must fail");
+    assert!(
+        err.contains("primary_outcomes.wall_clock_ms"),
+        "expected fail primary_outcomes type failure, got: {err}"
     );
 }
 

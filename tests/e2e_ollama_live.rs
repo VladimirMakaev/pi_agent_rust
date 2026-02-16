@@ -56,15 +56,15 @@ fn ollama_entry() -> ModelEntry {
     }
 }
 
-fn simple_context(prompt: &str) -> Context {
-    Context {
-        system_prompt: Some("You are a helpful assistant. Be concise.".to_string()),
-        messages: vec![Message::User(UserMessage {
+fn simple_context(prompt: &str) -> Context<'static> {
+    Context::owned(
+        Some("You are a helpful assistant. Be concise.".to_string()),
+        vec![Message::User(UserMessage {
             content: UserContent::Text(prompt.to_string()),
             timestamp: 0,
         })],
-        tools: vec![],
-    }
+        Vec::new(),
+    )
 }
 
 fn stream_options() -> StreamOptions {

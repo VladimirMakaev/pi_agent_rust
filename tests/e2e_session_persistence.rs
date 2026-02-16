@@ -98,7 +98,7 @@ impl Provider for PlannedProvider {
 
     async fn stream(
         &self,
-        context: &Context,
+        context: &Context<'_>,
         _options: &StreamOptions,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         let index = self.call_count.fetch_add(1, Ordering::SeqCst);

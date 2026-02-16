@@ -84,25 +84,25 @@ fn request_body_json(request: &MockHttpRequest) -> serde_json::Value {
     serde_json::from_slice(&request.body).unwrap_or(serde_json::Value::Null)
 }
 
-fn simple_context() -> Context {
-    Context {
-        system_prompt: Some("You are a test assistant.".to_string()),
-        messages: vec![Message::User(UserMessage {
+fn simple_context() -> Context<'static> {
+    Context::owned(
+        Some("You are a test assistant.".to_string()),
+        vec![Message::User(UserMessage {
             content: UserContent::Text("Hello".to_string()),
             timestamp: 0,
         })],
-        tools: Vec::new(),
-    }
+        Vec::new(),
+    )
 }
 
-fn context_with_tools() -> Context {
-    Context {
-        system_prompt: Some("You are a test assistant.".to_string()),
-        messages: vec![Message::User(UserMessage {
+fn context_with_tools() -> Context<'static> {
+    Context::owned(
+        Some("You are a test assistant.".to_string()),
+        vec![Message::User(UserMessage {
             content: UserContent::Text("Use the echo tool".to_string()),
             timestamp: 0,
         })],
-        tools: vec![
+        vec![
             ToolDef {
                 name: "echo".to_string(),
                 description: "Echoes text back".to_string(),
@@ -132,7 +132,7 @@ fn context_with_tools() -> Context {
                 }),
             },
         ],
-    }
+    )
 }
 
 fn options_with_key(key: &str) -> StreamOptions {
@@ -146,7 +146,7 @@ fn options_with_key(key: &str) -> StreamOptions {
 /// Drive a provider stream to Done and collect all events.
 fn collect_stream_events(
     provider: Arc<dyn pi::provider::Provider>,
-    context: Context,
+    context: Context<'static>,
     options: StreamOptions,
 ) -> Vec<StreamEvent> {
     common::run_async(async move {

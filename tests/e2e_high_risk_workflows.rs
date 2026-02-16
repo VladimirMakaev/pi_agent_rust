@@ -317,7 +317,7 @@ impl Provider for ErrorOnStreamProvider {
     }
     async fn stream(
         &self,
-        _context: &Context,
+        _context: &Context<'_>,
         _options: &StreamOptions,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         self.call_count.fetch_add(1, Ordering::SeqCst);
@@ -355,7 +355,7 @@ impl Provider for MidStreamErrorProvider {
     }
     async fn stream(
         &self,
-        _context: &Context,
+        _context: &Context<'_>,
         _options: &StreamOptions,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         self.call_count.fetch_add(1, Ordering::SeqCst);
@@ -397,7 +397,7 @@ impl Provider for InfiniteToolProvider {
     }
     async fn stream(
         &self,
-        _context: &Context,
+        _context: &Context<'_>,
         _options: &StreamOptions,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         let index = self.call_count.fetch_add(1, Ordering::SeqCst);
@@ -436,7 +436,7 @@ impl Provider for MaxTokensProvider {
     }
     async fn stream(
         &self,
-        _context: &Context,
+        _context: &Context<'_>,
         _options: &StreamOptions,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         let msg = make_assistant(
@@ -481,7 +481,7 @@ impl Provider for MixedToolErrorProvider {
     }
     async fn stream(
         &self,
-        context: &Context,
+        context: &Context<'_>,
         _options: &StreamOptions,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         let index = self.call_count.fetch_add(1, Ordering::SeqCst);
@@ -555,7 +555,7 @@ impl Provider for EmptyResponseProvider {
     }
     async fn stream(
         &self,
-        _context: &Context,
+        _context: &Context<'_>,
         _options: &StreamOptions,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         let msg = make_assistant("empty-response-provider", StopReason::Stop, Vec::new(), 5);
@@ -1468,7 +1468,7 @@ impl Provider for InvalidToolArgsProvider {
     }
     async fn stream(
         &self,
-        _context: &Context,
+        _context: &Context<'_>,
         _options: &StreamOptions,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         let index = self.call_count.fetch_add(1, Ordering::SeqCst);
@@ -1563,7 +1563,7 @@ fn agent_tool_read_nonexistent_file_surfaces_error() {
         }
         async fn stream(
             &self,
-            context: &Context,
+            context: &Context<'_>,
             _options: &StreamOptions,
         ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
             let index = self.call_count.fetch_add(1, Ordering::SeqCst);

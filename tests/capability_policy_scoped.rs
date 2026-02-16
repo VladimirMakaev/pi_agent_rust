@@ -712,6 +712,16 @@ mod tool_capability_mapping {
         };
         assert!(required_capability_for_host_call(&call).is_none());
     }
+
+    #[test]
+    fn tool_non_string_name_returns_none() {
+        let mut call = tool_call("read");
+        call.params = json!({"name": {"nested": "read"}, "input": {}});
+        assert!(required_capability_for_host_call(&call).is_none());
+
+        call.params = json!({"name": 7, "input": {}});
+        assert!(required_capability_for_host_call(&call).is_none());
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -838,6 +848,16 @@ mod fs_op_mapping {
             cancel_token: None,
             context: None,
         };
+        assert!(required_capability_for_host_call(&call).is_none());
+    }
+
+    #[test]
+    fn fs_non_string_op_returns_none() {
+        let mut call = fs_call("read");
+        call.params = json!({"op": {"kind": "read"}, "path": "/tmp/test"});
+        assert!(required_capability_for_host_call(&call).is_none());
+
+        call.params = json!({"op": false, "path": "/tmp/test"});
         assert!(required_capability_for_host_call(&call).is_none());
     }
 }
@@ -1028,6 +1048,46 @@ mod typed_method_alias_mapping {
             ))
             .as_deref(),
             Some("session")
+        );
+    }
+
+    #[test]
+    fn non_string_alias_values_fall_back_to_declared_method_capability() {
+        assert_eq!(
+            required_capability_for_host_call(&alias_call(
+                "events",
+                json!({ "op": {"name": "get_active_tools"} })
+            ))
+            .as_deref(),
+            Some("events")
+        );
+        assert_eq!(
+            required_capability_for_host_call(&alias_call(
+                "events",
+                json!({ "op": 1, "method": "set-model" })
+            ))
+            .as_deref(),
+            Some("events")
+        );
+        assert_eq!(
+            required_capability_for_host_call(&alias_call(
+                "session",
+                json!({ "name": ["set label"] })
+            ))
+            .as_deref(),
+            Some("session")
+        );
+        assert_eq!(
+            required_capability_for_host_call(&alias_call(
+                "session",
+                json!({ "op": true, "name": "get_model" })
+            ))
+            .as_deref(),
+            Some("session")
+        );
+        assert!(
+            required_capability_for_host_call(&alias_call("mystery", json!({ "op": {} })))
+                .is_none()
         );
     }
 

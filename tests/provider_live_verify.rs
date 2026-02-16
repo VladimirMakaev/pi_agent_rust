@@ -113,20 +113,20 @@ fn user_text(text: &str) -> Message {
     })
 }
 
-fn simple_context(prompt: &str) -> Context {
-    Context {
-        system_prompt: Some("You are a test harness. Respond concisely.".to_string()),
-        messages: vec![user_text(prompt)],
-        tools: vec![],
-    }
+fn simple_context(prompt: &str) -> Context<'static> {
+    Context::owned(
+        Some("You are a test harness. Respond concisely.".to_string()),
+        vec![user_text(prompt)],
+        Vec::new(),
+    )
 }
 
-fn tool_context(prompt: &str, tools: Vec<ToolDef>) -> Context {
-    Context {
-        system_prompt: Some("You are a test harness. Use tools when explicitly asked.".to_string()),
-        messages: vec![user_text(prompt)],
+fn tool_context(prompt: &str, tools: Vec<ToolDef>) -> Context<'static> {
+    Context::owned(
+        Some("You are a test harness. Use tools when explicitly asked.".to_string()),
+        vec![user_text(prompt)],
         tools,
-    }
+    )
 }
 
 fn simple_options(api_key: &str) -> StreamOptions {
@@ -155,7 +155,7 @@ fn echo_tool() -> ToolDef {
 /// Collect stream events with a timeout safety net.
 async fn collect_stream_events(
     provider: &dyn Provider,
-    context: &Context,
+    context: &Context<'_>,
     options: &StreamOptions,
 ) -> StreamResult {
     let start = Instant::now();

@@ -42,20 +42,20 @@ fn user_text(text: &str) -> Message {
     })
 }
 
-fn simple_context() -> Context {
-    Context {
-        system_prompt: Some("You are helpful.".to_string()),
-        messages: vec![user_text("Say hello in one sentence.")],
-        tools: Vec::new(),
-    }
+fn simple_context() -> Context<'static> {
+    Context::owned(
+        Some("You are helpful.".to_string()),
+        vec![user_text("Say hello in one sentence.")],
+        Vec::new(),
+    )
 }
 
-fn tool_context() -> Context {
+fn tool_context() -> Context<'static> {
     // Must match the tool definition used when recording VCR cassettes.
-    Context {
-        system_prompt: Some("You are a coding assistant.".to_string()),
-        messages: vec![user_text("Echo the text: verification test")],
-        tools: vec![ToolDef {
+    Context::owned(
+        Some("You are a coding assistant.".to_string()),
+        vec![user_text("Echo the text: verification test")],
+        vec![ToolDef {
             name: "echo".to_string(),
             description: "Echo text back".to_string(),
             parameters: json!({
@@ -66,15 +66,15 @@ fn tool_context() -> Context {
                 "required": ["text"]
             }),
         }],
-    }
+    )
 }
 
-fn context_with_tools(tools: Vec<ToolDef>) -> Context {
-    Context {
-        system_prompt: Some("You are a coding assistant.".to_string()),
-        messages: vec![user_text("Validate tool schema wiring.")],
+fn context_with_tools(tools: Vec<ToolDef>) -> Context<'static> {
+    Context::owned(
+        Some("You are a coding assistant.".to_string()),
+        vec![user_text("Validate tool schema wiring.")],
         tools,
-    }
+    )
 }
 
 fn default_options() -> StreamOptions {
@@ -101,7 +101,7 @@ struct EventSummary {
 
 async fn collect_and_summarize(
     provider: &dyn Provider,
-    context: &Context,
+    context: &Context<'_>,
     options: &StreamOptions,
 ) -> EventSummary {
     let stream_result = provider.stream(context, options).await;
@@ -621,7 +621,8 @@ fn contract_cross_provider_tool_call_subsequence() {
 #[test]
 fn contract_anthropic_tool_schema_has_input_schema() {
     let provider = AnthropicProvider::new("claude-sonnet-4-5");
-    let req = provider.build_request(&tool_context(), &default_options());
+    let context = tool_context();
+    let req = provider.build_request(&context, &default_options());
     let v = serde_json::to_value(&req).expect("serialize");
 
     let tools = v["tools"].as_array().expect("tools array");
@@ -898,7 +899,8 @@ mod proptests {
         fn anthropic_tool_schema_round_trips_generated_defs(seeds in tool_seeds_strategy()) {
             let provider = AnthropicProvider::new("claude-sonnet-4-5");
             let defs = to_tool_defs(&seeds);
-            let req = provider.build_request(&context_with_tools(defs.clone()), &default_options());
+            let context = context_with_tools(defs.clone());
+            let req = provider.build_request(&context, &default_options());
             let payload = serde_json::to_value(&req).expect("serialize Anthropic request");
             let tools = payload["tools"].as_array().expect("tools array");
 

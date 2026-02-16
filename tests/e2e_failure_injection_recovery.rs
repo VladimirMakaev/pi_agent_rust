@@ -198,7 +198,7 @@ impl Provider for AuthFailureProvider {
     }
     async fn stream(
         &self,
-        _context: &Context,
+        _context: &Context<'_>,
         _options: &StreamOptions,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         self.call_count.fetch_add(1, Ordering::SeqCst);
@@ -224,7 +224,7 @@ impl Provider for ForbiddenProvider {
     }
     async fn stream(
         &self,
-        _context: &Context,
+        _context: &Context<'_>,
         _options: &StreamOptions,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         Err(Error::api("403 Forbidden: Access denied for this model"))
@@ -337,7 +337,7 @@ impl Provider for RateLimitProvider {
     }
     async fn stream(
         &self,
-        _context: &Context,
+        _context: &Context<'_>,
         _options: &StreamOptions,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         self.call_count.fetch_add(1, Ordering::SeqCst);
@@ -365,7 +365,7 @@ impl Provider for QuotaExhaustedProvider {
     }
     async fn stream(
         &self,
-        _context: &Context,
+        _context: &Context<'_>,
         _options: &StreamOptions,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         Err(Error::api("402 Payment Required: Usage quota exhausted"))
@@ -473,7 +473,7 @@ impl Provider for TimeoutProvider {
     }
     async fn stream(
         &self,
-        _context: &Context,
+        _context: &Context<'_>,
         _options: &StreamOptions,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         self.call_count.fetch_add(1, Ordering::SeqCst);
@@ -499,7 +499,7 @@ impl Provider for StreamTimeoutProvider {
     }
     async fn stream(
         &self,
-        _context: &Context,
+        _context: &Context<'_>,
         _options: &StreamOptions,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         let partial = make_assistant("stream-timeout-provider", StopReason::Stop, Vec::new(), 0);
@@ -603,7 +603,7 @@ impl Provider for MalformedStreamProvider {
     }
     async fn stream(
         &self,
-        _context: &Context,
+        _context: &Context<'_>,
         _options: &StreamOptions,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         // Return a stream with only an error event (no Start)
@@ -631,7 +631,7 @@ impl Provider for TruncatedResponseProvider {
     }
     async fn stream(
         &self,
-        _context: &Context,
+        _context: &Context<'_>,
         _options: &StreamOptions,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         let msg = make_assistant(
@@ -664,7 +664,7 @@ impl Provider for EmptyContentProvider {
     }
     async fn stream(
         &self,
-        _context: &Context,
+        _context: &Context<'_>,
         _options: &StreamOptions,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         // Empty text block
@@ -822,7 +822,7 @@ impl Provider for ToolFailurePropagationProvider {
     }
     async fn stream(
         &self,
-        context: &Context,
+        context: &Context<'_>,
         _options: &StreamOptions,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         let index = self.call_count.fetch_add(1, Ordering::SeqCst);

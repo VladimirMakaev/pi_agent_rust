@@ -347,7 +347,7 @@ fn write_markdown_report(path: &Path, records: &[ParityRecord]) -> std::io::Resu
 
 async fn collect_stream_events(
     provider: std::sync::Arc<dyn pi::provider::Provider>,
-    context: Context,
+    context: Context<'static>,
     options: StreamOptions,
 ) -> Result<Vec<StreamEvent>, String> {
     let now = asupersync::Cx::current()
@@ -487,7 +487,7 @@ async fn run_parity_case(
     };
 
     let mut context = build_live_context(prompt);
-    context.tools = tools;
+    context.tools = tools.into();
 
     let mut options = build_live_stream_options(&entry, api_key);
     options.max_tokens = Some(max_tokens);

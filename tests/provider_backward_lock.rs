@@ -30,24 +30,26 @@ use std::collections::HashMap;
 // Shared helpers
 // ═══════════════════════════════════════════════════════════════════════
 
-fn minimal_context() -> Context {
+fn minimal_context() -> Context<'static> {
     Context {
-        system_prompt: Some("You are helpful.".to_string()),
+        system_prompt: Some("You are helpful.".to_string().into()),
         messages: vec![Message::User(pi::model::UserMessage {
             content: UserContent::Text("Hello".to_string()),
             timestamp: 0,
-        })],
-        tools: Vec::new(),
+        })]
+        .into(),
+        tools: Vec::new().into(),
     }
 }
 
-fn context_with_tools() -> Context {
+fn context_with_tools() -> Context<'static> {
     Context {
-        system_prompt: Some("Be concise.".to_string()),
+        system_prompt: Some("Be concise.".to_string().into()),
         messages: vec![Message::User(pi::model::UserMessage {
             content: UserContent::Text("Search for rust".to_string()),
             timestamp: 0,
-        })],
+        })]
+        .into(),
         tools: vec![
             ToolDef {
                 name: "web_search".to_string(),
@@ -71,7 +73,8 @@ fn context_with_tools() -> Context {
                     "required": ["path"]
                 }),
             },
-        ],
+        ]
+        .into(),
     }
 }
 
@@ -93,7 +96,8 @@ fn options_with_tokens(max_tokens: u32) -> StreamOptions {
 #[test]
 fn anthropic_request_shape_minimal() {
     let provider = AnthropicProvider::new("claude-sonnet-4-5");
-    let req = provider.build_request(&minimal_context(), &default_options());
+    let context = minimal_context();
+    let req = provider.build_request(&context, &default_options());
     let v = serde_json::to_value(&req).expect("serialize");
 
     // Locked: model, system as top-level string, messages array, stream bool
@@ -114,7 +118,8 @@ fn anthropic_request_shape_minimal() {
 #[test]
 fn anthropic_default_max_tokens_8192() {
     let provider = AnthropicProvider::new("claude-sonnet-4-5");
-    let req = provider.build_request(&minimal_context(), &default_options());
+    let context = minimal_context();
+    let req = provider.build_request(&context, &default_options());
     let v = serde_json::to_value(&req).expect("serialize");
     assert_eq!(
         v["max_tokens"], 8192,
@@ -125,7 +130,8 @@ fn anthropic_default_max_tokens_8192() {
 #[test]
 fn anthropic_custom_max_tokens_honored() {
     let provider = AnthropicProvider::new("claude-sonnet-4-5");
-    let req = provider.build_request(&minimal_context(), &options_with_tokens(2048));
+    let context = minimal_context();
+    let req = provider.build_request(&context, &options_with_tokens(2048));
     let v = serde_json::to_value(&req).expect("serialize");
     assert_eq!(v["max_tokens"], 2048);
 }
@@ -133,7 +139,8 @@ fn anthropic_custom_max_tokens_honored() {
 #[test]
 fn anthropic_tool_conversion_shape() {
     let provider = AnthropicProvider::new("claude-sonnet-4-5");
-    let req = provider.build_request(&context_with_tools(), &default_options());
+    let context = context_with_tools();
+    let req = provider.build_request(&context, &default_options());
     let v = serde_json::to_value(&req).expect("serialize");
 
     let tools = v["tools"].as_array().expect("tools array");
@@ -158,7 +165,8 @@ fn anthropic_thinking_medium_builds_correct_config() {
         thinking_level: Some(ThinkingLevel::Medium),
         ..Default::default()
     };
-    let req = provider.build_request(&minimal_context(), &options);
+    let context = minimal_context();
+    let req = provider.build_request(&context, &options);
     let v = serde_json::to_value(&req).expect("serialize");
 
     assert_eq!(v["thinking"]["type"], "enabled");
@@ -174,7 +182,8 @@ fn anthropic_thinking_bumps_max_tokens_when_budget_exceeds() {
         thinking_level: Some(ThinkingLevel::High),
         ..Default::default()
     };
-    let req = provider.build_request(&minimal_context(), &options);
+    let context = minimal_context();
+    let req = provider.build_request(&context, &options);
     let v = serde_json::to_value(&req).expect("serialize");
 
     let budget = v["thinking"]["budget_tokens"].as_u64().expect("budget");
@@ -194,7 +203,8 @@ fn anthropic_thinking_off_omits_thinking_field() {
         thinking_level: Some(ThinkingLevel::Off),
         ..Default::default()
     };
-    let req = provider.build_request(&minimal_context(), &options);
+    let context = minimal_context();
+    let req = provider.build_request(&context, &options);
     let v = serde_json::to_value(&req).expect("serialize");
     assert!(
         v["thinking"].is_null(),
@@ -217,7 +227,9 @@ fn anthropic_provider_identity() {
 #[test]
 fn openai_request_shape_minimal() {
     let provider = OpenAIProvider::new("gpt-4o");
-    let req = provider.build_request(&minimal_context(), &default_options());
+    let context = minimal_context();
+    let options = default_options();
+    let req = provider.build_request(&context, &options);
     let v = serde_json::to_value(&req).expect("serialize");
 
     assert_eq!(v["model"], "gpt-4o");
@@ -235,7 +247,9 @@ fn openai_request_shape_minimal() {
 #[test]
 fn openai_default_max_tokens_4096() {
     let provider = OpenAIProvider::new("gpt-4o");
-    let req = provider.build_request(&minimal_context(), &default_options());
+    let context = minimal_context();
+    let options = default_options();
+    let req = provider.build_request(&context, &options);
     let v = serde_json::to_value(&req).expect("serialize");
     assert_eq!(
         v["max_tokens"], 4096,
@@ -250,7 +264,9 @@ fn openai_default_max_tokens_4096() {
 #[test]
 fn openai_tool_conversion_shape() {
     let provider = OpenAIProvider::new("gpt-4o");
-    let req = provider.build_request(&context_with_tools(), &default_options());
+    let context = context_with_tools();
+    let options = default_options();
+    let req = provider.build_request(&context, &options);
     let v = serde_json::to_value(&req).expect("serialize");
 
     let tools = v["tools"].as_array().expect("tools array");
@@ -268,7 +284,9 @@ fn openai_compat_max_completion_tokens_routing() {
         max_tokens_field: Some("max_completion_tokens".to_string()),
         ..Default::default()
     }));
-    let req = provider.build_request(&minimal_context(), &options_with_tokens(2048));
+    let context = minimal_context();
+    let options = options_with_tokens(2048);
+    let req = provider.build_request(&context, &options);
     let v = serde_json::to_value(&req).expect("serialize");
     assert!(
         v["max_tokens"].is_null(),
@@ -283,7 +301,9 @@ fn openai_compat_developer_role() {
         system_role_name: Some("developer".to_string()),
         ..Default::default()
     }));
-    let req = provider.build_request(&minimal_context(), &default_options());
+    let context = minimal_context();
+    let options = default_options();
+    let req = provider.build_request(&context, &options);
     let v = serde_json::to_value(&req).expect("serialize");
     assert_eq!(v["messages"][0]["role"], "developer");
 }
@@ -294,7 +314,9 @@ fn openai_compat_tools_disabled() {
         supports_tools: Some(false),
         ..Default::default()
     }));
-    let req = provider.build_request(&context_with_tools(), &default_options());
+    let context = context_with_tools();
+    let options = default_options();
+    let req = provider.build_request(&context, &options);
     let v = serde_json::to_value(&req).expect("serialize");
     assert!(
         v["tools"].is_null(),
@@ -308,7 +330,9 @@ fn openai_compat_usage_streaming_disabled() {
         supports_usage_in_streaming: Some(false),
         ..Default::default()
     }));
-    let req = provider.build_request(&minimal_context(), &default_options());
+    let context = minimal_context();
+    let options = default_options();
+    let req = provider.build_request(&context, &options);
     let v = serde_json::to_value(&req).expect("serialize");
     assert_eq!(v["stream_options"]["include_usage"], false);
 }
@@ -335,7 +359,9 @@ fn openai_provider_name_override() {
 #[test]
 fn openai_responses_request_shape_minimal() {
     let provider = OpenAIResponsesProvider::new("gpt-4o");
-    let req = provider.build_request(&minimal_context(), &default_options());
+    let context = minimal_context();
+    let options = default_options();
+    let req = provider.build_request(&context, &options);
     let v = serde_json::to_value(&req).expect("serialize");
 
     assert_eq!(v["model"], "gpt-4o");
@@ -353,7 +379,9 @@ fn openai_responses_request_shape_minimal() {
 #[test]
 fn openai_responses_default_max_output_tokens_4096() {
     let provider = OpenAIResponsesProvider::new("gpt-4o");
-    let req = provider.build_request(&minimal_context(), &default_options());
+    let context = minimal_context();
+    let options = default_options();
+    let req = provider.build_request(&context, &options);
     let v = serde_json::to_value(&req).expect("serialize");
     assert_eq!(
         v["max_output_tokens"], 4096,
@@ -366,7 +394,9 @@ fn openai_responses_default_max_output_tokens_4096() {
 #[test]
 fn openai_responses_tool_conversion_shape() {
     let provider = OpenAIResponsesProvider::new("gpt-4o");
-    let req = provider.build_request(&context_with_tools(), &default_options());
+    let context = context_with_tools();
+    let options = default_options();
+    let req = provider.build_request(&context, &options);
     let v = serde_json::to_value(&req).expect("serialize");
 
     let tools = v["tools"].as_array().expect("tools array");
@@ -398,7 +428,9 @@ fn openai_responses_provider_identity() {
 #[test]
 fn cohere_request_shape_minimal() {
     let provider = CohereProvider::new("command-r-plus");
-    let req = provider.build_request(&minimal_context(), &default_options());
+    let context = minimal_context();
+    let options = default_options();
+    let req = provider.build_request(&context, &options);
     let v = serde_json::to_value(&req).expect("serialize");
 
     assert_eq!(v["model"], "command-r-plus");
@@ -412,7 +444,9 @@ fn cohere_request_shape_minimal() {
 #[test]
 fn cohere_default_max_tokens_4096() {
     let provider = CohereProvider::new("command-r-plus");
-    let req = provider.build_request(&minimal_context(), &default_options());
+    let context = minimal_context();
+    let options = default_options();
+    let req = provider.build_request(&context, &options);
     let v = serde_json::to_value(&req).expect("serialize");
     assert_eq!(
         v["max_tokens"], 4096,
@@ -423,7 +457,9 @@ fn cohere_default_max_tokens_4096() {
 #[test]
 fn cohere_tool_conversion_shape() {
     let provider = CohereProvider::new("command-r-plus");
-    let req = provider.build_request(&context_with_tools(), &default_options());
+    let context = context_with_tools();
+    let options = default_options();
+    let req = provider.build_request(&context, &options);
     let v = serde_json::to_value(&req).expect("serialize");
 
     let tools = v["tools"].as_array().expect("tools array");
@@ -450,7 +486,9 @@ fn cohere_provider_identity() {
 #[test]
 fn gemini_request_shape_minimal() {
     let provider = GeminiProvider::new("gemini-2.5-pro");
-    let req = provider.build_request(&minimal_context(), &default_options());
+    let context = minimal_context();
+    let options = default_options();
+    let req = provider.build_request(&context, &options);
     let v = serde_json::to_value(&req).expect("serialize");
 
     // Locked: systemInstruction as separate field (camelCase from serde rename)
@@ -474,7 +512,9 @@ fn gemini_request_shape_minimal() {
 #[test]
 fn gemini_default_max_tokens_8192() {
     let provider = GeminiProvider::new("gemini-2.5-pro");
-    let req = provider.build_request(&minimal_context(), &default_options());
+    let context = minimal_context();
+    let options = default_options();
+    let req = provider.build_request(&context, &options);
     let v = serde_json::to_value(&req).expect("serialize");
     assert_eq!(
         v["generationConfig"]["maxOutputTokens"], 8192,
@@ -485,7 +525,9 @@ fn gemini_default_max_tokens_8192() {
 #[test]
 fn gemini_tool_conversion_shape() {
     let provider = GeminiProvider::new("gemini-2.5-pro");
-    let req = provider.build_request(&context_with_tools(), &default_options());
+    let context = context_with_tools();
+    let options = default_options();
+    let req = provider.build_request(&context, &options);
     let v = serde_json::to_value(&req).expect("serialize");
 
     // Locked: tools as single-element array with functionDeclarations (camelCase)
@@ -513,7 +555,9 @@ fn gemini_tool_conversion_shape() {
 #[test]
 fn gemini_no_tool_config_without_tools() {
     let provider = GeminiProvider::new("gemini-2.5-pro");
-    let req = provider.build_request(&minimal_context(), &default_options());
+    let context = minimal_context();
+    let options = default_options();
+    let req = provider.build_request(&context, &options);
     let v = serde_json::to_value(&req).expect("serialize");
     assert!(v["toolConfig"].is_null(), "No toolConfig without tools");
     assert!(v["tools"].is_null(), "No tools field without tools");
@@ -922,10 +966,12 @@ fn factory_routes_gitlab_native_provider() {
 
 #[test]
 fn system_prompt_handling_differs_by_provider() {
+    let context = minimal_context();
+    let options = default_options();
+
     // Anthropic: top-level "system" field
     let anthropic = AnthropicProvider::new("claude-sonnet-4-5");
-    let v = serde_json::to_value(anthropic.build_request(&minimal_context(), &default_options()))
-        .unwrap();
+    let v = serde_json::to_value(anthropic.build_request(&context, &options)).unwrap();
     assert!(
         v["system"].is_string(),
         "Anthropic: system as top-level string"
@@ -941,15 +987,13 @@ fn system_prompt_handling_differs_by_provider() {
 
     // OpenAI Completions: system message in messages array
     let openai = OpenAIProvider::new("gpt-4o");
-    let v =
-        serde_json::to_value(openai.build_request(&minimal_context(), &default_options())).unwrap();
+    let v = serde_json::to_value(openai.build_request(&context, &options)).unwrap();
     assert!(v["system"].is_null(), "OpenAI: no top-level system field");
     assert_eq!(v["messages"][0]["role"], "system");
 
     // Gemini: system_instruction field
     let gemini = GeminiProvider::new("gemini-2.5-pro");
-    let v =
-        serde_json::to_value(gemini.build_request(&minimal_context(), &default_options())).unwrap();
+    let v = serde_json::to_value(gemini.build_request(&context, &options)).unwrap();
     assert!(
         v["systemInstruction"].is_object(),
         "Gemini: systemInstruction object"
@@ -959,42 +1003,38 @@ fn system_prompt_handling_differs_by_provider() {
 
 #[test]
 fn max_tokens_field_name_differs_by_provider() {
+    let context = minimal_context();
     let opts = options_with_tokens(1024);
 
     // Anthropic: max_tokens (required, not optional)
     let v = serde_json::to_value(
-        AnthropicProvider::new("claude-sonnet-4-5").build_request(&minimal_context(), &opts),
+        AnthropicProvider::new("claude-sonnet-4-5").build_request(&context, &opts),
     )
     .unwrap();
     assert_eq!(v["max_tokens"], 1024);
 
     // OpenAI: max_tokens
-    let v = serde_json::to_value(
-        OpenAIProvider::new("gpt-4o").build_request(&minimal_context(), &opts),
-    )
-    .unwrap();
+    let v =
+        serde_json::to_value(OpenAIProvider::new("gpt-4o").build_request(&context, &opts)).unwrap();
     assert_eq!(v["max_tokens"], 1024);
 
     // OpenAI Responses: max_output_tokens (different name!)
-    let v = serde_json::to_value(
-        OpenAIResponsesProvider::new("gpt-4o").build_request(&minimal_context(), &opts),
-    )
-    .unwrap();
+    let v =
+        serde_json::to_value(OpenAIResponsesProvider::new("gpt-4o").build_request(&context, &opts))
+            .unwrap();
     assert_eq!(v["max_output_tokens"], 1024);
     assert!(v["max_tokens"].is_null());
 
     // Gemini: generationConfig.maxOutputTokens (camelCase)
-    let v = serde_json::to_value(
-        GeminiProvider::new("gemini-2.5-pro").build_request(&minimal_context(), &opts),
-    )
-    .unwrap();
+    let v =
+        serde_json::to_value(GeminiProvider::new("gemini-2.5-pro").build_request(&context, &opts))
+            .unwrap();
     assert_eq!(v["generationConfig"]["maxOutputTokens"], 1024);
 
     // Cohere: max_tokens
-    let v = serde_json::to_value(
-        CohereProvider::new("command-r-plus").build_request(&minimal_context(), &opts),
-    )
-    .unwrap();
+    let v =
+        serde_json::to_value(CohereProvider::new("command-r-plus").build_request(&context, &opts))
+            .unwrap();
     assert_eq!(v["max_tokens"], 1024);
 }
 
@@ -1070,7 +1110,8 @@ fn anthropic_thinking_budgets_locked() {
             max_tokens: Some(100_000), // large enough to avoid auto-bump
             ..Default::default()
         };
-        let req = provider.build_request(&minimal_context(), &options);
+        let context = minimal_context();
+        let req = provider.build_request(&context, &options);
         let v = serde_json::to_value(&req).expect("serialize");
         assert_eq!(
             v["thinking"]["budget_tokens"].as_u64().unwrap(),
@@ -1095,7 +1136,8 @@ fn anthropic_custom_thinking_budgets_override_defaults() {
         max_tokens: Some(100_000),
         ..Default::default()
     };
-    let req = provider.build_request(&minimal_context(), &options);
+    let context = minimal_context();
+    let req = provider.build_request(&context, &options);
     let v = serde_json::to_value(&req).expect("serialize");
     assert_eq!(v["thinking"]["budget_tokens"], 5000);
 }

@@ -53,7 +53,7 @@ impl Provider for DummyProvider {
 
     async fn stream(
         &self,
-        _context: &Context,
+        _context: &Context<'_>,
         _options: &StreamOptions,
     ) -> pi::error::Result<
         Pin<Box<dyn futures::Stream<Item = pi::error::Result<StreamEvent>> + Send>>,

@@ -66,7 +66,7 @@ fn request_header(headers: &[(String, String)], key: &str) -> Option<String> {
 
 fn drive_to_done(
     provider: Arc<dyn pi::provider::Provider>,
-    context: Context,
+    context: Context<'static>,
     options: StreamOptions,
 ) {
     common::run_async(async move {
@@ -83,15 +83,15 @@ fn drive_to_done(
     });
 }
 
-fn minimal_context() -> Context {
-    Context {
-        system_prompt: Some("Be concise.".to_string()),
-        messages: vec![Message::User(UserMessage {
+fn minimal_context() -> Context<'static> {
+    Context::owned(
+        Some("Be concise.".to_string()),
+        vec![Message::User(UserMessage {
             content: UserContent::Text("Ping".to_string()),
             timestamp: 0,
         })],
-        tools: Vec::new(),
-    }
+        Vec::new(),
+    )
 }
 
 fn text_event_stream_response(body: String) -> MockHttpResponse {

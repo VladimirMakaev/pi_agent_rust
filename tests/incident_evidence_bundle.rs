@@ -1099,6 +1099,84 @@ fn zero_match_extension_filter_yields_empty_replay_and_valid_bundle() {
     assert!(report.errors.is_empty());
 }
 
+fn build_composed_filter_bundle(
+    ledger: &RuntimeRiskLedgerArtifact,
+    alerts: &SecurityAlertArtifact,
+    filter: &IncidentBundleFilter,
+) -> IncidentEvidenceBundle {
+    let telemetry = telemetry_artifact(vec![]);
+    let exec = exec_artifact(vec![]);
+    let secret = secret_artifact(vec![]);
+
+    build_incident_evidence_bundle(
+        ledger,
+        alerts,
+        &telemetry,
+        &exec,
+        &secret,
+        &[],
+        filter,
+        &IncidentBundleRedactionPolicy::default(),
+        100_000,
+    )
+}
+
+fn assert_composed_filter_bundle_ordering(bundle: &IncidentEvidenceBundle) {
+    assert_eq!(bundle.summary.alert_count, 2);
+    assert_eq!(
+        bundle
+            .security_alerts
+            .alerts
+            .iter()
+            .map(|a| a.sequence_id)
+            .collect::<Vec<_>>(),
+        vec![1100, 1300]
+    );
+    assert_eq!(
+        bundle
+            .risk_ledger
+            .entries
+            .iter()
+            .map(|entry| entry.ts_ms)
+            .collect::<Vec<_>>(),
+        vec![1000, 2000, 3000]
+    );
+    assert_eq!(
+        bundle
+            .risk_ledger
+            .entries
+            .iter()
+            .map(|entry| entry.extension_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["ext-a", "ext-a", "ext-a"]
+    );
+}
+
+fn assert_replay_determinism(bundle_a: &IncidentEvidenceBundle, bundle_b: &IncidentEvidenceBundle) {
+    assert_eq!(bundle_a.risk_replay, bundle_b.risk_replay);
+
+    if let Some(replay) = bundle_a.risk_replay.as_ref() {
+        assert_eq!(
+            replay
+                .steps
+                .iter()
+                .map(|step| step.call_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["call-1000", "call-2000", "call-3000"]
+        );
+        assert_eq!(
+            replay
+                .steps
+                .iter()
+                .map(|step| step.index)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+    } else {
+        assert!(bundle_b.risk_replay.is_none());
+    }
+}
+
 #[test]
 fn composed_filters_keep_replay_and_alert_order_deterministic() {
     let ledger = ledger_artifact(vec![
@@ -1143,70 +1221,12 @@ fn composed_filters_keep_replay_and_alert_order_deterministic() {
         ..Default::default()
     };
 
-    let build = || {
-        build_incident_evidence_bundle(
-            &ledger,
-            &alerts,
-            &telemetry_artifact(vec![]),
-            &exec_artifact(vec![]),
-            &secret_artifact(vec![]),
-            &[],
-            &filter,
-            &IncidentBundleRedactionPolicy::default(),
-            100_000,
-        )
-    };
-
-    let bundle_a = build();
-    let bundle_b = build();
+    let bundle_a = build_composed_filter_bundle(&ledger, &alerts, &filter);
+    let bundle_b = build_composed_filter_bundle(&ledger, &alerts, &filter);
 
     assert_eq!(bundle_a.bundle_hash, bundle_b.bundle_hash);
-    assert_eq!(bundle_a.summary.alert_count, 2);
-    assert_eq!(
-        bundle_a
-            .security_alerts
-            .alerts
-            .iter()
-            .map(|a| a.sequence_id)
-            .collect::<Vec<_>>(),
-        vec![1100, 1300]
-    );
-    assert_eq!(
-        bundle_a
-            .risk_ledger
-            .entries
-            .iter()
-            .map(|entry| entry.ts_ms)
-            .collect::<Vec<_>>(),
-        vec![1000, 2000, 3000]
-    );
-    assert_eq!(
-        bundle_a
-            .risk_ledger
-            .entries
-            .iter()
-            .map(|entry| entry.extension_id.as_str())
-            .collect::<Vec<_>>(),
-        vec!["ext-a", "ext-a", "ext-a"]
-    );
-    assert_eq!(bundle_a.risk_replay, bundle_b.risk_replay);
-
-    if let Some(replay) = bundle_a.risk_replay.as_ref() {
-        assert_eq!(
-            replay
-                .steps
-                .iter()
-                .map(|s| s.call_id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["call-1000", "call-2000", "call-3000"]
-        );
-        assert_eq!(
-            replay.steps.iter().map(|s| s.index).collect::<Vec<_>>(),
-            vec![0, 1, 2]
-        );
-    } else {
-        assert!(bundle_b.risk_replay.is_none());
-    }
+    assert_composed_filter_bundle_ordering(&bundle_a);
+    assert_replay_determinism(&bundle_a, &bundle_b);
 }
 
 // ---- 10. JSON round-trip stability ----

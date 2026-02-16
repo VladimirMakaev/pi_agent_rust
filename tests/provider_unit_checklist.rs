@@ -36,24 +36,26 @@ use std::path::PathBuf;
 // Shared helpers
 // ═══════════════════════════════════════════════════════════════════════
 
-fn minimal_context() -> Context {
+fn minimal_context() -> Context<'static> {
     Context {
-        system_prompt: Some("You are helpful.".to_string()),
+        system_prompt: Some("You are helpful.".to_string().into()),
         messages: vec![Message::User(UserMessage {
             content: UserContent::Text("Hello".to_string()),
             timestamp: 0,
-        })],
-        tools: Vec::new(),
+        })]
+        .into(),
+        tools: Vec::new().into(),
     }
 }
 
-fn context_with_tools() -> Context {
+fn context_with_tools() -> Context<'static> {
     Context {
-        system_prompt: Some("You are helpful.".to_string()),
+        system_prompt: Some("You are helpful.".to_string().into()),
         messages: vec![Message::User(UserMessage {
             content: UserContent::Text("Hello".to_string()),
             timestamp: 0,
-        })],
+        })]
+        .into(),
         tools: vec![ToolDef {
             name: "echo".to_string(),
             description: "Echo text back".to_string(),
@@ -64,7 +66,8 @@ fn context_with_tools() -> Context {
                 },
                 "required": ["text"]
             }),
-        }],
+        }]
+        .into(),
     }
 }
 
@@ -164,7 +167,9 @@ macro_rules! checklist_request_mapping {
         #[test]
         fn $test_name() {
             let provider = $provider_expr;
-            let req = provider.build_request(&minimal_context(), &default_options());
+            let context = minimal_context();
+            let options = default_options();
+            let req = provider.build_request(&context, &options);
             let v = serde_json::to_value(&req)
                 .expect(concat!($label, ": build_request must serialize to JSON"));
             assert!(
@@ -215,7 +220,9 @@ checklist_request_mapping!(
 // Bedrock and GitLab have different build_request signatures
 #[test]
 fn checklist_bedrock_request_mapping() {
-    let req = BedrockProvider::build_request(&minimal_context(), &default_options());
+    let context = minimal_context();
+    let options = default_options();
+    let req = BedrockProvider::build_request(&context, &options);
     let v = serde_json::to_value(&req).expect("bedrock: build_request must serialize to JSON");
     assert!(v.is_object(), "bedrock: request must be a JSON object");
     assert!(
@@ -226,7 +233,8 @@ fn checklist_bedrock_request_mapping() {
 
 #[test]
 fn checklist_gitlab_request_mapping() {
-    let req = GitLabProvider::build_request(&minimal_context());
+    let context = minimal_context();
+    let req = GitLabProvider::build_request(&context);
     let v = serde_json::to_value(&req).expect("gitlab: build_request must serialize to JSON");
     assert!(v.is_object(), "gitlab: request must be a JSON object");
     assert!(
@@ -244,7 +252,9 @@ macro_rules! checklist_tool_serialization {
         #[test]
         fn $test_name() {
             let provider = $provider_expr;
-            let req = provider.build_request(&context_with_tools(), &default_options());
+            let context = context_with_tools();
+            let options = default_options();
+            let req = provider.build_request(&context, &options);
             let v = serde_json::to_value(&req)
                 .expect(concat!($label, ": build_request with tools must serialize"));
 
@@ -301,7 +311,9 @@ checklist_tool_serialization!(
 // Bedrock tool serialization
 #[test]
 fn checklist_bedrock_tool_serialization() {
-    let req = BedrockProvider::build_request(&context_with_tools(), &default_options());
+    let context = context_with_tools();
+    let options = default_options();
+    let req = BedrockProvider::build_request(&context, &options);
     let v = serde_json::to_value(&req).expect("bedrock: must serialize with tools");
     let tool_config = &v["toolConfig"]["tools"];
     assert!(
@@ -428,11 +440,12 @@ fn checklist_vcr_fixture_coverage_floor() {
 #[test]
 fn checklist_anthropic_auth_key_flows_through() {
     let provider = AnthropicProvider::new("test");
+    let context = minimal_context();
     let options = StreamOptions {
         api_key: Some("sk-test-key-12345".to_string()),
         ..Default::default()
     };
-    let req = provider.build_request(&minimal_context(), &options);
+    let req = provider.build_request(&context, &options);
     let v = serde_json::to_value(&req).expect("serialize");
     // Anthropic uses a separate header (X-API-Key) not in the body.
     // The request body itself should still be valid.
@@ -442,11 +455,12 @@ fn checklist_anthropic_auth_key_flows_through() {
 #[test]
 fn checklist_openai_auth_key_flows_through() {
     let provider = OpenAIProvider::new("test");
+    let context = minimal_context();
     let options = StreamOptions {
         api_key: Some("sk-test-key-12345".to_string()),
         ..Default::default()
     };
-    let req = provider.build_request(&minimal_context(), &options);
+    let req = provider.build_request(&context, &options);
     let v = serde_json::to_value(&req).expect("serialize");
     assert!(v.is_object(), "request must be a JSON object");
 }

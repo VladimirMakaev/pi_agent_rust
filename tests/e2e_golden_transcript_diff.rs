@@ -151,25 +151,25 @@ fn make_entry(provider: &str, model_id: &str, base_url: &str) -> ModelEntry {
     }
 }
 
-fn simple_context() -> Context {
-    Context {
-        system_prompt: Some("You are a helpful assistant.".to_string()),
-        messages: vec![Message::User(UserMessage {
+fn simple_context() -> Context<'static> {
+    Context::owned(
+        Some("You are a helpful assistant.".to_string()),
+        vec![Message::User(UserMessage {
             content: UserContent::Text("Say hello world.".to_string()),
             timestamp: 0,
         })],
-        tools: Vec::new(),
-    }
+        Vec::new(),
+    )
 }
 
-fn tool_context() -> Context {
-    Context {
-        system_prompt: Some("You are a helpful assistant.".to_string()),
-        messages: vec![Message::User(UserMessage {
+fn tool_context() -> Context<'static> {
+    Context::owned(
+        Some("You are a helpful assistant.".to_string()),
+        vec![Message::User(UserMessage {
             content: UserContent::Text("Call the echo function with text hello.".to_string()),
             timestamp: 0,
         })],
-        tools: vec![ToolDef {
+        vec![ToolDef {
             name: "echo".to_string(),
             description: "Echo text back".to_string(),
             parameters: json!({
@@ -180,7 +180,7 @@ fn tool_context() -> Context {
                 "required": ["text"],
             }),
         }],
-    }
+    )
 }
 
 fn default_options() -> StreamOptions {
@@ -201,7 +201,7 @@ fn make_sse_response(body: &str) -> MockHttpResponse {
 
 fn collect_events(
     provider: Arc<dyn pi::provider::Provider>,
-    context: Context,
+    context: Context<'static>,
     options: StreamOptions,
 ) -> Result<Vec<StreamEvent>, String> {
     common::run_async(async move {

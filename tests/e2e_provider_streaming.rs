@@ -464,14 +464,14 @@ async fn run_e2e_scenario(
     let client = Client::new().with_vcr(recorder);
     let provider = AnthropicProvider::new(model).with_client(client);
 
-    let context = Context {
-        system_prompt: Some(
+    let context = Context::owned(
+        Some(
             "You are a test harness model. Follow instructions precisely and deterministically."
                 .to_string(),
         ),
-        messages: scenario.messages.clone(),
-        tools: scenario.tools.clone(),
-    };
+        scenario.messages.clone(),
+        scenario.tools.clone(),
+    );
 
     let thinking_enabled = scenario
         .thinking_level
@@ -901,14 +901,14 @@ fn e2e_anthropic_error_scenarios_comprehensive() {
                 let client = Client::new().with_vcr(recorder);
                 let provider = AnthropicProvider::new(&model).with_client(client);
 
-                let context = Context {
-                    system_prompt: Some(
+                let context = Context::owned(
+                    Some(
                         "You are a test harness model. Follow instructions precisely and deterministically."
                             .to_string(),
                     ),
-                    messages: vec![user_text(message_text)],
-                    tools: Vec::new(),
-                };
+                    vec![user_text(message_text)],
+                    Vec::new(),
+                );
                 let options = StreamOptions {
                     api_key: Some("vcr-playback".to_string()),
                     max_tokens: Some(256),

@@ -253,7 +253,7 @@ impl Provider for MixedToolCallProvider {
 
     async fn stream(
         &self,
-        context: &Context,
+        context: &Context<'_>,
         _options: &StreamOptions,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         let call_index = self.stream_calls.fetch_add(1, Ordering::SeqCst);
@@ -996,7 +996,7 @@ impl Provider for FailingToolProvider {
 
     async fn stream(
         &self,
-        context: &Context,
+        context: &Context<'_>,
         _options: &StreamOptions,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         let call_index = self.stream_calls.fetch_add(1, Ordering::SeqCst);
@@ -1276,7 +1276,7 @@ impl Provider for SimpleStopProvider {
 
     async fn stream(
         &self,
-        _context: &Context,
+        _context: &Context<'_>,
         _options: &StreamOptions,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         let call_index = self.stream_calls.fetch_add(1, Ordering::SeqCst);

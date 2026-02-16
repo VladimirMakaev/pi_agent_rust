@@ -108,7 +108,7 @@ impl Provider for ScriptedProvider {
 
     async fn stream(
         &self,
-        _context: &Context,
+        _context: &Context<'_>,
         _options: &StreamOptions,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         let idx = self.call_count.fetch_add(1, Ordering::SeqCst);

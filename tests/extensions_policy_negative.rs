@@ -483,6 +483,85 @@ fn hostcall_log_maps_to_log_capability() {
     assert_eq!(cap.as_deref(), Some("log"));
 }
 
+#[test]
+fn hostcall_unknown_method_with_recognized_event_alias_still_fails_closed() {
+    let payload = make_hostcall_payload("mystery", "mystery", json!({"op": "get_active_tools"}));
+    let cap = pi::extensions::required_capability_for_host_call(&payload);
+    assert_eq!(
+        cap, None,
+        "unknown method must not derive events capability"
+    );
+}
+
+#[test]
+fn hostcall_unknown_method_with_recognized_session_alias_still_fails_closed() {
+    let payload = make_hostcall_payload("mystery", "mystery", json!({"method": "get_model"}));
+    let cap = pi::extensions::required_capability_for_host_call(&payload);
+    assert_eq!(
+        cap, None,
+        "unknown method must not derive session capability"
+    );
+}
+
+#[test]
+fn hostcall_unsupported_events_and_session_ops_do_not_escalate() {
+    let events_payload = make_hostcall_payload(
+        "events",
+        "events",
+        json!({"op": "launch_shell", "method": "exec"}),
+    );
+    let events_cap = pi::extensions::required_capability_for_host_call(&events_payload);
+    assert_eq!(
+        events_cap.as_deref(),
+        Some("events"),
+        "unsupported events op must stay in events capability class"
+    );
+
+    let session_payload =
+        make_hostcall_payload("session", "session", json!({"op": "exec", "name": "bash"}));
+    let session_cap = pi::extensions::required_capability_for_host_call(&session_payload);
+    assert_eq!(
+        session_cap.as_deref(),
+        Some("session"),
+        "unsupported session op must stay in session capability class"
+    );
+}
+
+#[test]
+fn hostcall_malformed_alias_fields_do_not_promote_privileged_capabilities() {
+    let events_payload = make_hostcall_payload(
+        "events",
+        "events",
+        json!({
+            "op": {"nested": "get_active_tools"},
+            "method": "exec",
+            "name": "bash"
+        }),
+    );
+    let events_cap = pi::extensions::required_capability_for_host_call(&events_payload);
+    assert_eq!(
+        events_cap.as_deref(),
+        Some("events"),
+        "malformed alias fields must not promote events into exec/tool capability classes"
+    );
+
+    let session_payload = make_hostcall_payload(
+        "session",
+        "session",
+        json!({
+            "op": 123,
+            "method": "exec",
+            "name": "bash"
+        }),
+    );
+    let session_cap = pi::extensions::required_capability_for_host_call(&session_payload);
+    assert_eq!(
+        session_cap.as_deref(),
+        Some("session"),
+        "malformed alias fields must not promote session into exec/tool capability classes"
+    );
+}
+
 // ============================================================================
 // Integration: Load JS extension that attempts denied exec
 // ============================================================================

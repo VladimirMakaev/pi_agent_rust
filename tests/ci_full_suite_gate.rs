@@ -427,6 +427,7 @@ fn parse_required_evidence_paths(
     }
 
     let mut seen_paths = HashSet::new();
+    let mut previous_path: Option<String> = None;
     let mut paths = Vec::with_capacity(values.len());
     for (path_idx, value) in values.iter().enumerate() {
         let raw_path = value.as_str().ok_or_else(|| {
@@ -440,6 +441,14 @@ fn parse_required_evidence_paths(
         }
         let normalized_path =
             normalize_repo_relative_evidence_path(raw_path, row_idx, field_name, path_idx)?;
+        if let Some(previous) = previous_path.as_deref() {
+            if normalized_path.as_str() < previous {
+                return Err(format!(
+                    "coverage_rows[{row_idx}] field '{field_name}' must be sorted by normalized path order: '{normalized_path}' appears after '{previous}'"
+                ));
+            }
+        }
+        previous_path = Some(normalized_path.clone());
         if !seen_paths.insert(normalized_path.clone()) {
             return Err(format!(
                 "coverage_rows[{row_idx}] field '{field_name}' contains duplicate path: {normalized_path}"
@@ -2297,6 +2306,62 @@ fn perf3x_bead_coverage_contract_fails_closed_on_misordered_rows() {
     assert!(
         err.contains("must be sorted by canonical bead id order"),
         "error should mention ordering requirement, got: {err}"
+    );
+}
+
+#[test]
+fn perf3x_bead_coverage_contract_fails_closed_on_unsorted_unit_evidence_paths() {
+    let mut contract = perf3x_bead_coverage_contract();
+    contract["coverage_rows"][0]["unit_evidence"] =
+        serde_json::json!(["tests/z_unit.rs", "tests/a_unit.rs"]);
+
+    let err = validate_perf3x_bead_coverage_contract(&contract)
+        .expect_err("unsorted unit evidence paths must fail closed");
+    assert!(
+        err.contains("unit_evidence"),
+        "error should mention affected evidence field, got: {err}"
+    );
+    assert!(
+        err.contains("must be sorted by normalized path order"),
+        "error should mention deterministic normalized ordering requirement, got: {err}"
+    );
+}
+
+#[test]
+fn perf3x_bead_coverage_contract_fails_closed_on_unsorted_e2e_evidence_paths() {
+    let mut contract = perf3x_bead_coverage_contract();
+    contract["coverage_rows"][0]["e2e_evidence"] =
+        serde_json::json!(["tests/z_e2e.json", "tests/a_e2e.json"]);
+
+    let err = validate_perf3x_bead_coverage_contract(&contract)
+        .expect_err("unsorted e2e evidence paths must fail closed");
+    assert!(
+        err.contains("e2e_evidence"),
+        "error should mention affected evidence field, got: {err}"
+    );
+    assert!(
+        err.contains("must be sorted by normalized path order"),
+        "error should mention deterministic normalized ordering requirement, got: {err}"
+    );
+}
+
+#[test]
+fn perf3x_bead_coverage_contract_fails_closed_on_unsorted_log_evidence_paths() {
+    let mut contract = perf3x_bead_coverage_contract();
+    contract["coverage_rows"][0]["log_evidence"] = serde_json::json!([
+        "tests/full_suite_gate/z_events.jsonl",
+        "tests/full_suite_gate/a_events.jsonl"
+    ]);
+
+    let err = validate_perf3x_bead_coverage_contract(&contract)
+        .expect_err("unsorted log evidence paths must fail closed");
+    assert!(
+        err.contains("log_evidence"),
+        "error should mention affected evidence field, got: {err}"
+    );
+    assert!(
+        err.contains("must be sorted by normalized path order"),
+        "error should mention deterministic normalized ordering requirement, got: {err}"
     );
 }
 
