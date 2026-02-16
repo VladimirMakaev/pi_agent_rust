@@ -626,13 +626,9 @@ fn parse_v2_open_mode(raw: &str) -> Option<V2OpenMode> {
         "full" => Some(V2OpenMode::Full),
         "active" | "active_path" | "active-path" => Some(V2OpenMode::ActivePath),
         "tail" => Some(V2OpenMode::Tail(DEFAULT_V2_TAIL_HYDRATION_COUNT)),
-        _ => {
-            if let Some(value) = normalized.strip_prefix("tail:") {
-                value.parse::<u64>().ok().map(V2OpenMode::Tail)
-            } else {
-                None
-            }
-        }
+        _ => normalized
+            .strip_prefix("tail:")
+            .and_then(|value| value.parse::<u64>().ok().map(V2OpenMode::Tail)),
     }
 }
 
@@ -3927,7 +3923,7 @@ mod tests {
         assert_eq!(threshold, DEFAULT_V2_LAZY_HYDRATION_THRESHOLD);
 
         let (mode, reason, threshold) =
-            select_v2_open_mode_for_resume(50_000, None, Some("10_000"));
+            select_v2_open_mode_for_resume(50_000, None, Some("not-a-number"));
         assert_eq!(mode, V2OpenMode::Full, "invalid threshold should fall back");
         assert_eq!(reason, "default_full");
         assert_eq!(threshold, DEFAULT_V2_LAZY_HYDRATION_THRESHOLD);

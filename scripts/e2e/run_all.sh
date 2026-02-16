@@ -6629,7 +6629,806 @@ if isinstance(summary, dict):
         )
 
 
-# 6) Exception-policy coverage for non-pass conformance outcomes
+# 6) Claim-integrity fail-closed checks for benchmark/conformance evidence (bd-3ar8v.1.12)
+perf_sli_matrix_path = project_root / "docs" / "perf_sli_matrix.json"
+perf_sli_matrix = load_json(
+    "claim_integrity.perf_sli_matrix_json",
+    perf_sli_matrix_path,
+    strict=True,
+)
+require_keys(
+    "claim_integrity.perf_sli_matrix_json",
+    perf_sli_matrix,
+    perf_sli_matrix_path,
+    ["schema", "reporting_contract", "ci_enforcement", "workflow_sli_mapping", "sli_catalog"],
+    strict=True,
+)
+
+required_fail_closed_conditions = [
+    "missing_required_result_field",
+    "scenario_without_sli_mapping",
+    "sli_without_thresholds",
+    "missing_or_stale_evidence",
+    "missing_absolute_or_relative_values",
+    "missing_workload_partition_tag",
+    "missing_scenario_metadata",
+    "invalid_evidence_class",
+    "invalid_confidence_label",
+    "microbench_only_claim",
+    "global_claim_missing_partition_coverage",
+]
+
+required_scenarios: list[str] = []
+required_partition_tags: list[str] = ["matched-state", "realistic"]
+required_scenario_metadata_fields: list[str] = [
+    "workflow_id",
+    "workflow_class",
+    "suite_ids",
+    "vcr_mode",
+    "scenario_owner",
+]
+allowed_evidence_class: list[str] = ["measured", "inferred"]
+allowed_confidence: list[str] = ["high", "medium", "low"]
+workflow_sli_mapping: list[dict] = []
+sli_threshold_ids: set[str] = set()
+
+if isinstance(perf_sli_matrix, dict):
+    require_condition(
+        "claim_integrity.perf_sli_matrix_schema",
+        path=perf_sli_matrix_path,
+        ok=str(perf_sli_matrix.get("schema", "")).startswith("pi.perf.sli_ux_matrix."),
+        ok_msg="perf SLI matrix schema is versioned",
+        fail_msg=(
+            "perf SLI matrix schema must start with "
+            "'pi.perf.sli_ux_matrix.'"
+        ),
+        strict=True,
+    )
+
+    ci_enforcement = perf_sli_matrix.get("ci_enforcement")
+    require_condition(
+        "claim_integrity.ci_enforcement_object",
+        path=perf_sli_matrix_path,
+        ok=isinstance(ci_enforcement, dict),
+        ok_msg="ci_enforcement object exists",
+        fail_msg="ci_enforcement must be an object",
+        strict=True,
+    )
+    if isinstance(ci_enforcement, dict):
+        fail_closed_conditions = ci_enforcement.get("fail_closed_conditions")
+        fail_closed_list = (
+            fail_closed_conditions
+            if isinstance(fail_closed_conditions, list)
+            else []
+        )
+        fail_closed_set = {
+            str(value).strip()
+            for value in fail_closed_list
+            if str(value).strip()
+        }
+        missing_fail_closed = sorted(
+            condition
+            for condition in required_fail_closed_conditions
+            if condition not in fail_closed_set
+        )
+        require_condition(
+            "claim_integrity.fail_closed_conditions_complete",
+            path=perf_sli_matrix_path,
+            ok=not missing_fail_closed,
+            ok_msg=(
+                f"ci_enforcement.fail_closed_conditions includes "
+                f"{len(required_fail_closed_conditions)} required IDs"
+            ),
+            fail_msg=(
+                "ci_enforcement.fail_closed_conditions missing IDs: "
+                f"{missing_fail_closed}"
+            ),
+            strict=True,
+            remediation=(
+                "Restore all required fail_closed_conditions in "
+                "docs/perf_sli_matrix.json ci_enforcement."
+            ),
+        )
+
+        allowed_evidence_class_raw = ci_enforcement.get("allowed_evidence_class")
+        if isinstance(allowed_evidence_class_raw, list):
+            normalized = [
+                str(label).strip()
+                for label in allowed_evidence_class_raw
+                if str(label).strip()
+            ]
+            if normalized:
+                allowed_evidence_class = normalized
+        allowed_confidence_raw = ci_enforcement.get("allowed_confidence")
+        if isinstance(allowed_confidence_raw, list):
+            normalized = [
+                str(label).strip()
+                for label in allowed_confidence_raw
+                if str(label).strip()
+            ]
+            if normalized:
+                allowed_confidence = normalized
+
+    reporting_contract = perf_sli_matrix.get("reporting_contract")
+    require_condition(
+        "claim_integrity.reporting_contract_object",
+        path=perf_sli_matrix_path,
+        ok=isinstance(reporting_contract, dict),
+        ok_msg="reporting_contract object exists",
+        fail_msg="reporting_contract must be an object",
+        strict=True,
+    )
+    if isinstance(reporting_contract, dict):
+        required_scenarios_raw = reporting_contract.get("required_scenarios")
+        if isinstance(required_scenarios_raw, list):
+            required_scenarios = [
+                str(value).strip()
+                for value in required_scenarios_raw
+                if str(value).strip()
+            ]
+        required_partition_tags_raw = reporting_contract.get("required_partition_tags")
+        if isinstance(required_partition_tags_raw, list):
+            normalized = [
+                str(value).strip()
+                for value in required_partition_tags_raw
+                if str(value).strip()
+            ]
+            if normalized:
+                required_partition_tags = normalized
+        scenario_metadata_fields_raw = reporting_contract.get(
+            "required_scenario_metadata_fields"
+        )
+        if isinstance(scenario_metadata_fields_raw, list):
+            normalized = [
+                str(value).strip()
+                for value in scenario_metadata_fields_raw
+                if str(value).strip()
+            ]
+            if normalized:
+                required_scenario_metadata_fields = normalized
+
+    workflow_sli_mapping_payload = perf_sli_matrix.get("workflow_sli_mapping")
+    if isinstance(workflow_sli_mapping_payload, list):
+        workflow_sli_mapping = [
+            row for row in workflow_sli_mapping_payload if isinstance(row, dict)
+        ]
+
+    sli_catalog_payload = perf_sli_matrix.get("sli_catalog")
+    if isinstance(sli_catalog_payload, list):
+        for row in sli_catalog_payload:
+            if not isinstance(row, dict):
+                continue
+            sli_id = str(row.get("sli_id", "")).strip()
+            thresholds = row.get("thresholds")
+            if sli_id and isinstance(thresholds, dict) and thresholds:
+                sli_threshold_ids.add(sli_id)
+
+mapped_workflow_ids: set[str] = set()
+mapped_sli_ids: set[str] = set()
+for mapping in workflow_sli_mapping:
+    workflow_id = str(mapping.get("workflow_id", "")).strip()
+    if workflow_id:
+        mapped_workflow_ids.add(workflow_id)
+    sli_ids = mapping.get("sli_ids")
+    if isinstance(sli_ids, list):
+        for sli_id in sli_ids:
+            normalized = str(sli_id).strip()
+            if normalized:
+                mapped_sli_ids.add(normalized)
+
+missing_scenario_mappings = sorted(
+    scenario
+    for scenario in required_scenarios
+    if scenario not in mapped_workflow_ids
+)
+require_condition(
+    "claim_integrity.scenario_without_sli_mapping",
+    path=perf_sli_matrix_path,
+    ok=not missing_scenario_mappings,
+    ok_msg="every required scenario has workflow_sli_mapping coverage",
+    fail_msg=(
+        "required scenarios missing workflow_sli_mapping entries: "
+        f"{missing_scenario_mappings}"
+    ),
+    strict=True,
+    remediation=(
+        "Add missing workflow_id rows to docs/perf_sli_matrix.json "
+        "workflow_sli_mapping."
+    ),
+)
+
+missing_sli_thresholds = sorted(
+    sli_id for sli_id in mapped_sli_ids if sli_id not in sli_threshold_ids
+)
+require_condition(
+    "claim_integrity.sli_without_thresholds",
+    path=perf_sli_matrix_path,
+    ok=not missing_sli_thresholds,
+    ok_msg="every mapped SLI has thresholds in sli_catalog",
+    fail_msg=f"workflow_sli_mapping references SLI IDs without thresholds: {missing_sli_thresholds}",
+    strict=True,
+    remediation=(
+        "Define thresholds for referenced SLI IDs in "
+        "docs/perf_sli_matrix.json sli_catalog."
+    ),
+)
+
+claim_integrity_gate_active = (
+    claim_integrity_required
+    or perf_extension_stratification_path is not None
+    or perf_baseline_confidence_path is not None
+)
+add_check(
+    "claim_integrity.gate_active",
+    perf_sli_matrix_path,
+    True,
+    (
+        "claim-integrity artifact validation enabled"
+        if claim_integrity_gate_active
+        else "claim-integrity artifact validation skipped (no perf evidence paths configured)"
+    ),
+)
+
+evidence_missing_or_stale_reasons: list[str] = []
+missing_required_result_field_reasons: list[str] = []
+missing_workload_partition_tag_reasons: list[str] = []
+missing_scenario_metadata_reasons: list[str] = []
+invalid_evidence_class_reasons: list[str] = []
+invalid_confidence_label_reasons: list[str] = []
+missing_absolute_or_relative_reasons: list[str] = []
+microbench_only_claim_reasons: list[str] = []
+global_claim_partition_reasons: list[str] = []
+
+expected_claim_correlation_id = summary_correlation_id or environment_correlation_id
+freshness_cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+
+def validate_generated_at_freshness(
+    *,
+    payload: dict,
+    payload_path: Path,
+    check_id: str,
+    label: str,
+) -> None:
+    generated_at_value = payload.get("generated_at")
+    generated_at = parse_iso8601_timestamp(generated_at_value)
+    is_fresh = generated_at is not None and generated_at >= freshness_cutoff
+    require_condition(
+        check_id,
+        path=payload_path,
+        ok=is_fresh,
+        ok_msg=f"{label} generated_at is fresh ({generated_at_value!r})",
+        fail_msg=(
+            f"{label} generated_at is missing/invalid/stale: {generated_at_value!r}"
+        ),
+        strict=claim_integrity_required,
+        remediation=(
+            "Regenerate perf evidence in the current CI run via "
+            "./scripts/perf/orchestrate.sh --profile ci."
+        ),
+    )
+    if not is_fresh and claim_integrity_gate_active:
+        evidence_missing_or_stale_reasons.append(
+            f"{label} generated_at stale/invalid: {generated_at_value!r}"
+        )
+
+
+extension_stratification = None
+if perf_extension_stratification_path is None:
+    if claim_integrity_gate_active:
+        add_check(
+            "claim_integrity.extension_stratification_path_configured",
+            perf_sli_matrix_path,
+            False,
+            "PERF_EXTENSION_STRATIFICATION_JSON/PERF_EVIDENCE_DIR not configured",
+        )
+        record_issue(
+            "claim_integrity.extension_stratification_path_configured",
+            "missing extension stratification path for claim-integrity validation",
+            strict=claim_integrity_required,
+            remediation=(
+                "Set PERF_EXTENSION_STRATIFICATION_JSON (or PERF_EVIDENCE_DIR) to "
+                "extension_benchmark_stratification.json before run_all validation."
+            ),
+        )
+        evidence_missing_or_stale_reasons.append(
+            "missing extension_benchmark_stratification.json path"
+        )
+else:
+    extension_stratification = load_json(
+        "claim_integrity.extension_stratification_json",
+        perf_extension_stratification_path,
+        strict=claim_integrity_required,
+    )
+    if extension_stratification is None and claim_integrity_gate_active:
+        evidence_missing_or_stale_reasons.append(
+            f"missing/invalid extension stratification artifact at {perf_extension_stratification_path}"
+        )
+
+baseline_confidence = None
+if perf_baseline_confidence_path is None:
+    if claim_integrity_gate_active:
+        add_check(
+            "claim_integrity.baseline_confidence_path_configured",
+            perf_sli_matrix_path,
+            False,
+            "PERF_BASELINE_CONFIDENCE_JSON/PERF_EVIDENCE_DIR not configured",
+        )
+        record_issue(
+            "claim_integrity.baseline_confidence_path_configured",
+            "missing baseline variance confidence path for claim-integrity validation",
+            strict=claim_integrity_required,
+            remediation=(
+                "Set PERF_BASELINE_CONFIDENCE_JSON (or PERF_EVIDENCE_DIR) to "
+                "baseline_variance_confidence.json before run_all validation."
+            ),
+        )
+        evidence_missing_or_stale_reasons.append(
+            "missing baseline_variance_confidence.json path"
+        )
+else:
+    baseline_confidence = load_json(
+        "claim_integrity.baseline_confidence_json",
+        perf_baseline_confidence_path,
+        strict=claim_integrity_required,
+    )
+    if baseline_confidence is None and claim_integrity_gate_active:
+        evidence_missing_or_stale_reasons.append(
+            f"missing/invalid baseline confidence artifact at {perf_baseline_confidence_path}"
+        )
+
+if isinstance(extension_stratification, dict) and perf_extension_stratification_path is not None:
+    require_keys(
+        "claim_integrity.extension_stratification_json",
+        extension_stratification,
+        perf_extension_stratification_path,
+        ["schema", "generated_at", "run_id", "correlation_id", "layers", "claim_integrity"],
+        strict=claim_integrity_required,
+    )
+    require_condition(
+        "claim_integrity.extension_stratification_schema",
+        path=perf_extension_stratification_path,
+        ok=extension_stratification.get("schema") == "pi.perf.extension_benchmark_stratification.v1",
+        ok_msg="extension stratification schema matches",
+        fail_msg=(
+            "extension stratification schema mismatch: expected "
+            "'pi.perf.extension_benchmark_stratification.v1'"
+        ),
+        strict=claim_integrity_required,
+    )
+    validate_generated_at_freshness(
+        payload=extension_stratification,
+        payload_path=perf_extension_stratification_path,
+        check_id="claim_integrity.extension_stratification_generated_at_fresh",
+        label="extension stratification",
+    )
+    strat_correlation_id = str(extension_stratification.get("correlation_id", "")).strip()
+    correlation_ok = (
+        bool(strat_correlation_id)
+        and bool(expected_claim_correlation_id)
+        and strat_correlation_id == expected_claim_correlation_id
+    )
+    require_condition(
+        "claim_integrity.extension_stratification_correlation_matches_run",
+        path=perf_extension_stratification_path,
+        ok=correlation_ok,
+        ok_msg="extension stratification correlation_id matches run summary/environment",
+        fail_msg=(
+            "extension stratification correlation_id mismatch: expected "
+            f"{expected_claim_correlation_id!r}, got {strat_correlation_id!r}"
+        ),
+        strict=claim_integrity_required,
+        remediation=(
+            "Use a shared CI_CORRELATION_ID for perf orchestrator and "
+            "scripts/e2e/run_all.sh."
+        ),
+    )
+    if not correlation_ok and claim_integrity_gate_active:
+        evidence_missing_or_stale_reasons.append(
+            "extension stratification correlation_id mismatch with run artifacts"
+        )
+
+    layers = extension_stratification.get("layers")
+    layers_list = layers if isinstance(layers, list) else []
+    layers_by_id: dict[str, dict] = {}
+    for layer in layers_list:
+        if not isinstance(layer, dict):
+            continue
+        layer_id = str(layer.get("layer_id", "")).strip()
+        if layer_id:
+            layers_by_id[layer_id] = layer
+        evidence_state = str(layer.get("evidence_state", "")).strip()
+        if evidence_state and evidence_state not in allowed_evidence_class:
+            invalid_evidence_class_reasons.append(
+                f"layer {layer_id or '<unknown>'} evidence_state={evidence_state!r}"
+            )
+        layer_confidence = str(layer.get("confidence", "")).strip()
+        if layer_confidence and layer_confidence not in allowed_confidence:
+            invalid_confidence_label_reasons.append(
+                f"layer {layer_id or '<unknown>'} confidence={layer_confidence!r}"
+            )
+
+    claim_integrity_payload = extension_stratification.get("claim_integrity")
+    cherry_pick_guard = (
+        claim_integrity_payload.get("cherry_pick_guard", {})
+        if isinstance(claim_integrity_payload, dict)
+        else {}
+    )
+    invalidity_reasons = (
+        cherry_pick_guard.get("invalidity_reasons", [])
+        if isinstance(cherry_pick_guard, dict)
+        else []
+    )
+    invalidity_set = {
+        str(reason).strip()
+        for reason in invalidity_reasons
+        if str(reason).strip()
+    }
+    global_claim_valid = (
+        cherry_pick_guard.get("global_claim_valid")
+        if isinstance(cherry_pick_guard, dict)
+        else None
+    )
+    if "microbench_only_claim" in invalidity_set:
+        microbench_only_claim_reasons.append(
+            "extension stratification invalidity_reasons includes microbench_only_claim"
+        )
+    if global_claim_valid is not True:
+        microbench_only_claim_reasons.append(
+            f"cherry_pick_guard.global_claim_valid must be true (got {global_claim_valid!r})"
+        )
+
+    layer_coverage = (
+        cherry_pick_guard.get("layer_coverage", {})
+        if isinstance(cherry_pick_guard, dict)
+        else {}
+    )
+    required_layers = [
+        "cold_load_init",
+        "per_call_dispatch_micro",
+        "full_e2e_long_session",
+    ]
+    for layer_id in required_layers:
+        covered = (
+            bool(layer_coverage.get(layer_id))
+            if isinstance(layer_coverage, dict)
+            else False
+        )
+        if not covered:
+            missing_absolute_or_relative_reasons.append(
+                f"layer_coverage[{layer_id}] is missing/false"
+            )
+        layer_payload = layers_by_id.get(layer_id, {})
+        absolute_metrics = (
+            layer_payload.get("absolute_metrics", {})
+            if isinstance(layer_payload, dict)
+            else {}
+        )
+        relative_metrics = (
+            layer_payload.get("relative_metrics", {})
+            if isinstance(layer_payload, dict)
+            else {}
+        )
+        absolute_value = absolute_metrics.get("value")
+        node_ratio = relative_metrics.get("rust_vs_node_ratio")
+        bun_ratio = relative_metrics.get("rust_vs_bun_ratio")
+        if (
+            absolute_value is None
+            or node_ratio is None
+            or bun_ratio is None
+        ):
+            missing_absolute_or_relative_reasons.append(
+                f"layer {layer_id} missing absolute/relative metrics"
+            )
+
+    partition_coverage = (
+        claim_integrity_payload.get("partition_coverage", {})
+        if isinstance(claim_integrity_payload, dict)
+        else {}
+    )
+    missing_partition_tags = [
+        tag
+        for tag in required_partition_tags
+        if not (
+            isinstance(partition_coverage, dict)
+            and partition_coverage.get(tag) is True
+        )
+    ]
+    if "global_claim_missing_partition_coverage" in invalidity_set:
+        global_claim_partition_reasons.append(
+            "extension stratification invalidity_reasons includes global_claim_missing_partition_coverage"
+        )
+    if missing_partition_tags:
+        global_claim_partition_reasons.append(
+            f"claim_integrity.partition_coverage missing required tags: {missing_partition_tags}"
+        )
+
+if isinstance(baseline_confidence, dict) and perf_baseline_confidence_path is not None:
+    require_keys(
+        "claim_integrity.baseline_confidence_json",
+        baseline_confidence,
+        perf_baseline_confidence_path,
+        ["schema", "generated_at", "run_id", "correlation_id", "records", "summary"],
+        strict=claim_integrity_required,
+    )
+    require_condition(
+        "claim_integrity.baseline_confidence_schema",
+        path=perf_baseline_confidence_path,
+        ok=baseline_confidence.get("schema") == "pi.perf.baseline_variance_confidence.v1",
+        ok_msg="baseline confidence schema matches",
+        fail_msg=(
+            "baseline confidence schema mismatch: expected "
+            "'pi.perf.baseline_variance_confidence.v1'"
+        ),
+        strict=claim_integrity_required,
+    )
+    validate_generated_at_freshness(
+        payload=baseline_confidence,
+        payload_path=perf_baseline_confidence_path,
+        check_id="claim_integrity.baseline_confidence_generated_at_fresh",
+        label="baseline confidence",
+    )
+    baseline_correlation_id = str(baseline_confidence.get("correlation_id", "")).strip()
+    baseline_correlation_ok = (
+        bool(baseline_correlation_id)
+        and bool(expected_claim_correlation_id)
+        and baseline_correlation_id == expected_claim_correlation_id
+    )
+    require_condition(
+        "claim_integrity.baseline_confidence_correlation_matches_run",
+        path=perf_baseline_confidence_path,
+        ok=baseline_correlation_ok,
+        ok_msg="baseline confidence correlation_id matches run summary/environment",
+        fail_msg=(
+            "baseline confidence correlation_id mismatch: expected "
+            f"{expected_claim_correlation_id!r}, got {baseline_correlation_id!r}"
+        ),
+        strict=claim_integrity_required,
+        remediation=(
+            "Use a shared CI_CORRELATION_ID for perf orchestrator and "
+            "scripts/e2e/run_all.sh."
+        ),
+    )
+    if not baseline_correlation_ok and claim_integrity_gate_active:
+        evidence_missing_or_stale_reasons.append(
+            "baseline confidence correlation_id mismatch with run artifacts"
+        )
+
+    records = baseline_confidence.get("records")
+    records_list = records if isinstance(records, list) else []
+    require_condition(
+        "claim_integrity.baseline_confidence_records_non_empty",
+        path=perf_baseline_confidence_path,
+        ok=len(records_list) > 0,
+        ok_msg=f"baseline confidence has {len(records_list)} record(s)",
+        fail_msg="baseline confidence records must be a non-empty array",
+        strict=claim_integrity_required,
+    )
+
+    scenario_partition_coverage: dict[str, set[str]] = {}
+    minimal_required_fields = [
+        "run_id",
+        "correlation_id",
+        "scenario_id",
+        "workload_partition",
+        "scenario_metadata",
+        "sli_id",
+        "confidence",
+    ]
+    for index, record in enumerate(records_list):
+        if not isinstance(record, dict):
+            missing_required_result_field_reasons.append(
+                f"records[{index}] must be object"
+            )
+            continue
+
+        missing_fields = [
+            field for field in minimal_required_fields if field not in record
+        ]
+        if missing_fields:
+            missing_required_result_field_reasons.append(
+                f"records[{index}] missing fields: {missing_fields}"
+            )
+
+        scenario_id = str(record.get("scenario_id", "")).strip()
+        if not scenario_id:
+            missing_required_result_field_reasons.append(
+                f"records[{index}] missing non-empty scenario_id"
+            )
+        elif required_scenarios and scenario_id not in required_scenarios:
+            missing_scenario_metadata_reasons.append(
+                f"records[{index}] scenario_id {scenario_id!r} not in required_scenarios"
+            )
+
+        workload_partition = str(record.get("workload_partition", "")).strip()
+        if not workload_partition:
+            missing_workload_partition_tag_reasons.append(
+                f"records[{index}] missing workload_partition"
+            )
+        elif workload_partition not in required_partition_tags:
+            missing_workload_partition_tag_reasons.append(
+                f"records[{index}] workload_partition {workload_partition!r} not in {required_partition_tags}"
+            )
+
+        metadata = record.get("scenario_metadata")
+        if not isinstance(metadata, dict):
+            missing_scenario_metadata_reasons.append(
+                f"records[{index}] scenario_metadata must be object"
+            )
+        else:
+            missing_metadata_fields = [
+                field
+                for field in required_scenario_metadata_fields
+                if field not in metadata
+            ]
+            if missing_metadata_fields:
+                missing_scenario_metadata_reasons.append(
+                    f"records[{index}] scenario_metadata missing {missing_metadata_fields}"
+                )
+
+        confidence_label = str(record.get("confidence", "")).strip()
+        if confidence_label and confidence_label not in allowed_confidence:
+            invalid_confidence_label_reasons.append(
+                f"records[{index}] confidence={confidence_label!r}"
+            )
+
+        evidence_state = str(record.get("evidence_state", "")).strip()
+        if evidence_state and evidence_state not in allowed_evidence_class:
+            invalid_evidence_class_reasons.append(
+                f"records[{index}] evidence_state={evidence_state!r}"
+            )
+
+        if scenario_id and workload_partition:
+            scenario_partition_coverage.setdefault(scenario_id, set()).add(workload_partition)
+
+    for scenario in required_scenarios:
+        present_partitions = scenario_partition_coverage.get(scenario, set())
+        missing_tags = [
+            tag for tag in required_partition_tags if tag not in present_partitions
+        ]
+        if missing_tags:
+            global_claim_partition_reasons.append(
+                f"scenario {scenario} missing partition coverage: {missing_tags}"
+            )
+
+if claim_integrity_gate_active:
+    require_condition(
+        "claim_integrity.missing_or_stale_evidence",
+        path=perf_sli_matrix_path,
+        ok=not evidence_missing_or_stale_reasons,
+        ok_msg="all claim-evidence artifacts are present, fresh, and lineage-matched",
+        fail_msg=(
+            "missing/stale claim evidence detected: "
+            f"{evidence_missing_or_stale_reasons}"
+        ),
+        strict=claim_integrity_required,
+        remediation=(
+            "Generate fresh perf evidence in CI using "
+            "./scripts/perf/orchestrate.sh --profile ci with shared CI_CORRELATION_ID."
+        ),
+    )
+    require_condition(
+        "claim_integrity.missing_required_result_field",
+        path=perf_sli_matrix_path,
+        ok=not missing_required_result_field_reasons,
+        ok_msg="required result fields are present in baseline confidence records",
+        fail_msg=(
+            "missing required result fields in perf evidence: "
+            f"{missing_required_result_field_reasons}"
+        ),
+        strict=claim_integrity_required,
+        remediation=(
+            "Emit all required record fields in baseline_variance_confidence.json "
+            "before publishing certification claims."
+        ),
+    )
+    require_condition(
+        "claim_integrity.missing_workload_partition_tag",
+        path=perf_sli_matrix_path,
+        ok=not missing_workload_partition_tag_reasons,
+        ok_msg="all perf evidence rows include valid workload_partition tags",
+        fail_msg=(
+            "missing/invalid workload_partition tags detected: "
+            f"{missing_workload_partition_tag_reasons}"
+        ),
+        strict=claim_integrity_required,
+        remediation=(
+            "Ensure each perf evidence row declares matched-state/realistic "
+            "workload_partition values."
+        ),
+    )
+    require_condition(
+        "claim_integrity.missing_scenario_metadata",
+        path=perf_sli_matrix_path,
+        ok=not missing_scenario_metadata_reasons,
+        ok_msg="scenario_metadata payloads satisfy reporting contract",
+        fail_msg=(
+            "missing/invalid scenario_metadata detected: "
+            f"{missing_scenario_metadata_reasons}"
+        ),
+        strict=claim_integrity_required,
+        remediation=(
+            "Populate scenario_metadata with workflow_id/workflow_class/suite_ids/"
+            "vcr_mode/scenario_owner for each perf evidence row."
+        ),
+    )
+    require_condition(
+        "claim_integrity.invalid_evidence_class",
+        path=perf_sli_matrix_path,
+        ok=not invalid_evidence_class_reasons,
+        ok_msg=f"evidence class labels constrained to {allowed_evidence_class}",
+        fail_msg=(
+            "invalid evidence_class/evidence_state labels detected: "
+            f"{invalid_evidence_class_reasons}"
+        ),
+        strict=claim_integrity_required,
+        remediation=(
+            "Use only allowed evidence labels from docs/perf_sli_matrix.json "
+            "ci_enforcement.allowed_evidence_class."
+        ),
+    )
+    require_condition(
+        "claim_integrity.invalid_confidence_label",
+        path=perf_sli_matrix_path,
+        ok=not invalid_confidence_label_reasons,
+        ok_msg=f"confidence labels constrained to {allowed_confidence}",
+        fail_msg=(
+            "invalid confidence labels detected: "
+            f"{invalid_confidence_label_reasons}"
+        ),
+        strict=claim_integrity_required,
+        remediation=(
+            "Use only allowed confidence labels from docs/perf_sli_matrix.json "
+            "ci_enforcement.allowed_confidence."
+        ),
+    )
+    require_condition(
+        "claim_integrity.missing_absolute_or_relative_values",
+        path=perf_sli_matrix_path,
+        ok=not missing_absolute_or_relative_reasons,
+        ok_msg="all required stratification layers include absolute + relative values",
+        fail_msg=(
+            "missing absolute/relative values detected in stratification: "
+            f"{missing_absolute_or_relative_reasons}"
+        ),
+        strict=claim_integrity_required,
+        remediation=(
+            "Populate absolute metric values and Rust-vs-Node/Bun ratios for "
+            "cold_load_init, per_call_dispatch_micro, and full_e2e_long_session."
+        ),
+    )
+    require_condition(
+        "claim_integrity.microbench_only_claim",
+        path=perf_sli_matrix_path,
+        ok=not microbench_only_claim_reasons,
+        ok_msg="global claim is not microbench-only",
+        fail_msg=(
+            "microbench-only claim violations detected: "
+            f"{microbench_only_claim_reasons}"
+        ),
+        strict=claim_integrity_required,
+        remediation=(
+            "Require full_e2e_long_session coverage and set cherry_pick_guard."
+            "global_claim_valid=true before claiming global wins."
+        ),
+    )
+    require_condition(
+        "claim_integrity.global_claim_missing_partition_coverage",
+        path=perf_sli_matrix_path,
+        ok=not global_claim_partition_reasons,
+        ok_msg="global claims include required matched-state and realistic coverage",
+        fail_msg=(
+            "global claim partition coverage violations detected: "
+            f"{global_claim_partition_reasons}"
+        ),
+        strict=claim_integrity_required,
+        remediation=(
+            "Publish matched-state and realistic rows for every required scenario "
+            "before release-facing global claims."
+        ),
+    )
+
+
+# 7) Exception-policy coverage for non-pass conformance outcomes
 full_conformance_report_path = reports_dir / "conformance" / "conformance_report.json"
 full_conformance_report = load_json(
     "conformance.full_report_json",
