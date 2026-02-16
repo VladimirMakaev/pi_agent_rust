@@ -190,12 +190,22 @@ pi_ascii_logo_normalized() {
 
 pi_ascii_logo_gum() {
   local logo="$1"
-  local palette=(51 45 39 33 81 75)
+  local palette=(159 153 147 117 111 81 75 69 63 57 33 27)
   local line=""
+  local total_lines=0
   local idx=0
   local styled=""
+
   while IFS= read -r line; do
-    local color="${palette[$((idx % ${#palette[@]}))]}"
+    total_lines=$((total_lines + 1))
+  done <<< "$logo"
+
+  while IFS= read -r line; do
+    local color_idx=0
+    if [ "$total_lines" -gt 1 ]; then
+      color_idx=$(( idx * (${#palette[@]} - 1) / (total_lines - 1) ))
+    fi
+    local color="${palette[$color_idx]}"
     local rendered
     rendered="$(gum style --foreground "$color" --bold "$line")"
     if [ -z "$styled" ]; then
@@ -210,11 +220,21 @@ pi_ascii_logo_gum() {
 
 pi_ascii_logo_ansi() {
   local logo="$1"
-  local palette=(51 45 39 33 81 75)
+  local palette=(159 153 147 117 111 81 75 69 63 57 33 27)
   local line=""
+  local total_lines=0
   local idx=0
+
   while IFS= read -r line; do
-    local color="${palette[$((idx % ${#palette[@]}))]}"
+    total_lines=$((total_lines + 1))
+  done <<< "$logo"
+
+  while IFS= read -r line; do
+    local color_idx=0
+    if [ "$total_lines" -gt 1 ]; then
+      color_idx=$(( idx * (${#palette[@]} - 1) / (total_lines - 1) ))
+    fi
+    local color="${palette[$color_idx]}"
     printf '\033[1;38;5;%sm%s\033[0m\n' "$color" "$line"
     idx=$((idx + 1))
   done <<< "$logo"
@@ -420,21 +440,21 @@ show_header() {
       "$styled_logo" \
       "$(gum style --foreground 51 --bold 'Pi Agent Rust Installer')" \
       "$(gum style --foreground 45 --bold "Install target version: ${header_version}")" \
-      "$(gum style --foreground 117 'Based on Pi Agent by Mario Zechner')" \
-      "$(gum style --foreground 123 'Rust version by Jeffrey Emanuel')" \
-      "$(gum style --foreground 81 'Fast Rust-native coding agent installer')" \
-      "$(gum style --foreground 75 'Checksum verification by default | Optional Sigstore/cosign')" \
-      "$(gum style --foreground 111 "Repository: ${OWNER}/${REPO}")"
+      "$(gum style --foreground 117 --bold 'Based on Pi Agent by Mario Zechner')" \
+      "$(gum style --foreground 123 --bold 'Rust version by Jeffrey Emanuel')" \
+      "$(gum style --foreground 81 --bold 'Fast Rust-native coding agent installer')" \
+      "$(gum style --foreground 75 --bold 'Checksum verification by default | Optional Sigstore/cosign')" \
+      "$(gum style --foreground 111 --bold "Repository: ${OWNER}/${REPO}")"
   else
     echo ""
     pi_ascii_logo_ansi "$logo"
     echo -e "\033[1;38;5;51mPi Agent Rust Installer\033[0m"
     echo -e "\033[1;38;5;45mInstall target version: ${header_version}\033[0m"
-    echo -e "\033[0;38;5;117mBased on Pi Agent by Mario Zechner\033[0m"
-    echo -e "\033[0;38;5;123mRust version by Jeffrey Emanuel\033[0m"
-    echo -e "\033[0;38;5;81mFast Rust-native coding agent installer\033[0m"
-    echo -e "\033[0;38;5;75mChecksum verification by default | Optional Sigstore/cosign\033[0m"
-    echo -e "\033[0;38;5;111mRepository: ${OWNER}/${REPO}\033[0m"
+    echo -e "\033[1;38;5;117mBased on Pi Agent by Mario Zechner\033[0m"
+    echo -e "\033[1;38;5;123mRust version by Jeffrey Emanuel\033[0m"
+    echo -e "\033[1;38;5;81mFast Rust-native coding agent installer\033[0m"
+    echo -e "\033[1;38;5;75mChecksum verification by default | Optional Sigstore/cosign\033[0m"
+    echo -e "\033[1;38;5;111mRepository: ${OWNER}/${REPO}\033[0m"
     echo ""
   fi
 }
