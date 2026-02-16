@@ -13,12 +13,14 @@ mod common;
 
 use chrono::{SecondsFormat, Utc};
 use pi::extensions::{
-    ExtensionEventName, ExtensionManager, ExtensionPolicy, JsExtensionLoadSpec, PolicyProfile,
+    ExtensionEventName, ExtensionManager, ExtensionPolicy, HostcallReactorConfig,
+    JsExtensionLoadSpec, PolicyProfile,
 };
 use pi::extensions_js::PiJsRuntimeConfig;
 use pi::tools::ToolRegistry;
 use serde::Serialize;
 use serde_json::{Value, json};
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -48,6 +50,12 @@ const PROFILE_ROTATION_EVENTS_PER_SEC: u64 = 30;
 const PROFILE_ROTATION_RSS_INTERVAL_SECS: u64 = 3;
 /// Error-rate budget for policy-rotation soak slices.
 const MAX_PROFILE_ERROR_RATE_PCT: f64 = 25.0;
+/// Default shard count for reactor diagnostics in stress runs.
+const REACTOR_SHARD_COUNT: usize = 4;
+/// Queue capacity per reactor shard used during stress runs.
+const REACTOR_LANE_CAPACITY: usize = 512;
+/// Per-iteration drain budget to keep reactor queue telemetry bounded.
+const REACTOR_DRAIN_BUDGET: usize = 128;
 
 /// CI runners have unpredictable RSS behaviour (shared hosts, page cache
 /// pressure, different allocator fragmentation).  Return a much wider RSS
@@ -68,6 +76,31 @@ struct RssSample {
     rss_kb: u64,
 }
 
+#[derive(Debug, Serialize)]
+struct ReactorQueueSample {
+    t_s: u64,
+    queue_depths: Vec<usize>,
+    max_queue_depths: Vec<usize>,
+    total_enqueued_by_shard: Vec<u64>,
+    rejected_enqueues: u64,
+    total_dispatched: u64,
+}
+
+#[derive(Debug, Serialize, Default)]
+struct ReactorDiagnostics {
+    enabled: bool,
+    shard_count: usize,
+    queue_depths_final: Vec<usize>,
+    max_queue_depths: Vec<usize>,
+    total_enqueued_by_shard: Vec<u64>,
+    rejected_enqueues: u64,
+    total_dispatched: u64,
+    queue_samples: Vec<ReactorQueueSample>,
+    stall_reasons: BTreeMap<String, u64>,
+    migration_event_total: u64,
+    migration_events_by_transition: BTreeMap<String, u64>,
+}
+
 #[derive(Debug)]
 struct StressResult {
     initial_rss_kb: u64,
@@ -83,6 +116,7 @@ struct StressResult {
     rss_ok: bool,
     latency_ok: bool,
     extensions_loaded: usize,
+    reactor: ReactorDiagnostics,
 }
 
 #[derive(Debug, Serialize)]
@@ -110,6 +144,8 @@ struct ProfileRotationSlice {
     rss_growth_pct: Option<f64>,
     rss_ok: bool,
     latency_ok: bool,
+    reactor_rejected_enqueues: u64,
+    reactor_migration_event_total: u64,
     pass: bool,
 }
 
@@ -229,6 +265,113 @@ fn profile_rotation_duration_secs() -> u64 {
         .unwrap_or(PROFILE_ROTATION_DURATION_SECS)
 }
 
+fn maybe_enable_reactor(manager: &ExtensionManager) {
+    if manager.hostcall_reactor_enabled() {
+        return;
+    }
+    manager.enable_hostcall_reactor(HostcallReactorConfig {
+        shard_count: REACTOR_SHARD_COUNT,
+        lane_capacity: REACTOR_LANE_CAPACITY,
+        core_ids: None,
+    });
+}
+
+fn push_reactor_queue_sample(
+    manager: &ExtensionManager,
+    elapsed: Duration,
+    samples: &mut Vec<ReactorQueueSample>,
+) {
+    let Some(telemetry) = manager.reactor_telemetry() else {
+        return;
+    };
+    samples.push(ReactorQueueSample {
+        t_s: elapsed.as_secs(),
+        queue_depths: telemetry.queue_depths,
+        max_queue_depths: telemetry.max_queue_depths,
+        total_enqueued_by_shard: telemetry.total_enqueued,
+        rejected_enqueues: telemetry.rejected_enqueues,
+        total_dispatched: telemetry.total_dispatched,
+    });
+}
+
+fn build_reactor_diagnostics(
+    manager: &ExtensionManager,
+    queue_samples: Vec<ReactorQueueSample>,
+    telemetry_start_index: usize,
+) -> ReactorDiagnostics {
+    let telemetry_artifact = manager.runtime_hostcall_telemetry_artifact();
+    let entries = telemetry_artifact.entries;
+    let start = telemetry_start_index.min(entries.len());
+    let mut stall_reasons = BTreeMap::<String, u64>::new();
+    let mut migration_events_by_transition = BTreeMap::<String, u64>::new();
+    let mut last_lane_by_extension = HashMap::<String, String>::new();
+
+    for entry in &entries[start..] {
+        if let Some(reason) = entry
+            .lane_fallback_reason
+            .as_deref()
+            .filter(|reason| !reason.is_empty())
+        {
+            let count = stall_reasons.entry(reason.to_string()).or_insert(0);
+            *count = count.saturating_add(1);
+        }
+        if let Some(reason) = entry
+            .marshalling_fallback_reason
+            .as_deref()
+            .filter(|reason| !reason.is_empty())
+        {
+            let key = format!("marshalling:{reason}");
+            let count = stall_reasons.entry(key).or_insert(0);
+            *count = count.saturating_add(1);
+        }
+
+        if let Some(previous_lane) =
+            last_lane_by_extension.insert(entry.extension_id.clone(), entry.lane.clone())
+            && previous_lane != entry.lane
+        {
+            let key = format!("{previous_lane}->{}", entry.lane);
+            let count = migration_events_by_transition.entry(key).or_insert(0);
+            *count = count.saturating_add(1);
+        }
+    }
+
+    let migration_event_total = migration_events_by_transition
+        .values()
+        .copied()
+        .sum::<u64>();
+
+    let Some(reactor) = manager.reactor_telemetry() else {
+        return ReactorDiagnostics {
+            queue_samples,
+            stall_reasons,
+            migration_event_total,
+            migration_events_by_transition,
+            ..Default::default()
+        };
+    };
+
+    if reactor.rejected_enqueues > 0 {
+        let count = stall_reasons
+            .entry("lane_overflow".to_string())
+            .or_insert(0);
+        *count = count.saturating_add(reactor.rejected_enqueues);
+    }
+
+    ReactorDiagnostics {
+        enabled: true,
+        shard_count: reactor.shard_count,
+        queue_depths_final: reactor.queue_depths,
+        max_queue_depths: reactor.max_queue_depths,
+        total_enqueued_by_shard: reactor.total_enqueued,
+        rejected_enqueues: reactor.rejected_enqueues,
+        total_dispatched: reactor.total_dispatched,
+        queue_samples,
+        stall_reasons,
+        migration_event_total,
+        migration_events_by_transition,
+    }
+}
+
 // ─── Setup Functions ────────────────────────────────────────────────────────
 
 fn project_root() -> PathBuf {
@@ -311,6 +454,7 @@ fn load_extensions_with_policy(
         }
     });
     manager.set_js_runtime(runtime);
+    maybe_enable_reactor(&manager);
 
     let mut specs: Vec<JsExtensionLoadSpec> = Vec::new();
     for path in paths {
@@ -360,12 +504,15 @@ fn run_stress_loop(
     #[allow(clippy::cast_precision_loss)]
     let interval = Duration::from_secs_f64(1.0 / events_per_sec as f64);
     let start = Instant::now();
+    let telemetry_start_index = manager.runtime_hostcall_telemetry_artifact().entries.len();
     let mut next_event = start;
     let mut next_rss = start + Duration::from_secs(rss_interval_secs);
     let mut latencies_us = Vec::new();
     let mut errors = Vec::new();
     let mut error_count: u64 = 0;
     let mut event_count: u64 = 0;
+    let mut reactor_queue_samples = Vec::new();
+    push_reactor_queue_sample(manager, Duration::from_secs(0), &mut reactor_queue_samples);
 
     while start.elapsed() < duration {
         let now = Instant::now();
@@ -389,6 +536,7 @@ fn run_stress_loop(
                 errors.push(err.to_string());
             }
         }
+        let _ = manager.reactor_drain_global(REACTOR_DRAIN_BUDGET);
         latencies_us.push(elapsed_us);
         event_count += 1;
 
@@ -416,6 +564,7 @@ fn run_stress_loop(
                     rss_kb,
                 });
             }
+            push_reactor_queue_sample(manager, start.elapsed(), &mut reactor_queue_samples);
             next_rss += Duration::from_secs(rss_interval_secs);
         }
     }
@@ -433,6 +582,7 @@ fn run_stress_loop(
 
     let rss_ok = rss_growth_pct.is_none_or(|growth| growth <= effective_rss_budget());
     let latency_ok = latency_within_budget(p99_first, p99_last);
+    let reactor = build_reactor_diagnostics(manager, reactor_queue_samples, telemetry_start_index);
 
     StressResult {
         initial_rss_kb,
@@ -448,11 +598,13 @@ fn run_stress_loop(
         rss_ok,
         latency_ok,
         extensions_loaded: 0, // caller sets
+        reactor,
     }
 }
 
 // ─── Report Generation ──────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_lines)]
 fn write_stress_report(result: &StressResult, duration_secs: u64, ext_names: &[String]) {
     let report_dir = report_dir();
     let _ = std::fs::create_dir_all(&report_dir);
@@ -488,6 +640,17 @@ fn write_stress_report(result: &StressResult, duration_secs: u64, ext_names: &[S
         "p99_first_us": result.p99_first,
         "p99_last_us": result.p99_last,
         "latency_summary": summarize_latencies(&result.latencies_us),
+        "reactor": {
+            "enabled": result.reactor.enabled,
+            "shard_count": result.reactor.shard_count,
+            "queue_depths_final": result.reactor.queue_depths_final,
+            "max_queue_depths": result.reactor.max_queue_depths,
+            "rejected_enqueues": result.reactor.rejected_enqueues,
+            "total_dispatched": result.reactor.total_dispatched,
+            "stall_reasons": result.reactor.stall_reasons,
+            "migration_event_total": result.reactor.migration_event_total,
+            "migration_events": result.reactor.migration_events_by_transition,
+        },
     });
     lines.push(serde_json::to_string(&summary_entry).unwrap_or_default());
 
@@ -520,6 +683,19 @@ fn write_stress_report(result: &StressResult, duration_secs: u64, ext_names: &[S
                 "ok": result.latency_ok,
                 "summary": summarize_latencies(&result.latencies_us),
             },
+            "reactor": {
+                "enabled": result.reactor.enabled,
+                "shard_count": result.reactor.shard_count,
+                "queue_depths_final": result.reactor.queue_depths_final,
+                "max_queue_depths": result.reactor.max_queue_depths,
+                "rejected_enqueues": result.reactor.rejected_enqueues,
+                "total_dispatched": result.reactor.total_dispatched,
+                "total_enqueued_by_shard": result.reactor.total_enqueued_by_shard,
+                "stall_reasons": result.reactor.stall_reasons,
+                "migration_event_total": result.reactor.migration_event_total,
+                "migration_events": result.reactor.migration_events_by_transition,
+                "queue_samples": result.reactor.queue_samples,
+            },
         },
         "pass": result.rss_ok && result.latency_ok,
     });
@@ -546,6 +722,21 @@ fn write_stress_report(result: &StressResult, duration_secs: u64, ext_names: &[S
         result.p99_first, result.p99_last
     );
     eprintln!("  Latency OK: {}", result.latency_ok);
+    eprintln!(
+        "  Reactor: enabled={} shards={} rejected={} migrations={}",
+        result.reactor.enabled,
+        result.reactor.shard_count,
+        result.reactor.rejected_enqueues,
+        result.reactor.migration_event_total
+    );
+    eprintln!(
+        "  Reactor final queue depths: {:?}",
+        result.reactor.queue_depths_final
+    );
+    eprintln!(
+        "  Reactor stall reasons: {:?}",
+        result.reactor.stall_reasons
+    );
     eprintln!("  Report: {}", events_path.display());
     eprintln!("  Triage: {}\n", triage_path.display());
 }
@@ -800,6 +991,22 @@ fn stress_short_10_extensions() {
     // Generate report
     write_stress_report(&result, SHORT_STRESS_SECS, &ext_names);
 
+    let triage_path = report_dir().join("stress_triage.json");
+    let triage_data = std::fs::read_to_string(&triage_path).expect("read stress triage report");
+    let triage_json: Value = serde_json::from_str(&triage_data).expect("parse stress triage JSON");
+    assert!(
+        triage_json["results"]["reactor"]["queue_depths_final"].is_array(),
+        "reactor.queue_depths_final should be present in stress triage report"
+    );
+    assert!(
+        triage_json["results"]["reactor"]["stall_reasons"].is_object(),
+        "reactor.stall_reasons should be present in stress triage report"
+    );
+    assert!(
+        triage_json["results"]["reactor"]["migration_events"].is_object(),
+        "reactor.migration_events should be present in stress triage report"
+    );
+
     // Verify events were dispatched
     assert!(
         result.event_count > 0,
@@ -932,6 +1139,8 @@ fn stress_policy_profile_rotation() {
             rss_growth_pct: result.rss_growth_pct.map(|pct| pct * 100.0),
             rss_ok: result.rss_ok,
             latency_ok: result.latency_ok,
+            reactor_rejected_enqueues: result.reactor.rejected_enqueues,
+            reactor_migration_event_total: result.reactor.migration_event_total,
             pass,
         });
 

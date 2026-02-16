@@ -1,6 +1,7 @@
 //! Extension stress test harness: memory/RSS + event dispatch latency.
 #![forbid(unsafe_code)]
 
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -10,8 +11,10 @@ use asupersync::runtime::RuntimeBuilder;
 use asupersync::runtime::reactor::create_reactor;
 use asupersync::time::{sleep, wall_now};
 use chrono::{SecondsFormat, Utc};
-use clap::Parser;
-use pi::extensions::{ExtensionEventName, ExtensionManager, JsExtensionLoadSpec};
+use clap::{ArgAction, Parser};
+use pi::extensions::{
+    ExtensionEventName, ExtensionManager, HostcallReactorConfig, JsExtensionLoadSpec,
+};
 use pi::extensions_js::PiJsRuntimeConfig;
 use pi::tools::ToolRegistry;
 use serde_json::Value;
@@ -57,6 +60,24 @@ struct Args {
     /// Output report path (JSON).
     #[arg(long)]
     report_path: Option<PathBuf>,
+    /// Enable reactor diagnostics (queue depth, stall reasons, migration events).
+    #[arg(long, default_value_t = true, action = ArgAction::Set)]
+    reactor_enabled: bool,
+    /// Number of reactor shards to configure when enabled.
+    #[arg(long, default_value_t = 4)]
+    reactor_shards: usize,
+    /// Per-shard queue capacity for reactor diagnostics.
+    #[arg(long, default_value_t = 256)]
+    reactor_lane_capacity: usize,
+    /// Drain budget per dispatch iteration to keep queue depth bounded.
+    #[arg(long, default_value_t = 128)]
+    reactor_drain_budget: usize,
+    /// Run a built-in comparison: baseline shard count vs configured reactor mesh.
+    #[arg(long, default_value_t = false, action = ArgAction::Set)]
+    compare_shard_baseline: bool,
+    /// Baseline shard count used by `--compare-shard-baseline`.
+    #[arg(long, default_value_t = 1)]
+    compare_baseline_shards: usize,
 }
 
 fn main() {
@@ -132,29 +153,69 @@ async fn run(args: Args) -> Result<()> {
         .await
         .context("load JS extensions")?;
 
-    if args.warmup_secs > 0 {
-        run_loop(
+    let target_shards = args.reactor_shards.max(1);
+    let baseline_shards = args.compare_baseline_shards.max(1);
+    let lane_capacity = args.reactor_lane_capacity.max(1);
+
+    if args.compare_shard_baseline && !args.reactor_enabled {
+        bail!("--compare-shard-baseline requires --reactor-enabled=true");
+    }
+    if args.compare_shard_baseline && baseline_shards == target_shards {
+        bail!(
+            "--compare-shard-baseline requires --compare-baseline-shards to differ from --reactor-shards"
+        );
+    }
+
+    let (run_result, comparison) = if args.compare_shard_baseline {
+        configure_reactor(&manager, true, baseline_shards, lane_capacity);
+        let baseline_result = run_profile(
             &manager,
             event,
             payload.clone(),
             args.events_per_sec,
-            Duration::from_secs(args.warmup_secs),
+            args.warmup_secs,
+            args.duration_secs,
             args.rss_interval_secs,
-            false,
+            args.reactor_drain_budget,
         )
         .await?;
-    }
 
-    let run_result = run_loop(
-        &manager,
-        event,
-        payload,
-        args.events_per_sec,
-        Duration::from_secs(args.duration_secs),
-        args.rss_interval_secs,
-        true,
-    )
-    .await?;
+        configure_reactor(&manager, true, target_shards, lane_capacity);
+        let candidate_result = run_profile(
+            &manager,
+            event,
+            payload,
+            args.events_per_sec,
+            args.warmup_secs,
+            args.duration_secs,
+            args.rss_interval_secs,
+            args.reactor_drain_budget,
+        )
+        .await?;
+
+        let comparison = Some(build_shard_comparison_report(
+            &baseline_result,
+            &candidate_result,
+            args.duration_secs,
+            baseline_shards,
+            target_shards,
+        ));
+        (candidate_result, comparison)
+    } else {
+        configure_reactor(&manager, args.reactor_enabled, target_shards, lane_capacity);
+        let result = run_profile(
+            &manager,
+            event,
+            payload,
+            args.events_per_sec,
+            args.warmup_secs,
+            args.duration_secs,
+            args.rss_interval_secs,
+            args.reactor_drain_budget,
+        )
+        .await?;
+        (result, None)
+    };
 
     let report = serde_json::json!({
         "schema": "pi.ext.stress_profile.v1",
@@ -168,6 +229,12 @@ async fn run(args: Args) -> Result<()> {
             "rss_interval_secs": args.rss_interval_secs,
             "events_per_sec": args.events_per_sec,
             "max_extensions": args.max_extensions,
+            "reactor_enabled": args.reactor_enabled,
+            "reactor_shards": target_shards,
+            "reactor_lane_capacity": lane_capacity,
+            "reactor_drain_budget": args.reactor_drain_budget,
+            "compare_shard_baseline": args.compare_shard_baseline,
+            "compare_baseline_shards": baseline_shards,
         },
         "extensions": {
             "count": names.len(),
@@ -189,6 +256,8 @@ async fn run(args: Args) -> Result<()> {
             "errors": run_result.error_count,
             "sample_errors": run_result.errors,
         },
+        "reactor": run_result.reactor,
+        "comparison": comparison,
         "pass": {
             "rss_ok": run_result.rss_ok,
             "latency_ok": run_result.latency_ok,
@@ -227,8 +296,64 @@ struct RunResult {
     errors: Vec<String>,
     rss_ok: bool,
     latency_ok: bool,
+    reactor: Value,
 }
 
+fn configure_reactor(
+    manager: &ExtensionManager,
+    enabled: bool,
+    shard_count: usize,
+    lane_capacity: usize,
+) {
+    manager.disable_hostcall_reactor();
+    if enabled {
+        manager.enable_hostcall_reactor(HostcallReactorConfig {
+            shard_count: shard_count.max(1),
+            lane_capacity: lane_capacity.max(1),
+            core_ids: None,
+        });
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_profile(
+    manager: &ExtensionManager,
+    event: ExtensionEventName,
+    payload: Option<Value>,
+    events_per_sec: u64,
+    warmup_secs: u64,
+    duration_secs: u64,
+    rss_interval_secs: u64,
+    reactor_drain_budget: usize,
+) -> Result<RunResult> {
+    if warmup_secs > 0 {
+        run_loop(
+            manager,
+            event,
+            payload.clone(),
+            events_per_sec,
+            Duration::from_secs(warmup_secs),
+            rss_interval_secs,
+            reactor_drain_budget,
+            false,
+        )
+        .await?;
+    }
+
+    run_loop(
+        manager,
+        event,
+        payload,
+        events_per_sec,
+        Duration::from_secs(duration_secs),
+        rss_interval_secs,
+        reactor_drain_budget,
+        true,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 async fn run_loop(
     manager: &ExtensionManager,
     event: ExtensionEventName,
@@ -236,11 +361,13 @@ async fn run_loop(
     events_per_sec: u64,
     duration: Duration,
     rss_interval_secs: u64,
+    reactor_drain_budget: usize,
     collect: bool,
 ) -> Result<RunResult> {
     #[allow(clippy::cast_precision_loss)]
     let interval = Duration::from_secs_f64(1.0 / events_per_sec as f64);
     let start = Instant::now();
+    let telemetry_start_index = manager.runtime_hostcall_telemetry_artifact().entries.len();
     let mut next_event = start;
 
     let pid = get_current_pid().map_err(|err| anyhow::anyhow!(err))?;
@@ -260,6 +387,8 @@ async fn run_loop(
     let mut errors = Vec::new();
     let mut error_count: u64 = 0;
     let mut event_count: u64 = 0;
+    let mut reactor_queue_samples = Vec::new();
+    push_reactor_queue_sample(manager, Duration::from_secs(0), &mut reactor_queue_samples);
 
     while start.elapsed() < duration {
         let now = Instant::now();
@@ -274,6 +403,9 @@ async fn run_loop(
             if errors.len() < 5 {
                 errors.push(err.to_string());
             }
+        }
+        if reactor_drain_budget > 0 {
+            let _ = manager.reactor_drain_global(reactor_drain_budget);
         }
         let elapsed_us = u64::try_from(dispatch_start.elapsed().as_micros()).unwrap_or(u64::MAX);
         if collect {
@@ -306,6 +438,9 @@ async fn run_loop(
                         }));
                     }
                 }
+                if collect {
+                    push_reactor_queue_sample(manager, start.elapsed(), &mut reactor_queue_samples);
+                }
                 next_rss = Some(next_rss_due + Duration::from_secs(rss_interval_secs));
             }
         }
@@ -330,6 +465,22 @@ async fn run_loop(
         (Some(first), Some(last)) if first > 0 => last <= first.saturating_mul(2),
         _ => true,
     };
+    if collect {
+        push_reactor_queue_sample(manager, start.elapsed(), &mut reactor_queue_samples);
+    }
+    let reactor = if collect {
+        build_reactor_report(manager, reactor_queue_samples, telemetry_start_index)
+    } else {
+        serde_json::json!({
+            "enabled": manager.hostcall_reactor_enabled(),
+            "queue_samples": [],
+            "stall_reasons": {},
+            "migration_events": {
+                "total": 0,
+                "by_transition": {},
+            },
+        })
+    };
 
     Ok(RunResult {
         initial_rss_kb,
@@ -344,6 +495,7 @@ async fn run_loop(
         errors,
         rss_ok,
         latency_ok,
+        reactor,
     })
 }
 
@@ -365,6 +517,221 @@ fn default_event_payloads_path() -> PathBuf {
 
 fn default_report_path() -> PathBuf {
     project_root().join("tests/perf/reports/ext_stress_report.json")
+}
+
+fn push_reactor_queue_sample(
+    manager: &ExtensionManager,
+    elapsed: Duration,
+    samples: &mut Vec<Value>,
+) {
+    let Some(telemetry) = manager.reactor_telemetry() else {
+        return;
+    };
+    samples.push(serde_json::json!({
+        "t_s": elapsed.as_secs(),
+        "queue_depths": telemetry.queue_depths,
+        "max_queue_depths": telemetry.max_queue_depths,
+        "total_enqueued_by_shard": telemetry.total_enqueued,
+        "rejected_enqueues": telemetry.rejected_enqueues,
+        "total_dispatched": telemetry.total_dispatched,
+    }));
+}
+
+fn build_reactor_report(
+    manager: &ExtensionManager,
+    queue_samples: Vec<Value>,
+    telemetry_start_index: usize,
+) -> Value {
+    let telemetry_artifact = manager.runtime_hostcall_telemetry_artifact();
+    let entries = telemetry_artifact.entries;
+    let start = telemetry_start_index.min(entries.len());
+    let mut stall_reasons = BTreeMap::<String, u64>::new();
+    let mut migration_events = BTreeMap::<String, u64>::new();
+    let mut last_lane_by_extension = HashMap::<String, String>::new();
+
+    for entry in &entries[start..] {
+        if let Some(reason) = entry
+            .lane_fallback_reason
+            .as_deref()
+            .filter(|reason| !reason.is_empty())
+        {
+            let count = stall_reasons.entry(reason.to_string()).or_insert(0);
+            *count = count.saturating_add(1);
+        }
+        if let Some(reason) = entry
+            .marshalling_fallback_reason
+            .as_deref()
+            .filter(|reason| !reason.is_empty())
+        {
+            let key = format!("marshalling:{reason}");
+            let count = stall_reasons.entry(key).or_insert(0);
+            *count = count.saturating_add(1);
+        }
+        if let Some(previous_lane) =
+            last_lane_by_extension.insert(entry.extension_id.clone(), entry.lane.clone())
+            && previous_lane != entry.lane
+        {
+            let key = format!("{previous_lane}->{}", entry.lane);
+            let count = migration_events.entry(key).or_insert(0);
+            *count = count.saturating_add(1);
+        }
+    }
+
+    let migration_total = migration_events.values().copied().sum::<u64>();
+
+    let Some(reactor) = manager.reactor_telemetry() else {
+        return serde_json::json!({
+            "enabled": false,
+            "queue_samples": queue_samples,
+            "stall_reasons": stall_reasons,
+            "migration_events": {
+                "total": migration_total,
+                "by_transition": migration_events,
+            },
+        });
+    };
+
+    if reactor.rejected_enqueues > 0 {
+        let count = stall_reasons
+            .entry("lane_overflow".to_string())
+            .or_insert(0);
+        *count = count.saturating_add(reactor.rejected_enqueues);
+    }
+
+    serde_json::json!({
+        "enabled": true,
+        "shard_count": reactor.shard_count,
+        "queue_depths_final": reactor.queue_depths,
+        "max_queue_depths": reactor.max_queue_depths,
+        "total_enqueued_by_shard": reactor.total_enqueued,
+        "rejected_enqueues": reactor.rejected_enqueues,
+        "total_dispatched": reactor.total_dispatched,
+        "queue_samples": queue_samples,
+        "stall_reasons": stall_reasons,
+        "migration_events": {
+            "total": migration_total,
+            "by_transition": migration_events,
+        },
+    })
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn throughput_eps(event_count: u64, duration_secs: u64) -> f64 {
+    if duration_secs == 0 {
+        return 0.0;
+    }
+    event_count as f64 / duration_secs as f64
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn pct_delta(baseline: f64, candidate: f64) -> Option<f64> {
+    if baseline <= 0.0 {
+        return None;
+    }
+    Some(((candidate - baseline) / baseline) * 100.0)
+}
+
+fn signed_delta_u64(candidate: u64, baseline: u64) -> i64 {
+    if candidate >= baseline {
+        i64::try_from(candidate - baseline).unwrap_or(i64::MAX)
+    } else {
+        -i64::try_from(baseline - candidate).unwrap_or(i64::MAX)
+    }
+}
+
+fn value_u64_at_path(value: &Value, path: &[&str]) -> u64 {
+    let mut cursor = value;
+    for segment in path {
+        let Some(next) = cursor.get(*segment) else {
+            return 0;
+        };
+        cursor = next;
+    }
+    cursor.as_u64().unwrap_or(0)
+}
+
+fn sum_u64_array_field(value: &Value, key: &str) -> u64 {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|items| items.iter().filter_map(Value::as_u64).sum())
+        .unwrap_or(0)
+}
+
+fn build_shard_comparison_report(
+    baseline: &RunResult,
+    candidate: &RunResult,
+    duration_secs: u64,
+    baseline_shards: usize,
+    candidate_shards: usize,
+) -> Value {
+    let baseline_latency = summarize_us(&baseline.latencies_us);
+    let candidate_latency = summarize_us(&candidate.latencies_us);
+    let baseline_throughput = throughput_eps(baseline.event_count, duration_secs);
+    let candidate_throughput = throughput_eps(candidate.event_count, duration_secs);
+
+    let baseline_p95 = baseline_latency.get("p95").and_then(Value::as_u64);
+    let candidate_p95 = candidate_latency.get("p95").and_then(Value::as_u64);
+    let baseline_p99 = baseline_latency.get("p99").and_then(Value::as_u64);
+    let candidate_p99 = candidate_latency.get("p99").and_then(Value::as_u64);
+
+    let baseline_rejected = value_u64_at_path(&baseline.reactor, &["rejected_enqueues"]);
+    let candidate_rejected = value_u64_at_path(&candidate.reactor, &["rejected_enqueues"]);
+    let baseline_max_depth = sum_u64_array_field(&baseline.reactor, "max_queue_depths");
+    let candidate_max_depth = sum_u64_array_field(&candidate.reactor, "max_queue_depths");
+    let baseline_lane_overflow =
+        value_u64_at_path(&baseline.reactor, &["stall_reasons", "lane_overflow"]);
+    let candidate_lane_overflow =
+        value_u64_at_path(&candidate.reactor, &["stall_reasons", "lane_overflow"]);
+
+    let throughput_gain_pct = pct_delta(baseline_throughput, candidate_throughput);
+    let p95_improved = match (baseline_p95, candidate_p95) {
+        (Some(base), Some(curr)) => curr <= base,
+        _ => false,
+    };
+    let p99_improved = match (baseline_p99, candidate_p99) {
+        (Some(base), Some(curr)) => curr <= base,
+        _ => false,
+    };
+    let contention_improved =
+        candidate_rejected <= baseline_rejected && candidate_max_depth <= baseline_max_depth;
+
+    serde_json::json!({
+        "mode": "shard_baseline_vs_reactor_mesh",
+        "baseline": {
+            "shards": baseline_shards,
+            "throughput_eps": baseline_throughput,
+            "latency_us": baseline_latency,
+            "reactor": baseline.reactor.clone(),
+        },
+        "candidate": {
+            "shards": candidate_shards,
+            "throughput_eps": candidate_throughput,
+            "latency_us": candidate_latency,
+            "reactor": candidate.reactor.clone(),
+        },
+        "delta": {
+            "throughput_eps": candidate_throughput - baseline_throughput,
+            "throughput_gain_pct": throughput_gain_pct,
+            "p95_us": match (baseline_p95, candidate_p95) {
+                (Some(base), Some(curr)) => Some(signed_delta_u64(curr, base)),
+                _ => None,
+            },
+            "p99_us": match (baseline_p99, candidate_p99) {
+                (Some(base), Some(curr)) => Some(signed_delta_u64(curr, base)),
+                _ => None,
+            },
+            "rejected_enqueues": signed_delta_u64(candidate_rejected, baseline_rejected),
+            "max_queue_depth_total": signed_delta_u64(candidate_max_depth, baseline_max_depth),
+            "lane_overflow_stalls": signed_delta_u64(candidate_lane_overflow, baseline_lane_overflow),
+        },
+        "improved": {
+            "throughput": candidate_throughput >= baseline_throughput,
+            "p95": p95_improved,
+            "p99": p99_improved,
+            "contention_proxy": contention_improved,
+        }
+    })
 }
 
 fn extensions_by_tier(manifest_path: &Path, tier: &str) -> Result<Vec<(String, String)>> {
@@ -484,6 +851,7 @@ fn summarize_us(values: &[u64]) -> Value {
     let mut sorted = values.to_vec();
     sorted.sort_unstable();
     let p50 = sorted[percentile_index(sorted.len(), 50, 100)];
+    let p95 = sorted[percentile_index(sorted.len(), 95, 100)];
     let p99 = sorted[percentile_index(sorted.len(), 99, 100)];
     let min = sorted.first().copied().unwrap_or(0);
     let max = sorted.last().copied().unwrap_or(0);
@@ -495,6 +863,7 @@ fn summarize_us(values: &[u64]) -> Value {
         "max": max,
         "mean": mean,
         "p50": p50,
+        "p95": p95,
         "p99": p99,
     })
 }
@@ -510,4 +879,78 @@ fn p99_first_last(values: &[u64]) -> (Option<u64>, Option<u64>) {
     let p99_first = summarize_us(first).get("p99").and_then(Value::as_u64);
     let p99_last = summarize_us(last).get("p99").and_then(Value::as_u64);
     (p99_first, p99_last)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn synthetic_result(event_count: u64, latencies_us: Vec<u64>, reactor: Value) -> RunResult {
+        RunResult {
+            initial_rss_kb: 100,
+            max_rss_kb: 110,
+            rss_growth_pct: Some(0.10),
+            rss_samples: Vec::new(),
+            latencies_us,
+            p99_first: None,
+            p99_last: None,
+            event_count,
+            error_count: 0,
+            errors: Vec::new(),
+            rss_ok: true,
+            latency_ok: true,
+            reactor,
+        }
+    }
+
+    #[test]
+    fn summarize_us_includes_p95() {
+        let values = vec![10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+        let summary = summarize_us(&values);
+        assert_eq!(summary["p95"].as_u64(), Some(100));
+        assert_eq!(summary["p99"].as_u64(), Some(100));
+    }
+
+    #[test]
+    fn shard_comparison_reports_improvement_deltas() {
+        let baseline = synthetic_result(
+            100,
+            vec![300, 300, 300, 300, 300],
+            serde_json::json!({
+                "rejected_enqueues": 8,
+                "max_queue_depths": [20, 20],
+                "stall_reasons": { "lane_overflow": 5 }
+            }),
+        );
+        let candidate = synthetic_result(
+            140,
+            vec![180, 180, 180, 180, 180],
+            serde_json::json!({
+                "rejected_enqueues": 2,
+                "max_queue_depths": [8, 8, 8, 8],
+                "stall_reasons": { "lane_overflow": 1 }
+            }),
+        );
+
+        let report = build_shard_comparison_report(&baseline, &candidate, 10, 1, 4);
+        assert_eq!(
+            report["improved"]["throughput"].as_bool(),
+            Some(true),
+            "throughput should improve"
+        );
+        assert_eq!(
+            report["improved"]["p99"].as_bool(),
+            Some(true),
+            "p99 should improve"
+        );
+        assert_eq!(
+            report["delta"]["rejected_enqueues"].as_i64(),
+            Some(-6),
+            "rejected enqueues should drop"
+        );
+        let gain = report["delta"]["throughput_gain_pct"]
+            .as_f64()
+            .expect("gain pct");
+        assert!(gain > 0.0, "throughput gain should be positive");
+    }
 }
