@@ -122,6 +122,7 @@ impl TraceLog {
 // ===========================================================================
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn fault_inject_multi_phase_append_crash_recover_continue() {
     let mut trace = TraceLog::new();
     let temp_dir = tempfile::tempdir().unwrap();

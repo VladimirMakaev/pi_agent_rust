@@ -143,6 +143,22 @@ struct VarianceStats {
     confidence_interval_99: ConfidenceInterval,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CrossEnvVarianceBreakdown {
+    environment_count: usize,
+    mean: f64,
+    env_stddev: f64,
+    spread_pct: f64,
+    noise_floor_pct: f64,
+    signal_to_noise: f64,
+    environment_component_pct: f64,
+    build_component_pct: f64,
+    runtime_component_pct: f64,
+    noise_component_pct: f64,
+    dominant_source: String,
+    alert_triggered: bool,
+}
+
 /// Compute full variance statistics for a sample.
 fn compute_variance_stats(samples: &[f64]) -> Option<VarianceStats> {
     let n = samples.len();
@@ -223,6 +239,61 @@ fn compute_variance_stats(samples: &[f64]) -> Option<VarianceStats> {
             width: ci99_width,
             width_pct: ci99_width_pct,
         },
+    })
+}
+
+fn compute_cross_env_variance_breakdown(
+    env_means: &[f64],
+    env_cvs_pct: &[f64],
+    alert_threshold_pct: f64,
+) -> Option<CrossEnvVarianceBreakdown> {
+    if env_means.len() < 2 || env_means.len() != env_cvs_pct.len() {
+        return None;
+    }
+
+    let n = env_means.len();
+    let mean = env_means.iter().sum::<f64>() / n as f64;
+    let variance = env_means.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (n - 1) as f64;
+    let env_stddev = variance.sqrt();
+    let spread_pct = if mean.abs() > f64::EPSILON {
+        (env_stddev / mean.abs()) * 100.0
+    } else {
+        0.0
+    };
+
+    let noise_floor_pct = env_cvs_pct.iter().sum::<f64>() / n as f64;
+    let signal_to_noise = spread_pct / noise_floor_pct.max(1e-9);
+
+    let environment_component_pct = (spread_pct - noise_floor_pct).max(0.0);
+    let noise_component_pct = spread_pct.min(noise_floor_pct);
+    let build_component_pct: f64 = 0.0;
+    let runtime_component_pct = noise_component_pct;
+
+    let dominant_source = if environment_component_pct
+        > build_component_pct.max(runtime_component_pct.max(noise_component_pct))
+    {
+        "environment"
+    } else if runtime_component_pct > build_component_pct.max(noise_component_pct) {
+        "runtime"
+    } else if noise_component_pct > 0.0 {
+        "noise"
+    } else {
+        "build"
+    };
+
+    Some(CrossEnvVarianceBreakdown {
+        environment_count: n,
+        mean,
+        env_stddev,
+        spread_pct,
+        noise_floor_pct,
+        signal_to_noise,
+        environment_component_pct,
+        build_component_pct,
+        runtime_component_pct,
+        noise_component_pct,
+        dominant_source: dominant_source.to_string(),
+        alert_triggered: spread_pct >= alert_threshold_pct,
     })
 }
 
@@ -404,6 +475,59 @@ fn single_sample_returns_none() {
     assert!(
         stats.is_none(),
         "should return None for single sample (can't compute variance)"
+    );
+}
+
+#[test]
+fn cross_env_breakdown_detects_environment_dominated_spread() {
+    let env_means = vec![100.0, 122.0, 118.0];
+    let env_cvs_pct = vec![2.0, 2.2, 1.8];
+    let stats = compute_cross_env_variance_breakdown(&env_means, &env_cvs_pct, 10.0)
+        .expect("breakdown should compute");
+
+    assert!(
+        stats.environment_component_pct > stats.noise_component_pct,
+        "environment component should dominate when spread exceeds noise floor"
+    );
+    assert_eq!(stats.dominant_source, "environment");
+    assert!(stats.alert_triggered, "spread should breach 10% threshold");
+}
+
+#[test]
+fn cross_env_breakdown_classifies_noise_when_spread_within_noise_floor() {
+    let env_means = vec![100.0, 101.0, 99.0];
+    let env_cvs_pct = vec![4.5, 4.8, 4.2];
+    let stats = compute_cross_env_variance_breakdown(&env_means, &env_cvs_pct, 10.0)
+        .expect("breakdown should compute");
+
+    assert!(
+        stats.noise_component_pct >= stats.environment_component_pct,
+        "noise component should dominate when spread is inside noise floor"
+    );
+    assert!(
+        matches!(stats.dominant_source.as_str(), "noise" | "runtime"),
+        "dominant source should indicate noise-like variance"
+    );
+    assert!(!stats.alert_triggered, "small spread should not trigger alert");
+}
+
+#[test]
+fn cross_env_breakdown_threshold_gate_behavior() {
+    let env_means = vec![100.0, 112.0, 110.0];
+    let env_cvs_pct = vec![1.5, 1.7, 1.6];
+
+    let low_threshold = compute_cross_env_variance_breakdown(&env_means, &env_cvs_pct, 5.0)
+        .expect("breakdown should compute");
+    let high_threshold = compute_cross_env_variance_breakdown(&env_means, &env_cvs_pct, 20.0)
+        .expect("breakdown should compute");
+
+    assert!(
+        low_threshold.alert_triggered,
+        "spread should trigger at low threshold"
+    );
+    assert!(
+        !high_threshold.alert_triggered,
+        "spread should not trigger at high threshold"
     );
 }
 

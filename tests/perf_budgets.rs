@@ -1365,8 +1365,7 @@ fn required_e2e_ratio_contract_fails_when_full_e2e_evidence_missing() {
         failures
             .iter()
             .any(|failure| failure.contract_id == "missing_required_e2e_or_ratio_outputs"),
-        "expected missing_required_e2e_or_ratio_outputs failure, got: {:?}",
-        failures
+        "expected missing_required_e2e_or_ratio_outputs failure, got: {failures:?}",
     );
 }
 
@@ -1383,7 +1382,6 @@ fn required_e2e_ratio_contract_flags_microbench_only_claim() {
         failures
             .iter()
             .any(|failure| failure.contract_id == "microbench_only_claim"),
-        "expected microbench_only_claim failure, got: {:?}",
-        failures
+        "expected microbench_only_claim failure, got: {failures:?}",
     );
 }

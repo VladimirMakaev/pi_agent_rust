@@ -386,6 +386,7 @@ fn combined_limits_all_enforced() {
             max_stack_bytes: Some(256 * 1024),
             interrupt_budget: Some(50_000),
             hostcall_timeout_ms: Some(5000),
+            ..Default::default()
         });
 
         let runtime = PiJsRuntime::with_clock_and_config(DeterministicClock::new(0), config)

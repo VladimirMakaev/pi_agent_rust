@@ -2911,6 +2911,23 @@ fn capture_baseline_script_supports_validation_mode() {
 }
 
 #[test]
+fn capture_baseline_script_supports_cross_environment_diagnosis_mode() {
+    let content = load_text(CAPTURE_BASELINE_SCRIPT_PATH);
+    for token in [
+        "--diagnose-env",
+        "--diagnose-output",
+        "--variance-alert-pct",
+        "pi.perf.cross_env_variance_diagnosis.v1",
+        "pi.perf.cross_env_variance_diagnostic.v1",
+    ] {
+        assert!(
+            content.contains(token),
+            "capture_baseline.sh must support cross-env diagnosis token: {token}"
+        );
+    }
+}
+
+#[test]
 fn baseline_variance_schema_in_evidence_instance() {
     let instance = load_json(EVIDENCE_LOGGING_INSTANCE_PATH);
     let schemas = instance["schema_registry"]["schemas"]
@@ -2959,4 +2976,177 @@ fn orchestrate_script_includes_baseline_variance_suite() {
         content.contains("perf_baseline_variance"),
         "orchestrate.sh must include perf_baseline_variance in suite registry"
     );
+}
+
+#[test]
+fn orchestrate_script_supports_cross_environment_diagnosis_flow() {
+    let content = load_text(ORCHESTRATE_SCRIPT_PATH);
+    for token in [
+        "PERF_CROSS_ENV_BASELINES",
+        "PERF_CROSS_ENV_VARIANCE_ALERT_PCT",
+        "PERF_CROSS_ENV_ENFORCE",
+        "cross_env_variance_diagnosis",
+        "--diagnose-env",
+        "pi.perf.cross_env_variance_diagnosis.v1",
+    ] {
+        assert!(
+            content.contains(token),
+            "orchestrate.sh must include cross-env diagnosis token: {token}"
+        );
+    }
+}
+
+#[test]
+fn capture_baseline_cross_env_diagnosis_emits_structured_report_and_log() {
+    let temp = tempfile::tempdir().expect("create tempdir");
+    let baseline_ci = temp.path().join("baseline_ci.json");
+    let baseline_canary = temp.path().join("baseline_canary.json");
+    let diagnosis_out = temp.path().join("cross_env_diagnosis.json");
+
+    let baseline_ci_payload = serde_json::json!({
+        "schema": "pi.perf.baseline_variance.v1",
+        "version": "1.0.0",
+        "git_commit": "aaaaaaaa",
+        "measurement_rounds": 5,
+        "warmup_rounds": 1,
+        "metrics": [
+            {
+                "metric_name": "latency_ms",
+                "mean": 100.0,
+                "coefficient_of_variation": 0.02,
+                "variance_class": "low"
+            },
+            {
+                "metric_name": "throughput_ops",
+                "mean": 1000.0,
+                "coefficient_of_variation": 0.03,
+                "variance_class": "low"
+            }
+        ]
+    });
+    let baseline_canary_payload = serde_json::json!({
+        "schema": "pi.perf.baseline_variance.v1",
+        "version": "1.0.0",
+        "git_commit": "bbbbbbbb",
+        "measurement_rounds": 5,
+        "warmup_rounds": 1,
+        "metrics": [
+            {
+                "metric_name": "latency_ms",
+                "mean": 140.0,
+                "coefficient_of_variation": 0.03,
+                "variance_class": "low"
+            },
+            {
+                "metric_name": "throughput_ops",
+                "mean": 1010.0,
+                "coefficient_of_variation": 0.03,
+                "variance_class": "low"
+            }
+        ]
+    });
+
+    std::fs::write(
+        &baseline_ci,
+        serde_json::to_string_pretty(&baseline_ci_payload).expect("serialize ci baseline"),
+    )
+    .expect("write ci baseline fixture");
+    std::fs::write(
+        &baseline_canary,
+        serde_json::to_string_pretty(&baseline_canary_payload)
+            .expect("serialize canary baseline"),
+    )
+    .expect("write canary baseline fixture");
+
+    let output = Command::new("bash")
+        .arg(CAPTURE_BASELINE_SCRIPT_PATH)
+        .arg("--diagnose-env")
+        .arg(format!("ci={}", baseline_ci.display()))
+        .arg("--diagnose-env")
+        .arg(format!("canary={}", baseline_canary.display()))
+        .arg("--diagnose-output")
+        .arg(&diagnosis_out)
+        .arg("--variance-alert-pct")
+        .arg("10.0")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("run capture_baseline cross-env diagnosis");
+
+    if !output.status.success() {
+        panic!(
+            "capture_baseline diagnosis failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    assert!(
+        diagnosis_out.exists(),
+        "cross-env diagnosis report must be created: {}",
+        diagnosis_out.display()
+    );
+
+    let report_text = std::fs::read_to_string(&diagnosis_out).unwrap_or_else(|err| {
+        panic!(
+            "failed to read cross-env diagnosis report {}: {err}",
+            diagnosis_out.display()
+        )
+    });
+    let report: Value = serde_json::from_str(&report_text).expect("parse diagnosis report JSON");
+
+    assert_eq!(
+        report["schema"].as_str(),
+        Some("pi.perf.cross_env_variance_diagnosis.v1"),
+        "diagnosis report must use cross-env diagnosis schema"
+    );
+    assert_eq!(
+        report["summary"]["environment_count"].as_u64(),
+        Some(2),
+        "report summary must include environment_count=2"
+    );
+    assert_eq!(
+        report["summary"]["metric_count"].as_u64(),
+        Some(2),
+        "report summary must include both common metrics"
+    );
+    assert_eq!(
+        report["summary"]["alert_count"].as_u64(),
+        Some(1),
+        "report must trigger one alert for latency spread above threshold"
+    );
+
+    let diagnostics_log_path = report["diagnostics_log"]["jsonl_path"]
+        .as_str()
+        .expect("diagnostics_log.jsonl_path must be present");
+    let diagnostics_log = Path::new(diagnostics_log_path);
+    assert!(
+        diagnostics_log.exists(),
+        "diagnostics jsonl must be written: {}",
+        diagnostics_log.display()
+    );
+
+    let diagnostics_lines =
+        std::fs::read_to_string(diagnostics_log).expect("read diagnostics JSONL log");
+    let parsed_lines: Vec<Value> = diagnostics_lines
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("parse diagnostics JSONL line"))
+        .collect();
+    assert_eq!(
+        parsed_lines.len(),
+        2,
+        "diagnostics log must emit one line per common metric"
+    );
+
+    for entry in parsed_lines {
+        assert_eq!(
+            entry["schema"].as_str(),
+            Some("pi.perf.cross_env_variance_diagnostic.v1"),
+            "diagnostics log entries must use cross-env diagnostic schema"
+        );
+        assert!(
+            entry["metric_name"].as_str().is_some(),
+            "diagnostics entries must include metric_name"
+        );
+    }
 }
