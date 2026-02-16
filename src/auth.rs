@@ -376,14 +376,14 @@ impl AuthStorage {
             }
         }
 
+        let mut failed_providers = Vec::new();
+
         for (provider, refresh_token, stored_token_url, stored_client_id) in refreshes {
-            let refreshed = match provider.as_str() {
+            let result = match provider.as_str() {
                 "anthropic" => {
-                    Box::pin(refresh_anthropic_oauth_token(client, &refresh_token)).await?
+                    Box::pin(refresh_anthropic_oauth_token(client, &refresh_token)).await
                 }
                 _ => {
-                    // Try self-contained refresh if the credential stores its own
-                    // token_url and client_id (Copilot, GitLab, etc.).
                     if let (Some(url), Some(cid)) = (&stored_token_url, &stored_client_id) {
                         Box::pin(refresh_self_contained_oauth_token(
                             client,
@@ -392,16 +392,36 @@ impl AuthStorage {
                             &refresh_token,
                             &provider,
                         ))
-                        .await?
+                        .await
                     } else {
-                        // No self-contained metadata — skip. The extension refresh
-                        // path will handle this provider if a config is available.
+                        // Should have been filtered out or handled by extensions logic, but safe to ignore.
                         continue;
                     }
                 }
             };
-            self.entries.insert(provider, refreshed);
-            self.save_async().await?;
+
+            match result {
+                Ok(refreshed) => {
+                    let name = provider.clone();
+                    self.entries.insert(provider, refreshed);
+                    if let Err(e) = self.save_async().await {
+                        tracing::warn!("Failed to save auth.json after refreshing {name}: {e}");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to refresh OAuth token for {provider}: {e}");
+                    failed_providers.push(provider);
+                }
+            }
+        }
+
+        if !failed_providers.is_empty() {
+             // Return an error to signal that at least some refreshes failed,
+             // but only after attempting all of them.
+             return Err(Error::auth(format!(
+                 "OAuth token refresh failed for: {}",
+                 failed_providers.join(", ")
+             )));
         }
 
         Ok(())
