@@ -2300,4 +2300,174 @@ mod tests {
             assert!(m.model.reasoning, "{} should be reasoning", m.model.id);
         }
     }
+
+    mod proptest_models {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn dummy_model(id: &str, reasoning: bool) -> ModelEntry {
+            ModelEntry {
+                model: Model {
+                    id: id.to_string(),
+                    name: id.to_string(),
+                    provider: "test".to_string(),
+                    api: "messages".to_string(),
+                    base_url: String::new(),
+                    reasoning,
+                    input: vec![InputType::Text],
+                    context_window: 128_000,
+                    max_tokens: 4096,
+                    cost: ModelCost {
+                        input: 0.0,
+                        output: 0.0,
+                        cache_read: 0.0,
+                        cache_write: 0.0,
+                    },
+                    headers: HashMap::new(),
+                },
+                api_key: None,
+                headers: HashMap::new(),
+                auth_header: false,
+                compat: None,
+                oauth_config: None,
+            }
+        }
+
+        proptest! {
+            /// Non-reasoning models always clamp to `Off`.
+            #[test]
+            fn clamp_thinking_non_reasoning(level_idx in 0..6usize) {
+                use crate::model::ThinkingLevel;
+                let levels = [
+                    ThinkingLevel::Off,
+                    ThinkingLevel::Minimal,
+                    ThinkingLevel::Low,
+                    ThinkingLevel::Medium,
+                    ThinkingLevel::High,
+                    ThinkingLevel::XHigh,
+                ];
+                let entry = dummy_model("non-reasoning-model", false);
+                assert_eq!(entry.clamp_thinking_level(levels[level_idx]), ThinkingLevel::Off);
+            }
+
+            /// Reasoning models without xhigh downgrade `XHigh` to `High`.
+            #[test]
+            fn clamp_thinking_reasoning_no_xhigh(level_idx in 0..6usize) {
+                use crate::model::ThinkingLevel;
+                let levels = [
+                    ThinkingLevel::Off,
+                    ThinkingLevel::Minimal,
+                    ThinkingLevel::Low,
+                    ThinkingLevel::Medium,
+                    ThinkingLevel::High,
+                    ThinkingLevel::XHigh,
+                ];
+                let entry = dummy_model("claude-sonnet-4-5", true);
+                let result = entry.clamp_thinking_level(levels[level_idx]);
+                if levels[level_idx] == ThinkingLevel::XHigh {
+                    assert_eq!(result, ThinkingLevel::High);
+                } else {
+                    assert_eq!(result, levels[level_idx]);
+                }
+            }
+
+            /// `supports_xhigh` only returns true for specific model IDs.
+            #[test]
+            fn supports_xhigh_specific_ids(id in "[a-z\\-0-9]{5,20}") {
+                let entry = dummy_model(&id, true);
+                let expected = matches!(
+                    id.as_str(),
+                    "gpt-5.1-codex-max" | "gpt-5.2" | "gpt-5.2-codex"
+                );
+                assert_eq!(entry.supports_xhigh(), expected);
+            }
+
+            /// `canonicalize_openrouter_model_id` maps known aliases.
+            #[test]
+            fn openrouter_known_aliases(idx in 0..5usize) {
+                let pairs = [
+                    ("auto", "openrouter/auto"),
+                    ("gpt-4o-mini", "openai/gpt-4o-mini"),
+                    ("gpt-4o", "openai/gpt-4o"),
+                    ("claude-3.5-sonnet", "anthropic/claude-3.5-sonnet"),
+                    ("gemini-2.5-pro", "google/gemini-2.5-pro"),
+                ];
+                let (input, expected) = pairs[idx];
+                assert_eq!(canonicalize_openrouter_model_id(input), expected);
+            }
+
+            /// `canonicalize_openrouter_model_id` is case-insensitive for aliases.
+            #[test]
+            fn openrouter_case_insensitive(idx in 0..5usize) {
+                let aliases = ["auto", "gpt-4o-mini", "gpt-4o", "claude-3.5-sonnet", "gemini-2.5-pro"];
+                let lower = canonicalize_openrouter_model_id(aliases[idx]);
+                let upper = canonicalize_openrouter_model_id(&aliases[idx].to_uppercase());
+                assert_eq!(lower, upper);
+            }
+
+            /// `canonicalize_openrouter_model_id` passes unknown IDs through.
+            #[test]
+            fn openrouter_passthrough(id in "[a-z]/[a-z]{5,15}") {
+                let result = canonicalize_openrouter_model_id(&id);
+                assert_eq!(result, id);
+            }
+
+            /// `openrouter_model_lookup_ids` always includes the canonical form.
+            #[test]
+            fn openrouter_lookup_includes_canonical(id in "[a-z\\-0-9]{1,20}") {
+                let ids = openrouter_model_lookup_ids(&id);
+                let canonical = canonicalize_openrouter_model_id(&id);
+                assert!(ids.contains(&canonical));
+            }
+
+            /// `merge_headers` override wins for duplicate keys.
+            #[test]
+            fn merge_headers_override_wins(key in "[a-z]{1,5}", v1 in "[a-z]{1,5}", v2 in "[a-z]{1,5}") {
+                let base = HashMap::from([(key.clone(), v1)]);
+                let over = HashMap::from([(key.clone(), v2.clone())]);
+                let merged = merge_headers(&base, over);
+                assert_eq!(merged.get(&key).unwrap(), &v2);
+            }
+
+            /// `merge_headers` preserves non-overlapping keys.
+            #[test]
+            fn merge_headers_preserves_both(k1 in "[a-z]{1,5}", k2 in "[A-Z]{1,5}", v1 in "[a-z]{1,5}", v2 in "[a-z]{1,5}") {
+                let base = HashMap::from([(k1.clone(), v1.clone())]);
+                let over = HashMap::from([(k2.clone(), v2.clone())]);
+                let merged = merge_headers(&base, over);
+                assert_eq!(merged.get(&k1), Some(&v1));
+                assert_eq!(merged.get(&k2), Some(&v2));
+            }
+
+            /// `sap_chat_completions_endpoint` rejects empty inputs.
+            #[test]
+            fn sap_endpoint_rejects_empty(s in "[a-z]{0,10}") {
+                assert_eq!(sap_chat_completions_endpoint("", &s), None);
+                assert_eq!(sap_chat_completions_endpoint(&s, ""), None);
+                assert_eq!(sap_chat_completions_endpoint("  ", &s), None);
+            }
+
+            /// `sap_chat_completions_endpoint` formats correctly.
+            #[test]
+            fn sap_endpoint_format(base in "[a-z]{3,10}", deployment in "[a-z]{3,10}") {
+                let url = format!("https://{base}.example.com");
+                let result = sap_chat_completions_endpoint(&url, &deployment);
+                assert!(result.is_some());
+                let endpoint = result.unwrap();
+                assert!(endpoint.contains(&deployment));
+                assert!(endpoint.contains("/v2/inference/deployments/"));
+                assert!(endpoint.ends_with("/chat/completions"));
+            }
+
+            /// `sap_chat_completions_endpoint` strips trailing slashes.
+            #[test]
+            fn sap_endpoint_strips_trailing_slash(base in "[a-z]{5,10}") {
+                let url_no_slash = format!("https://{base}");
+                let url_slash = format!("https://{base}/");
+                let r1 = sap_chat_completions_endpoint(&url_no_slash, "model");
+                let r2 = sap_chat_completions_endpoint(&url_slash, "model");
+                assert_eq!(r1, r2);
+            }
+        }
+    }
 }

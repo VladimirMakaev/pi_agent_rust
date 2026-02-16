@@ -619,4 +619,145 @@ mod tests {
         assert!(report.deprecation_warnings.is_empty());
         assert!(report.warnings.is_empty());
     }
+
+    mod proptest_migrations {
+        use crate::migrations::{MigrationReport, session_cwd_from_header};
+        use proptest::prelude::*;
+
+        proptest! {
+            /// Empty `MigrationReport` produces empty messages.
+            #[test]
+            fn empty_report_no_messages(_dummy in 0..1u8) {
+                let report = MigrationReport::default();
+                assert!(report.messages().is_empty());
+            }
+
+            /// Auth provider migration message includes all provider names.
+            #[test]
+            fn messages_include_providers(
+                p1 in "[a-z]{3,8}",
+                p2 in "[a-z]{3,8}"
+            ) {
+                let report = MigrationReport {
+                    migrated_auth_providers: vec![p1.clone(), p2.clone()],
+                    ..Default::default()
+                };
+                let msgs = report.messages();
+                assert_eq!(msgs.len(), 1);
+                assert!(msgs[0].contains(&p1));
+                assert!(msgs[0].contains(&p2));
+            }
+
+            /// Session migration message includes count.
+            #[test]
+            fn messages_include_session_count(count in 1..100usize) {
+                let report = MigrationReport {
+                    migrated_session_files: count,
+                    ..Default::default()
+                };
+                let msgs = report.messages();
+                assert_eq!(msgs.len(), 1);
+                assert!(msgs[0].contains(&count.to_string()));
+            }
+
+            /// Warnings are prefixed with "Warning: ".
+            #[test]
+            fn messages_prefix_warnings(warning in "[a-z ]{5,20}") {
+                let report = MigrationReport {
+                    warnings: vec![warning.clone()],
+                    ..Default::default()
+                };
+                let msgs = report.messages();
+                assert_eq!(msgs.len(), 1);
+                assert!(msgs[0].starts_with("Warning: "));
+                assert!(msgs[0].contains(&warning));
+            }
+
+            /// Deprecation warnings add guide/docs URLs.
+            #[test]
+            fn messages_deprecation_adds_urls(warning in "[a-z ]{5,20}") {
+                let report = MigrationReport {
+                    deprecation_warnings: vec![warning],
+                    ..Default::default()
+                };
+                let msgs = report.messages();
+                // warning + guide URL + docs URL
+                assert_eq!(msgs.len(), 3);
+                assert!(msgs[1].contains("Migration guide:"));
+                assert!(msgs[2].contains("Extensions docs:"));
+            }
+
+            /// `session_cwd_from_header` extracts cwd from valid session header.
+            #[test]
+            fn session_cwd_extraction(cwd in "[/a-z]{3,20}") {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("test.jsonl");
+                let header = serde_json::json!({
+                    "type": "session",
+                    "cwd": cwd,
+                    "id": "test"
+                });
+                std::fs::write(&path, serde_json::to_string(&header).unwrap()).unwrap();
+                assert_eq!(session_cwd_from_header(&path), Some(cwd));
+            }
+
+            /// `session_cwd_from_header` returns None for wrong type.
+            #[test]
+            fn session_cwd_wrong_type(type_val in "[a-z]{3,10}") {
+                prop_assume!(type_val != "session");
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("test.jsonl");
+                let header = serde_json::json!({
+                    "type": type_val,
+                    "cwd": "/test"
+                });
+                std::fs::write(&path, serde_json::to_string(&header).unwrap()).unwrap();
+                assert_eq!(session_cwd_from_header(&path), None);
+            }
+
+            /// `session_cwd_from_header` returns None for empty file.
+            #[test]
+            fn session_cwd_empty_file(_dummy in 0..1u8) {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("empty.jsonl");
+                std::fs::write(&path, "").unwrap();
+                assert_eq!(session_cwd_from_header(&path), None);
+            }
+
+            /// `session_cwd_from_header` returns None for invalid JSON.
+            #[test]
+            fn session_cwd_invalid_json(s in "[a-z]{5,20}") {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("bad.jsonl");
+                std::fs::write(&path, &s).unwrap();
+                assert_eq!(session_cwd_from_header(&path), None);
+            }
+
+            /// Message count equals sum of non-empty field contributions.
+            #[test]
+            fn messages_count_additive(
+                n_providers in 0..3usize,
+                sessions in 0..5usize,
+                n_warnings in 0..3usize,
+                n_deprecations in 0..3usize
+            ) {
+                let report = MigrationReport {
+                    migrated_auth_providers: (0..n_providers).map(|i| format!("p{i}")).collect(),
+                    migrated_session_files: sessions,
+                    migrated_commands_dirs: Vec::new(),
+                    migrated_tool_binaries: Vec::new(),
+                    warnings: (0..n_warnings).map(|i| format!("w{i}")).collect(),
+                    deprecation_warnings: (0..n_deprecations).map(|i| format!("d{i}")).collect(),
+                };
+                let msgs = report.messages();
+                let mut expected = 0;
+                if n_providers > 0 { expected += 1; }
+                if sessions > 0 { expected += 1; }
+                expected += n_warnings;
+                expected += n_deprecations;
+                if n_deprecations > 0 { expected += 2; } // guide + docs URLs
+                assert_eq!(msgs.len(), expected);
+            }
+        }
+    }
 }

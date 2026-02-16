@@ -2465,4 +2465,182 @@ mod tests {
         assert!(is_retryable_error("RATE LIMIT", None, None));
         assert!(is_retryable_error("Service Unavailable", None, None));
     }
+
+    mod proptest_error {
+        use super::*;
+        use proptest::prelude::*;
+
+        const ALL_DIAGNOSTIC_CODES: &[AuthDiagnosticCode] = &[
+            AuthDiagnosticCode::MissingApiKey,
+            AuthDiagnosticCode::InvalidApiKey,
+            AuthDiagnosticCode::QuotaExceeded,
+            AuthDiagnosticCode::MissingOAuthAuthorizationCode,
+            AuthDiagnosticCode::OAuthTokenExchangeFailed,
+            AuthDiagnosticCode::OAuthTokenRefreshFailed,
+            AuthDiagnosticCode::MissingAzureDeployment,
+            AuthDiagnosticCode::MissingRegion,
+            AuthDiagnosticCode::MissingProject,
+            AuthDiagnosticCode::MissingProfile,
+            AuthDiagnosticCode::MissingEndpoint,
+            AuthDiagnosticCode::MissingCredentialChain,
+            AuthDiagnosticCode::UnknownAuthFailure,
+        ];
+
+        proptest! {
+            /// `as_str` always returns a non-empty dotted path.
+            #[test]
+            fn as_str_non_empty_dotted(idx in 0..13usize) {
+                let code = ALL_DIAGNOSTIC_CODES[idx];
+                let s = code.as_str();
+                assert!(!s.is_empty());
+                assert!(s.contains('.'), "diagnostic code should be dotted: {s}");
+            }
+
+            /// `as_str` values are unique across all codes.
+            #[test]
+            fn as_str_unique(a in 0..13usize, b in 0..13usize) {
+                if a != b {
+                    assert_ne!(
+                        ALL_DIAGNOSTIC_CODES[a].as_str(),
+                        ALL_DIAGNOSTIC_CODES[b].as_str()
+                    );
+                }
+            }
+
+            /// `remediation` always returns a non-empty string.
+            #[test]
+            fn remediation_non_empty(idx in 0..13usize) {
+                let code = ALL_DIAGNOSTIC_CODES[idx];
+                assert!(!code.remediation().is_empty());
+            }
+
+            /// `redaction_policy` is always `"redact-secrets"`.
+            #[test]
+            fn redaction_policy_constant(idx in 0..13usize) {
+                let code = ALL_DIAGNOSTIC_CODES[idx];
+                assert_eq!(code.redaction_policy(), "redact-secrets");
+            }
+
+            /// `hostcall_error_code` is one of the 5 known codes.
+            #[test]
+            fn hostcall_code_known(msg in "[a-z ]{1,20}") {
+                let known = ["invalid_request", "io", "denied", "timeout", "internal"];
+                let errors = [
+                    Error::config(msg.clone()),
+                    Error::session(msg.clone()),
+                    Error::auth(msg.clone()),
+                    Error::validation(msg.clone()),
+                    Error::api(msg),
+                ];
+                for e in &errors {
+                    assert!(known.contains(&e.hostcall_error_code()));
+                }
+            }
+
+            /// `category_code` is a non-empty ASCII lowercase string.
+            #[test]
+            fn category_code_format(msg in "[a-z ]{1,20}") {
+                let errors = [
+                    Error::config(msg.clone()),
+                    Error::session(msg.clone()),
+                    Error::auth(msg.clone()),
+                    Error::validation(msg.clone()),
+                    Error::extension(msg.clone()),
+                    Error::api(msg),
+                ];
+                for e in &errors {
+                    let code = e.category_code();
+                    assert!(!code.is_empty());
+                    assert!(code.chars().all(|c| c.is_ascii_lowercase()));
+                }
+            }
+
+            /// `is_context_overflow` detects token-based overflow.
+            #[test]
+            fn context_overflow_token_based(
+                input_tokens in 100_001..500_000u64,
+                window in 1..100_000u32
+            ) {
+                assert!(is_context_overflow(
+                    "",
+                    Some(input_tokens),
+                    Some(window)
+                ));
+            }
+
+            /// `is_context_overflow` does not fire when tokens are within window.
+            #[test]
+            fn context_overflow_within_window(
+                window in 100..200_000u32,
+                offset in 0..100u64
+            ) {
+                let input = u64::from(window).saturating_sub(offset);
+                assert!(!is_context_overflow(
+                    "some normal error",
+                    Some(input),
+                    Some(window)
+                ));
+            }
+
+            /// `is_context_overflow` detects all substring patterns.
+            #[test]
+            fn context_overflow_pattern_detection(idx in 0..OVERFLOW_PATTERNS.len()) {
+                let pattern = OVERFLOW_PATTERNS[idx];
+                assert!(is_context_overflow(pattern, None, None));
+            }
+
+            /// `is_context_overflow` is case-insensitive for patterns.
+            #[test]
+            fn context_overflow_case_insensitive(idx in 0..OVERFLOW_PATTERNS.len()) {
+                let pattern = OVERFLOW_PATTERNS[idx];
+                assert!(is_context_overflow(&pattern.to_uppercase(), None, None));
+            }
+
+            /// `is_retryable_error` rejects empty messages.
+            #[test]
+            fn retryable_empty_is_false(_dummy in 0..1u8) {
+                assert!(!is_retryable_error("", None, None));
+            }
+
+            /// Context overflow errors are NOT retryable.
+            #[test]
+            fn overflow_not_retryable(idx in 0..OVERFLOW_PATTERNS.len()) {
+                let pattern = OVERFLOW_PATTERNS[idx];
+                assert!(!is_retryable_error(pattern, None, None));
+            }
+
+            /// Known retryable patterns are detected.
+            #[test]
+            fn retryable_known_patterns(idx in 0..8usize) {
+                let patterns = [
+                    "overloaded",
+                    "rate limit exceeded",
+                    "too many requests",
+                    "429 status code",
+                    "502 bad gateway",
+                    "503 service unavailable",
+                    "connection error",
+                    "fetch failed",
+                ];
+                assert!(is_retryable_error(patterns[idx], None, None));
+            }
+
+            /// Random gibberish is not retryable.
+            #[test]
+            fn random_not_retryable(s in "[a-z]{20,40}") {
+                assert!(!is_retryable_error(&s, None, None));
+            }
+
+            /// Error constructors produce correct category codes.
+            #[test]
+            fn constructor_category_consistency(msg in "[a-z]{1,10}") {
+                assert_eq!(Error::config(&msg).category_code(), "config");
+                assert_eq!(Error::session(&msg).category_code(), "session");
+                assert_eq!(Error::auth(&msg).category_code(), "auth");
+                assert_eq!(Error::validation(&msg).category_code(), "validation");
+                assert_eq!(Error::extension(&msg).category_code(), "extension");
+                assert_eq!(Error::api(&msg).category_code(), "api");
+            }
+        }
+    }
 }
