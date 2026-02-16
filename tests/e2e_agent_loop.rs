@@ -220,9 +220,7 @@ impl Provider for ScriptedProvider {
                         return Err(Error::api("multi_tool expected write-1 result"));
                     };
                     if write_result.is_error {
-                        return Err(Error::api(
-                            "multi_tool expected successful write result",
-                        ));
+                        return Err(Error::api("multi_tool expected successful write result"));
                     }
                     return Ok(self.stream_done(self.assistant_message(
                         StopReason::ToolUse,
@@ -247,9 +245,7 @@ impl Provider for ScriptedProvider {
                         return Err(Error::api("multi_tool expected read-1 result"));
                     };
                     if read_result.is_error {
-                        return Err(Error::api(
-                            "multi_tool expected successful read result",
-                        ));
+                        return Err(Error::api("multi_tool expected successful read result"));
                     }
                     let read_text = read_result
                         .content

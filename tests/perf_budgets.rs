@@ -332,20 +332,22 @@ fn budget_artifact_candidates(root: &Path, budget_name: &str) -> Vec<PathBuf> {
     }
 }
 
-fn binary_size_candidate_paths(root: &Path) -> Vec<PathBuf> {
-    let mut paths = vec![
-        root.join("target/release/pi"),
-        root.join("target/perf/pi"),
-        root.join("target/debug/pi"),
-    ];
-
-    if let Some(path) = std::env::var_os("CARGO_BIN_EXE_pi") {
-        paths.push(PathBuf::from(path));
+fn build_binary_size_candidate_paths(target_dir: &Path, detected_profile: &str) -> Vec<PathBuf> {
+    let mut paths = vec![target_dir.join("release/pi")];
+    if !detected_profile.is_empty() && !detected_profile.eq_ignore_ascii_case("debug") {
+        paths.push(target_dir.join(detected_profile).join("pi"));
     }
+    paths.push(target_dir.join("perf/pi"));
 
     let mut dedup = std::collections::HashSet::new();
     paths.retain(|path| dedup.insert(path.clone()));
     paths
+}
+
+fn binary_size_candidate_paths(root: &Path) -> Vec<PathBuf> {
+    let target_dir = root.join("target");
+    let detected_profile = pi::perf_build::detect_build_profile();
+    build_binary_size_candidate_paths(&target_dir, &detected_profile)
 }
 
 fn collect_estimate_json_files(base: &Path) -> Vec<PathBuf> {
@@ -1426,6 +1428,50 @@ fn artifact_contract_flags_stale_evidence() {
     assert!(
         violation.contains("stale/invalid"),
         "expected stale violation text, got: {violation}"
+    );
+}
+
+#[test]
+fn binary_size_candidate_builder_defaults_to_release_then_perf() {
+    let target_dir = Path::new("/tmp/pi-agent-target");
+    let candidates = build_binary_size_candidate_paths(target_dir, "");
+    assert_eq!(
+        candidates,
+        vec![target_dir.join("release/pi"), target_dir.join("perf/pi")]
+    );
+}
+
+#[test]
+fn binary_size_candidate_builder_includes_non_debug_profile_before_perf() {
+    let target_dir = Path::new("/tmp/pi-agent-target");
+    let candidates = build_binary_size_candidate_paths(target_dir, "bench-profile");
+    assert_eq!(
+        candidates,
+        vec![
+            target_dir.join("release/pi"),
+            target_dir.join("bench-profile/pi"),
+            target_dir.join("perf/pi"),
+        ]
+    );
+}
+
+#[test]
+fn binary_size_candidate_builder_ignores_debug_profile() {
+    let target_dir = Path::new("/tmp/pi-agent-target");
+    let candidates = build_binary_size_candidate_paths(target_dir, "debug");
+    assert_eq!(
+        candidates,
+        vec![target_dir.join("release/pi"), target_dir.join("perf/pi")]
+    );
+}
+
+#[test]
+fn binary_size_candidate_builder_dedups_perf_profile() {
+    let target_dir = Path::new("/tmp/pi-agent-target");
+    let candidates = build_binary_size_candidate_paths(target_dir, "perf");
+    assert_eq!(
+        candidates,
+        vec![target_dir.join("release/pi"), target_dir.join("perf/pi")]
     );
 }
 

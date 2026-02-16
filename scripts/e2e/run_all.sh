@@ -8021,6 +8021,7 @@ if isinstance(phase1_matrix_validation, dict) and perf_phase1_matrix_validation_
 
     invalid_regression_guard_statuses: list[str] = []
     regression_guard_reason_mismatches: list[str] = []
+    expected_regression_guard_reason_set: set[str] = set()
     for guard_name in ("memory", "correctness", "security"):
         status_raw = (
             regression_guards_obj.get(guard_name)
@@ -8037,6 +8038,10 @@ if isinstance(phase1_matrix_validation, dict) and perf_phase1_matrix_validation_
         has_missing_reason = (
             missing_reason_token in normalized_failure_or_gap_reason_set
         )
+        if status == "fail":
+            expected_regression_guard_reason_set.add(fail_reason_token)
+        elif status == "missing":
+            expected_regression_guard_reason_set.add(missing_reason_token)
         if status == "pass" and (has_fail_reason or has_missing_reason):
             regression_guard_reason_mismatches.append(
                 f"{guard_name}=pass with {fail_reason_token}/{missing_reason_token}"
@@ -8069,6 +8074,37 @@ if isinstance(phase1_matrix_validation, dict) and perf_phase1_matrix_validation_
         evidence_missing_or_stale_reasons.append(
             "phase-1 matrix validation regression_guards statuses must be "
             "pass/fail/missing"
+        )
+
+    regression_guard_reason_set_exact = (
+        regression_guard_reason_format_ok
+        and not unknown_regression_guard_reasons
+        and not invalid_regression_guard_statuses
+        and normalized_failure_or_gap_reason_set == expected_regression_guard_reason_set
+    )
+    require_condition(
+        "claim_integrity.phase1_matrix_regression_guard_reason_set_exact",
+        path=perf_phase1_matrix_validation_path,
+        ok=regression_guard_reason_set_exact,
+        ok_msg=(
+            "phase-1 matrix regression guard reasons exactly match derived "
+            "status-required token set"
+        ),
+        fail_msg=(
+            "phase-1 matrix regression guard reasons must exactly match status-derived "
+            f"set: expected={sorted(expected_regression_guard_reason_set)}, "
+            f"observed={sorted(normalized_failure_or_gap_reason_set)}"
+        ),
+        strict=claim_integrity_required,
+        remediation=(
+            "Emit exactly one token per non-pass guard status: "
+            "<guard>_regression for fail and <guard>_regression_unverified for missing."
+        ),
+    )
+    if not regression_guard_reason_set_exact and claim_integrity_gate_active:
+        evidence_missing_or_stale_reasons.append(
+            "phase-1 matrix validation regression_guards.failure_or_gap_reasons "
+            "must exactly match derived non-pass guard statuses"
         )
 
     require_condition(

@@ -132,9 +132,7 @@ fn pi_binary_candidates() -> Vec<PathBuf> {
 
 /// Find the first available `pi` binary from test/build-profile candidates.
 fn pi_binary() -> Option<PathBuf> {
-    pi_binary_candidates()
-        .into_iter()
-        .find(|candidate| candidate.exists())
+    first_existing_candidate(pi_binary_candidates())
 }
 
 fn build_binary_size_candidates(target_dir: &Path, detected_profile: &str) -> Vec<PathBuf> {
@@ -156,9 +154,11 @@ fn binary_size_candidates() -> Vec<PathBuf> {
 }
 
 fn binary_size_binary() -> Option<PathBuf> {
-    binary_size_candidates()
-        .into_iter()
-        .find(|candidate| candidate.exists())
+    first_existing_candidate(binary_size_candidates())
+}
+
+fn first_existing_candidate(candidates: Vec<PathBuf>) -> Option<PathBuf> {
+    candidates.into_iter().find(|candidate| candidate.exists())
 }
 
 // ─── Environment Fingerprint ────────────────────────────────────────────────
@@ -1303,4 +1303,33 @@ fn binary_size_candidate_builder_ignores_debug_profile() {
     let root = Path::new("/tmp/pi-agent-target");
     let candidates = build_binary_size_candidates(root, "debug");
     assert_eq!(candidates, vec![root.join("release/pi")]);
+}
+
+#[test]
+fn binary_size_candidate_selector_prefers_existing_release_artifact() {
+    let temp = tempfile::tempdir().expect("create temp dir");
+    let root = temp.path();
+    let release = root.join("release/pi");
+    let profile = root.join("bench-profile/pi");
+
+    std::fs::create_dir_all(release.parent().expect("release parent")).expect("mkdir release");
+    std::fs::create_dir_all(profile.parent().expect("profile parent")).expect("mkdir profile");
+    std::fs::write(&release, b"release").expect("write release binary");
+    std::fs::write(&profile, b"profile").expect("write profile binary");
+
+    let selected = first_existing_candidate(build_binary_size_candidates(root, "bench-profile"));
+    assert_eq!(selected.as_deref(), Some(release.as_path()));
+}
+
+#[test]
+fn binary_size_candidate_selector_falls_back_when_release_missing() {
+    let temp = tempfile::tempdir().expect("create temp dir");
+    let root = temp.path();
+    let profile = root.join("bench-profile/pi");
+
+    std::fs::create_dir_all(profile.parent().expect("profile parent")).expect("mkdir profile");
+    std::fs::write(&profile, b"profile").expect("write profile binary");
+
+    let selected = first_existing_candidate(build_binary_size_candidates(root, "bench-profile"));
+    assert_eq!(selected.as_deref(), Some(profile.as_path()));
 }
