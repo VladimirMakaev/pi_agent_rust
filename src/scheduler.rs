@@ -320,8 +320,7 @@ impl<C: Clock> Scheduler<C> {
     ///
     /// Returns the timer ID for cancellation.
     pub fn set_timeout(&mut self, delay_ms: u64) -> u64 {
-        let timer_id = self.next_timer_id;
-        self.next_timer_id = self.next_timer_id.saturating_add(1);
+        let timer_id = self.allocate_timer_id();
         let deadline_ms = self.clock.now_ms().saturating_add(delay_ms);
         let seq = self.next_seq();
 
@@ -338,6 +337,40 @@ impl<C: Clock> Scheduler<C> {
         );
 
         timer_id
+    }
+
+    fn timer_id_in_use(&self, timer_id: u64) -> bool {
+        self.cancelled_timers.contains(&timer_id)
+            || self
+                .timer_heap
+                .iter()
+                .any(|entry| entry.timer_id == timer_id)
+    }
+
+    fn allocate_timer_id(&mut self) -> u64 {
+        if self.next_timer_id < u64::MAX {
+            let timer_id = self.next_timer_id;
+            self.next_timer_id += 1;
+            return timer_id;
+        }
+
+        if !self.timer_id_in_use(u64::MAX) {
+            self.next_timer_id = 1;
+            return u64::MAX;
+        }
+
+        for candidate in 1..u64::MAX {
+            if !self.timer_id_in_use(candidate) {
+                self.next_timer_id = candidate.saturating_add(1);
+                return candidate;
+            }
+        }
+
+        tracing::error!(
+            event = "scheduler.timer_id.exhausted",
+            "Timer ID namespace exhausted; falling back to u64::MAX reuse"
+        );
+        u64::MAX
     }
 
     /// Cancel a timer by ID.
@@ -1726,7 +1759,7 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_timer_id_saturates_at_u64_max() {
+    fn scheduler_timer_id_wraps_after_u64_max() {
         let clock = DeterministicClock::new(0);
         let mut sched = Scheduler::with_clock(clock);
         sched.next_timer_id = u64::MAX;
@@ -1735,7 +1768,26 @@ mod tests {
         let second = sched.set_timeout(20);
 
         assert_eq!(first, u64::MAX);
-        assert_eq!(second, u64::MAX);
+        assert_eq!(second, 1);
+    }
+
+    #[test]
+    fn scheduler_timer_id_wrap_preserves_cancellation_semantics() {
+        let clock = DeterministicClock::new(0);
+        let mut sched = Scheduler::with_clock(clock);
+        sched.next_timer_id = u64::MAX;
+
+        let max_id = sched.set_timeout(10);
+        let wrapped_id = sched.set_timeout(20);
+
+        assert_eq!(max_id, u64::MAX);
+        assert_eq!(wrapped_id, 1);
+        assert!(sched.clear_timeout(max_id));
+        assert!(sched.clear_timeout(wrapped_id));
+
+        sched.clock.advance(25);
+        assert!(sched.tick().is_none());
+        assert!(sched.tick().is_none());
     }
 
     #[test]
