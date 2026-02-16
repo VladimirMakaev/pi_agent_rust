@@ -1581,7 +1581,7 @@ pub(crate) async fn run_bash_command(
     loop {
         let mut updated = false;
         while let Ok(chunk) = rx.try_recv() {
-            ingest_bash_chunk(&chunk, &mut bash_output).await?;
+            ingest_bash_chunk(chunk, &mut bash_output).await?;
             updated = true;
         }
 
@@ -1630,7 +1630,7 @@ pub(crate) async fn run_bash_command(
     let drain_deadline = Instant::now() + Duration::from_secs(2);
     loop {
         match rx.try_recv() {
-            Ok(chunk) => ingest_bash_chunk(&chunk, &mut bash_output).await?,
+            Ok(chunk) => ingest_bash_chunk(chunk, &mut bash_output).await?,
             Err(mpsc::TryRecvError::Empty) => {
                 if Instant::now() >= drain_deadline {
                     break;
@@ -3720,11 +3720,11 @@ impl BashOutputState {
     }
 }
 
-async fn ingest_bash_chunk(chunk: &[u8], state: &mut BashOutputState) -> Result<()> {
+async fn ingest_bash_chunk(chunk: Vec<u8>, state: &mut BashOutputState) -> Result<()> {
     state.total_bytes = state.total_bytes.saturating_add(chunk.len());
     state.line_count = state
         .line_count
-        .saturating_add(memchr::memchr_iter(b'\n', chunk).count());
+        .saturating_add(memchr::memchr_iter(b'\n', &chunk).count());
 
     if state.total_bytes > DEFAULT_MAX_BYTES && state.temp_file.is_none() {
         let id_full = Uuid::new_v4().simple().to_string();
@@ -3765,13 +3765,13 @@ async fn ingest_bash_chunk(chunk: &[u8], state: &mut BashOutputState) -> Result<
     }
 
     if let Some(file) = state.temp_file.as_mut() {
-        file.write_all(chunk)
+        file.write_all(&chunk)
             .await
             .map_err(|e| Error::tool("bash", e.to_string()))?;
     }
 
-    state.chunks.push_back(chunk.to_vec());
     state.chunks_bytes = state.chunks_bytes.saturating_add(chunk.len());
+    state.chunks.push_back(chunk);
     while state.chunks_bytes > state.max_chunks_bytes && state.chunks.len() > 1 {
         if let Some(front) = state.chunks.pop_front() {
             state.chunks_bytes = state.chunks_bytes.saturating_sub(front.len());
@@ -3830,7 +3830,7 @@ fn emit_bash_update(
 
 #[allow(dead_code)]
 async fn process_bash_chunk(
-    chunk: &[u8],
+    chunk: Vec<u8>,
     state: &mut BashOutputState,
     on_update: Option<&(dyn Fn(ToolUpdate) + Send + Sync)>,
 ) -> Result<()> {
