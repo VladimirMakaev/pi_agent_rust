@@ -8130,6 +8130,195 @@ if isinstance(phase1_matrix_validation, dict) and perf_phase1_matrix_validation_
 
     matrix_cells = phase1_matrix_validation.get("matrix_cells")
     matrix_cells_list = matrix_cells if isinstance(matrix_cells, list) else []
+    stage_summary = phase1_matrix_validation.get("stage_summary")
+    stage_summary_obj = stage_summary if isinstance(stage_summary, dict) else None
+    require_condition(
+        "claim_integrity.phase1_matrix_stage_summary_object",
+        path=perf_phase1_matrix_validation_path,
+        ok=stage_summary_obj is not None,
+        ok_msg="phase-1 matrix validation stage_summary object present",
+        fail_msg="phase-1 matrix validation missing stage_summary object",
+        strict=claim_integrity_required,
+        remediation=(
+            "Update scripts/perf/orchestrate.sh to emit stage_summary with "
+            "required_stage_keys, required_cell_count, "
+            "cells_with_complete_stage_breakdown, and "
+            "cells_missing_stage_breakdown."
+        ),
+    )
+
+    expected_stage_keys = ["open_ms", "append_ms", "save_ms", "index_ms"]
+    required_stage_keys_raw = (
+        stage_summary_obj.get("required_stage_keys")
+        if isinstance(stage_summary_obj, dict)
+        else None
+    )
+    normalized_required_stage_keys: list[str] = []
+    invalid_required_stage_keys: list[str] = []
+    if isinstance(required_stage_keys_raw, list):
+        for index, raw_stage_key in enumerate(required_stage_keys_raw):
+            if not isinstance(raw_stage_key, str):
+                invalid_required_stage_keys.append(
+                    f"required_stage_keys[{index}] non-string {raw_stage_key!r}"
+                )
+                continue
+            normalized_stage_key = raw_stage_key.strip().lower()
+            if not normalized_stage_key:
+                invalid_required_stage_keys.append(
+                    f"required_stage_keys[{index}] empty stage key"
+                )
+                continue
+            normalized_required_stage_keys.append(normalized_stage_key)
+    elif stage_summary_obj is not None:
+        invalid_required_stage_keys.append(
+            "required_stage_keys is not an array"
+        )
+
+    required_stage_keys_exact = (
+        not invalid_required_stage_keys
+        and normalized_required_stage_keys == expected_stage_keys
+    )
+    require_condition(
+        "claim_integrity.phase1_matrix_required_stage_keys_exact",
+        path=perf_phase1_matrix_validation_path,
+        ok=required_stage_keys_exact,
+        ok_msg="phase-1 matrix stage_summary required_stage_keys include index_ms",
+        fail_msg=(
+            "phase-1 matrix stage_summary required_stage_keys mismatch: expected "
+            f"{expected_stage_keys}, got {normalized_required_stage_keys}, "
+            f"invalid={invalid_required_stage_keys}"
+        ),
+        strict=claim_integrity_required,
+        remediation=(
+            "Set stage_summary.required_stage_keys exactly to "
+            "['open_ms','append_ms','save_ms','index_ms'] in "
+            "scripts/perf/orchestrate.sh."
+        ),
+    )
+    if not required_stage_keys_exact and claim_integrity_gate_active:
+        evidence_missing_or_stale_reasons.append(
+            "phase-1 matrix validation stage_summary.required_stage_keys must include "
+            "open_ms/append_ms/save_ms/index_ms in canonical order"
+        )
+
+    def parse_non_negative_count(raw: object) -> int | None:
+        if isinstance(raw, bool):
+            return None
+        if isinstance(raw, int):
+            return raw if raw >= 0 else None
+        if isinstance(raw, str):
+            candidate = raw.strip()
+            if candidate.isdigit():
+                return int(candidate)
+        return None
+
+    complete_stage_cells = parse_non_negative_count(
+        stage_summary_obj.get("cells_with_complete_stage_breakdown")
+        if isinstance(stage_summary_obj, dict)
+        else None
+    )
+    missing_stage_cells = parse_non_negative_count(
+        stage_summary_obj.get("cells_missing_stage_breakdown")
+        if isinstance(stage_summary_obj, dict)
+        else None
+    )
+    required_stage_cells = parse_non_negative_count(
+        stage_summary_obj.get("required_cell_count")
+        if isinstance(stage_summary_obj, dict)
+        else None
+    )
+    stage_summary_counts_coherent = (
+        complete_stage_cells is not None
+        and missing_stage_cells is not None
+        and required_stage_cells is not None
+        and complete_stage_cells + missing_stage_cells == required_stage_cells
+    )
+    require_condition(
+        "claim_integrity.phase1_matrix_stage_summary_counts_coherent",
+        path=perf_phase1_matrix_validation_path,
+        ok=stage_summary_counts_coherent,
+        ok_msg="phase-1 matrix stage_summary complete/missing counts are coherent",
+        fail_msg=(
+            "phase-1 matrix stage_summary count mismatch: "
+            f"required_cell_count={required_stage_cells!r}, "
+            f"cells_with_complete_stage_breakdown={complete_stage_cells!r}, "
+            f"cells_missing_stage_breakdown={missing_stage_cells!r}"
+        ),
+        strict=claim_integrity_required,
+        remediation=(
+            "Ensure stage_summary.required_cell_count equals "
+            "cells_with_complete_stage_breakdown + cells_missing_stage_breakdown "
+            "in scripts/perf/orchestrate.sh."
+        ),
+    )
+    if not stage_summary_counts_coherent and claim_integrity_gate_active:
+        evidence_missing_or_stale_reasons.append(
+            "phase-1 matrix validation stage_summary counts must satisfy "
+            "required_cell_count == complete + missing"
+        )
+
+    missing_stage_metric_reason_cells = 0
+    invalid_missing_stage_metric_reason_cells: list[str] = []
+    for index, cell in enumerate(matrix_cells_list):
+        if not isinstance(cell, dict):
+            continue
+        failure_reasons = cell.get("failure_reasons")
+        if failure_reasons is None:
+            continue
+        if not isinstance(failure_reasons, list):
+            invalid_missing_stage_metric_reason_cells.append(
+                f"cell[{index}] failure_reasons is not an array"
+            )
+            continue
+        has_missing_stage_metrics_reason = False
+        for raw_reason in failure_reasons:
+            if not isinstance(raw_reason, str):
+                continue
+            normalized_reason = raw_reason.strip().lower()
+            if not normalized_reason.startswith("missing_stage_metrics:"):
+                continue
+            missing_suffix = normalized_reason.split(":", 1)[1].strip()
+            if missing_suffix:
+                has_missing_stage_metrics_reason = True
+            else:
+                invalid_missing_stage_metric_reason_cells.append(
+                    f"cell[{index}] has empty missing_stage_metrics reason token"
+                )
+        if has_missing_stage_metrics_reason:
+            missing_stage_metric_reason_cells += 1
+    missing_stage_metrics_visibility_ok = (
+        not invalid_missing_stage_metric_reason_cells
+        and missing_stage_cells is not None
+        and missing_stage_metric_reason_cells == missing_stage_cells
+    )
+    require_condition(
+        "claim_integrity.phase1_matrix_missing_stage_metrics_visibility",
+        path=perf_phase1_matrix_validation_path,
+        ok=missing_stage_metrics_visibility_ok,
+        ok_msg=(
+            "phase-1 matrix stage_summary missing-stage count matches matrix cell "
+            "missing_stage_metrics reasons"
+        ),
+        fail_msg=(
+            "phase-1 matrix missing_stage_metrics visibility mismatch: "
+            f"cells_missing_stage_breakdown={missing_stage_cells!r}, "
+            f"matrix_cells_with_missing_stage_metrics_reason="
+            f"{missing_stage_metric_reason_cells}, "
+            f"invalid={invalid_missing_stage_metric_reason_cells}"
+        ),
+        strict=claim_integrity_required,
+        remediation=(
+            "Emit a non-empty missing_stage_metrics:<csv> reason token on each matrix "
+            "cell missing any required stage metric and keep "
+            "stage_summary.cells_missing_stage_breakdown aligned."
+        ),
+    )
+    if not missing_stage_metrics_visibility_ok and claim_integrity_gate_active:
+        evidence_missing_or_stale_reasons.append(
+            "phase-1 matrix validation missing_stage_metrics visibility mismatch "
+            "between stage_summary and matrix cell failure_reasons"
+        )
+
     invalid_matrix_cell_primary_e2e: list[str] = []
     for index, cell in enumerate(matrix_cells_list):
         if not isinstance(cell, dict):

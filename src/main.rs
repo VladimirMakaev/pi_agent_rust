@@ -3049,7 +3049,10 @@ async fn run_rpc_mode(
     futures::pin_mut!(rpc_task, signal_task);
 
     match futures::future::select(rpc_task, signal_task).await {
-        futures::future::Either::Left((result, _)) => result.map_err(anyhow::Error::new),
+        futures::future::Either::Left((result, _)) => match result {
+            Ok(()) => Ok(()),
+            Err(err) => Err(anyhow::Error::new(err)),
+        },
         futures::future::Either::Right(((), _)) => {
             // Signal received, return Ok to trigger main_impl's shutdown flush
             Ok(())
