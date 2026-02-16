@@ -1254,4 +1254,138 @@ mod tests {
         assert_eq!(deser.total_requests, 10);
         assert_eq!(deser.interleaved_groups, 1);
     }
+
+    // ── Property tests ──
+
+    mod proptest_amac {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn stall_ratio_bounded_0_to_1000(
+                observations in prop::collection::vec(0..1_000_000u64, 1..100),
+            ) {
+                let mut telemetry = AmacStallTelemetry::new(100_000);
+                for elapsed in &observations {
+                    telemetry.record(*elapsed);
+                }
+                let ratio = telemetry.stall_ratio();
+                assert!(ratio <= 1_000, "stall_ratio was {ratio}, expected <= 1000");
+            }
+
+            #[test]
+            fn total_stalls_never_exceeds_total_calls(
+                observations in prop::collection::vec(0..1_000_000u64, 1..100),
+            ) {
+                let mut telemetry = AmacStallTelemetry::new(100_000);
+                for elapsed in &observations {
+                    telemetry.record(*elapsed);
+                }
+                assert!(
+                    telemetry.total_stalls <= telemetry.total_calls,
+                    "stalls {} > calls {}",
+                    telemetry.total_stalls,
+                    telemetry.total_calls,
+                );
+            }
+
+            #[test]
+            fn total_calls_matches_observation_count(
+                observations in prop::collection::vec(0..1_000_000u64, 1..100),
+            ) {
+                let mut telemetry = AmacStallTelemetry::new(100_000);
+                for elapsed in &observations {
+                    telemetry.record(*elapsed);
+                }
+                assert_eq!(
+                    telemetry.total_calls,
+                    observations.len() as u64,
+                );
+            }
+
+            #[test]
+            fn recent_window_never_exceeds_capacity(
+                observations in prop::collection::vec(0..1_000_000u64, 1..200),
+            ) {
+                let mut telemetry = AmacStallTelemetry::new(100_000);
+                for elapsed in &observations {
+                    telemetry.record(*elapsed);
+                }
+                let snap = telemetry.snapshot();
+                assert!(
+                    snap.recent_window_size <= TELEMETRY_WINDOW_SIZE,
+                    "window {} > capacity {}",
+                    snap.recent_window_size,
+                    TELEMETRY_WINDOW_SIZE,
+                );
+            }
+
+            #[test]
+            fn interleave_width_bounded(
+                stall_ratio in 0..2000u64,
+                memory_weight in 0..100u32,
+                group_size in 2..100usize,
+                max_width in 2..32usize,
+            ) {
+                let width = compute_interleave_width(
+                    stall_ratio,
+                    memory_weight,
+                    group_size,
+                    max_width,
+                );
+                assert!(width >= 2, "width must be >= 2, got {width}");
+                assert!(width <= max_width, "width {width} > max_width {max_width}");
+                assert!(width <= group_size, "width {width} > group_size {group_size}");
+            }
+
+            #[test]
+            fn interleave_width_monotone_in_stall_ratio(
+                base_ratio in 200..600u64,
+                delta in 1..400u64,
+                memory_weight in 1..100u32,
+                group_size in 4..50usize,
+                max_width in 4..32usize,
+            ) {
+                let low = compute_interleave_width(
+                    base_ratio,
+                    memory_weight,
+                    group_size,
+                    max_width,
+                );
+                let high = compute_interleave_width(
+                    base_ratio + delta,
+                    memory_weight,
+                    group_size,
+                    max_width,
+                );
+                assert!(
+                    high >= low,
+                    "higher stall ratio should give >= width: low={low} (ratio={base_ratio}), high={high} (ratio={})",
+                    base_ratio + delta,
+                );
+            }
+
+            #[test]
+            fn group_key_interleave_safe_stable(
+                idx in 0..9usize,
+            ) {
+                let keys = [
+                    AmacGroupKey::SessionRead,
+                    AmacGroupKey::SessionWrite,
+                    AmacGroupKey::EventRead,
+                    AmacGroupKey::EventWrite,
+                    AmacGroupKey::Tool,
+                    AmacGroupKey::Exec,
+                    AmacGroupKey::Http,
+                    AmacGroupKey::Ui,
+                    AmacGroupKey::Log,
+                ];
+                let key = &keys[idx];
+                let s1 = key.interleave_safe();
+                let s2 = key.interleave_safe();
+                assert_eq!(s1, s2, "interleave_safe must be deterministic");
+            }
+        }
+    }
 }

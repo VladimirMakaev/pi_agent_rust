@@ -481,13 +481,19 @@ fn auth_oauth_refresh_race_condition_vcr() {
         let second_auth_path = auth_path.clone();
         let second_refresh = async move {
             let mut seen_refreshed = false;
-            for _ in 0..80 {
+            // Use a generous iteration budget with yield_now() so the first future
+            // actually gets scheduled on the single-threaded test runtime.
+            // The previous 80-iteration / 10ms-sleep loop completed in ~160ms total
+            // because asupersync timers fire early under enable_parking(false),
+            // starving the first refresh future.
+            for _ in 0..500 {
                 if oauth_access_token(second_auth_path.as_path(), "anthropic").as_deref()
                     == Some("new-access-success")
                 {
                     seen_refreshed = true;
                     break;
                 }
+                asupersync::runtime::yield_now().await;
                 asupersync::time::sleep(asupersync::time::wall_now(), Duration::from_millis(10))
                     .await;
             }

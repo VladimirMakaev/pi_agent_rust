@@ -1511,6 +1511,176 @@ mod tests {
         assert_eq!(snapshot.overflow_capacity, HOSTCALL_OVERFLOW_CAPACITY);
     }
 
+    // ── Property tests ──
+
+    mod proptest_bravo {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arb_sample() -> impl Strategy<Value = ContentionSample> {
+            (0..10_000u64, 0..10_000u64, 0..50_000u64, 0..50_000u64, 0..100u64).prop_map(
+                |(reads, writes, r_wait, w_wait, w_timeouts)| ContentionSample {
+                    read_acquires: reads,
+                    write_acquires: writes,
+                    read_wait_p95_us: r_wait,
+                    write_wait_p95_us: w_wait,
+                    write_timeouts: w_timeouts,
+                },
+            )
+        }
+
+        fn arb_config() -> impl Strategy<Value = BravoContentionConfig> {
+            (
+                1..200u64,
+                500..1000u32,
+                100..500u32,
+                500..999u32,
+                1000..20_000u64,
+                1..10u64,
+                1..10u32,
+                1..5u32,
+            )
+                .prop_map(
+                    |(
+                        min_acq,
+                        rd_ratio,
+                        mixed_floor,
+                        mixed_ceil,
+                        starve_wait,
+                        starve_to,
+                        max_rb,
+                        wr_windows,
+                    )| {
+                        BravoContentionConfig {
+                            min_total_acquires: min_acq,
+                            read_dominant_ratio_permille: rd_ratio,
+                            mixed_ratio_floor_permille: mixed_floor,
+                            mixed_ratio_ceiling_permille: mixed_ceil.max(mixed_floor),
+                            writer_starvation_wait_us: starve_wait,
+                            writer_starvation_timeouts: starve_to,
+                            max_consecutive_read_bias_windows: max_rb,
+                            writer_recovery_windows: wr_windows,
+                        }
+                    },
+                )
+        }
+
+        proptest! {
+            #[test]
+            fn classify_is_deterministic(
+                sample in arb_sample(),
+                cfg in arb_config(),
+            ) {
+                let s1 = BravoContentionState::classify(sample, cfg);
+                let s2 = BravoContentionState::classify(sample, cfg);
+                assert_eq!(s1, s2, "same inputs must produce same signature");
+            }
+
+            #[test]
+            fn read_ratio_permille_bounded_0_to_1000(
+                reads in 0..u64::MAX / 2,
+                writes in 0..u64::MAX / 2,
+            ) {
+                let s = ContentionSample {
+                    read_acquires: reads,
+                    write_acquires: writes,
+                    ..Default::default()
+                };
+                let ratio = s.read_ratio_permille();
+                assert!(ratio <= 1000, "ratio was {ratio}, expected <= 1000");
+            }
+
+            #[test]
+            fn total_acquires_at_least_each_component(
+                reads in 0..u64::MAX / 2,
+                writes in 0..u64::MAX / 2,
+            ) {
+                let s = ContentionSample {
+                    read_acquires: reads,
+                    write_acquires: writes,
+                    ..Default::default()
+                };
+                let total = s.total_acquires();
+                assert!(total >= reads, "total must be >= reads");
+                assert!(total >= writes, "total must be >= writes");
+            }
+
+            #[test]
+            fn mode_always_valid_after_observation_sequence(
+                cfg in arb_config(),
+                samples in prop::collection::vec(arb_sample(), 1..30),
+            ) {
+                let mut state = BravoContentionState::new(cfg);
+                for sample in &samples {
+                    let decision = state.observe(*sample);
+                    assert!(
+                        matches!(
+                            decision.next_mode,
+                            BravoBiasMode::Balanced
+                                | BravoBiasMode::ReadBiased
+                                | BravoBiasMode::WriterRecovery
+                        ),
+                        "mode must be a valid variant"
+                    );
+                    assert_eq!(decision.switched, decision.previous_mode != decision.next_mode);
+                }
+            }
+
+            #[test]
+            fn counters_monotonically_nondecreasing(
+                cfg in arb_config(),
+                samples in prop::collection::vec(arb_sample(), 1..30),
+            ) {
+                let mut state = BravoContentionState::new(cfg);
+                let mut prev_transitions = 0u64;
+                let mut prev_rollbacks = 0u64;
+                let mut prev_windows = 0u64;
+
+                for sample in &samples {
+                    let _ = state.observe(*sample);
+                    let snap = state.snapshot();
+                    assert!(snap.transitions >= prev_transitions);
+                    assert!(snap.rollbacks >= prev_rollbacks);
+                    assert!(snap.windows_observed >= prev_windows);
+                    prev_transitions = snap.transitions;
+                    prev_rollbacks = snap.rollbacks;
+                    prev_windows = snap.windows_observed;
+                }
+            }
+
+            #[test]
+            fn windows_observed_equals_call_count(
+                cfg in arb_config(),
+                samples in prop::collection::vec(arb_sample(), 1..30),
+            ) {
+                let mut state = BravoContentionState::new(cfg);
+                for sample in &samples {
+                    let _ = state.observe(*sample);
+                }
+                let snap = state.snapshot();
+                assert_eq!(
+                    snap.windows_observed,
+                    samples.len() as u64,
+                    "windows_observed must equal number of observe() calls"
+                );
+            }
+
+            #[test]
+            fn initial_state_is_balanced_with_zero_counters(
+                cfg in arb_config(),
+            ) {
+                let state = BravoContentionState::new(cfg);
+                let snap = state.snapshot();
+                assert_eq!(snap.mode, BravoBiasMode::Balanced);
+                assert_eq!(snap.transitions, 0);
+                assert_eq!(snap.rollbacks, 0);
+                assert_eq!(snap.windows_observed, 0);
+                assert_eq!(snap.consecutive_read_bias_windows, 0);
+                assert_eq!(snap.writer_recovery_remaining, 0);
+            }
+        }
+    }
+
     #[test]
     fn loom_epoch_pin_blocks_reclamation_until_release() {
         use loom::sync::atomic::{AtomicBool, Ordering as LoomOrdering};
