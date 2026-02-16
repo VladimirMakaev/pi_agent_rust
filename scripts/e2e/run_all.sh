@@ -3948,6 +3948,7 @@ validate_evidence_contract() {
     )"
     perf_baseline_confidence_json="${PERF_BASELINE_CONFIDENCE_JSON:-}"
     perf_extension_stratification_json="${PERF_EXTENSION_STRATIFICATION_JSON:-}"
+    perf_phase1_matrix_validation_json="${PERF_PHASE1_MATRIX_VALIDATION_JSON:-}"
     claim_integrity_required_json="${CLAIM_INTEGRITY_REQUIRED:-}"
 
     if ARTIFACT_DIR="$ARTIFACT_DIR" \
@@ -3961,6 +3962,7 @@ validate_evidence_contract() {
         RERUN_FROM_JSON="$RERUN_JSON_VALUE" \
         PERF_BASELINE_CONFIDENCE_JSON="$perf_baseline_confidence_json" \
         PERF_EXTENSION_STRATIFICATION_JSON="$perf_extension_stratification_json" \
+        PERF_PHASE1_MATRIX_VALIDATION_JSON="$perf_phase1_matrix_validation_json" \
         PERF_EVIDENCE_DIR="${PERF_EVIDENCE_DIR:-}" \
         CLAIM_INTEGRITY_REQUIRED="$claim_integrity_required_json" \
         CI_ENV="${CI:-}" \
@@ -3969,7 +3971,7 @@ import json
 import os
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 artifact_dir = Path(os.environ["ARTIFACT_DIR"])
@@ -4018,6 +4020,9 @@ perf_baseline_confidence_path_raw = str(
 perf_extension_stratification_path_raw = str(
     os.environ.get("PERF_EXTENSION_STRATIFICATION_JSON", "")
 ).strip()
+perf_phase1_matrix_validation_path_raw = str(
+    os.environ.get("PERF_PHASE1_MATRIX_VALIDATION_JSON", "")
+).strip()
 
 if perf_evidence_dir_raw:
     if not perf_baseline_confidence_path_raw:
@@ -4028,12 +4033,21 @@ if perf_evidence_dir_raw:
         perf_extension_stratification_path_raw = str(
             Path(perf_evidence_dir_raw) / "results" / "extension_benchmark_stratification.json"
         )
+    if not perf_phase1_matrix_validation_path_raw:
+        perf_phase1_matrix_validation_path_raw = str(
+            Path(perf_evidence_dir_raw) / "results" / "phase1_matrix_validation.json"
+        )
 
 perf_baseline_confidence_path = (
     Path(perf_baseline_confidence_path_raw) if perf_baseline_confidence_path_raw else None
 )
 perf_extension_stratification_path = (
     Path(perf_extension_stratification_path_raw) if perf_extension_stratification_path_raw else None
+)
+perf_phase1_matrix_validation_path = (
+    Path(perf_phase1_matrix_validation_path_raw)
+    if perf_phase1_matrix_validation_path_raw
+    else None
 )
 ci_env = env_truthy("CI_ENV", default=env_truthy("CI", default=False))
 claim_integrity_required = env_truthy(
@@ -6907,7 +6921,9 @@ microbench_only_claim_reasons: list[str] = []
 global_claim_partition_reasons: list[str] = []
 scenario_partition_coverage: dict[str, set[str]] = {}
 observed_realistic_session_shapes: set[str] = set()
+phase1_realistic_session_shapes_observed: set[str] = set()
 missing_realistic_session_shapes: list[str] = []
+realistic_session_shape_coverage_source = "baseline_confidence"
 scenario_cell_status_payload: dict | None = None
 scenario_cell_status_json_path: Path | None = None
 scenario_cell_status_markdown_path: Path | None = None
@@ -6943,6 +6959,42 @@ def validate_generated_at_freshness(
         evidence_missing_or_stale_reasons.append(
             f"{label} generated_at stale/invalid: {generated_at_value!r}"
         )
+
+
+def parse_session_messages_value(raw: object) -> int | None:
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        value = int(raw)
+        return value if value > 0 else None
+    text = str(raw or "").strip().lower().replace(",", "")
+    if not text:
+        return None
+    suffix_match = re.search(r"(\d+)\s*([km]?)$", text)
+    if not suffix_match:
+        return None
+    magnitude = int(suffix_match.group(1))
+    suffix = suffix_match.group(2)
+    if suffix == "k":
+        magnitude *= 1_000
+    elif suffix == "m":
+        magnitude *= 1_000_000
+    return magnitude if magnitude > 0 else None
+
+
+def parse_shape_to_session_messages(shape: str) -> int | None:
+    text = str(shape or "").strip().lower()
+    if not text:
+        return None
+    candidate = text.split("_")[-1]
+    return parse_session_messages_value(candidate)
+
+
+required_realistic_shape_message_counts: dict[int, str] = {}
+for shape in required_realistic_session_shapes:
+    parsed_count = parse_shape_to_session_messages(shape)
+    if parsed_count is not None:
+        required_realistic_shape_message_counts[parsed_count] = shape
 
 
 extension_stratification = None
@@ -7007,6 +7059,39 @@ else:
     if baseline_confidence is None and claim_integrity_gate_active:
         evidence_missing_or_stale_reasons.append(
             f"missing/invalid baseline confidence artifact at {perf_baseline_confidence_path}"
+        )
+
+phase1_matrix_validation = None
+if perf_phase1_matrix_validation_path is None:
+    if claim_integrity_gate_active:
+        add_check(
+            "claim_integrity.phase1_matrix_validation_path_configured",
+            perf_sli_matrix_path,
+            False,
+            "PERF_PHASE1_MATRIX_VALIDATION_JSON/PERF_EVIDENCE_DIR not configured",
+        )
+        record_issue(
+            "claim_integrity.phase1_matrix_validation_path_configured",
+            "missing phase-1 matrix validation path for claim-integrity realistic tier checks",
+            strict=claim_integrity_required,
+            remediation=(
+                "Set PERF_PHASE1_MATRIX_VALIDATION_JSON (or PERF_EVIDENCE_DIR) to "
+                "phase1_matrix_validation.json before run_all validation."
+            ),
+        )
+        evidence_missing_or_stale_reasons.append(
+            "missing phase1_matrix_validation.json path"
+        )
+else:
+    phase1_matrix_validation = load_json(
+        "claim_integrity.phase1_matrix_validation_json",
+        perf_phase1_matrix_validation_path,
+        strict=claim_integrity_required,
+    )
+    if phase1_matrix_validation is None and claim_integrity_gate_active:
+        evidence_missing_or_stale_reasons.append(
+            "missing/invalid phase-1 matrix validation artifact at "
+            f"{perf_phase1_matrix_validation_path}"
         )
 
 if isinstance(extension_stratification, dict) and perf_extension_stratification_path is not None:
@@ -7301,19 +7386,21 @@ if isinstance(baseline_confidence, dict) and perf_baseline_confidence_path is no
                 realistic_session_shape = str(
                     metadata.get("realistic_session_shape", "")
                 ).strip()
-                if not realistic_session_shape:
-                    missing_realistic_session_shape_reasons.append(
-                        f"records[{index}] scenario_metadata missing "
-                        "realistic_session_shape for realistic partition"
-                    )
-                elif (
-                    required_realistic_session_shapes
+                if (
+                    realistic_session_shape
+                    and required_realistic_session_shapes
                     and realistic_session_shape not in required_realistic_session_shapes
                 ):
                     missing_realistic_session_shape_reasons.append(
                         f"records[{index}] scenario_metadata.realistic_session_shape "
                         f"{realistic_session_shape!r} not in {required_realistic_session_shapes}"
                     )
+                if (
+                    realistic_session_shape
+                    and required_realistic_session_shapes
+                    and realistic_session_shape in required_realistic_session_shapes
+                ):
+                    observed_realistic_session_shapes.add(realistic_session_shape)
 
         confidence_label = str(record.get("confidence", "")).strip()
         if confidence_label and confidence_label not in allowed_confidence:
@@ -7329,8 +7416,6 @@ if isinstance(baseline_confidence, dict) and perf_baseline_confidence_path is no
 
         if scenario_id and workload_partition:
             scenario_partition_coverage.setdefault(scenario_id, set()).add(workload_partition)
-        if workload_partition == "realistic" and realistic_session_shape:
-            observed_realistic_session_shapes.add(realistic_session_shape)
 
     for scenario in required_scenarios:
         present_partitions = scenario_partition_coverage.get(scenario, set())
@@ -7342,17 +7427,102 @@ if isinstance(baseline_confidence, dict) and perf_baseline_confidence_path is no
                 f"scenario {scenario} missing partition coverage: {missing_tags}"
             )
 
-    if required_realistic_session_shapes:
-        missing_realistic_session_shapes = [
-            shape
-            for shape in required_realistic_session_shapes
-            if shape not in observed_realistic_session_shapes
-        ]
-        if missing_realistic_session_shapes:
+if isinstance(phase1_matrix_validation, dict) and perf_phase1_matrix_validation_path is not None:
+    require_keys(
+        "claim_integrity.phase1_matrix_validation_json",
+        phase1_matrix_validation,
+        perf_phase1_matrix_validation_path,
+        ["schema", "generated_at", "run_id", "correlation_id", "matrix_requirements", "matrix_cells"],
+        strict=claim_integrity_required,
+    )
+    require_condition(
+        "claim_integrity.phase1_matrix_validation_schema",
+        path=perf_phase1_matrix_validation_path,
+        ok=phase1_matrix_validation.get("schema") == "pi.perf.phase1_matrix_validation.v1",
+        ok_msg="phase-1 matrix validation schema matches",
+        fail_msg=(
+            "phase-1 matrix validation schema mismatch: expected "
+            "'pi.perf.phase1_matrix_validation.v1'"
+        ),
+        strict=claim_integrity_required,
+    )
+    validate_generated_at_freshness(
+        payload=phase1_matrix_validation,
+        payload_path=perf_phase1_matrix_validation_path,
+        check_id="claim_integrity.phase1_matrix_validation_generated_at_fresh",
+        label="phase-1 matrix validation",
+    )
+    phase1_correlation_id = str(phase1_matrix_validation.get("correlation_id", "")).strip()
+    phase1_correlation_ok = (
+        bool(phase1_correlation_id)
+        and bool(expected_claim_correlation_id)
+        and phase1_correlation_id == expected_claim_correlation_id
+    )
+    require_condition(
+        "claim_integrity.phase1_matrix_correlation_matches_run",
+        path=perf_phase1_matrix_validation_path,
+        ok=phase1_correlation_ok,
+        ok_msg="phase-1 matrix validation correlation_id matches run summary/environment",
+        fail_msg=(
+            "phase-1 matrix validation correlation_id mismatch: expected "
+            f"{expected_claim_correlation_id!r}, got {phase1_correlation_id!r}"
+        ),
+        strict=claim_integrity_required,
+        remediation=(
+            "Use a shared CI_CORRELATION_ID for perf orchestrator and "
+            "scripts/e2e/run_all.sh."
+        ),
+    )
+    if not phase1_correlation_ok and claim_integrity_gate_active:
+        evidence_missing_or_stale_reasons.append(
+            "phase-1 matrix validation correlation_id mismatch with run artifacts"
+        )
+
+    matrix_cells = phase1_matrix_validation.get("matrix_cells")
+    matrix_cells_list = matrix_cells if isinstance(matrix_cells, list) else []
+    if required_realistic_session_shapes and not matrix_cells_list:
+        missing_realistic_session_shape_reasons.append(
+            "phase-1 matrix validation missing matrix_cells data for realistic tier coverage"
+        )
+    for index, cell in enumerate(matrix_cells_list):
+        if not isinstance(cell, dict):
+            continue
+        partition = str(cell.get("workload_partition", "")).strip().lower()
+        if partition != "realistic":
+            continue
+        session_messages = parse_session_messages_value(cell.get("session_messages"))
+        if session_messages is None:
             missing_realistic_session_shape_reasons.append(
-                "missing required realistic_session_shape coverage: "
-                f"{missing_realistic_session_shapes}"
+                f"phase1 matrix cell[{index}] missing/invalid session_messages for realistic partition"
             )
+            continue
+        mapped_shape = required_realistic_shape_message_counts.get(session_messages)
+        if mapped_shape is None and required_realistic_shape_message_counts:
+            missing_realistic_session_shape_reasons.append(
+                f"phase1 matrix cell[{index}] session_messages "
+                f"{session_messages} not mapped to required realistic tiers"
+            )
+            continue
+        if mapped_shape:
+            phase1_realistic_session_shapes_observed.add(mapped_shape)
+
+realistic_shape_coverage_path = perf_baseline_confidence_path
+if isinstance(phase1_matrix_validation, dict) and perf_phase1_matrix_validation_path is not None:
+    realistic_session_shape_coverage_source = "phase1_matrix_validation"
+    realistic_shape_coverage_path = perf_phase1_matrix_validation_path
+    observed_realistic_session_shapes = set(phase1_realistic_session_shapes_observed)
+
+if required_realistic_session_shapes:
+    missing_realistic_session_shapes = [
+        shape
+        for shape in required_realistic_session_shapes
+        if shape not in observed_realistic_session_shapes
+    ]
+    if missing_realistic_session_shapes:
+        missing_realistic_session_shape_reasons.append(
+            "missing required realistic_session_shape coverage: "
+            f"{missing_realistic_session_shapes}"
+        )
 
 if claim_integrity_gate_active:
     matrix_scenarios: list[str] = (
@@ -7379,6 +7549,10 @@ if claim_integrity_gate_active:
         "present": sorted(observed_realistic_session_shapes),
         "missing": list(missing_realistic_session_shapes),
         "overall_status": "pass" if not missing_realistic_session_shapes else "fail",
+        "source": realistic_session_shape_coverage_source,
+        "source_path": str(realistic_shape_coverage_path)
+        if realistic_shape_coverage_path is not None
+        else None,
     }
 
     cells: list[dict] = []
@@ -7457,6 +7631,14 @@ if claim_integrity_gate_active:
         (
             "- Missing realistic session shapes: "
             f"`{', '.join(realistic_shape_summary['missing']) or 'none'}`"
+        ),
+        (
+            "- Realistic session-shape source: "
+            f"`{realistic_shape_summary['source']}`"
+        ),
+        (
+            "- Realistic session-shape source path: "
+            f"`{realistic_shape_summary['source_path'] or 'none'}`"
         ),
         "",
         "| Scenario | Partition | Status | Reason |",
@@ -7548,11 +7730,11 @@ if claim_integrity_gate_active:
     )
     require_condition(
         "claim_integrity.realistic_session_shape_coverage",
-        path=perf_sli_matrix_path,
+        path=realistic_shape_coverage_path or perf_sli_matrix_path,
         ok=not missing_realistic_session_shape_reasons,
         ok_msg=(
-            "realistic partition rows include realistic_session_shape metadata "
-            "for required matrix tiers"
+            "required realistic session-shape tiers are covered "
+            f"(source={realistic_session_shape_coverage_source})"
         ),
         fail_msg=(
             "missing/invalid realistic_session_shape coverage detected: "
@@ -7560,8 +7742,9 @@ if claim_integrity_gate_active:
         ),
         strict=claim_integrity_required,
         remediation=(
-            "Set scenario_metadata.realistic_session_shape on realistic rows and "
-            "cover benchmark_partitions.realistic_long_session tiers."
+            "Publish phase1_matrix_validation.json with realistic matrix cells "
+            "(100k..5m) under PERF_EVIDENCE_DIR/results and ensure session_messages "
+            "map to benchmark_partitions.realistic_long_session."
         ),
     )
     require_condition(
