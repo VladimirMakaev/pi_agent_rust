@@ -119,11 +119,11 @@
     }
   ],
   "ci_enforced": 8,
-  "ci_fail": 0,
+  "ci_fail": 1,
   "ci_no_data": 6,
   "ci_with_data": 2,
   "data_contract_failures_count": 7,
-  "fail": 0,
+  "fail": 1,
   "failing_data_contracts": [
     {
       "budget_name": "startup_version_p95",
@@ -168,9 +168,9 @@
       "remediation": "Generate fresh extension_benchmark_stratification.json in the current perf run."
     }
   ],
-  "generated_at": "2026-02-16T16:10:36.119094529+00:00",
-  "no_data": 8,
-  "pass": 5,
+  "generated_at": "2026-02-16T19:20:03.912597056+00:00",
+  "no_data": 9,
+  "pass": 3,
   "schema": "pi.perf.budget_summary.v1",
   "total_budgets": 13
 }

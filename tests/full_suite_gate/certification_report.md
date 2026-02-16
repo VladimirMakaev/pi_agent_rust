@@ -1,6 +1,6 @@
 # Full Certification Report
 
-> Generated: 2026-02-16T16:19:09Z
+> Generated: 2026-02-16T20:01:48Z
 > Lane: **full**
 > Verdict: **FAIL**
 
@@ -14,7 +14,7 @@
 | Warned | 0 |
 | Skipped | 1 |
 | Waived | 0 |
-| Blocking | 7/8 |
+| Blocking | 8/9 |
 | Can promote | NO |
 
 ## Gate Results
@@ -34,7 +34,7 @@
 | Canonical E2E scenario matrix | bd-1f42.8.5.1 | no | PASS | - | `docs/e2e_scenario_matrix.json` |
 | Provider gap test matrix coverage | bd-3uqg.11.11.5 | no | PASS | - | `docs/provider-gaps-test-matrix.json` |
 | SEC-6.4 security compatibility conformance | bd-1a2cu | YES | PASS | - | `tests/full_suite_gate/sec_conformance_verdict.json` |
-| PERF-3X bead-to-artifact coverage audit | bd-3ar8v.6.11 | no | PASS | - | `tests/full_suite_gate/certification_events.jsonl` |
+| PERF-3X bead-to-artifact coverage audit | bd-3ar8v.6.11 | YES | PASS | - | `tests/full_suite_gate/certification_events.jsonl` |
 | Waiver lifecycle compliance | bd-1f42.8.8.1 | YES | PASS | - | `tests/full_suite_gate/waiver_audit.json` |
 
 ## Rerun Commands
