@@ -62,6 +62,23 @@ Run this matrix before declaring distribution parity complete for a release cand
    - `install.sh --version vX.Y.Z`
    - binary checksum validation passes against release `SHA256SUMS`
 
+## Perf-vs-size artifact policy (bd-3ar8v.5.5)
+
+Release operations must keep benchmark evidence and shipping artifacts distinct.
+
+- **Shipping/distribution artifacts**: built with Cargo `release` profile and published via
+  `release.yml` + installer flows (`pi` binaries + `SHA256SUMS`).
+- **Benchmark evidence artifacts**: produced by PERF-3X lanes (`scripts/perf/orchestrate.sh`,
+  `scripts/bench_extension_workloads.sh`) using benchmark profile labeling (typically `perf`)
+  with run-level provenance (`correlation_id`, build/profile metadata, allocator/PGO metadata).
+
+Policy constraints:
+
+1. Performance and certification claims must cite benchmark evidence artifacts, not release-only binaries.
+2. Release binaries remain the deployment target and may be used to validate size/startup/install behavior.
+3. Any release note claiming performance gains should include correlation-linked evidence references from benchmark artifact bundles.
+4. If profile labels/provenance are missing or contradictory, treat the performance claim as invalid until regenerated.
+
 ## When do we call it 1.0?
 We call it `1.0.0` when:
 - CI is green on Linux/macOS/Windows (`.github/workflows/ci.yml`)

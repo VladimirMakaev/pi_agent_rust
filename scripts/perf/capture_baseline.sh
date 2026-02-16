@@ -16,6 +16,8 @@
 #   ./scripts/perf/capture_baseline.sh --quick             # quick baseline (3 rounds)
 #   ./scripts/perf/capture_baseline.sh --output <path>     # custom output path
 #   ./scripts/perf/capture_baseline.sh --validate <path>   # validate existing baseline
+#   ./scripts/perf/capture_baseline.sh --diagnose-env ci=tests/perf/reports/baseline_variance.json \
+#       --diagnose-env canary=/tmp/baseline_variance_canary.json           # cross-env variance diagnosis
 #
 # Environment:
 #   CARGO_TARGET_DIR          Cargo target directory
@@ -23,6 +25,10 @@
 #   BASELINE_WARMUP_ROUNDS    Warmup rounds discarded (default: 1)
 #   BASELINE_OUTPUT            Output path (default: tests/perf/reports/baseline_variance.json)
 #   BASELINE_MAX_CV            Maximum coefficient of variation for acceptance (default: 0.15)
+#   BASELINE_DIAGNOSIS_OUTPUT  Cross-env diagnosis report path
+#                              (default: tests/perf/reports/cross_env_variance_diagnosis.json)
+#   BASELINE_VARIANCE_ALERT_PCT
+#                              Spread threshold (percent) for fail/warn diagnostics (default: 10.0)
 #   PERF_REGRESSION_FULL       Forward to perf_regression (default: 0)
 
 set -euo pipefail
@@ -42,6 +48,9 @@ GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")"
 TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 VALIDATE_ONLY=""
 QUICK=0
+DIAGNOSE_OUTPUT="${BASELINE_DIAGNOSIS_OUTPUT:-$PROJECT_ROOT/tests/perf/reports/cross_env_variance_diagnosis.json}"
+VARIANCE_ALERT_PCT="${BASELINE_VARIANCE_ALERT_PCT:-10.0}"
+DIAGNOSE_ENVS=()
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -60,6 +69,9 @@ while [[ $# -gt 0 ]]; do
     --output)  OUTPUT="$2"; shift 2 ;;
     --quick)   QUICK=1; ROUNDS=3; WARMUP_ROUNDS=0; shift ;;
     --validate) VALIDATE_ONLY="$2"; shift 2 ;;
+    --diagnose-env) DIAGNOSE_ENVS+=("$2"); shift 2 ;;
+    --diagnose-output) DIAGNOSE_OUTPUT="$2"; shift 2 ;;
+    --variance-alert-pct) VARIANCE_ALERT_PCT="$2"; shift 2 ;;
     --help|-h)
       sed -n '2,/^$/p' "$0" | sed 's/^# \?//'
       exit 0
@@ -108,6 +120,234 @@ if warnings > 0:
     print(f"\n{warnings} metric(s) exceed CV threshold")
 else:
     print("\nAll metrics within acceptable variance")
+PYEOF
+  exit $?
+fi
+
+# ─── Cross-environment diagnosis mode ───────────────────────────────────────
+
+if [[ "${#DIAGNOSE_ENVS[@]}" -gt 0 ]]; then
+  bold "Cross-environment variance diagnosis (bd-3ar8v.5.7)"
+
+  if [[ "${#DIAGNOSE_ENVS[@]}" -lt 2 ]]; then
+    die "--diagnose-env requires at least two entries (label=path)"
+  fi
+
+  mkdir -p "$(dirname "$DIAGNOSE_OUTPUT")"
+
+  python3 - "$DIAGNOSE_OUTPUT" "$VARIANCE_ALERT_PCT" "${DIAGNOSE_ENVS[@]}" <<'PYEOF'
+import json
+import math
+import os
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+output_path = Path(sys.argv[1])
+alert_pct = float(sys.argv[2])
+pairs = sys.argv[3:]
+
+if len(pairs) < 2:
+    raise SystemExit("need at least two --diagnose-env entries")
+
+inputs = []
+metrics_by_env = {}
+for pair in pairs:
+    if "=" not in pair:
+        raise SystemExit(f"invalid --diagnose-env '{pair}'; expected label=path")
+    label, path_str = pair.split("=", 1)
+    label = label.strip()
+    path = Path(path_str.strip())
+    if not label:
+        raise SystemExit(f"empty label in --diagnose-env '{pair}'")
+    if not path.exists():
+        raise SystemExit(f"baseline file not found for '{label}': {path}")
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("schema") != "pi.perf.baseline_variance.v1":
+        raise SystemExit(
+            f"baseline schema mismatch for '{label}': {payload.get('schema')}"
+        )
+
+    metric_rows = payload.get("metrics", [])
+    metric_map = {}
+    for row in metric_rows:
+        if not isinstance(row, dict):
+            continue
+        metric_name = str(row.get("metric_name", "")).strip()
+        if not metric_name:
+            continue
+        mean_value = row.get("mean")
+        cv_value = row.get("coefficient_of_variation")
+        if isinstance(mean_value, (int, float)) and isinstance(cv_value, (int, float)):
+            metric_map[metric_name] = {
+                "mean": float(mean_value),
+                "coefficient_of_variation": float(cv_value),
+                "variance_class": str(row.get("variance_class", "unknown")),
+            }
+
+    metrics_by_env[label] = metric_map
+    inputs.append(
+        {
+            "label": label,
+            "path": str(path),
+            "git_commit": str(payload.get("git_commit", "unknown")),
+            "measurement_rounds": payload.get("measurement_rounds"),
+            "warmup_rounds": payload.get("warmup_rounds"),
+            "metric_count": len(metric_map),
+        }
+    )
+
+common_metrics = sorted(
+    set.intersection(*(set(metric_map.keys()) for metric_map in metrics_by_env.values()))
+)
+
+diagnostics_rows = []
+alerts = []
+for metric_name in common_metrics:
+    env_rows = []
+    values = []
+    cvs_pct = []
+    for label in sorted(metrics_by_env.keys()):
+        row = metrics_by_env[label][metric_name]
+        value = float(row["mean"])
+        cv_pct = float(row["coefficient_of_variation"]) * 100.0
+        values.append(value)
+        cvs_pct.append(cv_pct)
+        env_rows.append(
+            {
+                "label": label,
+                "mean": value,
+                "coefficient_of_variation_pct": round(cv_pct, 6),
+                "variance_class": row.get("variance_class", "unknown"),
+            }
+        )
+
+    n = len(values)
+    mean_value = sum(values) / n if n else 0.0
+    if n > 1:
+        env_variance = sum((v - mean_value) ** 2 for v in values) / (n - 1)
+        env_stddev = math.sqrt(env_variance)
+    else:
+        env_stddev = 0.0
+
+    spread_pct = (env_stddev / abs(mean_value) * 100.0) if abs(mean_value) > 1e-9 else 0.0
+    noise_floor_pct = sum(cvs_pct) / n if n else 0.0
+    signal_to_noise = spread_pct / max(noise_floor_pct, 1e-9)
+
+    environment_component_pct = max(0.0, spread_pct - noise_floor_pct)
+    noise_component_pct = min(spread_pct, noise_floor_pct)
+    build_component_pct = 0.0
+    runtime_component_pct = noise_component_pct
+
+    if environment_component_pct > max(build_component_pct, runtime_component_pct, noise_component_pct):
+        dominant_source = "environment"
+    elif runtime_component_pct > max(build_component_pct, noise_component_pct):
+        dominant_source = "runtime"
+    elif noise_component_pct > 0:
+        dominant_source = "noise"
+    else:
+        dominant_source = "build"
+
+    triggered = spread_pct >= alert_pct
+    severity = "high" if triggered and signal_to_noise >= 1.5 else "medium" if triggered else "info"
+    reason = (
+        "cross-environment spread exceeds threshold"
+        if triggered
+        else "within configured cross-environment threshold"
+    )
+
+    diagnostic = {
+        "schema": "pi.perf.cross_env_variance_diagnostic.v1",
+        "metric_name": metric_name,
+        "severity": severity,
+        "event_code": "cross_env_variance_exceeds_threshold" if triggered else "cross_env_variance_within_threshold",
+        "spread_pct": round(spread_pct, 6),
+        "noise_floor_pct": round(noise_floor_pct, 6),
+        "signal_to_noise": round(signal_to_noise, 6),
+        "dominant_source": dominant_source,
+        "message": reason,
+        "recommended_action": "Stabilize environment/build controls before interpreting regression" if triggered else "No action required",
+    }
+    diagnostics_rows.append(diagnostic)
+
+    if triggered:
+        alerts.append(
+            {
+                "metric_name": metric_name,
+                "severity": severity,
+                "reason": reason,
+                "spread_pct": round(spread_pct, 6),
+                "threshold_pct": round(alert_pct, 6),
+                "signal_to_noise": round(signal_to_noise, 6),
+            }
+        )
+
+    env_rows_sorted = sorted(env_rows, key=lambda row: row["label"])
+    metric_payload = {
+        "metric_name": metric_name,
+        "environment_values": env_rows_sorted,
+        "aggregate": {
+            "environment_count": n,
+            "mean": round(mean_value, 6),
+            "env_stddev": round(env_stddev, 6),
+            "spread_pct": round(spread_pct, 6),
+            "noise_floor_pct": round(noise_floor_pct, 6),
+            "signal_to_noise": round(signal_to_noise, 6),
+        },
+        "variance_sources": {
+            "environment_pct": round(environment_component_pct, 6),
+            "build_pct": round(build_component_pct, 6),
+            "runtime_pct": round(runtime_component_pct, 6),
+            "noise_pct": round(noise_component_pct, 6),
+            "dominant_source": dominant_source,
+        },
+        "alert": {
+            "triggered": triggered,
+            "severity": severity,
+            "reason": reason,
+            "threshold_pct": round(alert_pct, 6),
+        },
+    }
+    diagnostics_rows[-1]["metric"] = metric_payload
+
+diagnostics_jsonl_path = output_path.with_suffix(".jsonl")
+diagnostics_jsonl_path.write_text(
+    "".join(json.dumps(row, separators=(",", ":")) + "\n" for row in diagnostics_rows),
+    encoding="utf-8",
+)
+
+report = {
+    "schema": "pi.perf.cross_env_variance_diagnosis.v1",
+    "version": "1.0.0",
+    "bead_id": "bd-3ar8v.5.7",
+    "generated_at": datetime.now(timezone.utc).isoformat(),
+    "thresholds": {
+        "variance_alert_pct": round(alert_pct, 6),
+        "signal_to_noise_env_cutoff": 1.5,
+    },
+    "inputs": sorted(inputs, key=lambda row: row["label"]),
+    "metrics": [entry["metric"] for entry in diagnostics_rows],
+    "diagnostics_log": {
+        "schema": "pi.perf.cross_env_variance_diagnostic.v1",
+        "jsonl_path": str(diagnostics_jsonl_path),
+        "entries": len(diagnostics_rows),
+    },
+    "summary": {
+        "environment_count": len(inputs),
+        "metric_count": len(common_metrics),
+        "alert_count": len(alerts),
+        "high_variance_metrics": [alert["metric_name"] for alert in alerts],
+    },
+    "alerts": alerts,
+}
+
+output_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+print(f"Cross-environment diagnosis written: {output_path}")
+print(f"Diagnostic log written: {diagnostics_jsonl_path}")
+print(f"Metrics analyzed: {len(common_metrics)}")
+print(f"Alerts: {len(alerts)}")
 PYEOF
   exit $?
 fi

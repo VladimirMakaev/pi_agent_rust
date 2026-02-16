@@ -410,6 +410,33 @@ The CI step includes inline assertions that verify mode semantics every run:
 - `rollback + failures` must remain non-blocking.
 - `strict + no failures` must pass.
 
+### Perf-vs-Size Artifact Policy and Shipping Strategy (bd-3ar8v.5.5)
+
+Pi uses two distinct artifact classes with different policy roles:
+
+| Artifact class | Primary producers | Required Cargo profile label | Allowed decision scope |
+|----------------|-------------------|------------------------------|------------------------|
+| Benchmark evidence artifacts | `scripts/perf/orchestrate.sh`, `scripts/bench_extension_workloads.sh`, PERF-3X CI matrix lanes | `perf` (or explicitly configured benchmark profile) | PERF-3X ratio claims, tuning decisions, certification evidence |
+| Shipping/release artifacts | `.github/workflows/release.yml`, `cargo build --release`, installer/release binaries | `release` | Distribution integrity, binary-size/startup tradeoffs, rollout safety |
+
+Normative rules:
+
+1. PERF-3X and phase-certification claims must be backed by benchmark evidence artifacts, never by shipping-only binaries.
+2. Shipping/release binaries remain the user distribution target and must not be re-labeled as benchmark evidence.
+3. Every benchmark evidence bundle must carry profile/provenance labels sufficient for replay and attribution:
+   - `build_profile`, `correlation_id`, `scenario_id`, `runtime`, `host`
+   - CI linkage when present: `ci_correlation_id`
+   - where applicable: `allocator_requested`, `allocator_effective`, allocator fallback field, `pgo_mode_requested`, `pgo_mode_effective`
+4. Evidence ingestion for release/certification must fail closed when:
+   - profile labels are missing,
+   - profile labels conflict across records/manifests in the same run,
+   - a global performance claim is sourced from release-only artifacts.
+5. Phase-5 gate tasks must consume this policy explicitly:
+   - `bd-3ar8v.6.1` opportunity matrix generation
+   - `bd-3ar8v.6.2` parameter-sweep certification
+   - `bd-3ar8v.6.3` extension conformance + perf stress certification
+   - `bd-3ar8v.6.6` unified certification dossier lane
+
 ---
 
 ## Suite Classification File
