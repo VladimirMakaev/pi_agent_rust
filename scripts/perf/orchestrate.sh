@@ -29,6 +29,11 @@
 #   PERF_PGO_MODE             PGO mode: off, train, use, compare (default: off)
 #   PERF_PGO_PROFILE_DATA     Explicit .profdata path for profile-use mode
 #   PERF_PGO_ALLOW_FALLBACK   Fail-closed toggle when PGO data is missing/corrupt (default: 1)
+#   PERF_CROSS_ENV_BASELINES  Semicolon-delimited label=path list for cross-env diagnosis
+#                             (example: ci=tests/perf/reports/baseline_variance.json;canary=/tmp/baseline_canary.json)
+#   PERF_CROSS_ENV_VARIANCE_ALERT_PCT
+#                             Cross-env spread threshold percent (default: 10.0)
+#   PERF_CROSS_ENV_ENFORCE    If 1, fail run when cross-env diagnosis emits alerts
 #   PERF_QUICK                Set to 1 for PR-safe subset (same as --profile quick)
 #   PERF_SKIP_CRITERION       Set to 1 to skip criterion benchmarks
 #   PERF_SKIP_BUILD           Set to 1 to skip cargo build step
@@ -54,6 +59,9 @@ PARALLELISM="${PERF_PARALLELISM:-1}"
 PGO_MODE="${PERF_PGO_MODE:-off}"
 PGO_PROFILE_DATA="${PERF_PGO_PROFILE_DATA:-$TARGET_DIR/perf/$CARGO_PROFILE/pgo_profile/pijs_workload.profdata}"
 PGO_ALLOW_FALLBACK="${PERF_PGO_ALLOW_FALLBACK:-1}"
+CROSS_ENV_BASELINES="${PERF_CROSS_ENV_BASELINES:-}"
+CROSS_ENV_VARIANCE_ALERT_PCT="${PERF_CROSS_ENV_VARIANCE_ALERT_PCT:-10.0}"
+CROSS_ENV_ENFORCE="${PERF_CROSS_ENV_ENFORCE:-0}"
 CORRELATION_ID="${CI_CORRELATION_ID:-}"
 PROFILE="full"
 SKIP_BUILD="${PERF_SKIP_BUILD:-0}"
@@ -638,7 +646,8 @@ cat > "$OUTPUT_DIR/manifest.json" <<EOF
     "bench_protocol": "pi.bench.protocol.v1",
     "sli_matrix": "pi.perf.sli_ux_matrix.v1",
     "pgo_pipeline": "pi.perf.pgo_pipeline_summary.v1",
-    "extension_stratification": "pi.perf.extension_benchmark_stratification.v1"
+    "extension_stratification": "pi.perf.extension_benchmark_stratification.v1",
+    "cross_env_variance_diagnosis": "pi.perf.cross_env_variance_diagnosis.v1"
   },
   "output_dir": "$OUTPUT_DIR"
 }
@@ -1492,6 +1501,82 @@ then
   log_ok "Extension benchmark stratification written: results/extension_benchmark_stratification.json"
 else
   die "Failed to generate extension benchmark stratification artifact"
+fi
+
+# ─── Phase 5e: Cross-environment variance diagnosis ─────────────────────────
+
+log_phase "Phase 5e: Cross-Environment Variance Diagnosis"
+
+if [[ -n "$CROSS_ENV_BASELINES" ]]; then
+  CROSS_ENV_DIAG_PATH="$OUTPUT_DIR/results/cross_env_variance_diagnosis.json"
+  IFS=';' read -r -a CROSS_ENV_ITEMS <<<"$CROSS_ENV_BASELINES"
+  DIAG_ARGS=()
+  for item in "${CROSS_ENV_ITEMS[@]}"; do
+    item="${item#"${item%%[![:space:]]*}"}"
+    item="${item%"${item##*[![:space:]]}"}"
+    if [[ -n "$item" ]]; then
+      DIAG_ARGS+=(--diagnose-env "$item")
+    fi
+  done
+
+  if [[ "${#DIAG_ARGS[@]}" -lt 4 ]]; then
+    die "PERF_CROSS_ENV_BASELINES must provide at least two label=path entries"
+  fi
+
+  log_step "Running cross-env diagnosis with ${#DIAG_ARGS[@]} parameters"
+  if ./scripts/perf/capture_baseline.sh \
+    "${DIAG_ARGS[@]}" \
+    --diagnose-output "$CROSS_ENV_DIAG_PATH" \
+    --variance-alert-pct "$CROSS_ENV_VARIANCE_ALERT_PCT"; then
+    artifact_count=$((artifact_count + 1))
+    log_ok "Cross-env diagnosis written: results/cross_env_variance_diagnosis.json"
+  else
+    die "Failed to generate cross-environment variance diagnosis artifact"
+  fi
+
+  CROSS_ENV_ALERT_COUNT="$(python3 - "$CROSS_ENV_DIAG_PATH" <<'PY'
+import json, sys
+payload = json.loads(open(sys.argv[1], encoding="utf-8").read())
+print(int(payload.get("summary", {}).get("alert_count", 0)))
+PY
+)"
+  CROSS_ENV_METRIC_COUNT="$(python3 - "$CROSS_ENV_DIAG_PATH" <<'PY'
+import json, sys
+payload = json.loads(open(sys.argv[1], encoding="utf-8").read())
+print(int(payload.get("summary", {}).get("metric_count", 0)))
+PY
+)"
+
+  if [[ "$CROSS_ENV_ENFORCE" == "1" && "${CROSS_ENV_ALERT_COUNT:-0}" -gt 0 ]]; then
+    die "Cross-env diagnosis produced ${CROSS_ENV_ALERT_COUNT} alert(s) with PERF_CROSS_ENV_ENFORCE=1"
+  fi
+
+  if OUTPUT_DIR="$OUTPUT_DIR" CROSS_ENV_DIAG_PATH="$CROSS_ENV_DIAG_PATH" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+output_dir = Path(os.environ["OUTPUT_DIR"])
+diag_path = Path(os.environ["CROSS_ENV_DIAG_PATH"])
+manifest_path = output_dir / "manifest.json"
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+diag = json.loads(diag_path.read_text(encoding="utf-8"))
+summary = diag.get("summary", {})
+manifest["cross_env_variance_diagnosis"] = {
+    "schema": "pi.perf.cross_env_variance_diagnosis.v1",
+    "path": str(diag_path),
+    "metric_count": int(summary.get("metric_count", 0)),
+    "alert_count": int(summary.get("alert_count", 0)),
+}
+manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+PY
+  then
+    :
+  else
+    die "Failed to record cross-env diagnosis metadata in manifest"
+  fi
+else
+  log_step "Skipping cross-env diagnosis (set PERF_CROSS_ENV_BASELINES to enable)"
 fi
 
 # ─── Phase 6: Generate checksums ────────────────────────────────────────────

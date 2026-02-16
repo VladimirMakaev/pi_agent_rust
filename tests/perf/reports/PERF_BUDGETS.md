@@ -1,6 +1,6 @@
 # Performance Budgets
 
-> Generated: 2026-02-15T18:20:27Z
+> Generated: 2026-02-16T03:25:15Z
 
 ## Summary
 
@@ -8,11 +8,14 @@
 |---|---|
 | Total budgets | 13 |
 | CI-enforced | 8 |
-| CI-enforced with data | 5 |
-| CI-enforced FAIL | 1 |
-| PASS | 8 |
-| FAIL | 1 |
-| No data | 4 |
+| CI-enforced with data | 1 |
+| CI-enforced FAIL | 0 |
+| CI-enforced NO_DATA | 7 |
+| PASS | 3 |
+| FAIL | 0 |
+| No data | 10 |
+
+| Failing data contracts | 8 |
 
 ## Startup
 
@@ -25,8 +28,8 @@
 
 | Budget | Metric | Threshold | Actual | Status | CI |
 |---|---|---|---|---|---|
-| `ext_cold_load_simple_p95` | p95 cold load time | 5 ms | 1.0 | PASS | Yes |
-| `ext_cold_load_complex_p95` | p95 cold load time | 50 ms | 0.8 | PASS | No |
+| `ext_cold_load_simple_p95` | p95 cold load time | 5 ms | - | NO_DATA | Yes |
+| `ext_cold_load_complex_p95` | p95 cold load time | 50 ms | - | NO_DATA | No |
 | `ext_load_60_total` | total load time (60 official extensions) | 10000 ms | 6198.0 | PASS | No |
 
 ## Tool_call
@@ -40,13 +43,13 @@
 
 | Budget | Metric | Threshold | Actual | Status | CI |
 |---|---|---|---|---|---|
-| `event_dispatch_p99` | p99 dispatch latency | 5000 us | 46 | PASS | No |
+| `event_dispatch_p99` | p99 dispatch latency | 5000 us | - | NO_DATA | No |
 
 ## Policy
 
 | Budget | Metric | Threshold | Actual | Status | CI |
 |---|---|---|---|---|---|
-| `policy_eval_p99` | p99 evaluation time | 500 ns | 115 | PASS | Yes |
+| `policy_eval_p99` | p99 evaluation time | 500 ns | - | NO_DATA | Yes |
 
 ## Memory
 
@@ -59,13 +62,32 @@
 
 | Budget | Metric | Threshold | Actual | Status | CI |
 |---|---|---|---|---|---|
-| `binary_size_release` | release binary size | 20 MB | 20.9 | FAIL | Yes |
+| `binary_size_release` | release binary size | 20 MB | - | NO_DATA | Yes |
 
 ## Protocol
 
 | Budget | Metric | Threshold | Actual | Status | CI |
 |---|---|---|---|---|---|
-| `protocol_parse_p99` | p99 parse+validate time | 50 us | 6 | PASS | Yes |
+| `protocol_parse_p99` | p99 parse+validate time | 50 us | - | NO_DATA | Yes |
+
+## Failing Data Contracts
+
+- `missing_or_stale_budget_artifact` (`startup_version_p95`): missing artifacts; expected one of [/data/projects/pi_agent_rust/target/criterion/startup/version/warm/new/estimates.json]
+  - Remediation: Regenerate benchmark artifacts in the same CI/perf run before evaluating budgets.
+- `missing_or_stale_budget_artifact` (`ext_cold_load_simple_p95`): missing artifacts; expected one of [/data/projects/pi_agent_rust/target/criterion/ext_load_init/load_init_cold/hello/new/estimates.json]
+  - Remediation: Regenerate benchmark artifacts in the same CI/perf run before evaluating budgets.
+- `missing_or_stale_budget_artifact` (`tool_call_latency_p99`): missing artifacts; expected one of [/data/projects/pi_agent_rust/target/perf/perf/pijs_workload_perf.jsonl, /data/projects/pi_agent_rust/target/perf/release/pijs_workload_release.jsonl, /data/projects/pi_agent_rust/target/perf/debug/pijs_workload_debug.jsonl, /data/projects/pi_agent_rust/target/perf/pijs_workload.jsonl]
+  - Remediation: Regenerate benchmark artifacts in the same CI/perf run before evaluating budgets.
+- `missing_or_stale_budget_artifact` (`tool_call_throughput_min`): missing artifacts; expected one of [/data/projects/pi_agent_rust/target/perf/perf/pijs_workload_perf.jsonl, /data/projects/pi_agent_rust/target/perf/release/pijs_workload_release.jsonl, /data/projects/pi_agent_rust/target/perf/debug/pijs_workload_debug.jsonl, /data/projects/pi_agent_rust/target/perf/pijs_workload.jsonl]
+  - Remediation: Regenerate benchmark artifacts in the same CI/perf run before evaluating budgets.
+- `missing_or_stale_budget_artifact` (`policy_eval_p99`): missing artifacts; expected one of [/data/projects/pi_agent_rust/target/criterion/ext_policy/evaluate]
+  - Remediation: Regenerate benchmark artifacts in the same CI/perf run before evaluating budgets.
+- `missing_or_stale_budget_artifact` (`binary_size_release`): missing artifacts; expected one of [/data/projects/pi_agent_rust/target/release/pi]
+  - Remediation: Regenerate benchmark artifacts in the same CI/perf run before evaluating budgets.
+- `missing_or_stale_budget_artifact` (`protocol_parse_p99`): missing artifacts; expected one of [/data/projects/pi_agent_rust/target/criterion/ext_protocol/parse_and_validate]
+  - Remediation: Regenerate benchmark artifacts in the same CI/perf run before evaluating budgets.
+- `missing_or_stale_e2e_matrix_evidence` (`global`): missing artifacts; expected one of [/data/projects/pi_agent_rust/target/perf/extension_benchmark_stratification.json, /data/projects/pi_agent_rust/tests/perf/reports/extension_benchmark_stratification.json]
+  - Remediation: Generate fresh extension_benchmark_stratification.json in the current perf run.
 
 ## Measurement Methodology
 
