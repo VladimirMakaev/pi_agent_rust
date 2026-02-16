@@ -192,6 +192,11 @@ fn read_jsonl_file(path: &Path) -> Vec<Value> {
         .collect()
 }
 
+fn load_perf_sli_matrix() -> Value {
+    let path = project_root().join("docs/perf_sli_matrix.json");
+    read_json_file(&path).unwrap_or_else(|| panic!("failed to parse {}", path.display()))
+}
+
 /// Measurement result for a budget check.
 #[derive(Debug, Clone, Serialize)]
 struct BudgetResult {
@@ -392,6 +397,126 @@ fn metric_state(value: Option<f64>) -> &'static str {
     }
 }
 
+const fn required_bool_state(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "true",
+        Some(false) => "false",
+        None => "missing_or_non_boolean",
+    }
+}
+
+fn collect_full_e2e_rows(payload: &Value) -> Vec<&Value> {
+    payload
+        .get("layers")
+        .and_then(Value::as_array)
+        .map_or_else(Vec::new, |rows| {
+            rows.iter()
+                .filter(|row| {
+                    row.get("layer_id").and_then(Value::as_str) == Some("full_e2e_long_session")
+                })
+                .collect::<Vec<_>>()
+        })
+}
+
+fn duplicate_full_e2e_failure(path: &Path, full_e2e_count: usize) -> Option<DataContractFailure> {
+    (full_e2e_count > 1).then(|| DataContractFailure {
+        contract_id: "missing_required_e2e_or_ratio_outputs".to_string(),
+        budget_name: None,
+        detail: format!(
+            "duplicate full_e2e_long_session layers found (count={full_e2e_count}) in {}",
+            path.display()
+        ),
+        remediation:
+            "Emit exactly one full_e2e_long_session layer in extension_benchmark_stratification."
+                .to_string(),
+    })
+}
+
+fn required_e2e_metric_failure(
+    path: &Path,
+    full_e2e: Option<&Value>,
+) -> Option<DataContractFailure> {
+    let absolute_value = full_e2e
+        .and_then(|row| row.pointer("/absolute_metrics/value"))
+        .and_then(Value::as_f64);
+    let node_ratio_value = full_e2e
+        .and_then(|row| row.pointer("/relative_metrics/rust_vs_node_ratio"))
+        .and_then(Value::as_f64);
+    let bun_ratio_value = full_e2e
+        .and_then(|row| row.pointer("/relative_metrics/rust_vs_bun_ratio"))
+        .and_then(Value::as_f64);
+
+    let absolute_valid = is_positive_finite_metric(absolute_value);
+    let node_ratio_valid = is_positive_finite_metric(node_ratio_value);
+    let bun_ratio_valid = is_positive_finite_metric(bun_ratio_value);
+
+    (!absolute_valid || !node_ratio_valid || !bun_ratio_valid).then(|| DataContractFailure {
+        contract_id: "missing_required_e2e_or_ratio_outputs".to_string(),
+        budget_name: None,
+        detail: format!(
+            "full_e2e_long_session evidence has invalid required values (absolute_metrics.value={}, rust_vs_node_ratio={}, rust_vs_bun_ratio={}) in {}",
+            metric_state(absolute_value),
+            metric_state(node_ratio_value),
+            metric_state(bun_ratio_value),
+            path.display()
+        ),
+        remediation:
+            "Emit full_e2e_long_session absolute latency and Rust-vs-Node/Bun ratios as finite positive numbers."
+                .to_string(),
+    })
+}
+
+fn claim_integrity_guard_failure(path: &Path, payload: &Value) -> Option<DataContractFailure> {
+    let global_claim_valid = payload
+        .pointer("/claim_integrity/cherry_pick_guard/global_claim_valid")
+        .and_then(Value::as_bool);
+    let full_e2e_layer_coverage = payload
+        .pointer("/claim_integrity/cherry_pick_guard/layer_coverage/full_e2e_long_session")
+        .and_then(Value::as_bool);
+
+    (global_claim_valid != Some(true) || full_e2e_layer_coverage != Some(true)).then(|| {
+        DataContractFailure {
+            contract_id: "invalid_claim_integrity_guard".to_string(),
+            budget_name: None,
+            detail: format!(
+                "claim_integrity.cherry_pick_guard requires global_claim_valid=true and layer_coverage.full_e2e_long_session=true (global_claim_valid={}, full_e2e_layer_coverage={}) in {}",
+                required_bool_state(global_claim_valid),
+                required_bool_state(full_e2e_layer_coverage),
+                path.display()
+            ),
+            remediation:
+                "Emit claim_integrity.cherry_pick_guard.global_claim_valid=true and layer_coverage.full_e2e_long_session=true for valid global claims."
+                    .to_string(),
+        }
+    })
+}
+
+fn microbench_only_claim_failure(path: &Path, payload: &Value) -> Option<DataContractFailure> {
+    let invalidity_reasons = payload
+        .pointer("/claim_integrity/cherry_pick_guard/invalidity_reasons")
+        .and_then(Value::as_array)
+        .map_or_else(Vec::new, |arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        });
+
+    invalidity_reasons
+        .iter()
+        .any(|reason| reason == "microbench_only_claim")
+        .then(|| DataContractFailure {
+            contract_id: "microbench_only_claim".to_string(),
+            budget_name: None,
+            detail: format!(
+                "claim_integrity.cherry_pick_guard.invalidity_reasons contains microbench_only_claim in {}",
+                path.display()
+            ),
+            remediation: "Provide full E2E matrix evidence before making global performance claims."
+                .to_string(),
+        })
+}
+
 fn evaluate_required_e2e_ratio_contract(
     root: &Path,
     max_age_hours: f64,
@@ -433,67 +558,18 @@ fn evaluate_required_e2e_ratio_contract(
         return failures;
     };
 
-    let layers = payload.get("layers").and_then(Value::as_array);
-    let full_e2e = layers.and_then(|rows| {
-        rows.iter().find(|row| {
-            row.get("layer_id").and_then(Value::as_str) == Some("full_e2e_long_session")
-        })
-    });
-
-    let absolute_value = full_e2e
-        .and_then(|row| row.pointer("/absolute_metrics/value"))
-        .and_then(Value::as_f64);
-    let node_ratio_value = full_e2e
-        .and_then(|row| row.pointer("/relative_metrics/rust_vs_node_ratio"))
-        .and_then(Value::as_f64);
-    let bun_ratio_value = full_e2e
-        .and_then(|row| row.pointer("/relative_metrics/rust_vs_bun_ratio"))
-        .and_then(Value::as_f64);
-
-    let absolute_valid = is_positive_finite_metric(absolute_value);
-    let node_ratio_valid = is_positive_finite_metric(node_ratio_value);
-    let bun_ratio_valid = is_positive_finite_metric(bun_ratio_value);
-
-    if !absolute_valid || !node_ratio_valid || !bun_ratio_valid {
-        failures.push(DataContractFailure {
-            contract_id: "missing_required_e2e_or_ratio_outputs".to_string(),
-            budget_name: None,
-            detail: format!(
-                "full_e2e_long_session evidence has invalid required values (absolute_metrics.value={}, rust_vs_node_ratio={}, rust_vs_bun_ratio={}) in {}",
-                metric_state(absolute_value),
-                metric_state(node_ratio_value),
-                metric_state(bun_ratio_value),
-                path.display()
-            ),
-            remediation:
-                "Emit full_e2e_long_session absolute latency and Rust-vs-Node/Bun ratios as finite positive numbers."
-                    .to_string(),
-        });
+    let full_e2e_rows = collect_full_e2e_rows(&payload);
+    if let Some(failure) = duplicate_full_e2e_failure(&path, full_e2e_rows.len()) {
+        failures.push(failure);
     }
-
-    let invalidity_reasons = payload
-        .pointer("/claim_integrity/cherry_pick_guard/invalidity_reasons")
-        .and_then(Value::as_array)
-        .map_or_else(Vec::new, |arr| {
-            arr.iter()
-                .filter_map(Value::as_str)
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-        });
-    if invalidity_reasons
-        .iter()
-        .any(|reason| reason == "microbench_only_claim")
-    {
-        failures.push(DataContractFailure {
-            contract_id: "microbench_only_claim".to_string(),
-            budget_name: None,
-            detail: format!(
-                "claim_integrity.cherry_pick_guard.invalidity_reasons contains microbench_only_claim in {}",
-                path.display()
-            ),
-            remediation:
-                "Provide full E2E matrix evidence before making global performance claims.".to_string(),
-        });
+    if let Some(failure) = required_e2e_metric_failure(&path, full_e2e_rows.first().copied()) {
+        failures.push(failure);
+    }
+    if let Some(failure) = claim_integrity_guard_failure(&path, &payload) {
+        failures.push(failure);
+    }
+    if let Some(failure) = microbench_only_claim_failure(&path, &payload) {
+        failures.push(failure);
     }
 
     failures
@@ -1368,6 +1444,37 @@ fn write_stratification_artifact_with_full_e2e_layer(
     invalidity_reasons: &[&str],
     full_e2e_layer: Option<Value>,
 ) {
+    let full_e2e_layers = full_e2e_layer.into_iter().collect::<Vec<_>>();
+    write_stratification_artifact_with_claim_guard(
+        path,
+        invalidity_reasons,
+        &full_e2e_layers,
+        Some(true),
+        Some(!full_e2e_layers.is_empty()),
+    );
+}
+
+fn write_stratification_artifact_with_full_e2e_layers(
+    path: &Path,
+    invalidity_reasons: &[&str],
+    full_e2e_layers: &[Value],
+) {
+    write_stratification_artifact_with_claim_guard(
+        path,
+        invalidity_reasons,
+        full_e2e_layers,
+        Some(true),
+        Some(!full_e2e_layers.is_empty()),
+    );
+}
+
+fn write_stratification_artifact_with_claim_guard(
+    path: &Path,
+    invalidity_reasons: &[&str],
+    full_e2e_layers: &[Value],
+    global_claim_valid: Option<bool>,
+    full_e2e_layer_coverage: Option<bool>,
+) {
     let mut layers = vec![
         json!({
             "layer_id": "cold_load_init",
@@ -1380,8 +1487,27 @@ fn write_stratification_artifact_with_full_e2e_layer(
             "relative_metrics": {"rust_vs_node_ratio": 2.0, "rust_vs_bun_ratio": 1.6}
         }),
     ];
-    if let Some(layer) = full_e2e_layer {
-        layers.push(layer);
+    if !full_e2e_layers.is_empty() {
+        layers.extend(full_e2e_layers.iter().cloned());
+    }
+
+    let mut cherry_pick_guard = serde_json::Map::new();
+    cherry_pick_guard.insert(
+        "invalidity_reasons".to_string(),
+        Value::Array(
+            invalidity_reasons
+                .iter()
+                .map(|reason| Value::String((*reason).to_string()))
+                .collect(),
+        ),
+    );
+    if let Some(valid) = global_claim_valid {
+        cherry_pick_guard.insert("global_claim_valid".to_string(), Value::Bool(valid));
+    }
+    if let Some(covered) = full_e2e_layer_coverage {
+        let mut layer_coverage = serde_json::Map::new();
+        layer_coverage.insert("full_e2e_long_session".to_string(), Value::Bool(covered));
+        cherry_pick_guard.insert("layer_coverage".to_string(), Value::Object(layer_coverage));
     }
 
     let payload = json!({
@@ -1389,9 +1515,7 @@ fn write_stratification_artifact_with_full_e2e_layer(
         "generated_at": chrono::Utc::now().to_rfc3339(),
         "layers": layers,
         "claim_integrity": {
-            "cherry_pick_guard": {
-                "invalidity_reasons": invalidity_reasons
-            }
+            "cherry_pick_guard": Value::Object(cherry_pick_guard)
         }
     });
     std::fs::write(
@@ -1446,11 +1570,7 @@ fn required_e2e_ratio_contract_fails_when_full_e2e_values_non_positive() {
         "absolute_metrics": {"value": 0.0},
         "relative_metrics": {"rust_vs_node_ratio": -1.0, "rust_vs_bun_ratio": 1.5}
     });
-    write_stratification_artifact_with_full_e2e_layer(
-        &artifact,
-        &[],
-        Some(invalid_full_e2e),
-    );
+    write_stratification_artifact_with_full_e2e_layer(&artifact, &[], Some(invalid_full_e2e));
 
     let failures = evaluate_required_e2e_ratio_contract(tmp.path(), 24.0);
     assert!(
@@ -1472,11 +1592,7 @@ fn required_e2e_ratio_contract_fails_when_full_e2e_values_non_numeric() {
         "absolute_metrics": {"value": "n/a"},
         "relative_metrics": {"rust_vs_node_ratio": 1.8, "rust_vs_bun_ratio": null}
     });
-    write_stratification_artifact_with_full_e2e_layer(
-        &artifact,
-        &[],
-        Some(invalid_full_e2e),
-    );
+    write_stratification_artifact_with_full_e2e_layer(&artifact, &[], Some(invalid_full_e2e));
 
     let failures = evaluate_required_e2e_ratio_contract(tmp.path(), 24.0);
     assert!(
@@ -1484,5 +1600,178 @@ fn required_e2e_ratio_contract_fails_when_full_e2e_values_non_numeric() {
             .iter()
             .any(|failure| failure.contract_id == "missing_required_e2e_or_ratio_outputs"),
         "expected missing_required_e2e_or_ratio_outputs failure, got: {failures:?}",
+    );
+}
+
+#[test]
+fn required_e2e_ratio_contract_fails_when_duplicate_full_e2e_layers_present() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let perf_dir = tmp.path().join("target/perf");
+    std::fs::create_dir_all(&perf_dir).expect("create perf dir");
+    let artifact = perf_dir.join("extension_benchmark_stratification.json");
+    let duplicate_layers = vec![
+        json!({
+            "layer_id": "full_e2e_long_session",
+            "absolute_metrics": {"value": 120.0},
+            "relative_metrics": {"rust_vs_node_ratio": 1.8, "rust_vs_bun_ratio": 1.5}
+        }),
+        json!({
+            "layer_id": "full_e2e_long_session",
+            "absolute_metrics": {"value": 130.0},
+            "relative_metrics": {"rust_vs_node_ratio": 1.7, "rust_vs_bun_ratio": 1.4}
+        }),
+    ];
+    write_stratification_artifact_with_full_e2e_layers(&artifact, &[], &duplicate_layers);
+
+    let failures = evaluate_required_e2e_ratio_contract(tmp.path(), 24.0);
+    assert!(
+        failures.iter().any(|failure| {
+            failure.contract_id == "missing_required_e2e_or_ratio_outputs"
+                && failure
+                    .detail
+                    .contains("duplicate full_e2e_long_session layers")
+        }),
+        "expected duplicate full_e2e_long_session failure, got: {failures:?}",
+    );
+}
+
+#[test]
+fn required_e2e_ratio_contract_fails_when_global_claim_valid_is_false() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let perf_dir = tmp.path().join("target/perf");
+    std::fs::create_dir_all(&perf_dir).expect("create perf dir");
+    let artifact = perf_dir.join("extension_benchmark_stratification.json");
+    let full_e2e_layers = vec![json!({
+        "layer_id": "full_e2e_long_session",
+        "absolute_metrics": {"value": 120.0},
+        "relative_metrics": {"rust_vs_node_ratio": 1.8, "rust_vs_bun_ratio": 1.5}
+    })];
+    write_stratification_artifact_with_claim_guard(
+        &artifact,
+        &[],
+        &full_e2e_layers,
+        Some(false),
+        Some(true),
+    );
+
+    let failures = evaluate_required_e2e_ratio_contract(tmp.path(), 24.0);
+    assert!(
+        failures.iter().any(|failure| {
+            failure.contract_id == "invalid_claim_integrity_guard"
+                && failure.detail.contains("global_claim_valid=false")
+        }),
+        "expected invalid_claim_integrity_guard failure for false global_claim_valid, got: {failures:?}",
+    );
+}
+
+#[test]
+fn required_e2e_ratio_contract_fails_when_layer_coverage_missing() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let perf_dir = tmp.path().join("target/perf");
+    std::fs::create_dir_all(&perf_dir).expect("create perf dir");
+    let artifact = perf_dir.join("extension_benchmark_stratification.json");
+    let full_e2e_layers = vec![json!({
+        "layer_id": "full_e2e_long_session",
+        "absolute_metrics": {"value": 120.0},
+        "relative_metrics": {"rust_vs_node_ratio": 1.8, "rust_vs_bun_ratio": 1.5}
+    })];
+    write_stratification_artifact_with_claim_guard(
+        &artifact,
+        &[],
+        &full_e2e_layers,
+        Some(true),
+        None,
+    );
+
+    let failures = evaluate_required_e2e_ratio_contract(tmp.path(), 24.0);
+    assert!(
+        failures.iter().any(|failure| {
+            failure.contract_id == "invalid_claim_integrity_guard"
+                && failure
+                    .detail
+                    .contains("full_e2e_layer_coverage=missing_or_non_boolean")
+        }),
+        "expected invalid_claim_integrity_guard failure for missing layer coverage, got: {failures:?}",
+    );
+}
+
+#[test]
+fn perf_sli_matrix_defines_evidence_adjudication_contract() {
+    let perf = load_perf_sli_matrix();
+    let contract = perf["evidence_adjudication_contract"]
+        .as_object()
+        .expect("evidence_adjudication_contract must be object");
+
+    assert_eq!(
+        contract.get("schema").and_then(Value::as_str),
+        Some("pi.perf.evidence_adjudication_contract.v1"),
+        "evidence_adjudication_contract.schema must be versioned"
+    );
+
+    let required_inputs: Vec<&str> = contract["required_input_artifacts"]
+        .as_array()
+        .expect("required_input_artifacts must be an array")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    for required in [
+        "summary_json",
+        "baseline_variance_confidence",
+        "extension_benchmark_stratification",
+        "phase1_matrix_validation",
+        "claim_integrity_scenario_cells",
+    ] {
+        assert!(
+            required_inputs.contains(&required),
+            "required_input_artifacts must include {required}"
+        );
+    }
+
+    let statuses: Vec<&str> = contract["allowed_verdict_statuses"]
+        .as_array()
+        .expect("allowed_verdict_statuses must be an array")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    for status in ["resolved", "conflict", "stale", "non_canonical"] {
+        assert!(
+            statuses.contains(&status),
+            "allowed_verdict_statuses must include {status}"
+        );
+    }
+}
+
+#[test]
+fn perf_sli_matrix_adjudication_contract_is_fail_closed() {
+    let perf = load_perf_sli_matrix();
+    let contract = &perf["evidence_adjudication_contract"];
+
+    let reason_codes: Vec<&str> = contract["fail_closed_reason_codes"]
+        .as_array()
+        .expect("fail_closed_reason_codes must be an array")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    for reason in [
+        "missing_input_artifact",
+        "stale_input_artifact",
+        "lineage_mismatch",
+        "confidence_conflict_unresolved",
+        "non_canonical_claim_source",
+    ] {
+        assert!(
+            reason_codes.contains(&reason),
+            "fail_closed_reason_codes must include {reason}"
+        );
+    }
+
+    assert!(
+        perf["ci_enforcement"]["fail_closed_conditions"]
+            .as_array()
+            .expect("ci_enforcement.fail_closed_conditions must be an array")
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|condition| condition == "unresolved_conflicting_claims"),
+        "ci_enforcement.fail_closed_conditions must include unresolved_conflicting_claims"
     );
 }

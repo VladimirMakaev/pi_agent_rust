@@ -1213,14 +1213,18 @@ fn patch_settings_file(path: &Path, patch: Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Config, ExtensionRiskConfig, SettingsScope, TerminalSettings,
-        extension_index_path_from_env, global_dir_from_env, package_dir_from_env,
+        BranchSummarySettings, CompactionSettings, Config, ExtensionPolicyConfig,
+        ExtensionRiskConfig, ImageSettings, RepairPolicyConfig, RetrySettings, SettingsScope,
+        TerminalSettings, ThinkingBudgets, deep_merge_settings_value,
+        extension_index_path_from_env, global_dir_from_env, merge_branch_summary, merge_compaction,
+        merge_extension_policy, merge_extension_risk, merge_images, merge_repair_policy,
+        merge_retry, merge_terminal, merge_thinking_budgets, package_dir_from_env,
         sessions_dir_from_env,
     };
     use crate::agent::QueueMode;
     use proptest::prelude::*;
     use proptest::string::string_regex;
-    use serde_json::json;
+    use serde_json::{Value, json};
     use std::collections::HashMap;
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -2362,6 +2366,255 @@ mod tests {
         #![proptest_config(ProptestConfig { cases: 128, .. ProptestConfig::default() })]
 
         #[test]
+        fn proptest_config_merge_prefers_other_for_scalar_fields(
+            base_theme in prop::option::of(string_regex("[A-Za-z0-9_-]{1,16}").unwrap()),
+            other_theme in prop::option::of(string_regex("[A-Za-z0-9_-]{1,16}").unwrap()),
+            base_provider in prop::option::of(string_regex("[A-Za-z0-9_-]{1,16}").unwrap()),
+            other_provider in prop::option::of(string_regex("[A-Za-z0-9_-]{1,16}").unwrap()),
+            base_hide_thinking in prop::option::of(any::<bool>()),
+            other_hide_thinking in prop::option::of(any::<bool>()),
+            base_autocomplete in prop::option::of(0u16..512u16),
+            other_autocomplete in prop::option::of(0u16..512u16),
+        ) {
+            let base = Config {
+                theme: base_theme.clone(),
+                default_provider: base_provider.clone(),
+                hide_thinking_block: base_hide_thinking,
+                autocomplete_max_visible: base_autocomplete.map(u32::from),
+                ..Config::default()
+            };
+            let other = Config {
+                theme: other_theme.clone(),
+                default_provider: other_provider.clone(),
+                hide_thinking_block: other_hide_thinking,
+                autocomplete_max_visible: other_autocomplete.map(u32::from),
+                ..Config::default()
+            };
+
+            let merged = Config::merge(base, other);
+            prop_assert_eq!(merged.theme, other_theme.or(base_theme));
+            prop_assert_eq!(merged.default_provider, other_provider.or(base_provider));
+            prop_assert_eq!(
+                merged.hide_thinking_block,
+                other_hide_thinking.or(base_hide_thinking)
+            );
+            prop_assert_eq!(
+                merged.autocomplete_max_visible,
+                other_autocomplete
+                    .map(u32::from)
+                    .or_else(|| base_autocomplete.map(u32::from))
+            );
+        }
+
+        #[test]
+        fn proptest_merge_extension_risk_prefers_other_fields_when_present(
+            base_present in any::<bool>(),
+            other_present in any::<bool>(),
+            base_enabled in prop::option::of(any::<bool>()),
+            other_enabled in prop::option::of(any::<bool>()),
+            base_alpha in prop::option::of(-1.0e6f64..1.0e6f64),
+            other_alpha in prop::option::of(-1.0e6f64..1.0e6f64),
+            base_window in prop::option::of(1u16..1024u16),
+            other_window in prop::option::of(1u16..1024u16),
+            base_ledger_limit in prop::option::of(1u16..2048u16),
+            other_ledger_limit in prop::option::of(1u16..2048u16),
+            base_timeout_ms in prop::option::of(1u16..5000u16),
+            other_timeout_ms in prop::option::of(1u16..5000u16),
+            base_fail_closed in prop::option::of(any::<bool>()),
+            other_fail_closed in prop::option::of(any::<bool>()),
+            base_enforce in prop::option::of(any::<bool>()),
+            other_enforce in prop::option::of(any::<bool>()),
+        ) {
+            let base = base_present.then_some(ExtensionRiskConfig {
+                enabled: base_enabled,
+                alpha: base_alpha,
+                window_size: base_window.map(u32::from),
+                ledger_limit: base_ledger_limit.map(u32::from),
+                decision_timeout_ms: base_timeout_ms.map(u64::from),
+                fail_closed: base_fail_closed,
+                enforce: base_enforce,
+            });
+            let other = other_present.then_some(ExtensionRiskConfig {
+                enabled: other_enabled,
+                alpha: other_alpha,
+                window_size: other_window.map(u32::from),
+                ledger_limit: other_ledger_limit.map(u32::from),
+                decision_timeout_ms: other_timeout_ms.map(u64::from),
+                fail_closed: other_fail_closed,
+                enforce: other_enforce,
+            });
+
+            let merged = super::merge_extension_risk(base.clone(), other.clone());
+            match (base, other, merged) {
+                (None, None, None) => {}
+                (Some(base), None, Some(merged)) => {
+                    prop_assert_eq!(merged.enabled, base.enabled);
+                    prop_assert_eq!(merged.alpha, base.alpha);
+                    prop_assert_eq!(merged.window_size, base.window_size);
+                    prop_assert_eq!(merged.ledger_limit, base.ledger_limit);
+                    prop_assert_eq!(merged.decision_timeout_ms, base.decision_timeout_ms);
+                    prop_assert_eq!(merged.fail_closed, base.fail_closed);
+                    prop_assert_eq!(merged.enforce, base.enforce);
+                }
+                (None, Some(other), Some(merged)) => {
+                    prop_assert_eq!(merged.enabled, other.enabled);
+                    prop_assert_eq!(merged.alpha, other.alpha);
+                    prop_assert_eq!(merged.window_size, other.window_size);
+                    prop_assert_eq!(merged.ledger_limit, other.ledger_limit);
+                    prop_assert_eq!(merged.decision_timeout_ms, other.decision_timeout_ms);
+                    prop_assert_eq!(merged.fail_closed, other.fail_closed);
+                    prop_assert_eq!(merged.enforce, other.enforce);
+                }
+                (Some(base), Some(other), Some(merged)) => {
+                    prop_assert_eq!(merged.enabled, other.enabled.or(base.enabled));
+                    prop_assert_eq!(merged.alpha, other.alpha.or(base.alpha));
+                    prop_assert_eq!(merged.window_size, other.window_size.or(base.window_size));
+                    prop_assert_eq!(merged.ledger_limit, other.ledger_limit.or(base.ledger_limit));
+                    prop_assert_eq!(
+                        merged.decision_timeout_ms,
+                        other.decision_timeout_ms.or(base.decision_timeout_ms)
+                    );
+                    prop_assert_eq!(merged.fail_closed, other.fail_closed.or(base.fail_closed));
+                    prop_assert_eq!(merged.enforce, other.enforce.or(base.enforce));
+                }
+                _ => panic!("merge_extension_risk must preserve Option-shape semantics"),
+            }
+        }
+
+        #[test]
+        fn proptest_deep_merge_settings_value_scalar_and_null_patch_semantics(
+            base_entries in prop::collection::hash_map(
+                string_regex("[a-z][a-z0-9_]{0,10}").unwrap(),
+                any::<i64>(),
+                0..16
+            ),
+            patch_entries in prop::collection::hash_map(
+                string_regex("[a-z][a-z0-9_]{0,10}").unwrap(),
+                prop::option::of(any::<i64>()),
+                0..16
+            ),
+        ) {
+            let mut dst = Value::Object(
+                base_entries
+                    .iter()
+                    .map(|(key, value)| (key.clone(), json!(*value)))
+                    .collect(),
+            );
+            let patch = Value::Object(
+                patch_entries
+                    .iter()
+                    .map(|(key, value)| {
+                        (
+                            key.clone(),
+                            value.map_or(Value::Null, |number| json!(number)),
+                        )
+                    })
+                    .collect(),
+            );
+
+            super::deep_merge_settings_value(&mut dst, patch).expect("merge should succeed");
+            let dst_obj = dst.as_object().expect("merged value should stay an object");
+
+            let mut expected = base_entries;
+            for (key, value) in &patch_entries {
+                match value {
+                    Some(number) => {
+                        expected.insert(key.clone(), *number);
+                    }
+                    None => {
+                        expected.remove(key);
+                    }
+                }
+            }
+
+            prop_assert_eq!(dst_obj.len(), expected.len());
+            for (key, expected_value) in expected {
+                prop_assert_eq!(dst_obj.get(&key), Some(&json!(expected_value)));
+            }
+        }
+
+        #[test]
+        fn proptest_deep_merge_settings_value_nested_object_patch_semantics(
+            base_nested in prop::collection::hash_map(
+                string_regex("[a-z][a-z0-9_]{0,10}").unwrap(),
+                any::<i64>(),
+                0..12
+            ),
+            patch_nested in prop::collection::hash_map(
+                string_regex("[a-z][a-z0-9_]{0,10}").unwrap(),
+                prop::option::of(any::<i64>()),
+                0..12
+            ),
+            preserve_value in any::<i64>(),
+        ) {
+            let mut dst = json!({
+                "nested": Value::Object(
+                    base_nested
+                        .iter()
+                        .map(|(key, value)| (key.clone(), json!(*value)))
+                        .collect()
+                ),
+                "preserve": preserve_value
+            });
+
+            let patch = json!({
+                "nested": Value::Object(
+                    patch_nested
+                        .iter()
+                        .map(|(key, value)| {
+                            (
+                                key.clone(),
+                                value.map_or(Value::Null, |number| json!(number)),
+                            )
+                        })
+                        .collect()
+                )
+            });
+
+            super::deep_merge_settings_value(&mut dst, patch).expect("nested merge should succeed");
+
+            let mut expected_nested = base_nested;
+            for (key, value) in &patch_nested {
+                match value {
+                    Some(number) => {
+                        expected_nested.insert(key.clone(), *number);
+                    }
+                    None => {
+                        expected_nested.remove(key);
+                    }
+                }
+            }
+
+            let nested = dst
+                .get("nested")
+                .and_then(Value::as_object)
+                .expect("nested key should stay an object");
+            prop_assert_eq!(nested.len(), expected_nested.len());
+            for (key, expected_value) in expected_nested {
+                prop_assert_eq!(nested.get(&key), Some(&json!(expected_value)));
+            }
+            prop_assert_eq!(dst.get("preserve"), Some(&json!(preserve_value)));
+        }
+
+        #[test]
+        fn proptest_deep_merge_settings_value_rejects_non_object_patch(
+            patch in prop_oneof![
+                any::<bool>().prop_map(Value::Bool),
+                any::<i64>().prop_map(Value::from),
+                Just(Value::Null),
+                prop::collection::vec(any::<i64>(), 0..8).prop_map(|values| json!(values)),
+            ],
+        ) {
+            let mut dst = json!({});
+            let err = super::deep_merge_settings_value(&mut dst, patch)
+                .expect_err("non-object patch must fail closed");
+            prop_assert!(
+                err.to_string().contains("Settings patch must be a JSON object"),
+                "unexpected error: {err}"
+            );
+        }
+
+        #[test]
         fn proptest_extension_risk_alpha_finite_values_clamp(alpha in -1.0e6f64..1.0e6f64) {
             let config = Config {
                 extension_risk: Some(ExtensionRiskConfig {
@@ -2512,5 +2765,316 @@ mod tests {
         let json = r#"{"check_for_updates": true}"#;
         let config: Config = serde_json::from_str(json).unwrap();
         assert!(config.should_check_for_updates());
+    }
+
+    // ── merge function property tests ──────────────────────────────────
+
+    mod merge_proptests {
+        use super::*;
+
+        // All merge functions share the same pattern:
+        //   (None, None)    → None
+        //   (Some, None)    → Some(base)
+        //   (None, Some)    → Some(other)
+        //   (Some, Some)    → Some(field-by-field other.or(base))
+
+        proptest! {
+            // ================================================================
+            // merge_compaction
+            // ================================================================
+
+            #[test]
+            fn compaction_none_none_is_none(() in Just(())) {
+                assert!(merge_compaction(None, None).is_none());
+            }
+
+            #[test]
+            fn compaction_right_identity(
+                enabled in prop::option::of(any::<bool>()),
+                reserve in prop::option::of(1u32..100_000),
+                keep in prop::option::of(1u32..100_000),
+            ) {
+                let base = CompactionSettings { enabled, reserve_tokens: reserve, keep_recent_tokens: keep };
+                let result = merge_compaction(Some(base.clone()), None).unwrap();
+                assert_eq!(result.enabled, base.enabled);
+                assert_eq!(result.reserve_tokens, base.reserve_tokens);
+                assert_eq!(result.keep_recent_tokens, base.keep_recent_tokens);
+            }
+
+            #[test]
+            fn compaction_left_identity(
+                enabled in prop::option::of(any::<bool>()),
+                reserve in prop::option::of(1u32..100_000),
+                keep in prop::option::of(1u32..100_000),
+            ) {
+                let other = CompactionSettings { enabled, reserve_tokens: reserve, keep_recent_tokens: keep };
+                let result = merge_compaction(None, Some(other.clone())).unwrap();
+                assert_eq!(result.enabled, other.enabled);
+                assert_eq!(result.reserve_tokens, other.reserve_tokens);
+                assert_eq!(result.keep_recent_tokens, other.keep_recent_tokens);
+            }
+
+            #[test]
+            fn compaction_other_overrides_base(
+                b_en in prop::option::of(any::<bool>()),
+                b_res in prop::option::of(1u32..100_000),
+                o_en in prop::option::of(any::<bool>()),
+                o_res in prop::option::of(1u32..100_000),
+            ) {
+                let base = CompactionSettings { enabled: b_en, reserve_tokens: b_res, keep_recent_tokens: None };
+                let other = CompactionSettings { enabled: o_en, reserve_tokens: o_res, keep_recent_tokens: None };
+                let result = merge_compaction(Some(base), Some(other)).unwrap();
+                assert_eq!(result.enabled, o_en.or(b_en));
+                assert_eq!(result.reserve_tokens, o_res.or(b_res));
+            }
+
+            // ================================================================
+            // merge_branch_summary
+            // ================================================================
+
+            #[test]
+            fn branch_summary_none_none_is_none(() in Just(())) {
+                assert!(merge_branch_summary(None, None).is_none());
+            }
+
+            #[test]
+            fn branch_summary_other_overrides(
+                b_res in prop::option::of(1u32..100_000),
+                o_res in prop::option::of(1u32..100_000),
+            ) {
+                let base = BranchSummarySettings { reserve_tokens: b_res };
+                let other = BranchSummarySettings { reserve_tokens: o_res };
+                let result = merge_branch_summary(Some(base), Some(other)).unwrap();
+                assert_eq!(result.reserve_tokens, o_res.or(b_res));
+            }
+
+            // ================================================================
+            // merge_retry
+            // ================================================================
+
+            #[test]
+            fn retry_none_none_is_none(() in Just(())) {
+                assert!(merge_retry(None, None).is_none());
+            }
+
+            #[test]
+            fn retry_other_overrides(
+                b_en in prop::option::of(any::<bool>()),
+                b_max in prop::option::of(1u32..10),
+                o_en in prop::option::of(any::<bool>()),
+                o_base_delay in prop::option::of(100u32..5000),
+            ) {
+                let base = RetrySettings { enabled: b_en, max_retries: b_max, base_delay_ms: None, max_delay_ms: None };
+                let other = RetrySettings { enabled: o_en, max_retries: None, base_delay_ms: o_base_delay, max_delay_ms: None };
+                let result = merge_retry(Some(base), Some(other)).unwrap();
+                assert_eq!(result.enabled, o_en.or(b_en));
+                assert_eq!(result.max_retries, b_max); // other had None, base passes through
+                assert_eq!(result.base_delay_ms, o_base_delay); // other had Some, overrides
+            }
+
+            // ================================================================
+            // merge_images
+            // ================================================================
+
+            #[test]
+            fn images_none_none_is_none(() in Just(())) {
+                assert!(merge_images(None, None).is_none());
+            }
+
+            #[test]
+            fn images_other_overrides(
+                b_resize in prop::option::of(any::<bool>()),
+                b_block in prop::option::of(any::<bool>()),
+                o_resize in prop::option::of(any::<bool>()),
+                o_block in prop::option::of(any::<bool>()),
+            ) {
+                let base = ImageSettings { auto_resize: b_resize, block_images: b_block };
+                let other = ImageSettings { auto_resize: o_resize, block_images: o_block };
+                let result = merge_images(Some(base), Some(other)).unwrap();
+                assert_eq!(result.auto_resize, o_resize.or(b_resize));
+                assert_eq!(result.block_images, o_block.or(b_block));
+            }
+
+            // ================================================================
+            // merge_terminal
+            // ================================================================
+
+            #[test]
+            fn terminal_none_none_is_none(() in Just(())) {
+                assert!(merge_terminal(None, None).is_none());
+            }
+
+            #[test]
+            fn terminal_other_overrides(
+                b_show in prop::option::of(any::<bool>()),
+                b_clear in prop::option::of(any::<bool>()),
+                o_show in prop::option::of(any::<bool>()),
+                o_clear in prop::option::of(any::<bool>()),
+            ) {
+                let base = TerminalSettings { show_images: b_show, clear_on_shrink: b_clear };
+                let other = TerminalSettings { show_images: o_show, clear_on_shrink: o_clear };
+                let result = merge_terminal(Some(base), Some(other)).unwrap();
+                assert_eq!(result.show_images, o_show.or(b_show));
+                assert_eq!(result.clear_on_shrink, o_clear.or(b_clear));
+            }
+
+            // ================================================================
+            // merge_thinking_budgets
+            // ================================================================
+
+            #[test]
+            fn thinking_budgets_none_none_is_none(() in Just(())) {
+                assert!(merge_thinking_budgets(None, None).is_none());
+            }
+
+            #[test]
+            fn thinking_budgets_other_overrides(
+                b_min in prop::option::of(1u32..65536),
+                b_low in prop::option::of(1u32..65536),
+                o_med in prop::option::of(1u32..65536),
+                o_high in prop::option::of(1u32..65536),
+            ) {
+                let base = ThinkingBudgets { minimal: b_min, low: b_low, medium: None, high: None, xhigh: None };
+                let other = ThinkingBudgets { minimal: None, low: None, medium: o_med, high: o_high, xhigh: None };
+                let result = merge_thinking_budgets(Some(base), Some(other)).unwrap();
+                assert_eq!(result.minimal, b_min); // only in base
+                assert_eq!(result.low, b_low); // only in base
+                assert_eq!(result.medium, o_med); // only in other
+                assert_eq!(result.high, o_high); // only in other
+                assert_eq!(result.xhigh, None); // neither
+            }
+
+            // ================================================================
+            // merge_extension_policy
+            // ================================================================
+
+            #[test]
+            fn extension_policy_none_none_is_none(() in Just(())) {
+                assert!(merge_extension_policy(None, None).is_none());
+            }
+
+            #[test]
+            fn extension_policy_other_overrides(
+                b_profile in prop::option::of(string_regex("[a-z]{3,10}").unwrap()),
+                b_danger in prop::option::of(any::<bool>()),
+                o_profile in prop::option::of(string_regex("[a-z]{3,10}").unwrap()),
+                o_danger in prop::option::of(any::<bool>()),
+            ) {
+                let base = ExtensionPolicyConfig { profile: b_profile.clone(), allow_dangerous: b_danger };
+                let other = ExtensionPolicyConfig { profile: o_profile.clone(), allow_dangerous: o_danger };
+                let result = merge_extension_policy(Some(base), Some(other)).unwrap();
+                assert_eq!(result.profile, o_profile.or(b_profile));
+                assert_eq!(result.allow_dangerous, o_danger.or(b_danger));
+            }
+
+            // ================================================================
+            // merge_repair_policy
+            // ================================================================
+
+            #[test]
+            fn repair_policy_none_none_is_none(() in Just(())) {
+                assert!(merge_repair_policy(None, None).is_none());
+            }
+
+            #[test]
+            fn repair_policy_other_overrides(
+                b_mode in prop::option::of(string_regex("[a-z-]{3,12}").unwrap()),
+                o_mode in prop::option::of(string_regex("[a-z-]{3,12}").unwrap()),
+            ) {
+                let base = RepairPolicyConfig { mode: b_mode.clone() };
+                let other = RepairPolicyConfig { mode: o_mode.clone() };
+                let result = merge_repair_policy(Some(base), Some(other)).unwrap();
+                assert_eq!(result.mode, o_mode.or(b_mode));
+            }
+
+            // ================================================================
+            // merge_extension_risk
+            // ================================================================
+
+            #[test]
+            fn extension_risk_none_none_is_none(() in Just(())) {
+                assert!(merge_extension_risk(None, None).is_none());
+            }
+
+            #[test]
+            fn extension_risk_other_overrides(
+                b_en in prop::option::of(any::<bool>()),
+                b_window in prop::option::of(1u32..1000),
+                o_en in prop::option::of(any::<bool>()),
+                o_timeout in prop::option::of(1u64..60_000),
+            ) {
+                let base = ExtensionRiskConfig {
+                    enabled: b_en, alpha: None, window_size: b_window,
+                    ledger_limit: None, decision_timeout_ms: None,
+                    fail_closed: None, enforce: None,
+                };
+                let other = ExtensionRiskConfig {
+                    enabled: o_en, alpha: None, window_size: None,
+                    ledger_limit: None, decision_timeout_ms: o_timeout,
+                    fail_closed: None, enforce: None,
+                };
+                let result = merge_extension_risk(Some(base), Some(other)).unwrap();
+                assert_eq!(result.enabled, o_en.or(b_en));
+                assert_eq!(result.window_size, b_window); // only in base
+                assert_eq!(result.decision_timeout_ms, o_timeout); // only in other
+            }
+        }
+
+        // ================================================================
+        // deep_merge_settings_value
+        // ================================================================
+
+        proptest! {
+            #[test]
+            fn deep_merge_null_deletes_key(key in "[a-z]{1,8}", val in "[a-z]{1,12}") {
+                let mut dst = json!({ &key: val });
+                deep_merge_settings_value(&mut dst, json!({ &key: null })).unwrap();
+                assert!(dst.get(&key).is_none());
+            }
+
+            #[test]
+            fn deep_merge_leaf_replaces(key in "[a-z]{1,8}", old in 0i64..100, new in 100i64..200) {
+                let mut dst = json!({ &key: old });
+                deep_merge_settings_value(&mut dst, json!({ &key: new })).unwrap();
+                assert_eq!(dst[&key], json!(new));
+            }
+
+            #[test]
+            fn deep_merge_nested_preserves_siblings(
+                parent in "[a-z]{1,6}",
+                child_a in "[a-z]{1,6}",
+                child_b in "[a-z]{1,6}",
+                val_a in 0i64..100,
+                val_b in 0i64..100,
+                val_new in 100i64..200,
+            ) {
+                if child_a != child_b {
+                    let mut dst = json!({ &parent: { &child_a: val_a, &child_b: val_b } });
+                    deep_merge_settings_value(
+                        &mut dst,
+                        json!({ &parent: { &child_a: val_new } }),
+                    ).unwrap();
+                    assert_eq!(dst[&parent][&child_a], json!(val_new));
+                    assert_eq!(dst[&parent][&child_b], json!(val_b));
+                }
+            }
+
+            #[test]
+            fn deep_merge_non_object_patch_rejected(val in 0i64..1000) {
+                let mut dst = json!({});
+                assert!(deep_merge_settings_value(&mut dst, json!(val)).is_err());
+            }
+
+            #[test]
+            fn deep_merge_idempotent(key in "[a-z]{1,6}", val in "[a-z]{1,10}") {
+                let patch = json!({ &key: &val });
+                let mut dst1 = json!({});
+                let mut dst2 = json!({});
+                deep_merge_settings_value(&mut dst1, patch.clone()).unwrap();
+                deep_merge_settings_value(&mut dst2, patch.clone()).unwrap();
+                deep_merge_settings_value(&mut dst2, patch).unwrap();
+                assert_eq!(dst1, dst2);
+            }
+        }
     }
 }

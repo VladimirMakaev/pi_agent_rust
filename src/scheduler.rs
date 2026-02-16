@@ -1195,6 +1195,39 @@ impl Default for NumaSlabConfig {
     }
 }
 
+impl NumaSlabConfig {
+    #[must_use]
+    pub const fn slab_footprint_bytes(&self) -> Option<usize> {
+        self.slab_capacity.checked_mul(self.entry_size_bytes)
+    }
+
+    #[must_use]
+    pub const fn hugepage_alignment_ok(&self) -> bool {
+        if !self.hugepage.enabled {
+            return true;
+        }
+        let page = self.hugepage.page_size_bytes;
+        if page == 0 {
+            return false;
+        }
+        match self.slab_footprint_bytes() {
+            Some(bytes) => bytes != 0 && bytes % page == 0,
+            None => false,
+        }
+    }
+
+    #[must_use]
+    pub const fn alignment_mismatch_status(&self) -> HugepageStatus {
+        HugepageStatus {
+            total_pages: 0,
+            free_pages: 0,
+            page_size_bytes: self.hugepage.page_size_bytes,
+            active: false,
+            fallback_reason: Some(HugepageFallbackReason::AlignmentMismatch),
+        }
+    }
+}
+
 /// Handle returned on successful slab allocation.
 ///
 /// Contains enough information to deallocate safely and detect use-after-free
@@ -1343,7 +1376,11 @@ impl NumaSlabPool {
 
         // Hugepage evaluation with zero system data (caller can override via
         // `set_hugepage_status` once real data is available).
-        let hugepage_status = HugepageStatus::evaluate(&config.hugepage, 0, 0);
+        let hugepage_status = if config.hugepage.enabled && !config.hugepage_alignment_ok() {
+            config.alignment_mismatch_status()
+        } else {
+            HugepageStatus::evaluate(&config.hugepage, 0, 0)
+        };
 
         Self {
             slabs,
@@ -1355,7 +1392,12 @@ impl NumaSlabPool {
 
     /// Override hugepage status after querying the host.
     pub const fn set_hugepage_status(&mut self, status: HugepageStatus) {
-        self.hugepage_status = status;
+        self.hugepage_status =
+            if self.config.hugepage.enabled && !self.config.hugepage_alignment_ok() {
+                self.config.alignment_mismatch_status()
+            } else {
+                status
+            };
     }
 
     /// Number of NUMA nodes in this pool.
@@ -2922,6 +2964,83 @@ mod tests {
     }
 
     #[test]
+    fn numa_slab_pool_misaligned_hugepage_config_reports_alignment_mismatch() {
+        let topology = ReactorTopologySnapshot::from_core_node_pairs(&[(0, 0)]);
+        let manifest = ReactorPlacementManifest::plan(1, Some(&topology));
+        let config = NumaSlabConfig {
+            slab_capacity: 3,
+            entry_size_bytes: 1024,
+            hugepage: HugepageConfig {
+                page_size_bytes: 2048,
+                enabled: true,
+            },
+        };
+
+        let pool = NumaSlabPool::from_manifest(&manifest, config);
+        let telemetry = pool.telemetry();
+        assert!(!telemetry.hugepage_status.active);
+        assert_eq!(
+            telemetry.hugepage_status.fallback_reason,
+            Some(HugepageFallbackReason::AlignmentMismatch)
+        );
+
+        let json = telemetry.as_json();
+        assert_eq!(
+            json["hugepage"]["fallback_reason"],
+            serde_json::json!("alignment_mismatch")
+        );
+    }
+
+    #[test]
+    fn numa_slab_pool_aligned_hugepage_config_defaults_to_detection_unavailable() {
+        let topology = ReactorTopologySnapshot::from_core_node_pairs(&[(0, 0)]);
+        let manifest = ReactorPlacementManifest::plan(1, Some(&topology));
+        let config = NumaSlabConfig {
+            slab_capacity: 4,
+            entry_size_bytes: 1024,
+            hugepage: HugepageConfig {
+                page_size_bytes: 4096,
+                enabled: true,
+            },
+        };
+
+        let pool = NumaSlabPool::from_manifest(&manifest, config);
+        let telemetry = pool.telemetry();
+        assert!(!telemetry.hugepage_status.active);
+        assert_eq!(
+            telemetry.hugepage_status.fallback_reason,
+            Some(HugepageFallbackReason::DetectionUnavailable)
+        );
+    }
+
+    #[test]
+    fn misaligned_hugepage_config_rejects_external_status_override() {
+        let topology = ReactorTopologySnapshot::from_core_node_pairs(&[(0, 0)]);
+        let manifest = ReactorPlacementManifest::plan(1, Some(&topology));
+        let config = NumaSlabConfig {
+            slab_capacity: 3,
+            entry_size_bytes: 1024,
+            hugepage: HugepageConfig {
+                page_size_bytes: 2048,
+                enabled: true,
+            },
+        };
+        let mut pool = NumaSlabPool::from_manifest(&manifest, config);
+
+        let forced = HugepageStatus::evaluate(&config.hugepage, 256, 64);
+        assert!(forced.active);
+        assert!(forced.fallback_reason.is_none());
+
+        pool.set_hugepage_status(forced);
+        let telemetry = pool.telemetry();
+        assert!(!telemetry.hugepage_status.active);
+        assert_eq!(
+            telemetry.hugepage_status.fallback_reason,
+            Some(HugepageFallbackReason::AlignmentMismatch)
+        );
+    }
+
+    #[test]
     fn hugepage_status_json_is_stable() {
         let config = HugepageConfig::default();
         let status = HugepageStatus::evaluate(&config, 1024, 128);
@@ -3253,17 +3372,18 @@ mod tests {
     #[test]
     fn numa_slab_pool_set_hugepage_status_and_node_count() {
         let manifest = ReactorPlacementManifest::plan(4, None);
-        let mut pool = NumaSlabPool::from_manifest(&manifest, NumaSlabConfig::default());
-        assert_eq!(pool.node_count(), 1);
-
-        let status = HugepageStatus::evaluate(
-            &HugepageConfig {
+        let config = NumaSlabConfig {
+            slab_capacity: 4096,
+            entry_size_bytes: 512,
+            hugepage: HugepageConfig {
                 page_size_bytes: 2 * 1024 * 1024,
                 enabled: true,
             },
-            512,
-            256,
-        );
+        };
+        let mut pool = NumaSlabPool::from_manifest(&manifest, config);
+        assert_eq!(pool.node_count(), 1);
+
+        let status = HugepageStatus::evaluate(&config.hugepage, 512, 256);
         assert!(status.active);
         pool.set_hugepage_status(status);
 
