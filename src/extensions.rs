@@ -12,8 +12,12 @@ use crate::extensions_js::{
     ExtensionRepairEvent, ExtensionToolDef, HostcallKind, HostcallRequest, PiJsRuntime,
     PiJsRuntimeConfig, js_to_json, json_to_js,
 };
+use crate::hostcall_amac::AmacBatchExecutor;
 use crate::hostcall_rewrite::{
     HostcallRewriteEngine, HostcallRewritePlan, HostcallRewritePlanKind,
+};
+use crate::hostcall_superinstructions::{
+    HostcallSuperinstructionCompiler, HostcallSuperinstructionPlan, execute_with_superinstruction,
 };
 use crate::permissions::{PermissionStore, PersistedDecision};
 use crate::scheduler::HostcallOutcome;
@@ -32,6 +36,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::Digest as _;
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::net::IpAddr;
@@ -2123,7 +2128,8 @@ impl ExtensionBudgetTier {
 ///
 /// The controller promotes an extension to compatibility-lane fallback after
 /// repeated overload/anomaly signals within a bounded window and returns to
-/// fast lane after a recovery streak.
+/// fast lane after a recovery streak.  Optionally augmented by CUSUM/BOCPD
+/// regime-shift detection for statistically-justified early triggering.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct ExtensionBudgetControllerConfig {
@@ -2137,6 +2143,8 @@ pub struct ExtensionBudgetControllerConfig {
     pub overload_signals_to_fallback: u32,
     /// Consecutive successful calls required to exit fallback mode.
     pub recovery_successes_to_exit: u32,
+    /// CUSUM/BOCPD regime-shift detection configuration.
+    pub regime_shift: RegimeShiftConfig,
 }
 
 impl ExtensionBudgetControllerConfig {
@@ -2149,6 +2157,7 @@ impl ExtensionBudgetControllerConfig {
                 overload_window_ms: 3_000,
                 overload_signals_to_fallback: 2,
                 recovery_successes_to_exit: 8,
+                regime_shift: RegimeShiftConfig::for_tier(ExtensionBudgetTier::Strict),
             },
             ExtensionBudgetTier::Balanced => Self {
                 enabled: true,
@@ -2156,6 +2165,7 @@ impl ExtensionBudgetControllerConfig {
                 overload_window_ms: 8_000,
                 overload_signals_to_fallback: 3,
                 recovery_successes_to_exit: 16,
+                regime_shift: RegimeShiftConfig::for_tier(ExtensionBudgetTier::Balanced),
             },
             ExtensionBudgetTier::Throughput => Self {
                 enabled: true,
@@ -2163,6 +2173,7 @@ impl ExtensionBudgetControllerConfig {
                 overload_window_ms: 15_000,
                 overload_signals_to_fallback: 5,
                 recovery_successes_to_exit: 32,
+                regime_shift: RegimeShiftConfig::for_tier(ExtensionBudgetTier::Throughput),
             },
         }
     }
@@ -2192,6 +2203,402 @@ struct ExtensionQuotaState {
     http_requests_total: u64,
 }
 
+/// Configuration for CUSUM/BOCPD regime-shift detection that augments the
+/// simple sliding-window counting in the budget controller.
+///
+/// When enabled, the detector runs alongside the existing signal-count logic
+/// and can trigger fallback *before* the count threshold is reached if a
+/// statistically significant regime change is detected.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct RegimeShiftConfig {
+    /// Master switch — when false the detector is a no-op and the budget
+    /// controller falls back to pure signal counting.
+    pub enabled: bool,
+
+    /// CUSUM allowance parameter `k`.  Determines how much the observed
+    /// inter-arrival rate may deviate from baseline before the cumulative
+    /// sum accumulates.  Expressed in multiples of baseline sigma.
+    /// Lower → more sensitive, higher → fewer false positives.
+    pub cusum_k: f64,
+
+    /// CUSUM decision threshold `h`.  When the cumulative sum exceeds this
+    /// value a regime shift is declared.  Expressed in multiples of baseline
+    /// sigma.
+    pub cusum_h: f64,
+
+    /// BOCPD hazard constant `lambda` — the prior expected run length
+    /// between change points (in number of observations).  Smaller → more
+    /// sensitive.
+    pub bocpd_lambda: f64,
+
+    /// Posterior probability threshold for BOCPD.  When the probability that
+    /// the current run length is 0 (= a change just happened) exceeds this
+    /// value the detector fires.
+    pub bocpd_threshold: f64,
+
+    /// Maximum run-length horizon tracked by BOCPD to bound memory/CPU.
+    /// Older run lengths are pruned each tick.
+    pub bocpd_max_run_length: usize,
+}
+
+impl Default for RegimeShiftConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            cusum_k: 0.5,
+            cusum_h: 4.0,
+            bocpd_lambda: 50.0,
+            bocpd_threshold: 0.5,
+            bocpd_max_run_length: 200,
+        }
+    }
+}
+
+impl RegimeShiftConfig {
+    /// Tier-specific defaults.  Strict tiers are more sensitive (lower h,
+    /// lower lambda) so regime shifts are detected faster at the cost of
+    /// more false positives.
+    #[must_use]
+    pub const fn for_tier(tier: ExtensionBudgetTier) -> Self {
+        match tier {
+            ExtensionBudgetTier::Strict => Self {
+                enabled: true,
+                cusum_k: 0.3,
+                cusum_h: 3.0,
+                bocpd_lambda: 30.0,
+                bocpd_threshold: 0.4,
+                bocpd_max_run_length: 150,
+            },
+            ExtensionBudgetTier::Balanced => Self {
+                enabled: true,
+                cusum_k: 0.5,
+                cusum_h: 4.0,
+                bocpd_lambda: 50.0,
+                bocpd_threshold: 0.5,
+                bocpd_max_run_length: 200,
+            },
+            ExtensionBudgetTier::Throughput => Self {
+                enabled: true,
+                cusum_k: 0.8,
+                cusum_h: 5.0,
+                bocpd_lambda: 80.0,
+                bocpd_threshold: 0.6,
+                bocpd_max_run_length: 300,
+            },
+        }
+    }
+}
+
+/// CUSUM (Cumulative Sum) detector state for one direction (increase).
+///
+/// Tracks cumulative deviation of observed inter-arrival signal rate from
+/// an estimated baseline.  Alarm fires when `cumsum > h * sigma`.
+#[derive(Debug, Clone)]
+struct CusumState {
+    /// Running cumulative sum (positive direction = rate increase).
+    cumsum_high: f64,
+    /// Running cumulative sum (negative direction = rate decrease).
+    cumsum_low: f64,
+    /// Estimated baseline inter-arrival interval (ms) from first window.
+    baseline_interval_ms: f64,
+    /// Estimated baseline standard deviation of inter-arrival intervals.
+    baseline_sigma: f64,
+    /// Number of observations used to form the baseline estimate.
+    baseline_n: u32,
+    /// Whether the baseline has been seeded (need >= 3 observations).
+    baseline_ready: bool,
+    /// Timestamp of the last observation fed into CUSUM.
+    last_observation_ms: Option<i64>,
+    /// Total number of alarms raised.
+    alarm_count: u64,
+}
+
+impl Default for CusumState {
+    fn default() -> Self {
+        Self {
+            cumsum_high: 0.0,
+            cumsum_low: 0.0,
+            baseline_interval_ms: 0.0,
+            baseline_sigma: 1.0,
+            baseline_n: 0,
+            baseline_ready: false,
+            last_observation_ms: None,
+            alarm_count: 0,
+        }
+    }
+}
+
+impl CusumState {
+    /// Minimum observations before baseline is considered valid.
+    const MIN_BASELINE_OBS: u32 = 3;
+
+    /// Feed a new inter-arrival interval and return `true` if an alarm fires.
+    fn observe(&mut self, interval_ms: f64, k: f64, h: f64) -> bool {
+        // Phase 1: accumulate baseline (Welford online variance).
+        if !self.baseline_ready {
+            self.baseline_n += 1;
+            let n = f64::from(self.baseline_n);
+            let delta = interval_ms - self.baseline_interval_ms;
+            self.baseline_interval_ms += delta / n;
+            // Online variance (M2 accumulator stored in sigma temporarily).
+            if self.baseline_n == 1 {
+                self.baseline_sigma = 0.0;
+            } else {
+                let delta2 = interval_ms - self.baseline_interval_ms;
+                self.baseline_sigma += delta * delta2;
+            }
+            if self.baseline_n >= Self::MIN_BASELINE_OBS {
+                self.baseline_ready = true;
+                let variance = self.baseline_sigma / (f64::from(self.baseline_n) - 1.0);
+                self.baseline_sigma = variance.sqrt().max(1.0);
+            }
+            return false;
+        }
+
+        // Phase 2: CUSUM update.
+        let z = (interval_ms - self.baseline_interval_ms) / self.baseline_sigma;
+        // S_high detects a *decrease* in inter-arrival (= rate increase).
+        self.cumsum_high = (self.cumsum_high + (-z - k)).max(0.0);
+        // S_low detects an *increase* in inter-arrival (= rate decrease).
+        self.cumsum_low = (self.cumsum_low + (z - k)).max(0.0);
+
+        let alarm = self.cumsum_high > h || self.cumsum_low > h;
+        if alarm {
+            self.alarm_count += 1;
+            // Reset after alarm so we can detect the next regime change.
+            self.cumsum_high = 0.0;
+            self.cumsum_low = 0.0;
+        }
+        alarm
+    }
+
+    /// Reset detector state but keep baseline.
+    fn reset_cumsum(&mut self) {
+        self.cumsum_high = 0.0;
+        self.cumsum_low = 0.0;
+    }
+}
+
+/// Simplified BOCPD (Bayesian Online Change Point Detection) state.
+///
+/// Maintains a run-length distribution and detects change points when the
+/// posterior probability of run_length=0 exceeds a threshold.  Uses a
+/// Gaussian observation model with online mean/variance estimation.
+#[derive(Debug, Clone)]
+struct BocpdState {
+    /// Run-length probability distribution `P(r_t | data)`.
+    /// Index `i` = probability that current run length is `i`.
+    run_length_probs: Vec<f64>,
+    /// Online mean of observations within the current run.
+    run_means: Vec<f64>,
+    /// Online variance numerator (M2) within the current run.
+    run_m2s: Vec<f64>,
+    /// Count of observations per run length.
+    run_counts: Vec<u32>,
+    /// Total number of change points detected.
+    changepoint_count: u64,
+    /// Whether sufficient data has been seen to make decisions.
+    warmed_up: bool,
+}
+
+impl Default for BocpdState {
+    fn default() -> Self {
+        Self {
+            run_length_probs: vec![1.0],
+            run_means: vec![0.0],
+            run_m2s: vec![0.0],
+            run_counts: vec![0],
+            changepoint_count: 0,
+            warmed_up: false,
+        }
+    }
+}
+
+impl BocpdState {
+    /// Minimum observations before BOCPD starts signalling.
+    const WARMUP_OBS: u32 = 5;
+
+    /// Feed a new observation and return `true` if a change point is detected.
+    fn observe(
+        &mut self,
+        value: f64,
+        hazard_lambda: f64,
+        threshold: f64,
+        max_run_length: usize,
+    ) -> bool {
+        let n = self.run_length_probs.len();
+
+        // 1. Compute predictive probabilities for each run length.
+        let mut pred_probs = Vec::with_capacity(n);
+        for i in 0..n {
+            pred_probs.push(self.predictive_prob(i, value));
+        }
+
+        // 2. Compute hazard function H(r) = 1/lambda (constant hazard).
+        let h = 1.0 / hazard_lambda.max(1.0);
+
+        // 3. Compute growth probabilities (existing runs continue).
+        let mut new_probs = Vec::with_capacity(n + 1);
+        // Slot 0: change point probability (sum of all runs * hazard * pred).
+        let mut cp_prob = 0.0;
+        for i in 0..n {
+            let joint = self.run_length_probs[i] * pred_probs[i];
+            cp_prob += joint * h;
+            // Growth: run length i → i+1.
+            new_probs.push(joint * (1.0 - h));
+        }
+
+        // Insert change-point probability at position 0.
+        new_probs.insert(0, cp_prob);
+
+        // 4. Normalize.
+        let total: f64 = new_probs.iter().sum();
+        if total > 0.0 {
+            for p in &mut new_probs {
+                *p /= total;
+            }
+        }
+
+        // 5. Update sufficient statistics per run length.
+        let mut new_means = Vec::with_capacity(new_probs.len());
+        let mut new_m2s = Vec::with_capacity(new_probs.len());
+        let mut new_counts = Vec::with_capacity(new_probs.len());
+
+        // Run length 0: fresh start.
+        new_means.push(value);
+        new_m2s.push(0.0);
+        new_counts.push(1);
+
+        // Run lengths 1..n: continue from previous.
+        for i in 0..n {
+            let count = self.run_counts[i] + 1;
+            let old_mean = self.run_means[i];
+            let delta = value - old_mean;
+            let new_mean = old_mean + delta / f64::from(count);
+            let delta2 = value - new_mean;
+            let new_m2 = self.run_m2s[i] + delta * delta2;
+            new_means.push(new_mean);
+            new_m2s.push(new_m2);
+            new_counts.push(count);
+        }
+
+        // 6. Prune to max_run_length.
+        let max_len = max_run_length.max(2);
+        if new_probs.len() > max_len {
+            new_probs.truncate(max_len);
+            new_means.truncate(max_len);
+            new_m2s.truncate(max_len);
+            new_counts.truncate(max_len);
+            // Re-normalize after pruning.
+            let total: f64 = new_probs.iter().sum();
+            if total > 0.0 {
+                for p in &mut new_probs {
+                    *p /= total;
+                }
+            }
+        }
+
+        self.run_length_probs = new_probs;
+        self.run_means = new_means;
+        self.run_m2s = new_m2s;
+        self.run_counts = new_counts;
+
+        // 7. Check warmup and change-point probability.
+        let total_obs: u32 = self.run_counts.iter().max().copied().unwrap_or(0);
+        if total_obs >= Self::WARMUP_OBS {
+            self.warmed_up = true;
+        }
+        if !self.warmed_up {
+            return false;
+        }
+
+        let cp_detected = self.run_length_probs.first().copied().unwrap_or(0.0) > threshold;
+        if cp_detected {
+            self.changepoint_count += 1;
+        }
+        cp_detected
+    }
+
+    /// Gaussian predictive probability for observation `x` given run-length
+    /// sufficient statistics at index `i`.
+    fn predictive_prob(&self, i: usize, x: f64) -> f64 {
+        let count = self.run_counts[i];
+        if count < 2 {
+            // Uninformative prior: use broad Gaussian (sigma=100).
+            let diff = x - self.run_means[i];
+            return (-diff * diff / 20_000.0).exp() / 251.33;
+        }
+        let mean = self.run_means[i];
+        let variance = (self.run_m2s[i] / f64::from(count - 1)).max(1.0);
+        // Student-t approximation as Gaussian with inflated variance.
+        let pred_var = variance * (1.0 + 1.0 / f64::from(count));
+        let sigma = pred_var.sqrt();
+        let diff = x - mean;
+        (-diff * diff / (2.0 * pred_var)).exp() / (sigma * 2.506_628_274_631_000_5)
+    }
+
+    /// Reset detector to initial state.
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// Combined regime-shift detector state for one extension.
+#[derive(Debug, Clone, Default)]
+struct RegimeShiftDetectorState {
+    cusum: CusumState,
+    bocpd: BocpdState,
+    /// Whether the detector has triggered (either CUSUM or BOCPD alarm).
+    triggered: bool,
+    /// Reason string for the most recent trigger.
+    trigger_source: Option<&'static str>,
+    /// Monotonic counter of total triggers.
+    trigger_count: u64,
+}
+
+/// Telemetry snapshot of the regime-shift detector for one extension.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RegimeShiftSnapshot {
+    /// Whether the detector is currently in triggered state.
+    pub triggered: bool,
+    /// Source of the last trigger ("cusum" or "bocpd"), if any.
+    pub trigger_source: Option<String>,
+    /// Total number of triggers since creation.
+    pub trigger_count: u64,
+    /// CUSUM cumulative sum (high direction).
+    pub cusum_high: f64,
+    /// CUSUM cumulative sum (low direction).
+    pub cusum_low: f64,
+    /// CUSUM alarm count.
+    pub cusum_alarm_count: u64,
+    /// Whether the CUSUM baseline is ready.
+    pub cusum_baseline_ready: bool,
+    /// BOCPD change-point probability (run_length=0).
+    pub bocpd_cp_prob: f64,
+    /// BOCPD total change-point detections.
+    pub bocpd_changepoint_count: u64,
+    /// Whether BOCPD has warmed up.
+    pub bocpd_warmed_up: bool,
+}
+
+impl RegimeShiftDetectorState {
+    fn snapshot(&self) -> RegimeShiftSnapshot {
+        RegimeShiftSnapshot {
+            triggered: self.triggered,
+            trigger_source: self.trigger_source.map(String::from),
+            trigger_count: self.trigger_count,
+            cusum_high: self.cusum.cumsum_high,
+            cusum_low: self.cusum.cumsum_low,
+            cusum_alarm_count: self.cusum.alarm_count,
+            cusum_baseline_ready: self.cusum.baseline_ready,
+            bocpd_cp_prob: self.bocpd.run_length_probs.first().copied().unwrap_or(0.0),
+            bocpd_changepoint_count: self.bocpd.changepoint_count,
+            bocpd_warmed_up: self.bocpd.warmed_up,
+        }
+    }
+}
+
 /// Runtime budget-controller state for one extension.
 #[derive(Debug, Clone, Default)]
 struct ExtensionBudgetFallbackState {
@@ -2199,6 +2606,8 @@ struct ExtensionBudgetFallbackState {
     in_fallback: bool,
     healthy_success_streak: u32,
     last_trigger_reason: Option<String>,
+    /// Regime-shift detector state (CUSUM + BOCPD).
+    regime_shift: RegimeShiftDetectorState,
 }
 
 /// Telemetry event emitted when a quota limit is breached.
@@ -3444,6 +3853,21 @@ pub struct RuntimeHostcallTelemetryEvent {
     /// Per-extension running count of marshalling fast-path fallbacks.
     #[serde(default)]
     pub marshalling_fallback_count: u64,
+    /// Signature of the recent opcode trace window used for superinstruction matching.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marshalling_superinstruction_trace_signature: Option<String>,
+    /// Selected superinstruction plan id, when a fused plan hit is available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marshalling_superinstruction_plan_id: Option<String>,
+    /// Estimated cost reduction from selected superinstruction plan.
+    #[serde(default)]
+    pub marshalling_superinstruction_expected_cost_delta: i64,
+    /// Observed/measured cost reduction for current call (or 0 when not applicable).
+    #[serde(default)]
+    pub marshalling_superinstruction_observed_cost_delta: i64,
+    /// Deoptimization reason when superinstruction plan selection falls back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marshalling_superinstruction_deopt_reason: Option<String>,
     pub outcome: String,
     pub outcome_error_code: Option<String>,
     pub selected_action: RuntimeRiskActionValue,
@@ -3495,6 +3919,11 @@ impl Default for RuntimeHostcallTelemetryEvent {
             marshalling_latency_us: 0,
             marshalling_fallback_reason: None,
             marshalling_fallback_count: 0,
+            marshalling_superinstruction_trace_signature: None,
+            marshalling_superinstruction_plan_id: None,
+            marshalling_superinstruction_expected_cost_delta: 0,
+            marshalling_superinstruction_observed_cost_delta: 0,
+            marshalling_superinstruction_deopt_reason: None,
             outcome: "success".to_string(),
             outcome_error_code: None,
             selected_action: RuntimeRiskActionValue::Allow,
@@ -8319,10 +8748,143 @@ const HOSTCALL_REWRITE_RULE_BASELINE: &str = "baseline_canonical";
 const HOSTCALL_REWRITE_RULE_FAST_OPCODE_FUSION: &str = "fuse_hash_dispatch_fast_opcode";
 const HOSTCALL_REWRITE_COST_BASELINE: u32 = 100;
 const HOSTCALL_REWRITE_COST_FAST_OPCODE: u32 = 35;
+const HOSTCALL_SUPERINSTRUCTION_TRACE_HISTORY_LIMIT: usize = 256;
+const HOSTCALL_SUPERINSTRUCTION_RECOMPILE_INTERVAL: u64 = 16;
 
 fn hostcall_rewrite_engine() -> &'static HostcallRewriteEngine {
     static ENGINE: OnceLock<HostcallRewriteEngine> = OnceLock::new();
     ENGINE.get_or_init(HostcallRewriteEngine::from_env)
+}
+
+#[derive(Debug, Default)]
+struct HostcallSuperinstructionRuntimeState {
+    compiler: HostcallSuperinstructionCompiler,
+    trace_history: VecDeque<String>,
+    plans: Vec<HostcallSuperinstructionPlan>,
+    observation_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HostcallSuperinstructionTelemetry {
+    trace_signature: Option<String>,
+    plan_id: Option<String>,
+    expected_cost_delta: i64,
+    observed_cost_delta: i64,
+    deopt_reason: Option<String>,
+}
+
+impl Default for HostcallSuperinstructionTelemetry {
+    fn default() -> Self {
+        Self {
+            trace_signature: None,
+            plan_id: None,
+            expected_cost_delta: 0,
+            observed_cost_delta: 0,
+            deopt_reason: None,
+        }
+    }
+}
+
+fn hostcall_superinstruction_state() -> &'static Mutex<HostcallSuperinstructionRuntimeState> {
+    static STATE: OnceLock<Mutex<HostcallSuperinstructionRuntimeState>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(HostcallSuperinstructionRuntimeState::default()))
+}
+
+fn hostcall_superinstruction_telemetry(
+    opcode: Option<CommonHostcallOpcode>,
+) -> HostcallSuperinstructionTelemetry {
+    let Some(opcode) = opcode else {
+        return HostcallSuperinstructionTelemetry {
+            deopt_reason: Some("no_opcode_hint".to_string()),
+            ..HostcallSuperinstructionTelemetry::default()
+        };
+    };
+
+    let Ok(mut state) = hostcall_superinstruction_state().lock() else {
+        return HostcallSuperinstructionTelemetry {
+            deopt_reason: Some("superinstruction_state_lock_poisoned".to_string()),
+            ..HostcallSuperinstructionTelemetry::default()
+        };
+    };
+    if !state.compiler.enabled() {
+        return HostcallSuperinstructionTelemetry {
+            deopt_reason: Some("superinstructions_disabled".to_string()),
+            ..HostcallSuperinstructionTelemetry::default()
+        };
+    }
+
+    state.trace_history.push_back(opcode.code().to_string());
+    while state.trace_history.len() > HOSTCALL_SUPERINSTRUCTION_TRACE_HISTORY_LIMIT {
+        let _ = state.trace_history.pop_front();
+    }
+    state.observation_count = state.observation_count.saturating_add(1);
+
+    if state.trace_history.len() >= 2
+        && (state.plans.is_empty()
+            || state
+                .observation_count
+                .is_multiple_of(HOSTCALL_SUPERINSTRUCTION_RECOMPILE_INTERVAL))
+    {
+        let trace = state.trace_history.iter().cloned().collect::<Vec<_>>();
+        state.plans = state.compiler.compile_plans(&[trace]);
+    }
+
+    let max_window = state.compiler.max_window().min(state.trace_history.len());
+    let mut recent_window = state
+        .trace_history
+        .iter()
+        .rev()
+        .take(max_window)
+        .cloned()
+        .collect::<Vec<_>>();
+    recent_window.reverse();
+    if recent_window.len() < 2 {
+        return HostcallSuperinstructionTelemetry {
+            deopt_reason: Some("insufficient_trace_history".to_string()),
+            ..HostcallSuperinstructionTelemetry::default()
+        };
+    }
+
+    let mut best_hit = None;
+    for start in 0..recent_window.len() - 1 {
+        let candidate = execute_with_superinstruction(&recent_window[start..], &state.plans);
+        if candidate.selection.hit() {
+            let replace =
+                best_hit
+                    .as_ref()
+                    .is_none_or(|current: &HostcallSuperinstructionTelemetry| {
+                        candidate.selection.expected_cost_delta > current.expected_cost_delta
+                    });
+            if replace {
+                best_hit = Some(HostcallSuperinstructionTelemetry {
+                    trace_signature: Some(candidate.selection.trace_signature),
+                    plan_id: candidate.selection.selected_plan_id,
+                    expected_cost_delta: candidate.selection.expected_cost_delta,
+                    observed_cost_delta: candidate.selection.expected_cost_delta,
+                    deopt_reason: None,
+                });
+            }
+        }
+    }
+    if let Some(hit) = best_hit {
+        return hit;
+    }
+
+    let fallback = execute_with_superinstruction(&recent_window, &state.plans);
+    HostcallSuperinstructionTelemetry {
+        trace_signature: Some(fallback.selection.trace_signature),
+        plan_id: None,
+        expected_cost_delta: 0,
+        observed_cost_delta: 0,
+        deopt_reason: fallback.selection.deopt_reason.map(str::to_string),
+    }
+}
+
+#[cfg(test)]
+fn reset_hostcall_superinstruction_state_for_tests() {
+    if let Ok(mut state) = hostcall_superinstruction_state().lock() {
+        *state = HostcallSuperinstructionRuntimeState::default();
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -8335,6 +8897,11 @@ struct HostcallMarshallingTelemetry {
     rewrite_expected_cost_delta: i64,
     rewrite_observed_cost_delta: i64,
     rewrite_fallback_reason: Option<String>,
+    superinstruction_trace_signature: Option<String>,
+    superinstruction_plan_id: Option<String>,
+    superinstruction_expected_cost_delta: i64,
+    superinstruction_observed_cost_delta: i64,
+    superinstruction_deopt_reason: Option<String>,
 }
 
 impl Default for HostcallMarshallingTelemetry {
@@ -8348,6 +8915,11 @@ impl Default for HostcallMarshallingTelemetry {
             rewrite_expected_cost_delta: 0,
             rewrite_observed_cost_delta: 0,
             rewrite_fallback_reason: None,
+            superinstruction_trace_signature: None,
+            superinstruction_plan_id: None,
+            superinstruction_expected_cost_delta: 0,
+            superinstruction_observed_cost_delta: 0,
+            superinstruction_deopt_reason: None,
         }
     }
 }
@@ -8466,6 +9038,7 @@ impl<'a> HostcallPayloadArena<'a> {
         } else {
             0
         };
+        let superinstruction = hostcall_superinstruction_telemetry(self.opcode);
 
         HostcallMarshallingArtifacts {
             params_hash,
@@ -8479,6 +9052,11 @@ impl<'a> HostcallPayloadArena<'a> {
                 rewrite_expected_cost_delta: rewrite_decision.expected_cost_delta,
                 rewrite_observed_cost_delta,
                 rewrite_fallback_reason,
+                superinstruction_trace_signature: superinstruction.trace_signature,
+                superinstruction_plan_id: superinstruction.plan_id,
+                superinstruction_expected_cost_delta: superinstruction.expected_cost_delta,
+                superinstruction_observed_cost_delta: superinstruction.observed_cost_delta,
+                superinstruction_deopt_reason: superinstruction.deopt_reason,
             },
         }
     }
@@ -12992,6 +13570,32 @@ struct JsRuntimeHost {
     interceptor: Option<Arc<dyn HostcallInterceptor>>,
 }
 
+thread_local! {
+    /// Per-thread AMAC batch executor for interleaved hostcall dispatch.
+    /// Persists telemetry across `pump_js_runtime_once` cycles on the
+    /// JS runtime thread.
+    static AMAC_EXECUTOR: RefCell<AmacBatchExecutor> =
+        RefCell::new(AmacBatchExecutor::default());
+}
+
+/// Query the AMAC batch executor telemetry for the current thread.
+///
+/// Returns `None` if called from a thread that has never run the JS
+/// runtime pump (the thread-local executor was never initialized with
+/// any observations).
+#[must_use]
+pub fn amac_telemetry_snapshot() -> Option<crate::hostcall_amac::AmacStallTelemetrySnapshot> {
+    AMAC_EXECUTOR.with(|cell| {
+        let executor = cell.borrow();
+        let snap = executor.telemetry().snapshot();
+        if snap.total_calls == 0 {
+            None
+        } else {
+            Some(snap)
+        }
+    })
+}
+
 impl JsRuntimeHost {
     /// Upgrade the weak manager reference.  Returns `None` if the
     /// `ExtensionManager` has already been dropped (shutdown in progress).
@@ -15050,44 +15654,140 @@ async fn pump_js_runtime_once(runtime: &PiJsRuntime, host: &JsRuntimeHost) -> Re
         runtime.drain_hostcall_requests()
     }
 
+    /// Dispatch a single hostcall request, recording timing and returning
+    /// the completion pair plus elapsed nanoseconds for AMAC telemetry.
+    async fn dispatch_one(
+        runtime: &PiJsRuntime,
+        host: &JsRuntimeHost,
+        req: HostcallRequest,
+    ) -> Option<(String, HostcallOutcome, u64)> {
+        let call_id = req.call_id.clone();
+        if !runtime.is_hostcall_pending(&call_id) {
+            tracing::debug!(
+                event = "pijs.hostcall.skip_cancelled",
+                call_id = %call_id,
+                "Skipping hostcall dispatch because call is no longer pending"
+            );
+            return None;
+        }
+        let extension_id = req.extension_id.clone();
+        let queue_wait_ms = runtime.hostcall_queue_wait_ms(&call_id).unwrap_or(0);
+        let dispatch_started = Instant::now();
+        let outcome = dispatch_hostcall_with_runtime(Some(runtime), host, req).await;
+        let elapsed = dispatch_started.elapsed();
+        let execution_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+        let elapsed_ns = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
+        let outcome_code = match &outcome {
+            HostcallOutcome::Success(_) => "success",
+            HostcallOutcome::StreamChunk { .. } => "stream",
+            HostcallOutcome::Error { code, .. } => code.as_str(),
+        };
+        tracing::debug!(
+            event = "pijs.hostcall.dispatch_timing",
+            call_id = %call_id,
+            extension_id = ?extension_id,
+            queue_wait_ms,
+            execution_ms,
+            outcome_code = %outcome_code,
+            "Hostcall dispatch timing"
+        );
+        Some((call_id, outcome, elapsed_ns))
+    }
+
     async fn dispatch_requests(
         runtime: &PiJsRuntime,
         host: &JsRuntimeHost,
-        mut pending: std::collections::VecDeque<HostcallRequest>,
+        pending: std::collections::VecDeque<HostcallRequest>,
+    ) {
+        if pending.is_empty() {
+            return;
+        }
+
+        let amac_enabled = AMAC_EXECUTOR.with(|cell| cell.borrow().enabled());
+
+        if amac_enabled {
+            dispatch_requests_amac(runtime, host, pending).await;
+        } else {
+            dispatch_requests_sequential(runtime, host, pending).await;
+        }
+    }
+
+    /// Sequential dispatch path (AMAC disabled or fallback).
+    async fn dispatch_requests_sequential(
+        runtime: &PiJsRuntime,
+        host: &JsRuntimeHost,
+        pending: std::collections::VecDeque<HostcallRequest>,
     ) {
         let mut completions = Vec::with_capacity(pending.len());
-        while let Some(req) = pending.pop_front() {
-            let call_id = req.call_id.clone();
-            if !runtime.is_hostcall_pending(&call_id) {
-                tracing::debug!(
-                    event = "pijs.hostcall.skip_cancelled",
-                    call_id = %call_id,
-                    "Skipping hostcall dispatch because call is no longer pending"
-                );
-                continue;
+        for req in pending {
+            if let Some((call_id, outcome, elapsed_ns)) =
+                dispatch_one(runtime, host, req).await
+            {
+                // Feed timing to AMAC even when disabled, so telemetry
+                // is ready if toggled on later.
+                AMAC_EXECUTOR.with(|cell| cell.borrow_mut().observe_call(elapsed_ns));
+                completions.push((call_id, outcome));
             }
-            let extension_id = req.extension_id.clone();
-            let queue_wait_ms = runtime.hostcall_queue_wait_ms(&call_id).unwrap_or(0);
-            let dispatch_started = Instant::now();
-            let outcome = dispatch_hostcall_with_runtime(Some(runtime), host, req).await;
-            let execution_ms =
-                u64::try_from(dispatch_started.elapsed().as_millis()).unwrap_or(u64::MAX);
-            let outcome_code = match &outcome {
-                HostcallOutcome::Success(_) => "success",
-                HostcallOutcome::StreamChunk { .. } => "stream",
-                HostcallOutcome::Error { code, .. } => code.as_str(),
-            };
-            tracing::debug!(
-                event = "pijs.hostcall.dispatch_timing",
-                call_id = %call_id,
-                extension_id = ?extension_id,
-                queue_wait_ms,
-                execution_ms,
-                outcome_code = %outcome_code,
-                "Hostcall dispatch timing"
-            );
-            completions.push((call_id, outcome));
         }
+        if !completions.is_empty() {
+            runtime.complete_hostcalls_batch(completions);
+        }
+    }
+
+    /// AMAC batch dispatch path: group requests by kind, decide per-group
+    /// whether to interleave, and dispatch with timing telemetry.
+    async fn dispatch_requests_amac(
+        runtime: &PiJsRuntime,
+        host: &JsRuntimeHost,
+        pending: std::collections::VecDeque<HostcallRequest>,
+    ) {
+        let requests: Vec<HostcallRequest> = pending.into_iter().collect();
+        let total = requests.len();
+
+        // Plan the batch: group by kind, decide toggle per group.
+        let plan = AMAC_EXECUTOR.with(|cell| cell.borrow_mut().plan_batch(requests));
+
+        tracing::debug!(
+            event = "pijs.amac.batch_planned",
+            total_requests = total,
+            groups = plan.groups.len(),
+            interleaved = plan.interleaved_groups,
+            sequential = plan.sequential_groups,
+            "AMAC batch plan created"
+        );
+
+        let batch_start = Instant::now();
+        let mut completions = Vec::with_capacity(total);
+
+        for (group, decision) in plan.groups.into_iter().zip(plan.decisions.into_iter()) {
+            tracing::debug!(
+                event = "pijs.amac.group_dispatch",
+                group_key = ?group.key,
+                group_size = group.len(),
+                interleave = decision.is_interleave(),
+                "Dispatching AMAC group"
+            );
+
+            for req in group.requests {
+                if let Some((call_id, outcome, elapsed_ns)) =
+                    dispatch_one(runtime, host, req).await
+                {
+                    AMAC_EXECUTOR
+                        .with(|cell| cell.borrow_mut().observe_call(elapsed_ns));
+                    completions.push((call_id, outcome));
+                }
+            }
+        }
+
+        let batch_elapsed_ms =
+            u64::try_from(batch_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        tracing::debug!(
+            event = "pijs.amac.batch_complete",
+            total_dispatched = completions.len(),
+            batch_elapsed_ms,
+            "AMAC batch dispatch complete"
+        );
+
         if !completions.is_empty() {
             runtime.complete_hostcalls_batch(completions);
         }
@@ -15334,6 +16034,15 @@ fn log_hostcall_end(
     let marshalling_rewrite_expected_cost_delta = marshalling.rewrite_expected_cost_delta;
     let marshalling_rewrite_observed_cost_delta = marshalling.rewrite_observed_cost_delta;
     let marshalling_rewrite_fallback_reason = marshalling.rewrite_fallback_reason.as_deref();
+    let marshalling_superinstruction_trace_signature =
+        marshalling.superinstruction_trace_signature.as_deref();
+    let marshalling_superinstruction_plan_id = marshalling.superinstruction_plan_id.as_deref();
+    let marshalling_superinstruction_expected_cost_delta =
+        marshalling.superinstruction_expected_cost_delta;
+    let marshalling_superinstruction_observed_cost_delta =
+        marshalling.superinstruction_observed_cost_delta;
+    let marshalling_superinstruction_deopt_reason =
+        marshalling.superinstruction_deopt_reason.as_deref();
 
     if is_error {
         tracing::warn!(
@@ -15359,6 +16068,13 @@ fn log_hostcall_end(
             marshalling_rewrite_expected_cost_delta,
             marshalling_rewrite_observed_cost_delta,
             marshalling_rewrite_fallback_reason = marshalling_rewrite_fallback_reason,
+            marshalling_superinstruction_trace_signature =
+                marshalling_superinstruction_trace_signature,
+            marshalling_superinstruction_plan_id = marshalling_superinstruction_plan_id,
+            marshalling_superinstruction_expected_cost_delta,
+            marshalling_superinstruction_observed_cost_delta,
+            marshalling_superinstruction_deopt_reason =
+                marshalling_superinstruction_deopt_reason,
             error_code = error_code,
             "Hostcall end (error)"
         );
@@ -15386,6 +16102,13 @@ fn log_hostcall_end(
             marshalling_rewrite_expected_cost_delta,
             marshalling_rewrite_observed_cost_delta,
             marshalling_rewrite_fallback_reason = marshalling_rewrite_fallback_reason,
+            marshalling_superinstruction_trace_signature =
+                marshalling_superinstruction_trace_signature,
+            marshalling_superinstruction_plan_id = marshalling_superinstruction_plan_id,
+            marshalling_superinstruction_expected_cost_delta,
+            marshalling_superinstruction_observed_cost_delta,
+            marshalling_superinstruction_deopt_reason =
+                marshalling_superinstruction_deopt_reason,
             "Hostcall end (success)"
         );
     }
@@ -18177,6 +18900,18 @@ pub(crate) struct RegistrySnapshot {
     pub hostcall_compat_kill_switch_extensions: HashSet<String>,
     /// Monotonic version counter (seqlock-style) for cache invalidation.
     pub version: u64,
+    // ── Pre-computed derived views (RCU read-hot) ────────────────────
+    /// Pre-computed merged flag list (dynamic flags take priority, then
+    /// extension-payload flags, deduplicated by name).
+    pub all_flags: Vec<Value>,
+    /// Pre-computed slash command list from all extensions.
+    pub all_commands: Vec<Value>,
+    /// Pre-computed shortcut list from all extensions.
+    pub all_shortcuts: Vec<Value>,
+    /// Pre-computed set of lowercase shortcut `key_id`s for O(1) lookup.
+    pub shortcut_key_ids: HashSet<String>,
+    /// Pre-computed sorted event hook names from all extensions.
+    pub all_event_hooks: Vec<String>,
 }
 
 /// Extension manager for handling loaded extensions.
@@ -18530,6 +19265,12 @@ impl ExtensionManager {
     ///
     /// Caller must already hold the mutex on `inner`.
     fn build_snapshot_from_inner(inner: &ExtensionManagerInner) -> RegistrySnapshot {
+        // Pre-compute derived views so readers never touch the mutex.
+        let all_flags = Self::precompute_all_flags(inner);
+        let all_commands = Self::precompute_all_commands(inner);
+        let (all_shortcuts, shortcut_key_ids) = Self::precompute_all_shortcuts(inner);
+        let all_event_hooks = Self::precompute_all_event_hooks(inner);
+
         RegistrySnapshot {
             hook_bitmap: inner.hook_bitmap.clone(),
             has_any_hooks: !inner.hook_bitmap.is_empty(),
@@ -18547,7 +19288,131 @@ impl ExtensionManager {
                 .hostcall_compat_kill_switch_extensions
                 .clone(),
             version: inner.ctx_generation,
+            all_flags,
+            all_commands,
+            all_shortcuts,
+            shortcut_key_ids,
+            all_event_hooks,
         }
+    }
+
+    /// Pre-compute the merged flag list from dynamic flags + extension payloads.
+    fn precompute_all_flags(inner: &ExtensionManagerInner) -> Vec<Value> {
+        let mut flags = Vec::new();
+        let mut seen = HashSet::new();
+        // Dynamic flags take priority.
+        for flag in &inner.flags {
+            let name = flag
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if !name.is_empty() {
+                seen.insert(name.clone());
+                let description = flag
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let flag_type = flag.get("type").and_then(Value::as_str).unwrap_or("string");
+                let extension_id = flag.get("extension_id").and_then(Value::as_str);
+                flags.push(json!({
+                    "name": name,
+                    "description": description,
+                    "type": flag_type,
+                    "default": flag.get("default").cloned(),
+                    "extension_id": extension_id,
+                    "source": "extension",
+                }));
+            }
+        }
+        // Extension-payload flags (skip duplicates).
+        for ext in &inner.extensions {
+            for flag in &ext.flags {
+                let name = flag
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                if !name.is_empty() && seen.insert(name.clone()) {
+                    let description = flag
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let flag_type =
+                        flag.get("type").and_then(Value::as_str).unwrap_or("string");
+                    flags.push(json!({
+                        "name": name,
+                        "description": description,
+                        "type": flag_type,
+                        "default": flag.get("default").cloned(),
+                        "extension_id": ext.name,
+                        "source": "extension",
+                    }));
+                }
+            }
+        }
+        flags
+    }
+
+    /// Pre-compute slash command list from all extensions.
+    fn precompute_all_commands(inner: &ExtensionManagerInner) -> Vec<Value> {
+        let mut commands = Vec::new();
+        for ext in &inner.extensions {
+            for cmd in &ext.slash_commands {
+                let Some(name) = extract_slash_command_name(cmd) else {
+                    continue;
+                };
+                let description = cmd.get("description").and_then(Value::as_str);
+                commands.push(json!({
+                    "name": name,
+                    "description": description,
+                    "source": "extension",
+                }));
+            }
+        }
+        commands
+    }
+
+    /// Pre-compute shortcut list and `key_id` set from all extensions.
+    fn precompute_all_shortcuts(
+        inner: &ExtensionManagerInner,
+    ) -> (Vec<Value>, HashSet<String>) {
+        let mut shortcuts = Vec::new();
+        let mut key_ids = HashSet::new();
+        for ext in &inner.extensions {
+            for shortcut in &ext.shortcuts {
+                let key_id = shortcut
+                    .get("key_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let description = shortcut.get("description").and_then(Value::as_str);
+                shortcuts.push(json!({
+                    "shortcut": key_id,
+                    "key_id": key_id,
+                    "key": shortcut.get("key"),
+                    "description": description,
+                    "source": "extension",
+                }));
+                if !key_id.is_empty() {
+                    key_ids.insert(key_id.to_lowercase());
+                }
+            }
+        }
+        (shortcuts, key_ids)
+    }
+
+    /// Pre-compute deduplicated event hook names from all extensions.
+    fn precompute_all_event_hooks(inner: &ExtensionManagerInner) -> Vec<String> {
+        let mut hooks = Vec::new();
+        let mut seen = HashSet::new();
+        for ext in &inner.extensions {
+            for hook in &ext.event_hooks {
+                if seen.insert(hook.clone()) {
+                    hooks.push(hook.clone());
+                }
+            }
+        }
+        hooks
     }
 
     /// Atomically publish a new snapshot, replacing the old one.
@@ -18944,6 +19809,40 @@ impl ExtensionManager {
             let _ = state.overload_timestamps_ms.pop_front();
         }
 
+        // Feed regime-shift detectors with inter-arrival interval.
+        let regime_shift_triggered = if config.regime_shift.enabled {
+            let interval_ms = state
+                .regime_shift
+                .cusum
+                .last_observation_ms
+                .map_or(0.0, |prev| (now_ms - prev) as f64);
+            state.regime_shift.cusum.last_observation_ms = Some(now_ms);
+
+            let cusum_alarm = state.regime_shift.cusum.observe(
+                interval_ms,
+                config.regime_shift.cusum_k,
+                config.regime_shift.cusum_h,
+            );
+            let bocpd_alarm = state.regime_shift.bocpd.observe(
+                interval_ms,
+                config.regime_shift.bocpd_lambda,
+                config.regime_shift.bocpd_threshold,
+                config.regime_shift.bocpd_max_run_length,
+            );
+
+            if cusum_alarm || bocpd_alarm {
+                let source = if cusum_alarm { "cusum" } else { "bocpd" };
+                state.regime_shift.triggered = true;
+                state.regime_shift.trigger_source = Some(source);
+                state.regime_shift.trigger_count += 1;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
         state.overload_timestamps_ms.push_back(now_ms);
         state.healthy_success_streak = 0;
         state.last_trigger_reason = Some(reason.to_string());
@@ -18955,13 +19854,22 @@ impl ExtensionManager {
             (f64::from(signal_count) / f64::from(config.overload_signals_to_fallback)) * 100.0
         };
 
-        if !state.in_fallback && signal_count >= config.overload_signals_to_fallback {
+        // Enter fallback if either the classic signal count threshold is met
+        // OR the regime-shift detector fires (statistical early trigger).
+        let count_trigger = signal_count >= config.overload_signals_to_fallback;
+        if !state.in_fallback && (count_trigger || regime_shift_triggered) {
+            let trigger_kind = if regime_shift_triggered && !count_trigger {
+                state.regime_shift.trigger_source.unwrap_or("regime_shift")
+            } else {
+                "count_threshold"
+            };
             state.in_fallback = true;
             tracing::warn!(
                 event = "host_call.budget_controller.fallback_entered",
                 extension_id = %ext_id,
                 budget_tier = config.tier.as_str(),
                 trigger_reason = %reason,
+                trigger_kind,
                 overload_signal_count = signal_count,
                 overload_signal_threshold = config.overload_signals_to_fallback,
                 overload_window_ms = config.overload_window_ms,
@@ -18969,6 +19877,7 @@ impl ExtensionManager {
                 queue_depth,
                 queue_capacity,
                 overload_utilization_pct = utilization_pct,
+                regime_shift_triggered,
                 fallback_lane = "compat",
                 "Budget controller entered compatibility fallback mode"
             );
@@ -18987,6 +19896,7 @@ impl ExtensionManager {
             queue_capacity,
             overload_utilization_pct = utilization_pct,
             fallback_active = state.in_fallback,
+            regime_shift_triggered,
             "Budget controller recorded overload/anomaly signal"
         );
     }
@@ -19022,6 +19932,11 @@ impl ExtensionManager {
         state.in_fallback = false;
         state.healthy_success_streak = 0;
         state.overload_timestamps_ms.clear();
+        // Reset regime-shift detectors so the next regime starts fresh.
+        state.regime_shift.cusum.reset_cumsum();
+        state.regime_shift.bocpd.reset();
+        state.regime_shift.triggered = false;
+        state.regime_shift.trigger_source = None;
         tracing::info!(
             event = "host_call.budget_controller.recovered",
             extension_id = %ext_id,
@@ -19030,6 +19945,15 @@ impl ExtensionManager {
             fallback_lane = "fast",
             "Budget controller exited compatibility fallback mode"
         );
+    }
+
+    /// Snapshot the regime-shift detector state for an extension.
+    pub fn regime_shift_snapshot(&self, extension_id: &str) -> Option<RegimeShiftSnapshot> {
+        let guard = self.inner.lock().ok()?;
+        guard
+            .budget_fallback_states
+            .get(extension_id)
+            .map(|state| state.regime_shift.snapshot())
     }
 
     #[cfg(test)]
@@ -19520,6 +20444,17 @@ impl ExtensionManager {
                 marshalling_latency_us: marshalling.latency_us,
                 marshalling_fallback_reason: marshalling.fallback_reason.clone(),
                 marshalling_fallback_count: marshalling.fallback_count,
+                marshalling_superinstruction_trace_signature: marshalling
+                    .superinstruction_trace_signature
+                    .clone(),
+                marshalling_superinstruction_plan_id: marshalling.superinstruction_plan_id.clone(),
+                marshalling_superinstruction_expected_cost_delta: marshalling
+                    .superinstruction_expected_cost_delta,
+                marshalling_superinstruction_observed_cost_delta: marshalling
+                    .superinstruction_observed_cost_delta,
+                marshalling_superinstruction_deopt_reason: marshalling
+                    .superinstruction_deopt_reason
+                    .clone(),
                 outcome: if is_error {
                     "error".to_string()
                 } else {
@@ -19953,20 +20888,25 @@ impl ExtensionManager {
         extension_id: Option<&str>,
     ) -> Option<&'static str> {
         let guard = self.inner.lock().ok()?;
-        if guard.hostcall_compat_kill_switch_global {
-            return Some("forced_compat_global_kill_switch");
-        }
-        if extension_id.is_some_and(|id| guard.hostcall_compat_kill_switch_extensions.contains(id))
-        {
-            return Some("forced_compat_extension_kill_switch");
-        }
-        if extension_id.is_some_and(|id| {
+        let forced_global = guard.hostcall_compat_kill_switch_global;
+        let forced_extension = extension_id
+            .is_some_and(|id| guard.hostcall_compat_kill_switch_extensions.contains(id));
+        let forced_budget = extension_id.is_some_and(|id| {
             guard.budget_controller_config.enabled
                 && guard
                     .budget_fallback_states
                     .get(id)
                     .is_some_and(|state| state.in_fallback)
-        }) {
+        });
+        drop(guard);
+
+        if forced_global {
+            return Some("forced_compat_global_kill_switch");
+        }
+        if forced_extension {
+            return Some("forced_compat_extension_kill_switch");
+        }
+        if forced_budget {
             return Some("forced_compat_budget_controller");
         }
         None
@@ -20857,6 +21797,7 @@ impl ExtensionManager {
     pub fn register_provider(&self, payload: Value) {
         let mut guard = self.inner.lock().unwrap();
         guard.providers.push(payload);
+        self.refresh_snapshot_with_guard_release(guard);
     }
 
     /// Dynamically register a flag at runtime (from a hostcall).
@@ -20868,6 +21809,7 @@ impl ExtensionManager {
             .flags
             .retain(|f| f.get("name").and_then(Value::as_str).unwrap_or_default() != name);
         guard.flags.push(spec);
+        self.refresh_snapshot_with_guard_release(guard);
     }
 
     /// Execute an extension slash command via the JS runtime.
@@ -20925,10 +21867,10 @@ impl ExtensionManager {
         use crate::provider::{InputType, Model, ModelCost};
         use std::collections::HashMap;
 
-        let guard = self.inner.lock().unwrap();
+        let snap = self.read_snapshot();
         let mut entries = Vec::new();
 
-        for provider_spec in &guard.providers {
+        for provider_spec in &snap.providers {
             let provider_id = provider_spec
                 .get("id")
                 .and_then(Value::as_str)
@@ -21079,142 +22021,29 @@ impl ExtensionManager {
                 });
             }
         }
-        drop(guard);
         entries
     }
 
     pub fn list_commands(&self) -> Vec<Value> {
-        let guard = self.inner.lock().unwrap();
-        let mut commands = Vec::new();
-
-        for ext in &guard.extensions {
-            for cmd in &ext.slash_commands {
-                let Some(name) = extract_slash_command_name(cmd) else {
-                    continue;
-                };
-                let description = cmd.get("description").and_then(Value::as_str);
-                commands.push(json!({
-                    "name": name,
-                    "description": description,
-                    "source": "extension",
-                }));
-            }
-        }
-
-        drop(guard);
-        commands
+        self.read_snapshot().all_commands.clone()
     }
 
     pub fn has_shortcut(&self, key_id: &str) -> bool {
         let needle = key_id.to_lowercase();
-        let guard = self.inner.lock().unwrap();
-        guard
-            .extensions
-            .iter()
-            .flat_map(|ext| ext.shortcuts.iter())
-            .filter_map(|s| s.get("key_id").and_then(Value::as_str))
-            .any(|id| id == needle)
+        self.read_snapshot().shortcut_key_ids.contains(&needle)
     }
 
     pub fn list_shortcuts(&self) -> Vec<Value> {
-        let guard = self.inner.lock().unwrap();
-        let mut shortcuts = Vec::new();
-
-        for ext in &guard.extensions {
-            for shortcut in &ext.shortcuts {
-                let key_id = shortcut
-                    .get("key_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                let description = shortcut.get("description").and_then(Value::as_str);
-                shortcuts.push(json!({
-                    "shortcut": key_id,  // Primary field matching TS oracle output
-                    "key_id": key_id,
-                    "key": shortcut.get("key"),
-                    "description": description,
-                    "source": "extension",
-                }));
-            }
-        }
-
-        drop(guard);
-        shortcuts
+        self.read_snapshot().all_shortcuts.clone()
     }
 
     pub fn list_flags(&self) -> Vec<Value> {
-        let guard = self.inner.lock().unwrap();
-        let mut flags = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-
-        // Collect from dynamically registered flags first (higher priority).
-        for flag in &guard.flags {
-            let name = flag
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            if !name.is_empty() {
-                seen.insert(name.clone());
-                let description = flag
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                let flag_type = flag.get("type").and_then(Value::as_str).unwrap_or("string");
-                let extension_id = flag.get("extension_id").and_then(Value::as_str);
-                flags.push(json!({
-                    "name": name,
-                    "description": description,
-                    "type": flag_type,
-                    "default": flag.get("default").cloned(),
-                    "extension_id": extension_id,
-                    "source": "extension",
-                }));
-            }
-        }
-
-        // Collect from snapshot-loaded extension payloads (skip duplicates).
-        for ext in &guard.extensions {
-            for flag in &ext.flags {
-                let name = flag
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string();
-                if !name.is_empty() && seen.insert(name.clone()) {
-                    let description = flag
-                        .get("description")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default();
-                    let flag_type = flag.get("type").and_then(Value::as_str).unwrap_or("string");
-                    flags.push(json!({
-                        "name": name,
-                        "description": description,
-                        "type": flag_type,
-                        "default": flag.get("default").cloned(),
-                        "extension_id": ext.name,
-                        "source": "extension",
-                    }));
-                }
-            }
-        }
-
-        drop(guard);
-        flags
+        self.read_snapshot().all_flags.clone()
     }
 
     /// List all event hook names registered by all loaded extensions.
     pub fn list_event_hooks(&self) -> Vec<String> {
-        let guard = self.inner.lock().unwrap();
-        let mut hooks = Vec::new();
-        for ext in &guard.extensions {
-            for hook in &ext.event_hooks {
-                if !hooks.contains(hook) {
-                    hooks.push(hook.clone());
-                }
-            }
-        }
-        drop(guard);
-        hooks
+        self.read_snapshot().all_event_hooks.clone()
     }
 
     /// Execute an extension shortcut via the JS runtime.
@@ -32522,8 +33351,7 @@ mod tests {
     fn budget_controller_tier_defaults_are_ordered() {
         let strict = ExtensionBudgetControllerConfig::for_tier(ExtensionBudgetTier::Strict);
         let balanced = ExtensionBudgetControllerConfig::for_tier(ExtensionBudgetTier::Balanced);
-        let throughput =
-            ExtensionBudgetControllerConfig::for_tier(ExtensionBudgetTier::Throughput);
+        let throughput = ExtensionBudgetControllerConfig::for_tier(ExtensionBudgetTier::Throughput);
 
         assert!(strict.enabled);
         assert!(balanced.enabled);
@@ -32543,12 +33371,29 @@ mod tests {
             overload_window_ms: 10_000,
             overload_signals_to_fallback: 2,
             recovery_successes_to_exit: 4,
+            ..Default::default()
         });
 
-        assert_eq!(manager.hostcall_compat_kill_switch_reason(Some("ext.budget")), None);
-        manager.record_budget_overload_signal(Some("ext.budget"), "reactor_lane_overflow", None, None);
-        assert_eq!(manager.hostcall_compat_kill_switch_reason(Some("ext.budget")), None);
-        manager.record_budget_overload_signal(Some("ext.budget"), "reactor_lane_overflow", None, None);
+        assert_eq!(
+            manager.hostcall_compat_kill_switch_reason(Some("ext.budget")),
+            None
+        );
+        manager.record_budget_overload_signal(
+            Some("ext.budget"),
+            "reactor_lane_overflow",
+            None,
+            None,
+        );
+        assert_eq!(
+            manager.hostcall_compat_kill_switch_reason(Some("ext.budget")),
+            None
+        );
+        manager.record_budget_overload_signal(
+            Some("ext.budget"),
+            "reactor_lane_overflow",
+            None,
+            None,
+        );
         assert_eq!(
             manager.hostcall_compat_kill_switch_reason(Some("ext.budget")),
             Some("forced_compat_budget_controller")
@@ -32570,6 +33415,7 @@ mod tests {
             overload_window_ms: 10_000,
             overload_signals_to_fallback: 1,
             recovery_successes_to_exit: 2,
+            ..Default::default()
         });
 
         manager.record_budget_overload_signal(Some("ext.recover"), "quota_exceeded", None, None);
@@ -32584,7 +33430,12 @@ mod tests {
             Some("forced_compat_budget_controller")
         );
 
-        manager.record_budget_overload_signal(Some("ext.recover"), "reactor_lane_overflow", None, None);
+        manager.record_budget_overload_signal(
+            Some("ext.recover"),
+            "reactor_lane_overflow",
+            None,
+            None,
+        );
         let snapshot = manager
             .budget_fallback_state_snapshot("ext.recover")
             .expect("budget state");
@@ -32592,7 +33443,10 @@ mod tests {
 
         manager.record_budget_recovery_sample(Some("ext.recover"), true);
         manager.record_budget_recovery_sample(Some("ext.recover"), true);
-        assert_eq!(manager.hostcall_compat_kill_switch_reason(Some("ext.recover")), None);
+        assert_eq!(
+            manager.hostcall_compat_kill_switch_reason(Some("ext.recover")),
+            None
+        );
     }
 
     #[test]
@@ -32611,6 +33465,7 @@ mod tests {
             overload_window_ms: 10_000,
             overload_signals_to_fallback: 1,
             recovery_successes_to_exit: 5,
+            ..Default::default()
         });
         manager.record_budget_overload_signal(
             Some("ext.budget.lane"),
@@ -32645,6 +33500,284 @@ mod tests {
             HostcallOutcome::Success(_) => {}
             other => panic!("expected success, got {other:?}"),
         }
+    }
+
+    // ── Regime-shift detector (CUSUM/BOCPD) tests ─────────────────────
+
+    /// Simple deterministic jitter for BOCPD tests (avoids needing `rand`).
+    fn rand_jitter() -> f64 {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEED: AtomicU64 = AtomicU64::new(12345);
+        let s = SEED.fetch_add(1, Ordering::Relaxed);
+        let x = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        ((x >> 33) as f64 / f64::from(u32::MAX)) * 2.0 - 1.0
+    }
+
+    #[test]
+    fn cusum_baseline_requires_min_observations() {
+        let mut cusum = CusumState::default();
+        assert!(!cusum.observe(100.0, 0.5, 4.0));
+        assert!(!cusum.observe(110.0, 0.5, 4.0));
+        assert!(!cusum.baseline_ready);
+        assert!(!cusum.observe(105.0, 0.5, 4.0));
+        assert!(cusum.baseline_ready);
+        assert!(cusum.baseline_interval_ms > 0.0);
+    }
+
+    #[test]
+    fn cusum_detects_rate_increase() {
+        let mut cusum = CusumState::default();
+        for _ in 0..5 {
+            cusum.observe(1000.0, 0.5, 4.0);
+        }
+        assert!(cusum.baseline_ready);
+        let mut alarmed = false;
+        for _ in 0..20 {
+            if cusum.observe(100.0, 0.5, 4.0) {
+                alarmed = true;
+                break;
+            }
+        }
+        assert!(alarmed, "CUSUM should detect rate increase");
+        assert!(cusum.alarm_count > 0);
+    }
+
+    #[test]
+    fn cusum_reset_clears_cumsum_but_keeps_baseline() {
+        let mut cusum = CusumState::default();
+        for _ in 0..5 {
+            cusum.observe(1000.0, 0.5, 4.0);
+        }
+        cusum.cumsum_high = 3.0;
+        cusum.cumsum_low = 2.5;
+        cusum.reset_cumsum();
+        assert_eq!(cusum.cumsum_high, 0.0);
+        assert_eq!(cusum.cumsum_low, 0.0);
+        assert!(cusum.baseline_ready, "baseline should survive reset");
+    }
+
+    #[test]
+    fn cusum_no_alarm_on_stable_signal() {
+        let mut cusum = CusumState::default();
+        for _ in 0..55 {
+            assert!(
+                !cusum.observe(500.0, 0.5, 4.0),
+                "should not alarm on stable signal"
+            );
+        }
+        assert_eq!(cusum.alarm_count, 0);
+    }
+
+    #[test]
+    fn bocpd_warmup_suppresses_early_signals() {
+        let mut bocpd = BocpdState::default();
+        for i in 0..BocpdState::WARMUP_OBS {
+            assert!(
+                !bocpd.observe(f64::from(i) * 100.0, 50.0, 0.5, 200),
+                "BOCPD should not signal during warmup"
+            );
+        }
+    }
+
+    #[test]
+    fn bocpd_detects_changepoint_on_mean_shift() {
+        let mut bocpd = BocpdState::default();
+        for _ in 0..20 {
+            bocpd.observe(1000.0 + (rand_jitter() * 10.0), 50.0, 0.3, 200);
+        }
+        assert!(bocpd.warmed_up);
+        let mut detected = false;
+        for _ in 0..20 {
+            if bocpd.observe(100.0 + (rand_jitter() * 10.0), 50.0, 0.3, 200) {
+                detected = true;
+                break;
+            }
+        }
+        assert!(detected, "BOCPD should detect mean shift");
+        assert!(bocpd.changepoint_count > 0);
+    }
+
+    #[test]
+    fn bocpd_run_length_bounded() {
+        let mut bocpd = BocpdState::default();
+        for _ in 0..500 {
+            bocpd.observe(1000.0, 50.0, 0.5, 100);
+        }
+        assert!(
+            bocpd.run_length_probs.len() <= 100,
+            "run length should be bounded to max_run_length"
+        );
+    }
+
+    #[test]
+    fn bocpd_reset_returns_to_default() {
+        let mut bocpd = BocpdState::default();
+        for _ in 0..20 {
+            bocpd.observe(1000.0, 50.0, 0.5, 200);
+        }
+        bocpd.reset();
+        assert_eq!(bocpd.run_length_probs.len(), 1);
+        assert_eq!(bocpd.changepoint_count, 0);
+        assert!(!bocpd.warmed_up);
+    }
+
+    #[test]
+    fn regime_shift_config_tiers_are_ordered() {
+        let strict = RegimeShiftConfig::for_tier(ExtensionBudgetTier::Strict);
+        let balanced = RegimeShiftConfig::for_tier(ExtensionBudgetTier::Balanced);
+        let throughput = RegimeShiftConfig::for_tier(ExtensionBudgetTier::Throughput);
+
+        assert!(strict.cusum_k < balanced.cusum_k);
+        assert!(balanced.cusum_k < throughput.cusum_k);
+        assert!(strict.cusum_h < balanced.cusum_h);
+        assert!(balanced.cusum_h < throughput.cusum_h);
+        assert!(strict.bocpd_lambda < balanced.bocpd_lambda);
+        assert!(balanced.bocpd_lambda < throughput.bocpd_lambda);
+    }
+
+    #[test]
+    fn regime_shift_snapshot_reflects_state() {
+        let mut state = RegimeShiftDetectorState::default();
+        let snap = state.snapshot();
+        assert!(!snap.triggered);
+        assert_eq!(snap.trigger_count, 0);
+        assert!(snap.trigger_source.is_none());
+
+        state.triggered = true;
+        state.trigger_source = Some("cusum");
+        state.trigger_count = 3;
+        state.cusum.cumsum_high = 2.5;
+        state.cusum.alarm_count = 2;
+        let snap = state.snapshot();
+        assert!(snap.triggered);
+        assert_eq!(snap.trigger_source.as_deref(), Some("cusum"));
+        assert_eq!(snap.trigger_count, 3);
+        assert!((snap.cusum_high - 2.5).abs() < f64::EPSILON);
+        assert_eq!(snap.cusum_alarm_count, 2);
+    }
+
+    #[test]
+    fn budget_controller_regime_shift_triggers_early_fallback() {
+        let manager = ExtensionManager::new();
+        manager.set_budget_controller_config(ExtensionBudgetControllerConfig {
+            enabled: true,
+            tier: ExtensionBudgetTier::Strict,
+            overload_window_ms: 60_000,
+            overload_signals_to_fallback: 100,
+            recovery_successes_to_exit: 4,
+            regime_shift: RegimeShiftConfig {
+                enabled: true,
+                cusum_k: 0.3,
+                cusum_h: 2.0,
+                bocpd_lambda: 10.0,
+                bocpd_threshold: 0.3,
+                bocpd_max_run_length: 50,
+            },
+        });
+
+        for _ in 0..5 {
+            manager.record_budget_overload_signal(
+                Some("ext.regime"),
+                "quota_exceeded",
+                None,
+                None,
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            manager
+                .hostcall_compat_kill_switch_reason(Some("ext.regime"))
+                .is_none(),
+            "should not be in fallback with only 5 signals against threshold=100"
+        );
+
+        let mut entered_fallback = false;
+        for _ in 0..30 {
+            manager.record_budget_overload_signal(
+                Some("ext.regime"),
+                "burst_overload",
+                None,
+                None,
+            );
+            if manager
+                .hostcall_compat_kill_switch_reason(Some("ext.regime"))
+                .is_some()
+            {
+                entered_fallback = true;
+                break;
+            }
+        }
+        assert!(
+            entered_fallback,
+            "regime-shift should trigger early fallback before count threshold"
+        );
+
+        let snap = manager
+            .regime_shift_snapshot("ext.regime")
+            .expect("snapshot");
+        assert!(snap.triggered);
+        assert!(snap.trigger_count > 0);
+    }
+
+    #[test]
+    fn budget_controller_regime_shift_disabled_does_not_trigger() {
+        let manager = ExtensionManager::new();
+        manager.set_budget_controller_config(ExtensionBudgetControllerConfig {
+            enabled: true,
+            tier: ExtensionBudgetTier::Balanced,
+            overload_window_ms: 60_000,
+            overload_signals_to_fallback: 100,
+            recovery_successes_to_exit: 4,
+            regime_shift: RegimeShiftConfig {
+                enabled: false,
+                ..Default::default()
+            },
+        });
+
+        for _ in 0..50 {
+            manager.record_budget_overload_signal(Some("ext.disabled"), "burst", None, None);
+        }
+        assert!(
+            manager
+                .hostcall_compat_kill_switch_reason(Some("ext.disabled"))
+                .is_none(),
+            "regime-shift disabled should not trigger early fallback"
+        );
+    }
+
+    #[test]
+    fn budget_controller_recovery_resets_regime_shift_state() {
+        let manager = ExtensionManager::new();
+        manager.set_budget_controller_config(ExtensionBudgetControllerConfig {
+            enabled: true,
+            tier: ExtensionBudgetTier::Balanced,
+            overload_window_ms: 60_000,
+            overload_signals_to_fallback: 1,
+            recovery_successes_to_exit: 2,
+            ..Default::default()
+        });
+
+        manager.record_budget_overload_signal(Some("ext.reset"), "quota_exceeded", None, None);
+        assert!(
+            manager
+                .hostcall_compat_kill_switch_reason(Some("ext.reset"))
+                .is_some()
+        );
+
+        manager.record_budget_recovery_sample(Some("ext.reset"), true);
+        manager.record_budget_recovery_sample(Some("ext.reset"), true);
+        assert!(
+            manager
+                .hostcall_compat_kill_switch_reason(Some("ext.reset"))
+                .is_none()
+        );
+
+        let snap = manager
+            .regime_shift_snapshot("ext.reset")
+            .expect("snapshot");
+        assert!(!snap.triggered);
+        assert!(snap.trigger_source.is_none());
+        assert_eq!(snap.bocpd_changepoint_count, 0);
     }
 
     #[test]
@@ -32792,6 +33925,7 @@ mod tests {
 
     #[test]
     fn hostcall_marshalling_fast_hash_matches_generic_for_hot_opcodes() {
+        reset_hostcall_superinstruction_state_for_tests();
         let tool_params = json!({
             "name": "read",
             "input": {
@@ -32836,10 +33970,12 @@ mod tests {
             assert!(artifacts.telemetry.rewrite_expected_cost_delta > 0);
             assert!(artifacts.telemetry.rewrite_fallback_reason.is_none());
         }
+        reset_hostcall_superinstruction_state_for_tests();
     }
 
     #[test]
     fn hostcall_marshalling_shape_miss_reports_rewrite_fallback() {
+        reset_hostcall_superinstruction_state_for_tests();
         let params = json!({
             "name": "read",
             "input": {
@@ -32865,10 +34001,53 @@ mod tests {
             artifacts.telemetry.rewrite_fallback_reason.as_deref(),
             Some("no_better_candidate")
         );
+        reset_hostcall_superinstruction_state_for_tests();
+    }
+
+    #[test]
+    fn hostcall_marshalling_superinstruction_hits_after_trace_warmup() {
+        reset_hostcall_superinstruction_state_for_tests();
+
+        let get_name = json!({ "op": "get_name" });
+        let get_model = json!({ "op": "get_model" });
+        let mut artifacts = HostcallPayloadArena::new(
+            "session",
+            &get_name,
+            Some(CommonHostcallOpcode::SessionGetName),
+        )
+        .marshal();
+
+        for _ in 0..8 {
+            let _ = HostcallPayloadArena::new(
+                "session",
+                &get_name,
+                Some(CommonHostcallOpcode::SessionGetName),
+            )
+            .marshal();
+            artifacts = HostcallPayloadArena::new(
+                "session",
+                &get_model,
+                Some(CommonHostcallOpcode::SessionGetModel),
+            )
+            .marshal();
+        }
+
+        assert!(
+            artifacts
+                .telemetry
+                .superinstruction_trace_signature
+                .is_some()
+        );
+        assert!(artifacts.telemetry.superinstruction_plan_id.is_some());
+        assert!(artifacts.telemetry.superinstruction_expected_cost_delta > 0);
+        assert!(artifacts.telemetry.superinstruction_deopt_reason.is_none());
+
+        reset_hostcall_superinstruction_state_for_tests();
     }
 
     #[test]
     fn runtime_hostcall_telemetry_records_marshalling_fallback_reason_and_counter() {
+        reset_hostcall_superinstruction_state_for_tests();
         let dir = tempdir().expect("tempdir");
         let file = dir.path().join("lane_telemetry_fallback.txt");
         std::fs::write(&file, "lane-telemetry-fallback").expect("write test file");
@@ -32941,6 +34120,11 @@ mod tests {
             .cloned()
             .expect("second telemetry entry");
         assert_eq!(second_entry.marshalling_fallback_count, 2);
+        assert!(
+            second_entry
+                .marshalling_superinstruction_trace_signature
+                .is_some()
+        );
     }
 
     #[test]

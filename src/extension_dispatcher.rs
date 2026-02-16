@@ -4,6 +4,7 @@
 //! hostcall requests (tools, HTTP, session, UI, etc.) from the JS runtime to
 //! Rust implementations.
 
+use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::collections::VecDeque;
 use std::future::Future;
@@ -56,6 +57,8 @@ pub struct ExtensionDispatcher<C: SchedulerClock = WallClock> {
     snapshot: PolicySnapshot,
     /// Deterministic policy snapshot version hash for provenance/telemetry.
     snapshot_version: String,
+    /// Adaptive regime detector for hostcall workload shifts.
+    regime_detector: RefCell<RegimeShiftDetector>,
 }
 
 fn protocol_hostcall_op(params: &Value) -> Option<&str> {
@@ -286,6 +289,317 @@ fn hostcall_outcome_to_protocol_result_with_trace(
     }
 }
 
+const REGIME_MIN_SAMPLES: usize = 24;
+const REGIME_CUSUM_DRIFT: f64 = 0.03;
+const REGIME_CUSUM_THRESHOLD: f64 = 2.8;
+const REGIME_BOCPD_HAZARD: f64 = 0.08;
+const REGIME_POSTERIOR_DECAY: f64 = 0.92;
+const REGIME_POSTERIOR_THRESHOLD: f64 = 0.72;
+const REGIME_COOLDOWN_OBSERVATIONS: usize = 32;
+const REGIME_CONFIRMATION_STREAK: usize = 2;
+const REGIME_FALLBACK_QUEUE_DEPTH: f64 = 1.0;
+const REGIME_FALLBACK_SERVICE_US: f64 = 1_200.0;
+const REGIME_VARIANCE_FLOOR: f64 = 1e-6;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RegimeAdaptationMode {
+    SequentialFastPath,
+    InterleavedBatching,
+}
+
+impl RegimeAdaptationMode {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::SequentialFastPath => "sequential_fast_path",
+            Self::InterleavedBatching => "interleaved_batching",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RegimeTransition {
+    EnterInterleavedBatching,
+    ReturnToSequentialFastPath,
+}
+
+impl RegimeTransition {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::EnterInterleavedBatching => "enter_interleaved_batching",
+            Self::ReturnToSequentialFastPath => "return_to_sequential_fast_path",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RegimeSignal {
+    queue_depth: f64,
+    service_time_us: f64,
+    opcode_entropy: f64,
+    llc_miss_rate: f64,
+}
+
+impl RegimeSignal {
+    fn composite_score(self) -> f64 {
+        let queue_component = (self.queue_depth / 32.0).min(4.0);
+        let service_component = (self.service_time_us / 5_000.0).min(4.0);
+        let entropy_component = (self.opcode_entropy / 4.0).min(2.0);
+        let llc_component = self.llc_miss_rate.clamp(0.0, 1.0) * 2.0;
+        0.15f64.mul_add(
+            llc_component,
+            0.15f64.mul_add(
+                entropy_component,
+                0.35f64.mul_add(queue_component, 0.35 * service_component),
+            ),
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RegimeObservation {
+    score: f64,
+    mean: f64,
+    stddev: f64,
+    upper_cusum: f64,
+    lower_cusum: f64,
+    change_posterior: f64,
+    transition: Option<RegimeTransition>,
+    mode: RegimeAdaptationMode,
+    fallback_triggered: bool,
+}
+
+#[derive(Debug, Clone)]
+struct RegimeShiftDetector {
+    sample_count: usize,
+    mean: f64,
+    m2: f64,
+    upper_cusum: f64,
+    lower_cusum: f64,
+    change_posterior: f64,
+    cooldown_remaining: usize,
+    confirmation_streak: usize,
+    mode: RegimeAdaptationMode,
+}
+
+impl Default for RegimeShiftDetector {
+    fn default() -> Self {
+        Self {
+            sample_count: 0,
+            mean: 0.0,
+            m2: 0.0,
+            upper_cusum: 0.0,
+            lower_cusum: 0.0,
+            change_posterior: 0.0,
+            cooldown_remaining: 0,
+            confirmation_streak: 0,
+            mode: RegimeAdaptationMode::SequentialFastPath,
+        }
+    }
+}
+
+impl RegimeShiftDetector {
+    const fn current_mode(&self) -> RegimeAdaptationMode {
+        self.mode
+    }
+
+    fn observe(&mut self, signal: RegimeSignal) -> RegimeObservation {
+        let score = signal.composite_score();
+        let baseline_mean = self.mean;
+        let baseline_stddev = self.variance().sqrt().max(REGIME_VARIANCE_FLOOR);
+        let deviation = if self.sample_count > 1 {
+            score - baseline_mean
+        } else {
+            0.0
+        };
+
+        self.upper_cusum = (self.upper_cusum + deviation - REGIME_CUSUM_DRIFT).max(0.0);
+        self.lower_cusum = (self.lower_cusum + deviation + REGIME_CUSUM_DRIFT).min(0.0);
+
+        let z_score = if baseline_stddev > REGIME_VARIANCE_FLOOR {
+            deviation / baseline_stddev
+        } else {
+            0.0
+        };
+        let evidence = (z_score.abs() - 0.8).max(0.0);
+        let change_likelihood = 1.0 - (-evidence).exp();
+        self.change_posterior = self
+            .change_posterior
+            .mul_add(
+                REGIME_POSTERIOR_DECAY,
+                REGIME_BOCPD_HAZARD * change_likelihood,
+            )
+            .clamp(0.0, 1.0);
+
+        let cusum_triggered = self.upper_cusum >= REGIME_CUSUM_THRESHOLD
+            || self.lower_cusum <= -REGIME_CUSUM_THRESHOLD;
+        let posterior_triggered = self.change_posterior >= REGIME_POSTERIOR_THRESHOLD;
+        let candidate_shift =
+            self.sample_count >= REGIME_MIN_SAMPLES && cusum_triggered && posterior_triggered;
+        let direction_is_up = self.upper_cusum >= -self.lower_cusum;
+
+        let mut transition = None;
+        let mut fallback_triggered = false;
+
+        if self.cooldown_remaining > 0 {
+            self.cooldown_remaining = self.cooldown_remaining.saturating_sub(1);
+            self.confirmation_streak = 0;
+        } else if candidate_shift {
+            let desired_mode = if direction_is_up {
+                RegimeAdaptationMode::InterleavedBatching
+            } else {
+                RegimeAdaptationMode::SequentialFastPath
+            };
+            if desired_mode == self.mode {
+                self.confirmation_streak = 0;
+            } else {
+                self.confirmation_streak = self.confirmation_streak.saturating_add(1);
+                if self.confirmation_streak >= REGIME_CONFIRMATION_STREAK {
+                    self.mode = desired_mode;
+                    transition = Some(match desired_mode {
+                        RegimeAdaptationMode::InterleavedBatching => {
+                            RegimeTransition::EnterInterleavedBatching
+                        }
+                        RegimeAdaptationMode::SequentialFastPath => {
+                            RegimeTransition::ReturnToSequentialFastPath
+                        }
+                    });
+                    self.cooldown_remaining = REGIME_COOLDOWN_OBSERVATIONS;
+                    self.upper_cusum = 0.0;
+                    self.lower_cusum = 0.0;
+                    self.change_posterior = self.change_posterior.min(0.5);
+                    self.confirmation_streak = 0;
+                }
+            }
+        } else {
+            self.confirmation_streak = 0;
+        }
+
+        if self.mode == RegimeAdaptationMode::InterleavedBatching
+            && signal.queue_depth <= REGIME_FALLBACK_QUEUE_DEPTH
+            && signal.service_time_us <= REGIME_FALLBACK_SERVICE_US
+        {
+            self.mode = RegimeAdaptationMode::SequentialFastPath;
+            transition = Some(RegimeTransition::ReturnToSequentialFastPath);
+            fallback_triggered = true;
+            self.cooldown_remaining = REGIME_COOLDOWN_OBSERVATIONS / 2;
+            self.upper_cusum = 0.0;
+            self.lower_cusum = 0.0;
+            self.change_posterior = self.change_posterior.min(0.25);
+            self.confirmation_streak = 0;
+        }
+
+        self.sample_count = self.sample_count.saturating_add(1);
+        if self.sample_count == 1 {
+            self.mean = score;
+            self.m2 = 0.0;
+        } else {
+            let count_f64 = f64::from(u32::try_from(self.sample_count).unwrap_or(u32::MAX));
+            let delta = score - self.mean;
+            self.mean += delta / count_f64;
+            let delta2 = score - self.mean;
+            self.m2 += delta * delta2;
+        }
+
+        RegimeObservation {
+            score,
+            mean: self.mean,
+            stddev: self.variance().sqrt().max(REGIME_VARIANCE_FLOOR),
+            upper_cusum: self.upper_cusum,
+            lower_cusum: self.lower_cusum,
+            change_posterior: self.change_posterior,
+            transition,
+            mode: self.mode,
+            fallback_triggered,
+        }
+    }
+
+    fn variance(&self) -> f64 {
+        if self.sample_count < 2 {
+            REGIME_VARIANCE_FLOOR
+        } else {
+            let denom = f64::from(
+                u32::try_from(self.sample_count.saturating_sub(1)).unwrap_or(u32::MAX),
+            );
+            (self.m2 / denom).max(REGIME_VARIANCE_FLOOR)
+        }
+    }
+}
+
+fn usize_to_f64(value: usize) -> f64 {
+    f64::from(u32::try_from(value).unwrap_or(u32::MAX))
+}
+
+fn llc_miss_proxy(total_depth: usize, overflow_depth: usize, overflow_rejected_total: u64) -> f64 {
+    if total_depth == 0 && overflow_rejected_total == 0 {
+        return 0.0;
+    }
+    let depth_denominator = usize_to_f64(total_depth.max(1));
+    let overflow_ratio = usize_to_f64(overflow_depth) / depth_denominator;
+    let rejected_ratio = if overflow_rejected_total == 0 {
+        0.0
+    } else {
+        let rejected = overflow_rejected_total.min(u64::from(u32::MAX));
+        f64::from(u32::try_from(rejected).unwrap_or(u32::MAX)) / 1_000.0
+    };
+    (overflow_ratio + rejected_ratio).clamp(0.0, 1.0)
+}
+
+const fn hostcall_kind_label(kind: &HostcallKind) -> &'static str {
+    match kind {
+        HostcallKind::Tool { .. } => "tool",
+        HostcallKind::Exec { .. } => "exec",
+        HostcallKind::Http => "http",
+        HostcallKind::Session { .. } => "session",
+        HostcallKind::Ui { .. } => "ui",
+        HostcallKind::Events { .. } => "events",
+        HostcallKind::Log => "log",
+    }
+}
+
+fn shannon_entropy_bytes(bytes: &[u8]) -> f64 {
+    if bytes.is_empty() {
+        return 0.0;
+    }
+    let mut counts = [0_u32; 256];
+    for &byte in bytes {
+        counts[usize::from(byte)] = counts[usize::from(byte)].saturating_add(1);
+    }
+    let total = f64::from(u32::try_from(bytes.len()).unwrap_or(u32::MAX));
+    counts
+        .iter()
+        .filter(|&&count| count > 0)
+        .map(|&count| {
+            let probability = f64::from(count) / total;
+            -(probability * (probability.ln() / std::f64::consts::LN_2))
+        })
+        .sum()
+}
+
+fn hostcall_opcode_entropy(kind: &HostcallKind, payload: &Value) -> f64 {
+    let mut key_material = hostcall_kind_label(kind).as_bytes().to_vec();
+    if let Some(op) = payload
+        .get("op")
+        .or_else(|| payload.get("method"))
+        .or_else(|| payload.get("name"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        key_material.push(b':');
+        key_material.extend_from_slice(op.as_bytes());
+    }
+    if let Some(capability) = payload
+        .get("capability")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        key_material.push(b':');
+        key_material.extend_from_slice(capability.as_bytes());
+    }
+    shannon_entropy_bytes(&key_material)
+}
+
 impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -329,6 +643,7 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
             policy,
             snapshot,
             snapshot_version,
+            regime_detector: RefCell::new(RegimeShiftDetector::default()),
         }
     }
 
@@ -362,6 +677,47 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
         );
     }
 
+    fn emit_regime_observation_telemetry(
+        call_id: &str,
+        observation: RegimeObservation,
+        queue_depth: usize,
+        overflow_depth: usize,
+        overflow_rejected_total: u64,
+        service_time_us: f64,
+    ) {
+        tracing::debug!(
+            target: "pi.extensions.regime_shift",
+            call_id,
+            adaptation_mode = observation.mode.as_str(),
+            composite_score = observation.score,
+            baseline_mean = observation.mean,
+            baseline_stddev = observation.stddev,
+            upper_cusum = observation.upper_cusum,
+            lower_cusum = observation.lower_cusum,
+            change_posterior = observation.change_posterior,
+            queue_depth,
+            overflow_depth,
+            overflow_rejected_total,
+            service_time_us,
+            fallback_triggered = observation.fallback_triggered,
+            "Hostcall regime observation recorded"
+        );
+        if let Some(transition) = observation.transition {
+            tracing::info!(
+                target: "pi.extensions.regime_shift",
+                call_id,
+                transition = transition.as_str(),
+                adaptation_mode = observation.mode.as_str(),
+                score = observation.score,
+                change_posterior = observation.change_posterior,
+                queue_depth,
+                service_time_us,
+                fallback_triggered = observation.fallback_triggered,
+                "Hostcall regime transition accepted"
+            );
+        }
+    }
+
     /// Drain pending hostcall requests from the JS runtime.
     #[must_use]
     pub fn drain_hostcall_requests(&self) -> VecDeque<HostcallRequest> {
@@ -392,6 +748,12 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
                 return;
             }
 
+            let queue_snapshot = self.runtime.hostcall_queue_telemetry();
+            let queue_depth = queue_snapshot.total_depth;
+            let overflow_depth = queue_snapshot.overflow_depth;
+            let overflow_rejected_total = queue_snapshot.overflow_rejected_total;
+            let dispatch_started_at = Instant::now();
+
             let HostcallRequest {
                 call_id,
                 kind,
@@ -400,6 +762,7 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
                 ..
             } = request;
 
+            let opcode_entropy = hostcall_opcode_entropy(&kind, &payload);
             let outcome = match kind {
                 HostcallKind::Tool { name } => self.dispatch_tool(&call_id, &name, payload).await,
                 HostcallKind::Exec { cmd } => self.dispatch_exec(&call_id, &cmd, payload).await,
@@ -419,6 +782,28 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
                     HostcallOutcome::Success(serde_json::json!({ "logged": true }))
                 }
             };
+
+            let service_time_us = dispatch_started_at.elapsed().as_secs_f64() * 1_000_000.0;
+            let llc_miss_rate =
+                llc_miss_proxy(queue_depth, overflow_depth, overflow_rejected_total);
+            let regime_signal = RegimeSignal {
+                queue_depth: usize_to_f64(queue_depth),
+                service_time_us,
+                opcode_entropy,
+                llc_miss_rate,
+            };
+            let observation = {
+                let mut detector = self.regime_detector.borrow_mut();
+                detector.observe(regime_signal)
+            };
+            Self::emit_regime_observation_telemetry(
+                &call_id,
+                observation,
+                queue_depth,
+                overflow_depth,
+                overflow_rejected_total,
+                service_time_us,
+            );
 
             self.runtime.complete_hostcall(call_id, outcome);
         })
@@ -9067,5 +9452,146 @@ mod tests {
                 other => panic!("expected host_result, got {other:?}"),
             }
         });
+    }
+
+    fn regime_signal(
+        queue_depth: f64,
+        service_time_us: f64,
+        opcode_entropy: f64,
+        llc_miss_rate: f64,
+    ) -> RegimeSignal {
+        RegimeSignal {
+            queue_depth,
+            service_time_us,
+            opcode_entropy,
+            llc_miss_rate,
+        }
+    }
+
+    fn drive_detector_to_interleaved(detector: &mut RegimeShiftDetector) {
+        for _ in 0..64 {
+            let _ = detector.observe(regime_signal(1.0, 600.0, 0.8, 0.02));
+        }
+        for _ in 0..48 {
+            let observation = detector.observe(regime_signal(40.0, 14_000.0, 2.6, 0.92));
+            if observation.transition == Some(RegimeTransition::EnterInterleavedBatching) {
+                break;
+            }
+        }
+    }
+
+    #[test]
+    fn regime_detector_switches_to_interleaved_on_sustained_upshift() {
+        let mut detector = RegimeShiftDetector::default();
+        let mut switched = false;
+
+        for _ in 0..64 {
+            let _ = detector.observe(regime_signal(1.0, 700.0, 0.9, 0.03));
+        }
+        for _ in 0..64 {
+            let observation = detector.observe(regime_signal(42.0, 16_000.0, 2.8, 0.95));
+            if observation.transition == Some(RegimeTransition::EnterInterleavedBatching) {
+                switched = true;
+                break;
+            }
+        }
+
+        assert!(switched, "detector should switch on sustained high-contention shift");
+        assert_eq!(
+            detector.current_mode(),
+            RegimeAdaptationMode::InterleavedBatching
+        );
+    }
+
+    #[test]
+    fn regime_detector_avoids_false_positives_on_stationary_noise() {
+        let mut detector = RegimeShiftDetector::default();
+        let mut transitions = 0_usize;
+
+        for idx in 0..320 {
+            let jitter = match idx % 5 {
+                0 => -70.0,
+                1 => -20.0,
+                2 => 0.0,
+                3 => 35.0,
+                _ => 80.0,
+            };
+            let queue_depth = if idx % 3 == 0 { 2.0 } else { 1.0 };
+            let entropy = if idx % 7 == 0 { 1.2 } else { 1.0 };
+            let observation =
+                detector.observe(regime_signal(queue_depth, 900.0 + jitter, entropy, 0.06));
+            if observation.transition.is_some() {
+                transitions = transitions.saturating_add(1);
+            }
+        }
+
+        assert_eq!(transitions, 0, "stationary noise should not trigger transitions");
+        assert_eq!(
+            detector.current_mode(),
+            RegimeAdaptationMode::SequentialFastPath
+        );
+    }
+
+    #[test]
+    fn regime_detector_hysteresis_limits_thrash() {
+        let mut detector = RegimeShiftDetector::default();
+        drive_detector_to_interleaved(&mut detector);
+        assert_eq!(
+            detector.current_mode(),
+            RegimeAdaptationMode::InterleavedBatching
+        );
+
+        let mut transitions = 0_usize;
+        for idx in 0..200 {
+            let signal = if idx % 2 == 0 {
+                regime_signal(36.0, 12_500.0, 2.4, 0.88)
+            } else {
+                regime_signal(5.0, 2_200.0, 1.1, 0.18)
+            };
+            let observation = detector.observe(signal);
+            if observation.transition.is_some() {
+                transitions = transitions.saturating_add(1);
+            }
+        }
+
+        assert!(
+            transitions <= 4,
+            "hysteresis/cooldown should prevent oscillation: observed {transitions} transitions"
+        );
+    }
+
+    #[test]
+    fn regime_detector_fallbacks_when_workload_cools() {
+        let mut detector = RegimeShiftDetector::default();
+        drive_detector_to_interleaved(&mut detector);
+        assert_eq!(
+            detector.current_mode(),
+            RegimeAdaptationMode::InterleavedBatching
+        );
+
+        let mut fallback_triggered = false;
+        let mut returned_to_sequential = false;
+        for _ in 0..40 {
+            let observation = detector.observe(regime_signal(0.0, 450.0, 0.2, 0.0));
+            if observation.fallback_triggered {
+                fallback_triggered = true;
+            }
+            if observation.transition == Some(RegimeTransition::ReturnToSequentialFastPath) {
+                returned_to_sequential = true;
+            }
+        }
+
+        assert!(
+            fallback_triggered,
+            "low queue/latency should trigger conservative fallback"
+        );
+        assert!(
+            returned_to_sequential,
+            "fallback should report an explicit transition"
+        );
+        assert_eq!(
+            detector.current_mode(),
+            RegimeAdaptationMode::SequentialFastPath
+        );
     }
 }
