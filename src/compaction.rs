@@ -710,6 +710,21 @@ fn append_tool_result_message(out: &mut String, content: &[ContentBlock]) {
     }
 }
 
+fn collect_text_blocks(blocks: &[ContentBlock]) -> String {
+    let mut out = String::new();
+    let mut first = true;
+    for block in blocks {
+        if let ContentBlock::Text(text) = block {
+            if !first {
+                out.push('\n');
+            }
+            out.push_str(&text.text);
+            first = false;
+        }
+    }
+    out
+}
+
 fn serialize_conversation(messages: &[Message]) -> String {
     let mut out = String::new();
 
@@ -828,15 +843,7 @@ async fn generate_summary(
     )
     .await?;
 
-    let text = assistant
-        .content
-        .iter()
-        .filter_map(|block| match block {
-            ContentBlock::Text(text) => Some(text.text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let text = collect_text_blocks(&assistant.content);
 
     if text.trim().is_empty() {
         return Err(Error::api(
@@ -872,15 +879,7 @@ async fn generate_turn_prefix_summary(
     )
     .await?;
 
-    let text = assistant
-        .content
-        .iter()
-        .filter_map(|block| match block {
-            ContentBlock::Text(text) => Some(text.text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let text = collect_text_blocks(&assistant.content);
 
     if text.trim().is_empty() {
         return Err(Error::api(
@@ -2107,7 +2106,7 @@ mod tests {
         // By picking 1, we keep 1..4 (130 tokens).
 
         // Create entries with controlled lengths.
-        // We need 100 tokens for TR. 100 * 4 = 400 chars.
+        // With chars/token ~=3, 400 chars => ceil(400/3)=134 tokens.
         let tr_text = "x".repeat(400);
         let entries = vec![
             user_entry("0", "user"),              // Valid
@@ -2118,13 +2117,13 @@ mod tests {
         ];
 
         // Verify token estimates (approx)
-        // 0: 4/4 = 1
-        // 1: 4/4 = 1
-        // 2: 400/4 = 100
-        // 3: 4/4 = 1
-        // 4: 4/4 = 1
+        // 0: ceil(4/3) = 2
+        // 1: ceil(4/3) = 2
+        // 2: ceil(400/3) = 134
+        // 3: ceil(4/3) = 2
+        // 4: ceil(4/3) = 2
         // Total recent needed: 100.
-        // Accumulate: 4(1)+3(1)+2(100) = 102. Crossed at 2.
+        // Accumulate: 4(2)+3(2)+2(134) = 138. Crossed at 2.
 
         let settings = ResolvedCompactionSettings {
             enabled: true,
@@ -2163,17 +2162,17 @@ mod tests {
 
     #[test]
     fn find_cut_point_should_not_discard_context_to_skip_tool_chain() {
-        // Setup (estimate_tokens uses ceil(chars/4)):
-        // 0. User "x"*4000 → 1000 tokens
-        // 1. Assistant "x"*400 → 100 tokens
-        // 2. Tool Result "x"*400 → 100 tokens
-        // 3. User "next" → 1 token
+        // Setup (estimate_tokens uses ceil(chars/3)):
+        // 0. User "x"*4000 → 1334 tokens
+        // 1. Assistant "x"*400 → 134 tokens
+        // 2. Tool Result "x"*400 → 134 tokens
+        // 3. User "next" → 2 tokens
         //
         // Keep recent = 150.
         // Accumulation (from end):
-        // 3: 1
-        // 2: 101
-        // 1: 201 (Crosses 150) -> cut_index = 1
+        // 3: 2
+        // 2: 136
+        // 1: 270 (Crosses 150) -> cut_index = 1
         //
         // The cut should land at index 1 (the assistant message), keeping
         // entries 1-3 and summarizing only entry 0.
