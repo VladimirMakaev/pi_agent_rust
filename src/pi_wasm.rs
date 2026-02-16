@@ -642,7 +642,11 @@ const WASM_POLYFILL_JS: &str = r#"
             configurable: true
           });
           memObj.grow = function(delta) {
-            return __pi_wasm_memory_grow_native(instanceId, name, delta);
+            var prevPages = __pi_wasm_memory_grow_native(instanceId, name, delta);
+            if (prevPages < 0) {
+              throw new RangeError("WebAssembly.Memory.grow(): failed to grow memory");
+            }
+            return prevPages;
           };
           exports[name] = memObj;
         })(exp.name);
@@ -1291,6 +1295,74 @@ mod tests {
                 )
                 .expect("polyfill memory buffer");
             assert_eq!(size, 65536);
+        });
+    }
+
+    #[test]
+    fn js_polyfill_memory_grow_returns_previous_pages() {
+        let wasm_bytes = wat_to_wasm(r#"(module (memory (export "memory") 1 10))"#);
+        run_wasm_test(|ctx, _state| {
+            let arr = rquickjs::Array::new(ctx.clone()).unwrap();
+            for (i, &b) in wasm_bytes.iter().enumerate() {
+                arr.set(i, i32::from(b)).unwrap();
+            }
+            ctx.globals().set("__test_bytes", arr).unwrap();
+
+            let prev_pages: i32 = ctx
+                .eval(
+                    r"
+                    var __test_prev = -1;
+                    WebAssembly.instantiate(__test_bytes).then(function(r) {
+                        __test_prev = r.instance.exports.memory.grow(2);
+                    });
+                    __test_prev;
+                ",
+                )
+                .expect("polyfill memory grow");
+            assert_eq!(prev_pages, 1);
+
+            let new_size: i32 = ctx
+                .eval(
+                    r"
+                    var __test_size = -1;
+                    WebAssembly.instantiate(__test_bytes).then(function(r) {
+                        r.instance.exports.memory.grow(2);
+                        __test_size = r.instance.exports.memory.buffer.byteLength;
+                    });
+                    __test_size;
+                ",
+                )
+                .expect("polyfill memory size after grow");
+            assert_eq!(new_size, 3 * 65536);
+        });
+    }
+
+    #[test]
+    fn js_polyfill_memory_grow_failure_throws_range_error() {
+        let wasm_bytes = wat_to_wasm(r#"(module (memory (export "memory") 1 1))"#);
+        run_wasm_test(|ctx, _state| {
+            let arr = rquickjs::Array::new(ctx.clone()).unwrap();
+            for (i, &b) in wasm_bytes.iter().enumerate() {
+                arr.set(i, i32::from(b)).unwrap();
+            }
+            ctx.globals().set("__test_bytes", arr).unwrap();
+
+            let threw_range_error: bool = ctx
+                .eval(
+                    r"
+                    var __threw_range_error = false;
+                    WebAssembly.instantiate(__test_bytes).then(function(r) {
+                        try {
+                            r.instance.exports.memory.grow(1);
+                        } catch (e) {
+                            __threw_range_error = e instanceof RangeError;
+                        }
+                    });
+                    __threw_range_error;
+                ",
+                )
+                .expect("polyfill memory grow failure");
+            assert!(threw_range_error);
         });
     }
 
