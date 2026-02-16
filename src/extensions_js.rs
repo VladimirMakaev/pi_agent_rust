@@ -15077,7 +15077,7 @@ class __pi_HostcallStream {
 }
 
 // Complete a hostcall (called from Rust)
-function __pi_complete_hostcall(call_id, outcome) {
+function __pi_complete_hostcall_impl(call_id, outcome) {
     const pending = __pi_pending_hostcalls.get(call_id);
     if (!pending) return;
 
@@ -15146,6 +15146,20 @@ function __pi_complete_hostcall(call_id, outcome) {
         error.code = outcome.code;
         pending.reject(error);
     }
+}
+
+function __pi_complete_hostcall(call_id, outcome) {
+    const pending = __pi_pending_hostcalls.get(call_id);
+    if (pending && pending.extensionId) {
+        const prev = __pi_current_extension_id;
+        __pi_current_extension_id = pending.extensionId;
+        try {
+            return __pi_complete_hostcall_impl(call_id, outcome);
+        } finally {
+            Promise.resolve().then(() => { __pi_current_extension_id = prev; });
+        }
+    }
+    return __pi_complete_hostcall_impl(call_id, outcome);
 }
 
 // Fire a timer callback (called from Rust)
@@ -15287,11 +15301,7 @@ function __pi_path_normalize(path) {
 }
 
 function __pi_sleep(ms) {
-    return new Promise((resolve) => {
-        const delay = Math.max(0, ms | 0);
-        const timer_id = __pi_set_timeout_native(delay);
-        __pi_register_timer(timer_id, resolve);
-    });
+    return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // Create the pi global object with Promise-returning methods
@@ -15313,7 +15323,7 @@ const __pi_exec_hostcall = __pi_make_hostcall(__pi_exec_native);
                 delete opts.on_chunk;
                 const call_id = __pi_exec_native(cmd, args, opts);
                 return new Promise((resolve, reject) => {
-                    __pi_pending_hostcalls.set(call_id, { onChunk, resolve, reject });
+                    __pi_pending_hostcalls.set(call_id, { onChunk, resolve, reject, extensionId: __pi_current_extension_id });
                 });
             }
             return __pi_make_streaming_hostcall(__pi_exec_native, cmd, args, options);
@@ -15334,7 +15344,7 @@ const __pi_exec_hostcall = __pi_make_hostcall(__pi_exec_native);
                 delete req.on_chunk;
                 const call_id = __pi_http_native(req);
                 return new Promise((resolve, reject) => {
-                    __pi_pending_hostcalls.set(call_id, { onChunk, resolve, reject });
+                    __pi_pending_hostcalls.set(call_id, { onChunk, resolve, reject, extensionId: __pi_current_extension_id });
                 });
             }
             return __pi_make_streaming_hostcall(__pi_http_native, request);

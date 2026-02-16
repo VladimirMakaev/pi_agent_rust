@@ -230,6 +230,15 @@ test_unknown_option_fails() {
   assert_output_contains "$dir" "Unknown option"
 }
 
+test_missing_option_value_fails() {
+  local dir
+  dir="$(case_dir "missing-option-value")"
+  write_existing_pi_stub "$dir"
+  run_installer "$dir" --version
+  assert_exit_code "$dir" 1
+  assert_output_contains "$dir" "Option --version requires a value"
+}
+
 test_checksum_inline_success() {
   local dir artifact artifact_url checksum
   dir="$(case_dir "checksum-inline-success")"
@@ -471,6 +480,7 @@ main() {
   run_test test_help_lists_installer_flags
   run_test test_invalid_completions_value_fails
   run_test test_unknown_option_fails
+  run_test test_missing_option_value_fails
   run_test test_checksum_inline_success
   run_test test_checksum_mismatch_fails_hard
   run_test test_checksum_missing_manifest_entry_fails_hard

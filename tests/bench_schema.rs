@@ -2078,6 +2078,30 @@ fn phase1_matrix_validator_rejects_non_positive_primary_outcomes_ratio() {
 }
 
 #[test]
+fn phase1_matrix_validator_rejects_non_positive_pass_cell_primary_e2e_metric() {
+    let mut malformed = phase1_matrix_validation_golden_fixture();
+    malformed["matrix_cells"][0]["primary_e2e"]["wall_clock_ms"] = json!(0.0);
+
+    let err = validate_phase1_matrix_validation_record(&malformed).expect_err("fixture must fail");
+    assert!(
+        err.contains("matrix cell primary_e2e.wall_clock_ms"),
+        "expected pass-cell non-positive metric failure, got: {err}"
+    );
+}
+
+#[test]
+fn phase1_matrix_validator_rejects_non_numeric_primary_outcomes_metric() {
+    let mut malformed = phase1_matrix_validation_golden_fixture();
+    malformed["primary_outcomes"]["wall_clock_ms"] = json!("unknown");
+
+    let err = validate_phase1_matrix_validation_record(&malformed).expect_err("fixture must fail");
+    assert!(
+        err.contains("primary_outcomes.wall_clock_ms"),
+        "expected non-numeric primary_outcomes metric failure, got: {err}"
+    );
+}
+
+#[test]
 fn phase1_matrix_validator_rejects_null_pass_cell_primary_e2e_metric() {
     let mut malformed = phase1_matrix_validation_golden_fixture();
     malformed["matrix_cells"][0]["primary_e2e"]["rust_vs_node_ratio"] = Value::Null;
@@ -2152,6 +2176,25 @@ fn phase1_matrix_validator_rejects_non_positive_fail_primary_outcomes_metric() {
     assert!(
         err.contains("primary_outcomes.rust_vs_node_ratio"),
         "expected fail primary_outcomes non-positive metric failure, got: {err}"
+    );
+}
+
+#[test]
+fn phase1_matrix_validator_accepts_nullable_fail_metrics() {
+    let mut candidate = phase1_matrix_validation_golden_fixture();
+    candidate["matrix_cells"][0]["status"] = json!("fail");
+    candidate["matrix_cells"][0]["primary_e2e"]["wall_clock_ms"] = Value::Null;
+    candidate["matrix_cells"][0]["primary_e2e"]["rust_vs_node_ratio"] = Value::Null;
+    candidate["matrix_cells"][0]["primary_e2e"]["rust_vs_bun_ratio"] = Value::Null;
+    candidate["primary_outcomes"]["status"] = json!("fail");
+    candidate["primary_outcomes"]["wall_clock_ms"] = Value::Null;
+    candidate["primary_outcomes"]["rust_vs_node_ratio"] = Value::Null;
+    candidate["primary_outcomes"]["rust_vs_bun_ratio"] = Value::Null;
+    candidate["consumption_contract"]["artifact_ready_for_phase5"] = json!(false);
+
+    assert!(
+        validate_phase1_matrix_validation_record(&candidate).is_ok(),
+        "fail-status records should allow nullable primary metrics while remaining schema-valid"
     );
 }
 
