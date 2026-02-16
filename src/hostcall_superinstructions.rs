@@ -130,7 +130,8 @@ impl HostcallSuperinstructionCompiler {
                 }
                 let estimated_cost_baseline = estimated_baseline_cost(opcode_window.len());
                 let estimated_cost_fused = estimated_fused_cost(opcode_window.len());
-                let expected_cost_delta = estimated_cost_baseline.saturating_sub(estimated_cost_fused);
+                let expected_cost_delta =
+                    estimated_cost_baseline.saturating_sub(estimated_cost_fused);
                 if expected_cost_delta <= 0 {
                     return None;
                 }
@@ -230,15 +231,11 @@ pub fn select_plan_for_trace(
     });
 
     let best = matching[0];
-    if matching
-        .iter()
-        .skip(1)
-        .any(|candidate| {
-            candidate.expected_cost_delta == best.expected_cost_delta
-                && candidate.support_count == best.support_count
-                && candidate.width() == best.width()
-        })
-    {
+    if matching.iter().skip(1).any(|candidate| {
+        candidate.expected_cost_delta == best.expected_cost_delta
+            && candidate.support_count == best.support_count
+            && candidate.width() == best.width()
+    }) {
         return HostcallSuperinstructionSelection {
             trace_signature,
             selected_plan_id: None,
@@ -398,8 +395,18 @@ mod tests {
         let trace = opcode_trace(&["tool.read", "events.list", "events.get_model"]);
         let plans = vec![
             plan("p_low_delta", &["tool.read", "events.list"], 8, 10),
-            plan("p_best", &["tool.read", "events.list", "events.get_model"], 7, 14),
-            plan("p_low_support", &["tool.read", "events.list", "events.get_model"], 4, 14),
+            plan(
+                "p_best",
+                &["tool.read", "events.list", "events.get_model"],
+                7,
+                14,
+            ),
+            plan(
+                "p_low_support",
+                &["tool.read", "events.list", "events.get_model"],
+                4,
+                14,
+            ),
         ];
 
         let selected = select_plan_for_trace(&trace, &plans);
@@ -412,18 +419,8 @@ mod tests {
     fn selection_deopts_on_ambiguous_top_plan() {
         let trace = opcode_trace(&["session.get_state", "session.get_entries"]);
         let plans = vec![
-            plan(
-                "p_a",
-                &["session.get_state", "session.get_entries"],
-                5,
-                11,
-            ),
-            plan(
-                "p_b",
-                &["session.get_state", "session.get_entries"],
-                5,
-                11,
-            ),
+            plan("p_a", &["session.get_state", "session.get_entries"], 5, 11),
+            plan("p_b", &["session.get_state", "session.get_entries"], 5, 11),
         ];
 
         let selected = select_plan_for_trace(&trace, &plans);
