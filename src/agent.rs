@@ -1578,7 +1578,7 @@ impl Agent {
             results.push(tool_result);
 
             if abort.as_ref().is_some_and(AbortSignal::is_aborted) {
-                break;
+                continue;
             }
 
             // Steering logic
