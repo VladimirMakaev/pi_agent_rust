@@ -1339,8 +1339,10 @@ fn run_all_claim_integrity_gate_wires_fail_closed_conditions() {
         "PERF_BASELINE_CONFIDENCE_JSON",
         "PERF_EXTENSION_STRATIFICATION_JSON",
         "PERF_PHASE1_MATRIX_VALIDATION_JSON",
+        "claim_integrity.phase1_matrix_validation_path_configured",
         "claim_integrity.phase1_matrix_validation_json",
         "claim_integrity.phase1_matrix_validation_schema",
+        "claim_integrity.phase1_matrix_validation_generated_at_fresh",
         "claim_integrity.phase1_matrix_correlation_matches_run",
         "claim_integrity.missing_or_stale_evidence",
         "claim_integrity.missing_required_result_field",
@@ -1421,6 +1423,40 @@ fn ci_workflow_publishes_scenario_cell_gate_artifacts() {
             "CI workflow must include scenario-cell publish token: {token}"
         );
     }
+}
+
+#[test]
+fn run_all_claim_integrity_python_block_compiles() {
+    let run_all = load_text("scripts/e2e/run_all.sh");
+    let anchor = run_all
+        .find("PERF_PHASE1_MATRIX_VALIDATION_JSON")
+        .expect("run_all.sh must include phase1 matrix env wiring");
+    let marker = "python3 - <<'PY'\n";
+    let py_block_start = run_all[..anchor]
+        .rfind(marker)
+        .expect("run_all.sh must include claim-integrity Python heredoc")
+        + marker.len();
+    let py_block_end_rel = run_all[py_block_start..]
+        .find("\nPY")
+        .expect("run_all.sh claim-integrity Python heredoc must terminate with PY");
+    let py_source = &run_all[py_block_start..py_block_start + py_block_end_rel];
+
+    let temp = tempfile::tempdir().expect("create tempdir for claim-integrity Python compile");
+    let py_path = temp.path().join("run_all_claim_integrity.py");
+    std::fs::write(&py_path, py_source).expect("write extracted run_all claim-integrity Python");
+
+    let output = Command::new("python3")
+        .arg("-m")
+        .arg("py_compile")
+        .arg(&py_path)
+        .output()
+        .expect("run python3 -m py_compile for run_all claim-integrity Python");
+    assert!(
+        output.status.success(),
+        "run_all claim-integrity Python must compile\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -2718,16 +2718,25 @@ mod tests {
     }
 
     #[test]
-    fn ci_correlation_id_absent_when_env_unset() {
-        // CI_CORRELATION_ID is not set in normal test runs.
+    fn ci_correlation_id_reflects_environment_value() {
+        let expected_ci_correlation_id = std::env::var("CI_CORRELATION_ID")
+            .ok()
+            .filter(|value| !value.is_empty());
         let logger = TestLogger::new();
-        assert!(logger.ci_correlation_id().is_none());
-        logger.info("test", "no ci id");
+        assert_eq!(
+            logger.ci_correlation_id(),
+            expected_ci_correlation_id.as_deref()
+        );
+        logger.info("test", "ci id reflection");
         let jsonl = logger.dump_jsonl();
         let record: serde_json::Value =
             serde_json::from_str(jsonl.lines().next().unwrap()).unwrap();
-        // Field should be absent from JSON (skip_serializing_if = None).
-        assert!(record.get("ci_correlation_id").is_none());
+        assert_eq!(
+            record
+                .get("ci_correlation_id")
+                .and_then(serde_json::Value::as_str),
+            expected_ci_correlation_id.as_deref()
+        );
     }
 
     #[test]
