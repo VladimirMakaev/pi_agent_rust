@@ -930,6 +930,7 @@ fn write_executable(path: &Path, content: &str) {
 }
 
 #[cfg(unix)]
+#[allow(clippy::literal_string_with_formatting_args)] // bash ${VAR} syntax, not Rust fmt
 fn install_fake_bench_toolchain(bin_dir: &Path) {
     let cargo_stub = r#"#!/usr/bin/env bash
 set -euo pipefail
@@ -1181,7 +1182,12 @@ fn pgo_compare_mode_emits_delta_artifact_and_comparison_event() {
         .find(|path| {
             path.file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("pgo_delta_") && name.ends_with(".json"))
+                .is_some_and(|name| {
+                    name.starts_with("pgo_delta_")
+                        && std::path::Path::new(name)
+                            .extension()
+                            .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+                })
         })
         .expect("compare mode must emit pgo_delta_*.json artifact");
 

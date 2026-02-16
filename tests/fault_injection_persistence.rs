@@ -90,7 +90,7 @@ struct TraceLog {
 }
 
 impl TraceLog {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self { events: Vec::new() }
     }
 
@@ -777,7 +777,7 @@ fn fault_inject_v2_store_segment_corruption_recovery() {
         "read_after_corruption",
         format!(
             "result: {:?}",
-            after_corruption.as_ref().map(|e| e.len())
+            after_corruption.as_ref().map(Vec::len)
         ),
     );
 
@@ -820,9 +820,9 @@ fn fault_inject_save_to_readonly_filesystem() {
     // Make parent directory read-only to simulate ENOSPC-like conditions.
     let parent = path.parent().unwrap();
     let orig_perms = std::fs::metadata(parent).unwrap().permissions();
-    let mut ro_perms = orig_perms.clone();
-    ro_perms.set_mode(0o555);
-    std::fs::set_permissions(parent, ro_perms).unwrap();
+    let mut readonly_perms = orig_perms.clone();
+    readonly_perms.set_mode(0o555);
+    std::fs::set_permissions(parent, readonly_perms).unwrap();
     trace.log("FAULT", "make_parent_readonly", "directory set to r-x");
 
     // Force full rewrite by dirtying header.
@@ -846,9 +846,9 @@ fn fault_inject_save_to_readonly_filesystem() {
     );
 
     // Restore permissions.
-    let mut rw_perms = orig_perms;
-    rw_perms.set_mode(0o755);
-    std::fs::set_permissions(parent, rw_perms).unwrap();
+    let mut restored_perms = orig_perms;
+    restored_perms.set_mode(0o755);
+    std::fs::set_permissions(parent, restored_perms).unwrap();
     trace.log(
         "RECOVER",
         "restore_permissions",

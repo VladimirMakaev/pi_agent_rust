@@ -47,9 +47,9 @@ fn write_fixture_parity_log(path: &Path) {
 
     let mut lines = String::new();
     for suite in suites {
-        let _ = write!(
+        let _ = writeln!(
             lines,
-            "Running tests/{suite}.rs (target/debug/deps/{suite}-abcdef)\n"
+            "Running tests/{suite}.rs (target/debug/deps/{suite}-abcdef)"
         );
         lines.push_str(
             "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\n",
@@ -229,7 +229,7 @@ fn counting_taxonomy_validator_rejects_missing_required_labels() {
     providers_metrics.retain(|m| {
         m.get("granularity_label")
             .and_then(Value::as_str)
-            .map_or(true, |label| label != "provider_alias_ids")
+            != Some("provider_alias_ids")
     });
 
     fs::write(

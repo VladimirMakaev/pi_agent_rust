@@ -234,6 +234,7 @@ fn write_executable(path: &Path, content: &str) {
 }
 
 #[cfg(unix)]
+#[allow(clippy::literal_string_with_formatting_args)] // bash ${VAR} syntax, not Rust fmt
 fn install_fake_orchestrate_toolchain(bin_dir: &Path) {
     let cargo_stub = r#"#!/usr/bin/env bash
 set -euo pipefail
@@ -820,7 +821,7 @@ fn protocol_contract_defines_partition_weighting_and_guardrails() {
     let weights_sum_to = contract["partition_weighting"]["weights_sum_to"]
         .as_f64()
         .expect("weights_sum_to");
-    assert_eq!(weights_sum_to, 1.0);
+    assert!((weights_sum_to - 1.0).abs() < f64::EPSILON);
     assert!(
         ((matched_weight + realistic_weight) - weights_sum_to).abs() < f64::EPSILON,
         "partition weights must sum to 1.0"
@@ -1837,15 +1838,15 @@ fn generate_schema_doc() {
         else {
             return ("(missing)".to_string(), "No UX mapping".to_string());
         };
-        let sli_ids = row["sli_ids"]
-            .as_array()
-            .map(|ids| {
+        let sli_ids = row["sli_ids"].as_array().map_or_else(
+            || "(missing)".to_string(),
+            |ids| {
                 ids.iter()
                     .filter_map(Value::as_str)
                     .collect::<Vec<_>>()
                     .join(", ")
-            })
-            .unwrap_or_else(|| "(missing)".to_string());
+            },
+        );
         let ux_outcome = row["ux_outcome"]
             .as_str()
             .unwrap_or("No UX outcome specified")

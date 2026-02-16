@@ -1102,7 +1102,7 @@ generate_failure_diagnostics() {
 import json
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 artifact_dir = Path(os.environ["ARTIFACT_DIR"])
@@ -3927,6 +3927,8 @@ validate_evidence_contract() {
     local contract_file="$ARTIFACT_DIR/evidence_contract.json"
     local selected_units_json selected_suites_json
     local all_unit_targets_json all_suites_json
+    local perf_baseline_confidence_json perf_extension_stratification_json
+    local claim_integrity_required_json
 
     selected_units_json="$(
         printf '%s\n' "${SELECTED_UNIT_TARGETS[@]:-}" | \
@@ -3944,6 +3946,9 @@ validate_evidence_contract() {
         printf '%s\n' "${ALL_SUITES[@]:-}" | \
             python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))' 2>/dev/null || echo '[]'
     )"
+    perf_baseline_confidence_json="${PERF_BASELINE_CONFIDENCE_JSON:-}"
+    perf_extension_stratification_json="${PERF_EXTENSION_STRATIFICATION_JSON:-}"
+    claim_integrity_required_json="${CLAIM_INTEGRITY_REQUIRED:-}"
 
     if ARTIFACT_DIR="$ARTIFACT_DIR" \
         PROJECT_ROOT="$PROJECT_ROOT" \
@@ -3954,6 +3959,11 @@ validate_evidence_contract() {
         ALL_UNIT_TARGETS_JSON="$all_unit_targets_json" \
         ALL_SUITES_JSON="$all_suites_json" \
         RERUN_FROM_JSON="$RERUN_JSON_VALUE" \
+        PERF_BASELINE_CONFIDENCE_JSON="$perf_baseline_confidence_json" \
+        PERF_EXTENSION_STRATIFICATION_JSON="$perf_extension_stratification_json" \
+        PERF_EVIDENCE_DIR="${PERF_EVIDENCE_DIR:-}" \
+        CLAIM_INTEGRITY_REQUIRED="$claim_integrity_required_json" \
+        CI_ENV="${CI:-}" \
         python3 - <<'PY'
 import json
 import os
@@ -3987,6 +3997,49 @@ try:
     rerun_from = json.loads(os.environ.get("RERUN_FROM_JSON", "null"))
 except json.JSONDecodeError:
     rerun_from = None
+
+
+def env_truthy(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+perf_evidence_dir_raw = str(os.environ.get("PERF_EVIDENCE_DIR", "")).strip()
+perf_baseline_confidence_path_raw = str(
+    os.environ.get("PERF_BASELINE_CONFIDENCE_JSON", "")
+).strip()
+perf_extension_stratification_path_raw = str(
+    os.environ.get("PERF_EXTENSION_STRATIFICATION_JSON", "")
+).strip()
+
+if perf_evidence_dir_raw:
+    if not perf_baseline_confidence_path_raw:
+        perf_baseline_confidence_path_raw = str(
+            Path(perf_evidence_dir_raw) / "results" / "baseline_variance_confidence.json"
+        )
+    if not perf_extension_stratification_path_raw:
+        perf_extension_stratification_path_raw = str(
+            Path(perf_evidence_dir_raw) / "results" / "extension_benchmark_stratification.json"
+        )
+
+perf_baseline_confidence_path = (
+    Path(perf_baseline_confidence_path_raw) if perf_baseline_confidence_path_raw else None
+)
+perf_extension_stratification_path = (
+    Path(perf_extension_stratification_path_raw) if perf_extension_stratification_path_raw else None
+)
+ci_env = env_truthy("CI_ENV", default=env_truthy("CI", default=False))
+claim_integrity_required = env_truthy(
+    "CLAIM_INTEGRITY_REQUIRED",
+    default=ci_env and profile in {"ci", "full"},
+)
 
 checks = []
 errors = []
@@ -4433,6 +4486,23 @@ def path_matches(value: object, expected: Path) -> bool:
         return candidate.resolve() == expected.resolve()
     except Exception:  # pragma: no cover - defensive
         return False
+
+
+def parse_iso8601_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def read_jsonl_lines(check_id: str, path: Path, *, strict: bool) -> list[tuple[int, str]]:
