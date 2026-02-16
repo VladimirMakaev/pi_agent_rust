@@ -34,6 +34,7 @@ use crate::extensions::{
     ui_response_value_for_op,
 };
 use crate::extensions_js::{HostcallKind, HostcallRequest, PiJsRuntime, js_to_json, json_to_js};
+use crate::hostcall_amac::{AmacBatchExecutor, AmacBatchExecutorConfig};
 use crate::scheduler::{Clock as SchedulerClock, HostcallOutcome, WallClock};
 use crate::tools::ToolRegistry;
 
@@ -59,6 +60,8 @@ pub struct ExtensionDispatcher<C: SchedulerClock = WallClock> {
     snapshot_version: String,
     /// Adaptive regime detector for hostcall workload shifts.
     regime_detector: RefCell<RegimeShiftDetector>,
+    /// AMAC batch executor for interleaved hostcall dispatch.
+    amac_executor: RefCell<AmacBatchExecutor>,
 }
 
 fn protocol_hostcall_op(params: &Value) -> Option<&str> {
@@ -643,6 +646,9 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
             snapshot,
             snapshot_version,
             regime_detector: RefCell::new(RegimeShiftDetector::default()),
+            amac_executor: RefCell::new(
+                AmacBatchExecutor::new(AmacBatchExecutorConfig::from_env()),
+            ),
         }
     }
 
@@ -805,6 +811,64 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
             );
 
             self.runtime.complete_hostcall(call_id, outcome);
+        })
+    }
+
+    /// Dispatch a batch of hostcall requests using AMAC-aware grouping.
+    ///
+    /// Groups requests by kind, decides per-group whether to interleave or
+    /// use sequential dispatch, then dispatches accordingly. Falls back to
+    /// sequential one-by-one dispatch when AMAC is disabled or the batch is
+    /// too small.
+    #[allow(clippy::future_not_send)]
+    pub fn dispatch_batch_amac(
+        &self,
+        mut requests: VecDeque<HostcallRequest>,
+    ) -> Pin<Box<dyn Future<Output = ()> + '_>> {
+        Box::pin(async move {
+            if requests.is_empty() {
+                return;
+            }
+
+            // Check if AMAC is enabled before consuming requests.
+            let amac_enabled = self.amac_executor.borrow().enabled();
+            if !amac_enabled {
+                // Dispatch sequentially without AMAC overhead.
+                while let Some(req) = requests.pop_front() {
+                    self.dispatch_and_complete(req).await;
+                }
+                return;
+            }
+
+            let request_vec: Vec<HostcallRequest> = requests.into();
+            let plan = self.amac_executor.borrow_mut().plan_batch(request_vec);
+
+            for (group, decision) in plan.groups.into_iter().zip(plan.decisions.iter()) {
+                let group_key = group.key.clone();
+                let start = Instant::now();
+                // Dispatch each request in the group sequentially.
+                // AMAC decision metadata is recorded for telemetry but the
+                // actual dispatch remains sequential within a single-threaded
+                // async executor — true concurrency is achieved at the reactor
+                // mesh level (bd-3ar8v.4.20).
+                for request in group.requests {
+                    let req_start = Instant::now();
+                    self.dispatch_and_complete(request).await;
+                    let elapsed_ns =
+                        u64::try_from(req_start.elapsed().as_nanos()).unwrap_or(u64::MAX);
+                    self.amac_executor.borrow_mut().observe_call(elapsed_ns);
+                }
+
+                let group_elapsed_ns =
+                    u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX);
+                tracing::trace!(
+                    target: "pi.extensions.amac",
+                    group_key = ?group_key,
+                    decision = ?decision,
+                    group_elapsed_ns,
+                    "AMAC group dispatched"
+                );
+            }
         })
     }
 
@@ -1884,10 +1948,8 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
                 )));
             }
 
-            let mut pending = self.runtime.drain_hostcall_requests();
-            while let Some(req) = pending.pop_front() {
-                self.dispatch_and_complete(req).await;
-            }
+            let pending = self.runtime.drain_hostcall_requests();
+            self.dispatch_batch_amac(pending).await;
 
             let _ = self.runtime.tick().await?;
             let _ = self.runtime.drain_microtasks().await?;

@@ -16,7 +16,7 @@
     clippy::suboptimal_flops
 )]
 
-use chrono::{SecondsFormat, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use clap::Parser;
 use futures::executor::block_on;
 use pi::error::{Error, Result};
@@ -34,6 +34,7 @@ use std::time::{Duration, Instant};
 const BENCH_REPORT_TOOL: &str = "__bench_report";
 const BENCH_SCHEMA: &str = "pi.ext.rust_bench.v1";
 const HOTSPOT_MATRIX_SCHEMA: &str = "pi.ext.hostcall_hotspot_matrix.v1";
+const VOI_SCHEDULER_SCHEMA: &str = "pi.ext.voi_scheduler.v1";
 const TRACE_EVENT_SCHEMA: &str = "pi.ext.hostcall_trace.v1";
 const DEFAULT_MATRIX_FILENAME: &str = "ext_hostcall_hotspot_matrix.json";
 const DEFAULT_TRACE_FILENAME: &str = "ext_hostcall_bridge_trace.jsonl";
@@ -47,6 +48,12 @@ const DEFAULT_DOWNSTREAM_BEADS: &[&str] = &[
 const DEFAULT_PMU_LLC_MISS_BUDGET_PCT: f64 = 18.0;
 const DEFAULT_PMU_BRANCH_MISS_BUDGET_PCT: f64 = 6.0;
 const DEFAULT_PMU_STALL_TOTAL_BUDGET_PCT: f64 = 65.0;
+const DEFAULT_PMU_REGRESSION_LLC_DELTA_PCT: f64 = 1.0;
+const DEFAULT_PMU_REGRESSION_BRANCH_DELTA_PCT: f64 = 0.5;
+const DEFAULT_PMU_REGRESSION_STALL_DELTA_PCT: f64 = 2.0;
+const DEFAULT_VOI_BUDGET_MS: f64 = 120.0;
+const DEFAULT_VOI_MAX_EXPERIMENTS: usize = 3;
+const DEFAULT_VOI_STALE_AFTER_HOURS: f64 = 24.0;
 
 #[derive(Parser, Debug)]
 #[command(name = "ext_workloads")]
@@ -129,6 +136,7 @@ struct StageTotals {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[allow(clippy::struct_field_names)]
 struct PmuBudgetSpec {
     llc_miss_budget_pct: f64,
     branch_miss_budget_pct: f64,
@@ -183,6 +191,94 @@ struct PmuCountersNormalized {
     llc_miss_pct: Option<f64>,
     branch_miss_pct: Option<f64>,
     cycles_per_call: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+struct PerfOutcomeSnapshot {
+    p50_us: Option<f64>,
+    p95_us: Option<f64>,
+    p99_us: Option<f64>,
+    throughput_eps: Option<f64>,
+    rss_mb: Option<f64>,
+    cpu_pct: Option<f64>,
+    io_wait_pct: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct VoiBudgetConfig {
+    max_overhead_ms: f64,
+    max_experiments: usize,
+    stale_after_hours: f64,
+}
+
+impl Default for VoiBudgetConfig {
+    fn default() -> Self {
+        Self {
+            max_overhead_ms: DEFAULT_VOI_BUDGET_MS,
+            max_experiments: DEFAULT_VOI_MAX_EXPERIMENTS,
+            stale_after_hours: DEFAULT_VOI_STALE_AFTER_HOURS,
+        }
+    }
+}
+
+impl VoiBudgetConfig {
+    fn from_env() -> Self {
+        fn parse_env_f64(key: &str) -> Option<f64> {
+            std::env::var(key)
+                .ok()
+                .and_then(|raw| raw.trim().parse::<f64>().ok())
+                .filter(|value| value.is_finite())
+        }
+
+        fn parse_env_usize(key: &str) -> Option<usize> {
+            std::env::var(key)
+                .ok()
+                .and_then(|raw| raw.trim().parse::<usize>().ok())
+        }
+
+        let mut config = Self::default();
+        if let Some(value) = parse_env_f64("PI_EXT_VOI_BUDGET_MS") {
+            config.max_overhead_ms = value.clamp(5.0, 2_000.0);
+        }
+        if let Some(value) = parse_env_usize("PI_EXT_VOI_MAX_EXPERIMENTS") {
+            config.max_experiments = value.clamp(1, 12);
+        }
+        if let Some(value) = parse_env_f64("PI_EXT_VOI_STALE_AFTER_HOURS") {
+            config.stale_after_hours = value.clamp(1.0, 168.0);
+        }
+        config
+    }
+}
+
+#[derive(Debug, Clone)]
+struct VoiCandidate {
+    stage: String,
+    utility_total: f64,
+    uncertainty_reduction: f64,
+    user_impact_score: f64,
+    pressure_bonus: f64,
+    expected_information_gain: f64,
+    cost_ms: f64,
+    voi_score: f64,
+    recommended_probe: &'static str,
+}
+
+#[derive(Debug, Clone)]
+struct ScoredVoiCandidate {
+    candidate: VoiCandidate,
+    rank: usize,
+    selected: bool,
+    skip_reason: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+struct VoiPlannerInputs<'a> {
+    hotspot_entries: &'a [Value],
+    run_metadata: &'a Value,
+    pmu_meta: &'a Value,
+    pmu_comparison: &'a Value,
+    pmu_outcome_correlation: &'a Value,
+    outcome_comparison: &'a Value,
 }
 
 impl StageTotals {
@@ -342,10 +438,18 @@ fn run() -> Result<()> {
         "event_count": trace_events.len(),
     });
     let pmu_meta = collect_pmu_metadata();
+    let pmu_budget = pmu_budget_from_meta(&pmu_meta);
+    let pmu_baseline_meta = collect_pmu_baseline_metadata(pmu_budget);
     let flame_meta = collect_flame_metadata();
 
-    let hotspot_matrix =
-        build_hotspot_matrix(&records, &run_metadata, &trace_meta, &pmu_meta, &flame_meta);
+    let hotspot_matrix = build_hotspot_matrix(
+        &records,
+        &run_metadata,
+        &trace_meta,
+        &pmu_meta,
+        &pmu_baseline_meta,
+        &flame_meta,
+    );
     validate_hotspot_matrix_schema(&hotspot_matrix)?;
 
     let matrix_path = args
@@ -430,12 +534,11 @@ fn write_jsonl(path: &Path, records: &[Value]) -> Result<()> {
 }
 
 fn normalize_pct(value: Option<f64>) -> Option<f64> {
-    value.map(|raw| {
-        if raw <= 1.0 {
-            (raw * 100.0).clamp(0.0, 100.0)
-        } else {
-            raw.clamp(0.0, 100.0)
-        }
+    let raw = value?;
+    Some(if raw <= 1.0 {
+        (raw * 100.0).clamp(0.0, 100.0)
+    } else {
+        raw.clamp(0.0, 100.0)
     })
 }
 
@@ -554,12 +657,12 @@ fn evaluate_pmu_budget(counters: &PmuCountersNormalized, budget: PmuBudgetSpec) 
 }
 
 fn annotate_pmu_payload(
-    raw: Value,
+    raw: &Value,
     source: &str,
     path: Option<&str>,
     budget: PmuBudgetSpec,
 ) -> Value {
-    let normalized = parse_pmu_counters(&raw);
+    let normalized = parse_pmu_counters(raw);
     let budget_eval = normalized.as_ref().map_or_else(
         || {
             json!({
@@ -581,8 +684,7 @@ fn annotate_pmu_payload(
         base["path"] = Value::String(path.to_string());
     }
     if let Some(counters) = normalized {
-        base["normalized_counters"] =
-            serde_json::to_value(counters).unwrap_or_else(|_| Value::Null);
+        base["normalized_counters"] = serde_json::to_value(counters).unwrap_or(Value::Null);
     } else {
         base["normalized_counters"] = Value::Null;
     }
@@ -602,7 +704,7 @@ fn collect_pmu_metadata() -> Value {
                     "budget": budget.as_json(),
                 })
             },
-            |parsed| annotate_pmu_payload(parsed, "env:PI_EXT_PMU_COUNTERS_JSON", None, budget),
+            |parsed| annotate_pmu_payload(&parsed, "env:PI_EXT_PMU_COUNTERS_JSON", None, budget),
         );
     }
 
@@ -629,7 +731,7 @@ fn collect_pmu_metadata() -> Value {
                     },
                     |parsed| {
                         annotate_pmu_payload(
-                            parsed,
+                            &parsed,
                             "env:PI_EXT_PMU_COUNTERS_PATH",
                             Some(&path),
                             budget,
@@ -644,6 +746,358 @@ fn collect_pmu_metadata() -> Value {
         "status": "not_collected",
         "reason": "set PI_EXT_PMU_COUNTERS_JSON or PI_EXT_PMU_COUNTERS_PATH to attach PMU counters",
         "budget": budget.as_json(),
+    })
+}
+
+fn collect_pmu_baseline_metadata(budget: PmuBudgetSpec) -> Value {
+    if let Ok(raw) = std::env::var("PI_EXT_PMU_BASELINE_COUNTERS_JSON") {
+        return serde_json::from_str::<Value>(&raw).map_or_else(
+            |_| {
+                json!({
+                    "status": "invalid",
+                    "source": "env:PI_EXT_PMU_BASELINE_COUNTERS_JSON",
+                    "reason": "failed_to_parse_json",
+                    "budget": budget.as_json(),
+                })
+            },
+            |parsed| {
+                annotate_pmu_payload(
+                    &parsed,
+                    "env:PI_EXT_PMU_BASELINE_COUNTERS_JSON",
+                    None,
+                    budget,
+                )
+            },
+        );
+    }
+
+    if let Ok(path) = std::env::var("PI_EXT_PMU_BASELINE_COUNTERS_PATH") {
+        return fs::read_to_string(&path).map_or_else(
+            |_| {
+                json!({
+                    "status": "missing",
+                    "source": "env:PI_EXT_PMU_BASELINE_COUNTERS_PATH",
+                    "path": path,
+                    "budget": budget.as_json(),
+                })
+            },
+            |raw| {
+                serde_json::from_str::<Value>(&raw).map_or_else(
+                    |_| {
+                        json!({
+                            "status": "invalid",
+                            "source": "env:PI_EXT_PMU_BASELINE_COUNTERS_PATH",
+                            "path": path,
+                            "reason": "failed_to_parse_json",
+                            "budget": budget.as_json(),
+                        })
+                    },
+                    |parsed| {
+                        annotate_pmu_payload(
+                            &parsed,
+                            "env:PI_EXT_PMU_BASELINE_COUNTERS_PATH",
+                            Some(&path),
+                            budget,
+                        )
+                    },
+                )
+            },
+        );
+    }
+
+    json!({
+        "status": "not_collected",
+        "reason": "set PI_EXT_PMU_BASELINE_COUNTERS_JSON or PI_EXT_PMU_BASELINE_COUNTERS_PATH for before/after PMU comparison",
+        "budget": budget.as_json(),
+    })
+}
+
+fn pmu_counters_from_meta(meta: &Value) -> Option<PmuCountersNormalized> {
+    meta.get("normalized_counters")
+        .and_then(parse_pmu_counters)
+        .or_else(|| parse_pmu_counters(meta))
+}
+
+fn record_weight(record: &Value) -> u64 {
+    json_number_as_u64(record.get("iterations"))
+        .or_else(|| json_number_as_u64(record.get("runs")))
+        .or_else(|| json_number_as_u64(record.get("summary").and_then(|v| v.get("count"))))
+        .unwrap_or(1)
+        .max(1)
+}
+
+fn weighted_percentile(values: &[(f64, u64)], numerator: u64, denominator: u64) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|lhs, rhs| lhs.0.total_cmp(&rhs.0));
+    let total_weight = sorted
+        .iter()
+        .fold(0_u64, |acc, (_, weight)| acc.saturating_add(*weight));
+    if total_weight == 0 {
+        return None;
+    }
+    let target = total_weight
+        .saturating_mul(numerator)
+        .saturating_add(denominator.saturating_sub(1))
+        / denominator.max(1);
+    let mut cumulative = 0_u64;
+    for (value, weight) in &sorted {
+        cumulative = cumulative.saturating_add(*weight);
+        if cumulative >= target.max(1) {
+            return Some(*value);
+        }
+    }
+    Some(sorted[sorted.len() - 1].0)
+}
+
+fn weighted_summary(values: &[(f64, u64)]) -> Value {
+    if values.is_empty() {
+        return json!({
+            "status": "not_available",
+            "reason": "no_weighted_samples",
+        });
+    }
+    let total_weight = values
+        .iter()
+        .fold(0_u64, |acc, (_, weight)| acc.saturating_add(*weight));
+    if total_weight == 0 {
+        return json!({
+            "status": "not_available",
+            "reason": "zero_total_weight",
+        });
+    }
+
+    let weighted_sum = values
+        .iter()
+        .fold(0.0, |acc, (value, weight)| acc + (value * (*weight as f64)));
+    let mean = weighted_sum / total_weight as f64;
+    let min = values
+        .iter()
+        .map(|(value, _)| *value)
+        .min_by(f64::total_cmp)
+        .unwrap_or(0.0);
+    let max = values
+        .iter()
+        .map(|(value, _)| *value)
+        .max_by(f64::total_cmp)
+        .unwrap_or(0.0);
+
+    json!({
+        "status": "observed",
+        "sample_weight_total": total_weight,
+        "min": min,
+        "max": max,
+        "mean": mean,
+        "p50": weighted_percentile(values, 50, 100),
+        "p95": weighted_percentile(values, 95, 100),
+        "p99": weighted_percentile(values, 99, 100),
+    })
+}
+
+fn latency_outcome_summary(records: &[Value]) -> Value {
+    let weighted = records
+        .iter()
+        .filter_map(parse_profile_record)
+        .map(|entry| (entry.per_call_us, entry.samples.max(1)))
+        .collect::<Vec<_>>();
+    weighted_summary(&weighted)
+}
+
+fn throughput_outcome_summary(records: &[Value]) -> Value {
+    let weighted = records
+        .iter()
+        .filter_map(|record| {
+            json_number_as_f64(record.get("calls_per_sec")).map(|throughput| {
+                let weight = record_weight(record);
+                (throughput, weight)
+            })
+        })
+        .collect::<Vec<_>>();
+    weighted_summary(&weighted)
+}
+
+fn parse_perf_outcome_snapshot(raw: &Value) -> Option<PerfOutcomeSnapshot> {
+    let root = raw
+        .get("outcomes")
+        .and_then(Value::as_object)
+        .or_else(|| raw.as_object())?;
+    let p50_us = value_as_f64(root.get("p50_us").or_else(|| root.get("p50")));
+    let p95_us = value_as_f64(root.get("p95_us").or_else(|| root.get("p95")));
+    let p99_us = value_as_f64(root.get("p99_us").or_else(|| root.get("p99")));
+    let throughput_eps = value_as_f64(
+        root.get("throughput_eps")
+            .or_else(|| root.get("calls_per_sec"))
+            .or_else(|| root.get("throughput")),
+    );
+    let rss_mb = value_as_f64(root.get("rss_mb"))
+        .or_else(|| value_as_f64(root.get("rss_kb")).map(|rss_kb| (rss_kb / 1024.0).max(0.0)));
+    let cpu_pct = value_as_f64(root.get("cpu_pct"));
+    let io_wait_pct = value_as_f64(root.get("io_wait_pct"));
+
+    if p50_us.is_none()
+        && p95_us.is_none()
+        && p99_us.is_none()
+        && throughput_eps.is_none()
+        && rss_mb.is_none()
+        && cpu_pct.is_none()
+        && io_wait_pct.is_none()
+    {
+        None
+    } else {
+        Some(PerfOutcomeSnapshot {
+            p50_us,
+            p95_us,
+            p99_us,
+            throughput_eps,
+            rss_mb,
+            cpu_pct,
+            io_wait_pct,
+        })
+    }
+}
+
+fn collect_perf_baseline_metadata() -> Value {
+    if let Ok(raw) = std::env::var("PI_EXT_BASELINE_OUTCOMES_JSON") {
+        return serde_json::from_str::<Value>(&raw).map_or_else(
+            |_| {
+                json!({
+                    "status": "invalid",
+                    "source": "env:PI_EXT_BASELINE_OUTCOMES_JSON",
+                    "reason": "failed_to_parse_json",
+                })
+            },
+            |parsed| {
+                let parsed_snapshot = parse_perf_outcome_snapshot(&parsed);
+                json!({
+                    "status": if parsed_snapshot.is_some() { "collected" } else { "invalid" },
+                    "source": "env:PI_EXT_BASELINE_OUTCOMES_JSON",
+                    "outcomes": parsed,
+                    "normalized": parsed_snapshot,
+                })
+            },
+        );
+    }
+
+    if let Ok(path) = std::env::var("PI_EXT_BASELINE_OUTCOMES_PATH") {
+        return fs::read_to_string(&path).map_or_else(
+            |_| {
+                json!({
+                    "status": "missing",
+                    "source": "env:PI_EXT_BASELINE_OUTCOMES_PATH",
+                    "path": path,
+                })
+            },
+            |raw| {
+                serde_json::from_str::<Value>(&raw).map_or_else(
+                    |_| {
+                        json!({
+                            "status": "invalid",
+                            "source": "env:PI_EXT_BASELINE_OUTCOMES_PATH",
+                            "path": path,
+                            "reason": "failed_to_parse_json",
+                        })
+                    },
+                    |parsed| {
+                        let parsed_snapshot = parse_perf_outcome_snapshot(&parsed);
+                        json!({
+                            "status": if parsed_snapshot.is_some() { "collected" } else { "invalid" },
+                            "source": "env:PI_EXT_BASELINE_OUTCOMES_PATH",
+                            "path": path,
+                            "outcomes": parsed,
+                            "normalized": parsed_snapshot,
+                        })
+                    },
+                )
+            },
+        );
+    }
+
+    json!({
+        "status": "not_collected",
+        "reason": "set PI_EXT_BASELINE_OUTCOMES_JSON or PI_EXT_BASELINE_OUTCOMES_PATH for before/after outcome deltas",
+    })
+}
+
+fn candidate_outcome_snapshot(records: &[Value]) -> PerfOutcomeSnapshot {
+    let latency = latency_outcome_summary(records);
+    let throughput = throughput_outcome_summary(records);
+    let latency_view = latency
+        .get("status")
+        .and_then(Value::as_str)
+        .is_some_and(|status| status == "observed")
+        .then_some(&latency)
+        .and_then(Value::as_object);
+    let throughput_view = throughput
+        .get("status")
+        .and_then(Value::as_str)
+        .is_some_and(|status| status == "observed")
+        .then_some(&throughput)
+        .and_then(Value::as_object);
+
+    PerfOutcomeSnapshot {
+        p50_us: latency_view.and_then(|view| value_as_f64(view.get("p50"))),
+        p95_us: latency_view.and_then(|view| value_as_f64(view.get("p95"))),
+        p99_us: latency_view.and_then(|view| value_as_f64(view.get("p99"))),
+        throughput_eps: throughput_view.and_then(|view| value_as_f64(view.get("mean"))),
+        rss_mb: None,
+        cpu_pct: None,
+        io_wait_pct: None,
+    }
+}
+
+fn delta(candidate: Option<f64>, baseline: Option<f64>) -> Option<f64> {
+    match (candidate, baseline) {
+        (Some(candidate), Some(baseline)) => Some(candidate - baseline),
+        _ => None,
+    }
+}
+
+fn compare_perf_outcomes(
+    baseline: Option<PerfOutcomeSnapshot>,
+    candidate: PerfOutcomeSnapshot,
+) -> Value {
+    let Some(baseline) = baseline else {
+        return json!({
+            "status": "not_compared",
+            "reason": "baseline_outcomes_unavailable",
+            "candidate": candidate,
+        });
+    };
+
+    let delta_p95 = delta(candidate.p95_us, baseline.p95_us);
+    let delta_p99 = delta(candidate.p99_us, baseline.p99_us);
+    let delta_throughput = delta(candidate.throughput_eps, baseline.throughput_eps);
+    let delta_rss = delta(candidate.rss_mb, baseline.rss_mb);
+    let delta_cpu = delta(candidate.cpu_pct, baseline.cpu_pct);
+    let delta_iowait = delta(candidate.io_wait_pct, baseline.io_wait_pct);
+
+    let latency_regressed =
+        delta_p95.is_some_and(|delta| delta > 0.0) || delta_p99.is_some_and(|delta| delta > 0.0);
+    let throughput_regressed = delta_throughput.is_some_and(|delta| delta < 0.0);
+    let resource_regressed = delta_rss.is_some_and(|delta| delta > 0.0)
+        || delta_cpu.is_some_and(|delta| delta > 0.0)
+        || delta_iowait.is_some_and(|delta| delta > 0.0);
+
+    json!({
+        "status": "compared",
+        "baseline": baseline,
+        "candidate": candidate,
+        "deltas": {
+            "p95_us": delta_p95,
+            "p99_us": delta_p99,
+            "throughput_eps": delta_throughput,
+            "rss_mb": delta_rss,
+            "cpu_pct": delta_cpu,
+            "io_wait_pct": delta_iowait,
+        },
+        "regressions": {
+            "latency": latency_regressed,
+            "throughput": throughput_regressed,
+            "resource": resource_regressed,
+            "overall": latency_regressed || throughput_regressed || resource_regressed,
+        }
     })
 }
 
@@ -1260,6 +1714,315 @@ fn stage_user_impact(stage_total_us: f64, total_samples: u64, potential: f64) ->
     })
 }
 
+fn stage_probe_cost_ms(stage: &str, pmu_multiplier: f64) -> f64 {
+    let base = match stage {
+        "queue" => 42.0,
+        "schedule" => 36.0,
+        "execute" => 34.0,
+        "policy" => 24.0,
+        "io" => 28.0,
+        "marshal" => 18.0,
+        _ => 22.0,
+    };
+    let pressure_factor = (1.0 + ((pmu_multiplier - 1.0).max(0.0) * 0.5)).clamp(0.8, 2.0);
+    base * pressure_factor
+}
+
+fn stage_probe_recommendation(stage: &str) -> &'static str {
+    match stage {
+        "queue" => "sample queue depth histogram + lock contention counters",
+        "schedule" => "sample scheduler turn duration and microtask batch size",
+        "execute" => "sample opcode-level latency histogram + tail breakdown",
+        "policy" => "sample policy cache hit/miss + risk decision latency",
+        "marshal" => "sample shape-hash cardinality + serialization cost",
+        "io" => "sample transport wait time + async pipeline occupancy",
+        _ => "sample stage latency and variance",
+    }
+}
+
+fn parse_rfc3339_timestamp(value: Option<&Value>) -> Option<DateTime<Utc>> {
+    let raw = value.and_then(Value::as_str)?;
+    DateTime::parse_from_rfc3339(raw)
+        .ok()
+        .map(|ts| ts.with_timezone(&Utc))
+}
+
+fn evidence_age_hours(run_metadata: &Value, now: DateTime<Utc>) -> Option<f64> {
+    let ts = parse_rfc3339_timestamp(run_metadata.get("finished_at"))
+        .or_else(|| parse_rfc3339_timestamp(run_metadata.get("started_at")))?;
+    let age_secs = (now.timestamp() - ts.timestamp()).max(0) as f64;
+    Some(age_secs / 3600.0)
+}
+
+fn rank_voi_candidates(candidates: &mut [VoiCandidate]) {
+    candidates.sort_by(|lhs, rhs| {
+        rhs.voi_score
+            .total_cmp(&lhs.voi_score)
+            .then_with(|| rhs.utility_total.total_cmp(&lhs.utility_total))
+            .then_with(|| lhs.stage.cmp(&rhs.stage))
+    });
+}
+
+fn realized_information_gain(
+    selected: &[VoiCandidate],
+    correlation_strength: &str,
+    outcome_regressed: bool,
+    pmu_regressed: bool,
+) -> Value {
+    let expected_total = selected
+        .iter()
+        .map(|candidate| candidate.expected_information_gain)
+        .sum::<f64>();
+    let correlation_multiplier = match correlation_strength {
+        "high" => 1.0,
+        "moderate" => 0.7,
+        "low" => 0.45,
+        _ => 0.35,
+    };
+    let regression_penalty = if outcome_regressed && pmu_regressed {
+        0.75
+    } else if outcome_regressed || pmu_regressed {
+        0.88
+    } else {
+        1.0
+    };
+    let realized_total = expected_total * correlation_multiplier * regression_penalty;
+    json!({
+        "expected_total": expected_total,
+        "realized_total": realized_total,
+        "correlation_strength": correlation_strength,
+        "correlation_multiplier": correlation_multiplier,
+        "regression_penalty": regression_penalty,
+    })
+}
+
+fn build_voi_scheduler_plan(inputs: VoiPlannerInputs<'_>) -> Value {
+    build_voi_scheduler_plan_at(inputs, Utc::now(), VoiBudgetConfig::from_env())
+}
+
+fn build_voi_scheduler_plan_at(
+    inputs: VoiPlannerInputs<'_>,
+    now: DateTime<Utc>,
+    budget_config: VoiBudgetConfig,
+) -> Value {
+    let missing_telemetry = pmu_counters_from_meta(inputs.pmu_meta).is_none()
+        || inputs.pmu_comparison.get("status").and_then(Value::as_str) != Some("compared");
+    let evidence_age = evidence_age_hours(inputs.run_metadata, now);
+    let stale_evidence =
+        evidence_age.is_some_and(|age_hours| age_hours > budget_config.stale_after_hours);
+
+    let correlation_strength = inputs
+        .pmu_outcome_correlation
+        .get("correlation_strength")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let pmu_worse = inputs
+        .pmu_outcome_correlation
+        .get("signals")
+        .and_then(|signals| signals.get("pmu_worse"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let outcome_regressed = inputs
+        .outcome_comparison
+        .get("regressions")
+        .and_then(|regressions| regressions.get("overall"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let pmu_regressed = inputs
+        .pmu_comparison
+        .get("regressions")
+        .and_then(|regressions| regressions.get("overall"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let signal_mismatch = pmu_worse ^ outcome_regressed;
+    let drift_detected = correlation_strength == "low" && signal_mismatch;
+
+    let mut safe_mode_reasons = Vec::new();
+    if missing_telemetry {
+        safe_mode_reasons.push("missing_telemetry");
+    }
+    if stale_evidence {
+        safe_mode_reasons.push("stale_evidence");
+    }
+    if drift_detected {
+        safe_mode_reasons.push("estimator_drift");
+    }
+    let safe_mode = !safe_mode_reasons.is_empty();
+
+    let mut candidates = inputs
+        .hotspot_entries
+        .iter()
+        .filter_map(|entry| {
+            let stage = entry
+                .get("stage")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)?;
+            let ev_score = json_number_as_f64(entry.get("ev_score"))
+                .unwrap_or(0.0)
+                .max(0.0);
+            let confidence = json_number_as_f64(entry.get("confidence"))
+                .unwrap_or(0.5)
+                .clamp(0.0, 1.0);
+            let pmu_multiplier = json_number_as_f64(entry.get("pmu_multiplier"))
+                .unwrap_or(1.0)
+                .clamp(0.5, 3.0);
+            let turn_latency_ms = entry
+                .get("projected_user_impact")
+                .and_then(|impact| impact.get("turn_latency_p95_ms"))
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0)
+                .max(0.0);
+
+            let uncertainty_reduction = (1.0 - confidence) * (ev_score + 1.0);
+            let user_impact_score = turn_latency_ms * 4.0;
+            let pressure_bonus = (pmu_multiplier - 1.0).max(0.0) * 12.0;
+            let utility_total = uncertainty_reduction + user_impact_score + pressure_bonus;
+            let cost_ms = stage_probe_cost_ms(&stage, pmu_multiplier);
+            let expected_information_gain = (utility_total / (cost_ms + 1.0)).clamp(0.0, 5.0);
+            let voi_score = utility_total / cost_ms.max(1.0);
+
+            Some(VoiCandidate {
+                stage: stage.clone(),
+                utility_total,
+                uncertainty_reduction,
+                user_impact_score,
+                pressure_bonus,
+                expected_information_gain,
+                cost_ms,
+                voi_score,
+                recommended_probe: stage_probe_recommendation(&stage),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    rank_voi_candidates(&mut candidates);
+    let diagnostic_stage = safe_mode.then(|| {
+        candidates
+            .iter()
+            .min_by(|lhs, rhs| {
+                lhs.cost_ms
+                    .total_cmp(&rhs.cost_ms)
+                    .then_with(|| lhs.stage.cmp(&rhs.stage))
+            })
+            .map(|candidate| candidate.stage.clone())
+    });
+    let diagnostic_stage = diagnostic_stage.flatten();
+
+    let mut remaining_budget_ms = budget_config.max_overhead_ms;
+    let mut used_budget_ms = 0.0;
+    let mut selected_count = 0_usize;
+    let mut selected_candidates = Vec::new();
+    let mut scored = Vec::new();
+
+    for (idx, candidate) in candidates.iter().enumerate() {
+        let mut selected = false;
+        let mut skip_reason = None;
+
+        if safe_mode {
+            if diagnostic_stage
+                .as_ref()
+                .is_some_and(|stage| stage == &candidate.stage)
+            {
+                if candidate.cost_ms <= remaining_budget_ms {
+                    selected = true;
+                } else {
+                    skip_reason = Some("diagnostic_budget_exceeded".to_string());
+                }
+            } else {
+                skip_reason = Some("safe_mode_guardrail".to_string());
+            }
+        } else if selected_count >= budget_config.max_experiments {
+            skip_reason = Some("max_experiments_reached".to_string());
+        } else if candidate.cost_ms > remaining_budget_ms {
+            skip_reason = Some("budget_exceeded".to_string());
+        } else if candidate.utility_total <= 0.01 {
+            skip_reason = Some("low_expected_utility".to_string());
+        } else {
+            selected = true;
+        }
+
+        if selected {
+            remaining_budget_ms = (remaining_budget_ms - candidate.cost_ms).max(0.0);
+            used_budget_ms += candidate.cost_ms;
+            selected_count += 1;
+            selected_candidates.push(candidate.clone());
+        }
+
+        scored.push(ScoredVoiCandidate {
+            candidate: candidate.clone(),
+            rank: idx + 1,
+            selected,
+            skip_reason,
+        });
+    }
+
+    let realized_gain = realized_information_gain(
+        &selected_candidates,
+        correlation_strength,
+        outcome_regressed,
+        pmu_regressed,
+    );
+    let candidate_rows = scored
+        .iter()
+        .map(|item| {
+            json!({
+                "stage": item.candidate.stage,
+                "rank": item.rank,
+                "selected": item.selected,
+                "skip_reason": item.skip_reason,
+                "cost_ms": item.candidate.cost_ms,
+                "voi_score": item.candidate.voi_score,
+                "expected_information_gain": item.candidate.expected_information_gain,
+                "recommended_probe": item.candidate.recommended_probe,
+                "utility": {
+                    "uncertainty_reduction": item.candidate.uncertainty_reduction,
+                    "user_impact_score": item.candidate.user_impact_score,
+                    "pressure_bonus": item.candidate.pressure_bonus,
+                    "total": item.candidate.utility_total,
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+    let selected_plan = scored
+        .iter()
+        .filter(|item| item.selected)
+        .map(|item| {
+            json!({
+                "stage": item.candidate.stage,
+                "rank": item.rank,
+                "cost_ms": item.candidate.cost_ms,
+                "expected_information_gain": item.candidate.expected_information_gain,
+                "recommended_probe": item.candidate.recommended_probe,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    json!({
+        "schema": VOI_SCHEDULER_SCHEMA,
+        "status": if safe_mode { "safe_mode" } else { "active" },
+        "selection_strategy": if safe_mode { "safe_mode_min_cost_probe" } else { "greedy_voi_under_budget" },
+        "deterministic_tiebreak": "voi_score desc, utility.total desc, stage asc",
+        "safe_mode_reasons": safe_mode_reasons,
+        "estimator": {
+            "missing_telemetry": missing_telemetry,
+            "drift_detected": drift_detected,
+            "stale_evidence": stale_evidence,
+            "evidence_age_hours": evidence_age,
+            "stale_after_hours": budget_config.stale_after_hours,
+        },
+        "budget": {
+            "max_overhead_ms": budget_config.max_overhead_ms,
+            "max_experiments": budget_config.max_experiments,
+            "used_overhead_ms": used_budget_ms,
+            "remaining_overhead_ms": remaining_budget_ms,
+            "feasible": used_budget_ms <= budget_config.max_overhead_ms + f64::EPSILON,
+        },
+        "candidates": candidate_rows,
+        "selected_plan": selected_plan,
+        "realized_information_gain": realized_gain,
+    })
+}
+
 fn pmu_budget_from_meta(pmu_meta: &Value) -> PmuBudgetSpec {
     let mut budget = PmuBudgetSpec::default();
     let Some(object) = pmu_meta.get("budget").and_then(Value::as_object) else {
@@ -1279,10 +2042,7 @@ fn pmu_budget_from_meta(pmu_meta: &Value) -> PmuBudgetSpec {
 
 fn pmu_stage_multiplier(stage: &str, pmu_meta: &Value) -> f64 {
     let budget = pmu_budget_from_meta(pmu_meta);
-    let counters = pmu_meta
-        .get("normalized_counters")
-        .and_then(parse_pmu_counters)
-        .or_else(|| parse_pmu_counters(pmu_meta));
+    let counters = pmu_counters_from_meta(pmu_meta);
 
     let Some(counters) = counters else {
         return 1.0;
@@ -1302,11 +2062,160 @@ fn pmu_stage_multiplier(stage: &str, pmu_meta: &Value) -> f64 {
     (1.0 + adjustment).clamp(0.7, 1.8)
 }
 
+fn stall_total_pct(counters: &PmuCountersNormalized) -> f64 {
+    counters.frontend_stall_pct.unwrap_or(0.0) + counters.backend_stall_pct.unwrap_or(0.0)
+}
+
+fn compare_pmu_profiles(candidate_meta: &Value, baseline_meta: &Value) -> Value {
+    let budget = pmu_budget_from_meta(candidate_meta);
+    let Some(candidate) = pmu_counters_from_meta(candidate_meta) else {
+        return json!({
+            "status": "not_compared",
+            "reason": "candidate_pmu_counters_unavailable",
+        });
+    };
+
+    let Some(baseline) = pmu_counters_from_meta(baseline_meta) else {
+        return json!({
+            "status": "not_compared",
+            "reason": "baseline_pmu_counters_unavailable",
+            "candidate": candidate,
+        });
+    };
+
+    let candidate_stall_total = stall_total_pct(&candidate);
+    let baseline_stall_total = stall_total_pct(&baseline);
+    let delta_llc = delta(candidate.llc_miss_pct, baseline.llc_miss_pct);
+    let delta_branch = delta(candidate.branch_miss_pct, baseline.branch_miss_pct);
+    let delta_stall = Some(candidate_stall_total - baseline_stall_total);
+    let delta_cycles = delta(candidate.cycles_per_call, baseline.cycles_per_call);
+
+    let regression_thresholds = json!({
+        "llc_miss_delta_pct": DEFAULT_PMU_REGRESSION_LLC_DELTA_PCT,
+        "branch_miss_delta_pct": DEFAULT_PMU_REGRESSION_BRANCH_DELTA_PCT,
+        "stall_total_delta_pct": DEFAULT_PMU_REGRESSION_STALL_DELTA_PCT,
+    });
+    let llc_regressed = delta_llc.is_some_and(|delta| delta > DEFAULT_PMU_REGRESSION_LLC_DELTA_PCT);
+    let branch_regressed =
+        delta_branch.is_some_and(|delta| delta > DEFAULT_PMU_REGRESSION_BRANCH_DELTA_PCT);
+    let stall_regressed =
+        delta_stall.is_some_and(|delta| delta > DEFAULT_PMU_REGRESSION_STALL_DELTA_PCT);
+    let budget_evaluation = evaluate_pmu_budget(&candidate, budget);
+    let budget_failed = budget_evaluation
+        .get("status")
+        .and_then(Value::as_str)
+        .is_some_and(|status| status == "fail");
+    let overall_regression = llc_regressed || branch_regressed || stall_regressed || budget_failed;
+
+    json!({
+        "status": "compared",
+        "baseline": baseline,
+        "candidate": candidate,
+        "delta_pct_points": {
+            "llc_miss_pct": delta_llc,
+            "branch_miss_pct": delta_branch,
+            "stall_total_pct": delta_stall,
+            "cycles_per_call": delta_cycles,
+        },
+        "pressure": {
+            "baseline": pmu_pressure_score(&baseline, budget),
+            "candidate": pmu_pressure_score(&candidate, budget),
+        },
+        "regression_thresholds": regression_thresholds,
+        "regressions": {
+            "llc_miss": llc_regressed,
+            "branch_miss": branch_regressed,
+            "stall_total": stall_regressed,
+            "budget": budget_failed,
+            "overall": overall_regression,
+        },
+    })
+}
+
+fn build_pmu_outcome_correlation(
+    pmu_comparison: &Value,
+    candidate_outcomes: PerfOutcomeSnapshot,
+    outcome_comparison: &Value,
+) -> Value {
+    let stall_delta = pmu_comparison
+        .get("delta_pct_points")
+        .and_then(|delta| delta.get("stall_total_pct"))
+        .and_then(Value::as_f64);
+    let llc_delta = pmu_comparison
+        .get("delta_pct_points")
+        .and_then(|delta| delta.get("llc_miss_pct"))
+        .and_then(Value::as_f64);
+    let branch_delta = pmu_comparison
+        .get("delta_pct_points")
+        .and_then(|delta| delta.get("branch_miss_pct"))
+        .and_then(Value::as_f64);
+
+    let outcome_regression = outcome_comparison
+        .get("regressions")
+        .and_then(|regressions| regressions.get("overall"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let p95_p50_ratio = match (candidate_outcomes.p95_us, candidate_outcomes.p50_us) {
+        (Some(p95), Some(p50)) if p50 > 0.0 => Some(p95 / p50),
+        _ => None,
+    };
+    let p99_p95_ratio = match (candidate_outcomes.p99_us, candidate_outcomes.p95_us) {
+        (Some(p99), Some(p95)) if p95 > 0.0 => Some(p99 / p95),
+        _ => None,
+    };
+    let tail_under_pressure = p95_p50_ratio.is_some_and(|ratio| ratio > 1.2)
+        || p99_p95_ratio.is_some_and(|ratio| ratio > 1.1);
+
+    let pmu_worse = stall_delta.is_some_and(|delta| delta > 0.0)
+        || llc_delta.is_some_and(|delta| delta > 0.0)
+        || branch_delta.is_some_and(|delta| delta > 0.0);
+
+    let correlation_strength = if pmu_worse && outcome_regression {
+        "high"
+    } else if pmu_worse || outcome_regression || tail_under_pressure {
+        "moderate"
+    } else {
+        "low"
+    };
+
+    json!({
+        "status": "computed",
+        "pmu_shift": {
+            "stall_total_pct_delta": stall_delta,
+            "llc_miss_pct_delta": llc_delta,
+            "branch_miss_pct_delta": branch_delta,
+        },
+        "user_visible_latency": {
+            "p50_us": candidate_outcomes.p50_us,
+            "p95_us": candidate_outcomes.p95_us,
+            "p99_us": candidate_outcomes.p99_us,
+            "tail_ratios": {
+                "p95_over_p50": p95_p50_ratio,
+                "p99_over_p95": p99_p95_ratio,
+            },
+        },
+        "resource_outcomes": {
+            "throughput_eps": candidate_outcomes.throughput_eps,
+            "rss_mb": candidate_outcomes.rss_mb,
+            "cpu_pct": candidate_outcomes.cpu_pct,
+            "io_wait_pct": candidate_outcomes.io_wait_pct,
+        },
+        "signals": {
+            "pmu_worse": pmu_worse,
+            "tail_under_pressure": tail_under_pressure,
+            "outcome_regression": outcome_regression,
+        },
+        "correlation_strength": correlation_strength,
+    })
+}
+
 fn build_hotspot_matrix(
     records: &[Value],
     run_metadata: &Value,
     trace_meta: &Value,
     pmu_meta: &Value,
+    pmu_baseline_meta: &Value,
     flame_meta: &Value,
 ) -> Value {
     let parsed = records
@@ -1341,10 +2250,7 @@ fn build_hotspot_matrix(
     let grand_total = totals.total_us().max(1.0);
     let confidence = ((total_samples as f64).ln_1p() / 8.0).clamp(0.35, 0.99);
     let pmu_budget = pmu_budget_from_meta(pmu_meta);
-    let pmu_counters = pmu_meta
-        .get("normalized_counters")
-        .and_then(parse_pmu_counters)
-        .or_else(|| parse_pmu_counters(pmu_meta));
+    let pmu_counters = pmu_counters_from_meta(pmu_meta);
     let pmu_budget_eval = pmu_counters.as_ref().map_or_else(
         || {
             json!({
@@ -1354,6 +2260,17 @@ fn build_hotspot_matrix(
         },
         |counters| evaluate_pmu_budget(counters, pmu_budget),
     );
+    let latency_summary = latency_outcome_summary(records);
+    let throughput_summary = throughput_outcome_summary(records);
+    let baseline_outcomes_meta = collect_perf_baseline_metadata();
+    let baseline_outcomes = baseline_outcomes_meta
+        .get("normalized")
+        .and_then(parse_perf_outcome_snapshot);
+    let candidate_outcomes = candidate_outcome_snapshot(records);
+    let outcome_comparison = compare_perf_outcomes(baseline_outcomes, candidate_outcomes);
+    let pmu_comparison = compare_pmu_profiles(pmu_meta, pmu_baseline_meta);
+    let pmu_outcome_correlation =
+        build_pmu_outcome_correlation(&pmu_comparison, candidate_outcomes, &outcome_comparison);
     let stage_values = [
         ("marshal", totals.marshal),
         ("queue", totals.queue),
@@ -1392,6 +2309,14 @@ fn build_hotspot_matrix(
         let rhs = json_number_as_f64(b.get("ev_score")).unwrap_or(0.0);
         rhs.total_cmp(&lhs)
     });
+    let voi_scheduler = build_voi_scheduler_plan(VoiPlannerInputs {
+        hotspot_entries: &hotspot_entries,
+        run_metadata,
+        pmu_meta,
+        pmu_comparison: &pmu_comparison,
+        pmu_outcome_correlation: &pmu_outcome_correlation,
+        outcome_comparison: &outcome_comparison,
+    });
 
     json!({
         "schema": HOTSPOT_MATRIX_SCHEMA,
@@ -1404,8 +2329,15 @@ fn build_hotspot_matrix(
         "artifacts": {
             "trace_log": trace_meta,
             "pmu_counters": pmu_meta,
+            "pmu_baseline_counters": pmu_baseline_meta,
             "pmu_budget": pmu_budget.as_json(),
             "pmu_budget_evaluation": pmu_budget_eval,
+            "pmu_comparison": pmu_comparison,
+            "latency_outcomes": latency_summary,
+            "throughput_outcomes": throughput_summary,
+            "baseline_outcomes": baseline_outcomes_meta,
+            "outcome_comparison": outcome_comparison,
+            "pmu_outcome_correlation": pmu_outcome_correlation,
             "flame_data": flame_meta,
         },
         "stage_totals_us": {
@@ -1418,13 +2350,14 @@ fn build_hotspot_matrix(
             "total": grand_total,
         },
         "hotspot_matrix": hotspot_entries,
+        "voi_scheduler": voi_scheduler,
         "scenario_breakdown": scenario_breakdown,
         "downstream_consumers": DEFAULT_DOWNSTREAM_BEADS,
         "methodology": {
             "stage_decomposition": ["marshal", "queue", "schedule", "policy", "execute", "io"],
             "ev_formula": "share_pct * optimization_potential * confidence * pmu_multiplier",
             "confidence_formula": "clamp(log(sample_count+1)/8, 0.35, 0.99)",
-            "notes": "Queue/schedule attribution is inferred from scenario-specific stage weights; PMU counters shape ev_score via stage multipliers when available."
+            "notes": "Queue/schedule attribution is inferred from scenario-specific stage weights; PMU counters shape ev_score via stage multipliers when available. Before/after PMU deltas and outcome comparison (p50/p95/p99 + resource proxies) are included for regression gating."
         },
     })
 }
@@ -1438,6 +2371,7 @@ fn validate_hotspot_matrix_schema(matrix: &Value) -> Result<()> {
         "artifacts",
         "stage_totals_us",
         "hotspot_matrix",
+        "voi_scheduler",
         "downstream_consumers",
     ];
     for field in required_top {
@@ -1453,6 +2387,28 @@ fn validate_hotspot_matrix_schema(matrix: &Value) -> Result<()> {
             "unexpected hotspot matrix schema: {:?}",
             matrix.get("schema")
         )));
+    }
+
+    let Some(artifacts) = matrix.get("artifacts").and_then(Value::as_object) else {
+        return Err(Error::extension(
+            "hotspot matrix artifacts must be an object".to_string(),
+        ));
+    };
+    for field in [
+        "pmu_counters",
+        "pmu_baseline_counters",
+        "pmu_comparison",
+        "latency_outcomes",
+        "throughput_outcomes",
+        "baseline_outcomes",
+        "outcome_comparison",
+        "pmu_outcome_correlation",
+    ] {
+        if artifacts.get(field).is_none() {
+            return Err(Error::extension(format!(
+                "hotspot matrix artifacts missing field: {field}"
+            )));
+        }
     }
 
     let Some(hotspots) = matrix.get("hotspot_matrix").and_then(Value::as_array) else {
@@ -1478,6 +2434,31 @@ fn validate_hotspot_matrix_schema(matrix: &Value) -> Result<()> {
             }
         }
     }
+    let Some(voi) = matrix.get("voi_scheduler").and_then(Value::as_object) else {
+        return Err(Error::extension(
+            "voi_scheduler must be an object".to_string(),
+        ));
+    };
+    if voi.get("schema").and_then(Value::as_str) != Some(VOI_SCHEDULER_SCHEMA) {
+        return Err(Error::extension(format!(
+            "unexpected VOI scheduler schema: {:?}",
+            voi.get("schema")
+        )));
+    }
+    for field in [
+        "status",
+        "budget",
+        "candidates",
+        "selected_plan",
+        "realized_information_gain",
+    ] {
+        if voi.get(field).is_none() {
+            return Err(Error::extension(format!(
+                "voi_scheduler missing field: {field}"
+            )));
+        }
+    }
+
     Ok(())
 }
 
@@ -1525,6 +2506,131 @@ mod tests {
                 .and_then(|v| v.get("ok"))
                 .and_then(Value::as_bool),
             Some(false)
+        );
+    }
+
+    #[test]
+    fn compare_pmu_profiles_flags_regressions() {
+        let candidate = json!({
+            "status": "collected",
+            "normalized_counters": {
+                "frontend_stall_pct": 40.0,
+                "backend_stall_pct": 34.0,
+                "llc_miss_pct": 22.0,
+                "branch_miss_pct": 7.5,
+                "cycles_per_call": 19500.0
+            },
+            "budget": {
+                "llc_miss_budget_pct": 18.0,
+                "branch_miss_budget_pct": 6.0,
+                "stall_total_budget_pct": 65.0
+            }
+        });
+        let baseline = json!({
+            "status": "collected",
+            "normalized_counters": {
+                "frontend_stall_pct": 31.0,
+                "backend_stall_pct": 27.0,
+                "llc_miss_pct": 15.0,
+                "branch_miss_pct": 4.0,
+                "cycles_per_call": 15000.0
+            },
+            "budget": {
+                "llc_miss_budget_pct": 18.0,
+                "branch_miss_budget_pct": 6.0,
+                "stall_total_budget_pct": 65.0
+            }
+        });
+
+        let comparison = compare_pmu_profiles(&candidate, &baseline);
+        assert_eq!(
+            comparison.get("status").and_then(Value::as_str),
+            Some("compared")
+        );
+        assert_eq!(
+            comparison
+                .get("regressions")
+                .and_then(|value| value.get("overall"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn compare_perf_outcomes_detects_latency_regression() {
+        let baseline = PerfOutcomeSnapshot {
+            p50_us: Some(95.0),
+            p95_us: Some(120.0),
+            p99_us: Some(160.0),
+            throughput_eps: Some(1800.0),
+            rss_mb: Some(180.0),
+            cpu_pct: Some(70.0),
+            io_wait_pct: Some(2.0),
+        };
+        let candidate = PerfOutcomeSnapshot {
+            p50_us: Some(100.0),
+            p95_us: Some(145.0),
+            p99_us: Some(190.0),
+            throughput_eps: Some(1720.0),
+            rss_mb: Some(188.0),
+            cpu_pct: Some(74.0),
+            io_wait_pct: Some(2.6),
+        };
+
+        let comparison = compare_perf_outcomes(Some(baseline), candidate);
+        assert_eq!(
+            comparison.get("status").and_then(Value::as_str),
+            Some("compared")
+        );
+        assert_eq!(
+            comparison
+                .get("regressions")
+                .and_then(|value| value.get("latency"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            comparison
+                .get("regressions")
+                .and_then(|value| value.get("overall"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn pmu_outcome_correlation_high_when_signals_align() {
+        let pmu_comparison = json!({
+            "status": "compared",
+            "delta_pct_points": {
+                "stall_total_pct": 8.0,
+                "llc_miss_pct": 3.0,
+                "branch_miss_pct": 1.2
+            }
+        });
+        let candidate_outcomes = PerfOutcomeSnapshot {
+            p50_us: Some(100.0),
+            p95_us: Some(145.0),
+            p99_us: Some(195.0),
+            throughput_eps: Some(1700.0),
+            rss_mb: None,
+            cpu_pct: None,
+            io_wait_pct: None,
+        };
+        let outcome_comparison = json!({
+            "status": "compared",
+            "regressions": {
+                "overall": true
+            }
+        });
+
+        let correlation =
+            build_pmu_outcome_correlation(&pmu_comparison, candidate_outcomes, &outcome_comparison);
+        assert_eq!(
+            correlation
+                .get("correlation_strength")
+                .and_then(Value::as_str),
+            Some("high")
         );
     }
 
@@ -1615,6 +2721,21 @@ mod tests {
                     "stall_total_budget_pct": 65.0
                 }
             }),
+            &json!({
+                "status": "collected",
+                "normalized_counters": {
+                    "frontend_stall_pct": 30.0,
+                    "backend_stall_pct": 27.0,
+                    "llc_miss_pct": 14.0,
+                    "branch_miss_pct": 4.5,
+                    "cycles_per_call": 15500.0
+                },
+                "budget": {
+                    "llc_miss_budget_pct": 18.0,
+                    "branch_miss_budget_pct": 6.0,
+                    "stall_total_budget_pct": 65.0
+                }
+            }),
             &json!({ "status": "not_collected" }),
         );
         validate_hotspot_matrix_schema(&matrix).expect("schema should validate");
@@ -1634,6 +2755,360 @@ mod tests {
         assert!(
             top.get("projected_user_impact").is_some(),
             "missing projected_user_impact"
+        );
+        assert_eq!(
+            matrix
+                .get("artifacts")
+                .and_then(|artifacts| artifacts.get("pmu_comparison"))
+                .and_then(|comparison| comparison.get("status"))
+                .and_then(Value::as_str),
+            Some("compared")
+        );
+        assert!(
+            matrix
+                .get("artifacts")
+                .and_then(|artifacts| artifacts.get("pmu_outcome_correlation"))
+                .and_then(|correlation| correlation.get("correlation_strength"))
+                .and_then(Value::as_str)
+                .is_some(),
+            "missing PMU outcome correlation strength"
+        );
+        assert_eq!(
+            matrix
+                .get("voi_scheduler")
+                .and_then(|scheduler| scheduler.get("schema"))
+                .and_then(Value::as_str),
+            Some(VOI_SCHEDULER_SCHEMA),
+            "missing VOI scheduler artifact"
+        );
+    }
+
+    #[test]
+    fn voi_scheduler_prefers_higher_utility_per_cost() {
+        let now = DateTime::parse_from_rfc3339("2026-02-16T05:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let hotspots = vec![
+            json!({
+                "stage": "queue",
+                "ev_score": 90.0,
+                "confidence": 0.40,
+                "pmu_multiplier": 1.5,
+                "projected_user_impact": { "turn_latency_p95_ms": 6.0 }
+            }),
+            json!({
+                "stage": "marshal",
+                "ev_score": 25.0,
+                "confidence": 0.85,
+                "pmu_multiplier": 1.0,
+                "projected_user_impact": { "turn_latency_p95_ms": 0.4 }
+            }),
+        ];
+        let plan = build_voi_scheduler_plan_at(
+            VoiPlannerInputs {
+                hotspot_entries: &hotspots,
+                run_metadata: &json!({ "finished_at": "2026-02-16T04:50:00Z" }),
+                pmu_meta: &json!({
+                    "normalized_counters": {
+                        "frontend_stall_pct": 32.0,
+                        "backend_stall_pct": 28.0,
+                        "llc_miss_pct": 20.0,
+                        "branch_miss_pct": 5.5
+                    }
+                }),
+                pmu_comparison: &json!({
+                    "status": "compared",
+                    "regressions": { "overall": true }
+                }),
+                pmu_outcome_correlation: &json!({
+                    "correlation_strength": "high",
+                    "signals": {
+                        "pmu_worse": true,
+                        "outcome_regression": true
+                    }
+                }),
+                outcome_comparison: &json!({
+                    "regressions": { "overall": true }
+                }),
+            },
+            now,
+            VoiBudgetConfig {
+                max_overhead_ms: 200.0,
+                max_experiments: 3,
+                stale_after_hours: 24.0,
+            },
+        );
+        let candidates = plan
+            .get("candidates")
+            .and_then(Value::as_array)
+            .expect("candidate rows");
+        assert_eq!(
+            candidates[0].get("stage").and_then(Value::as_str),
+            Some("queue")
+        );
+        let top_voi = candidates[0]
+            .get("voi_score")
+            .and_then(Value::as_f64)
+            .expect("top voi");
+        let second_voi = candidates[1]
+            .get("voi_score")
+            .and_then(Value::as_f64)
+            .expect("second voi");
+        assert!(top_voi > second_voi);
+    }
+
+    #[test]
+    fn voi_scheduler_budget_selection_is_feasible() {
+        let now = DateTime::parse_from_rfc3339("2026-02-16T05:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let hotspots = vec![
+            json!({
+                "stage": "queue",
+                "ev_score": 90.0,
+                "confidence": 0.30,
+                "pmu_multiplier": 1.8,
+                "projected_user_impact": { "turn_latency_p95_ms": 8.0 }
+            }),
+            json!({
+                "stage": "schedule",
+                "ev_score": 72.0,
+                "confidence": 0.35,
+                "pmu_multiplier": 1.6,
+                "projected_user_impact": { "turn_latency_p95_ms": 5.0 }
+            }),
+            json!({
+                "stage": "marshal",
+                "ev_score": 18.0,
+                "confidence": 0.80,
+                "pmu_multiplier": 1.0,
+                "projected_user_impact": { "turn_latency_p95_ms": 0.8 }
+            }),
+        ];
+        let plan = build_voi_scheduler_plan_at(
+            VoiPlannerInputs {
+                hotspot_entries: &hotspots,
+                run_metadata: &json!({ "finished_at": "2026-02-16T04:55:00Z" }),
+                pmu_meta: &json!({
+                    "normalized_counters": {
+                        "frontend_stall_pct": 30.0,
+                        "backend_stall_pct": 25.0,
+                        "llc_miss_pct": 19.0,
+                        "branch_miss_pct": 5.0
+                    }
+                }),
+                pmu_comparison: &json!({
+                    "status": "compared",
+                    "regressions": { "overall": false }
+                }),
+                pmu_outcome_correlation: &json!({
+                    "correlation_strength": "moderate",
+                    "signals": {
+                        "pmu_worse": false,
+                        "outcome_regression": false
+                    }
+                }),
+                outcome_comparison: &json!({
+                    "regressions": { "overall": false }
+                }),
+            },
+            now,
+            VoiBudgetConfig {
+                max_overhead_ms: 40.0,
+                max_experiments: 3,
+                stale_after_hours: 24.0,
+            },
+        );
+        let used = plan
+            .get("budget")
+            .and_then(|budget| budget.get("used_overhead_ms"))
+            .and_then(Value::as_f64)
+            .expect("used budget");
+        let feasible = plan
+            .get("budget")
+            .and_then(|budget| budget.get("feasible"))
+            .and_then(Value::as_bool)
+            .expect("feasible");
+        assert!(feasible);
+        assert!(used <= 40.0 + f64::EPSILON);
+    }
+
+    #[test]
+    fn voi_scheduler_tie_break_is_stage_lexicographic() {
+        let now = DateTime::parse_from_rfc3339("2026-02-16T05:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let hotspots = vec![
+            json!({
+                "stage": "beta",
+                "ev_score": 20.0,
+                "confidence": 0.50,
+                "pmu_multiplier": 1.0,
+                "projected_user_impact": { "turn_latency_p95_ms": 1.0 }
+            }),
+            json!({
+                "stage": "alpha",
+                "ev_score": 20.0,
+                "confidence": 0.50,
+                "pmu_multiplier": 1.0,
+                "projected_user_impact": { "turn_latency_p95_ms": 1.0 }
+            }),
+        ];
+        let plan = build_voi_scheduler_plan_at(
+            VoiPlannerInputs {
+                hotspot_entries: &hotspots,
+                run_metadata: &json!({ "finished_at": "2026-02-16T04:59:00Z" }),
+                pmu_meta: &json!({
+                    "normalized_counters": {
+                        "frontend_stall_pct": 20.0,
+                        "backend_stall_pct": 20.0,
+                        "llc_miss_pct": 12.0,
+                        "branch_miss_pct": 3.0
+                    }
+                }),
+                pmu_comparison: &json!({
+                    "status": "compared",
+                    "regressions": { "overall": false }
+                }),
+                pmu_outcome_correlation: &json!({
+                    "correlation_strength": "high",
+                    "signals": {
+                        "pmu_worse": false,
+                        "outcome_regression": false
+                    }
+                }),
+                outcome_comparison: &json!({
+                    "regressions": { "overall": false }
+                }),
+            },
+            now,
+            VoiBudgetConfig {
+                max_overhead_ms: 200.0,
+                max_experiments: 2,
+                stale_after_hours: 24.0,
+            },
+        );
+        let candidates = plan
+            .get("candidates")
+            .and_then(Value::as_array)
+            .expect("candidates");
+        assert_eq!(
+            candidates[0].get("stage").and_then(Value::as_str),
+            Some("alpha"),
+            "ties should resolve by stage name ascending"
+        );
+    }
+
+    #[test]
+    fn voi_scheduler_safe_mode_on_stale_evidence() {
+        let now = DateTime::parse_from_rfc3339("2026-02-16T05:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let hotspots = vec![json!({
+            "stage": "queue",
+            "ev_score": 50.0,
+            "confidence": 0.5,
+            "pmu_multiplier": 1.2,
+            "projected_user_impact": { "turn_latency_p95_ms": 2.0 }
+        })];
+        let plan = build_voi_scheduler_plan_at(
+            VoiPlannerInputs {
+                hotspot_entries: &hotspots,
+                run_metadata: &json!({ "finished_at": "2026-02-14T01:00:00Z" }),
+                pmu_meta: &json!({
+                    "normalized_counters": {
+                        "frontend_stall_pct": 25.0,
+                        "backend_stall_pct": 22.0,
+                        "llc_miss_pct": 16.0,
+                        "branch_miss_pct": 4.0
+                    }
+                }),
+                pmu_comparison: &json!({
+                    "status": "compared",
+                    "regressions": { "overall": false }
+                }),
+                pmu_outcome_correlation: &json!({
+                    "correlation_strength": "moderate",
+                    "signals": {
+                        "pmu_worse": false,
+                        "outcome_regression": false
+                    }
+                }),
+                outcome_comparison: &json!({
+                    "regressions": { "overall": false }
+                }),
+            },
+            now,
+            VoiBudgetConfig {
+                max_overhead_ms: 50.0,
+                max_experiments: 2,
+                stale_after_hours: 12.0,
+            },
+        );
+        assert_eq!(
+            plan.get("status").and_then(Value::as_str),
+            Some("safe_mode")
+        );
+        assert!(
+            plan.get("safe_mode_reasons")
+                .and_then(Value::as_array)
+                .is_some_and(|reasons| reasons
+                    .iter()
+                    .any(|reason| reason.as_str() == Some("stale_evidence")))
+        );
+    }
+
+    #[test]
+    fn voi_scheduler_safe_mode_on_missing_telemetry() {
+        let now = DateTime::parse_from_rfc3339("2026-02-16T05:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let hotspots = vec![json!({
+            "stage": "queue",
+            "ev_score": 45.0,
+            "confidence": 0.45,
+            "pmu_multiplier": 1.1,
+            "projected_user_impact": { "turn_latency_p95_ms": 2.2 }
+        })];
+        let plan = build_voi_scheduler_plan_at(
+            VoiPlannerInputs {
+                hotspot_entries: &hotspots,
+                run_metadata: &json!({ "finished_at": "2026-02-16T04:55:00Z" }),
+                pmu_meta: &json!({
+                    "status": "not_collected"
+                }),
+                pmu_comparison: &json!({
+                    "status": "not_compared",
+                    "reason": "candidate_pmu_counters_unavailable"
+                }),
+                pmu_outcome_correlation: &json!({
+                    "correlation_strength": "low",
+                    "signals": {
+                        "pmu_worse": false,
+                        "outcome_regression": false
+                    }
+                }),
+                outcome_comparison: &json!({
+                    "regressions": { "overall": false }
+                }),
+            },
+            now,
+            VoiBudgetConfig {
+                max_overhead_ms: 50.0,
+                max_experiments: 2,
+                stale_after_hours: 24.0,
+            },
+        );
+        assert_eq!(
+            plan.get("status").and_then(Value::as_str),
+            Some("safe_mode")
+        );
+        assert!(
+            plan.get("safe_mode_reasons")
+                .and_then(Value::as_array)
+                .is_some_and(|reasons| reasons
+                    .iter()
+                    .any(|reason| reason.as_str() == Some("missing_telemetry")))
         );
     }
 }

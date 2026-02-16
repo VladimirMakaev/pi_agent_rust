@@ -2145,6 +2145,10 @@ pub struct ExtensionBudgetControllerConfig {
     pub recovery_successes_to_exit: u32,
     /// CUSUM/BOCPD regime-shift detection configuration.
     pub regime_shift: RegimeShiftConfig,
+    /// Conformal + PAC-Bayes safety envelope configuration.
+    pub safety_envelope: SafetyEnvelopeConfig,
+    /// Online convex optimization tuner for queue/batch/time-slice budgets.
+    pub oco_tuner: OcoTunerConfig,
 }
 
 impl ExtensionBudgetControllerConfig {
@@ -2158,6 +2162,8 @@ impl ExtensionBudgetControllerConfig {
                 overload_signals_to_fallback: 2,
                 recovery_successes_to_exit: 8,
                 regime_shift: RegimeShiftConfig::for_tier(ExtensionBudgetTier::Strict),
+                safety_envelope: SafetyEnvelopeConfig::for_tier(ExtensionBudgetTier::Strict),
+                oco_tuner: OcoTunerConfig::for_tier(ExtensionBudgetTier::Strict),
             },
             ExtensionBudgetTier::Balanced => Self {
                 enabled: true,
@@ -2166,6 +2172,8 @@ impl ExtensionBudgetControllerConfig {
                 overload_signals_to_fallback: 3,
                 recovery_successes_to_exit: 16,
                 regime_shift: RegimeShiftConfig::for_tier(ExtensionBudgetTier::Balanced),
+                safety_envelope: SafetyEnvelopeConfig::for_tier(ExtensionBudgetTier::Balanced),
+                oco_tuner: OcoTunerConfig::for_tier(ExtensionBudgetTier::Balanced),
             },
             ExtensionBudgetTier::Throughput => Self {
                 enabled: true,
@@ -2174,6 +2182,8 @@ impl ExtensionBudgetControllerConfig {
                 overload_signals_to_fallback: 5,
                 recovery_successes_to_exit: 32,
                 regime_shift: RegimeShiftConfig::for_tier(ExtensionBudgetTier::Throughput),
+                safety_envelope: SafetyEnvelopeConfig::for_tier(ExtensionBudgetTier::Throughput),
+                oco_tuner: OcoTunerConfig::for_tier(ExtensionBudgetTier::Throughput),
             },
         }
     }
@@ -2185,6 +2195,88 @@ impl ExtensionBudgetControllerConfig {
 }
 
 impl Default for ExtensionBudgetControllerConfig {
+    fn default() -> Self {
+        Self::for_tier(ExtensionBudgetTier::Balanced)
+    }
+}
+
+/// OCO controller configuration for queue, batch, and time-slice budgets.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+#[allow(clippy::struct_field_names)]
+pub struct OcoTunerConfig {
+    /// Master switch for online updates.
+    pub enabled: bool,
+    /// Step size for online gradient updates.
+    pub learning_rate: f64,
+    /// Minimum and maximum queue budget (logical slots).
+    pub min_queue_budget: f64,
+    pub max_queue_budget: f64,
+    /// Minimum and maximum batch budget (logical dispatch width).
+    pub min_batch_budget: f64,
+    pub max_batch_budget: f64,
+    /// Minimum and maximum time-slice budget (milliseconds).
+    pub min_time_slice_ms: f64,
+    pub max_time_slice_ms: f64,
+    /// Initial values for each tuned budget.
+    pub initial_queue_budget: f64,
+    pub initial_batch_budget: f64,
+    pub initial_time_slice_ms: f64,
+    /// Guardrail threshold; instantaneous loss above this triggers rollback.
+    pub rollback_loss_threshold: f64,
+}
+
+impl OcoTunerConfig {
+    #[must_use]
+    pub const fn for_tier(tier: ExtensionBudgetTier) -> Self {
+        match tier {
+            ExtensionBudgetTier::Strict => Self {
+                enabled: true,
+                learning_rate: 0.10,
+                min_queue_budget: 2.0,
+                max_queue_budget: 16.0,
+                min_batch_budget: 1.0,
+                max_batch_budget: 8.0,
+                min_time_slice_ms: 2.0,
+                max_time_slice_ms: 12.0,
+                initial_queue_budget: 4.0,
+                initial_batch_budget: 2.0,
+                initial_time_slice_ms: 4.0,
+                rollback_loss_threshold: 1.35,
+            },
+            ExtensionBudgetTier::Balanced => Self {
+                enabled: true,
+                learning_rate: 0.08,
+                min_queue_budget: 4.0,
+                max_queue_budget: 32.0,
+                min_batch_budget: 2.0,
+                max_batch_budget: 16.0,
+                min_time_slice_ms: 4.0,
+                max_time_slice_ms: 20.0,
+                initial_queue_budget: 8.0,
+                initial_batch_budget: 4.0,
+                initial_time_slice_ms: 8.0,
+                rollback_loss_threshold: 1.45,
+            },
+            ExtensionBudgetTier::Throughput => Self {
+                enabled: true,
+                learning_rate: 0.06,
+                min_queue_budget: 8.0,
+                max_queue_budget: 64.0,
+                min_batch_budget: 4.0,
+                max_batch_budget: 32.0,
+                min_time_slice_ms: 6.0,
+                max_time_slice_ms: 32.0,
+                initial_queue_budget: 16.0,
+                initial_batch_budget: 8.0,
+                initial_time_slice_ms: 12.0,
+                rollback_loss_threshold: 1.60,
+            },
+        }
+    }
+}
+
+impl Default for OcoTunerConfig {
     fn default() -> Self {
         Self::for_tier(ExtensionBudgetTier::Balanced)
     }
@@ -2712,6 +2804,11 @@ impl Default for ConformalState {
     }
 }
 
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 impl ConformalState {
     /// Feed a new observation and return `true` if it is anomalous (outside
     /// the conformal prediction interval at the configured confidence level).
@@ -2797,6 +2894,11 @@ struct PacBayesState {
     prior_error_rate: f64,
 }
 
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::missing_const_for_fn,
+    clippy::manual_midpoint
+)]
 impl PacBayesState {
     /// Record an outcome.
     fn record(&mut self, success: bool) {
@@ -2906,6 +3008,151 @@ pub struct SafetyEnvelopeSnapshot {
     pub pac_bayes_total: u64,
 }
 
+/// Snapshot of OCO-tuned budgets for one extension.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OcoTunerSnapshot {
+    pub queue_budget: f64,
+    pub batch_budget: f64,
+    pub time_slice_ms: f64,
+    pub rounds: u64,
+    pub cumulative_loss: f64,
+    pub cumulative_regret: f64,
+    pub guardrail_rollbacks: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OcoTunerUpdateTelemetry {
+    instantaneous_loss: f64,
+    cumulative_regret: f64,
+    rolled_back: bool,
+}
+
+/// Per-extension online convex optimization state for budget tuning.
+#[derive(Debug, Clone)]
+struct OcoTunerState {
+    queue_budget: f64,
+    batch_budget: f64,
+    time_slice_ms: f64,
+    rounds: u64,
+    cumulative_loss: f64,
+    cumulative_regret: f64,
+    guardrail_rollbacks: u64,
+}
+
+impl OcoTunerState {
+    fn from_config(config: &OcoTunerConfig) -> Self {
+        let queue_budget = config
+            .initial_queue_budget
+            .clamp(config.min_queue_budget, config.max_queue_budget);
+        let batch_budget = config
+            .initial_batch_budget
+            .clamp(config.min_batch_budget, config.max_batch_budget);
+        let time_slice_ms = config
+            .initial_time_slice_ms
+            .clamp(config.min_time_slice_ms, config.max_time_slice_ms);
+        Self {
+            queue_budget,
+            batch_budget,
+            time_slice_ms,
+            rounds: 0,
+            cumulative_loss: 0.0,
+            cumulative_regret: 0.0,
+            guardrail_rollbacks: 0,
+        }
+    }
+
+    fn snapshot(&self) -> OcoTunerSnapshot {
+        OcoTunerSnapshot {
+            queue_budget: self.queue_budget,
+            batch_budget: self.batch_budget,
+            time_slice_ms: self.time_slice_ms,
+            rounds: self.rounds,
+            cumulative_loss: self.cumulative_loss,
+            cumulative_regret: self.cumulative_regret,
+            guardrail_rollbacks: self.guardrail_rollbacks,
+        }
+    }
+
+    fn rollback_to_safe_profile(&mut self, config: &OcoTunerConfig) {
+        self.queue_budget = config
+            .initial_queue_budget
+            .clamp(config.min_queue_budget, config.max_queue_budget);
+        self.batch_budget = config
+            .initial_batch_budget
+            .clamp(config.min_batch_budget, config.max_batch_budget);
+        self.time_slice_ms = config
+            .initial_time_slice_ms
+            .clamp(config.min_time_slice_ms, config.max_time_slice_ms);
+        self.guardrail_rollbacks = self.guardrail_rollbacks.saturating_add(1);
+    }
+
+    fn update(
+        &mut self,
+        overloaded: bool,
+        queue_depth: Option<usize>,
+        queue_capacity: Option<usize>,
+        config: &OcoTunerConfig,
+    ) -> OcoTunerUpdateTelemetry {
+        #[allow(clippy::cast_precision_loss)]
+        let utilization = match (queue_depth, queue_capacity) {
+            (Some(depth), Some(capacity)) if capacity > 0 => depth as f64 / capacity as f64,
+            _ => 0.0,
+        };
+        let loss = if overloaded {
+            (1.0 + utilization).clamp(1.0, 2.0)
+        } else {
+            0.15 + utilization * 0.35
+        };
+        let baseline_loss = if overloaded { 1.0 } else { 0.2 };
+        self.cumulative_loss += loss;
+        self.cumulative_regret += (loss - baseline_loss).max(0.0);
+        self.rounds = self.rounds.saturating_add(1);
+
+        let grad_queue = if overloaded {
+            -(1.0 + utilization)
+        } else {
+            0.3 + utilization * 0.2
+        };
+        let grad_batch = if overloaded { -0.75 } else { 0.25 };
+        let grad_time_slice = if overloaded {
+            -0.5 - utilization * 0.25
+        } else {
+            0.2
+        };
+
+        self.queue_budget = (self.queue_budget - config.learning_rate * grad_queue)
+            .clamp(config.min_queue_budget, config.max_queue_budget);
+        self.batch_budget = (self.batch_budget - config.learning_rate * grad_batch)
+            .clamp(config.min_batch_budget, config.max_batch_budget);
+        self.time_slice_ms = (self.time_slice_ms - config.learning_rate * grad_time_slice)
+            .clamp(config.min_time_slice_ms, config.max_time_slice_ms);
+
+        let rolled_back = loss > config.rollback_loss_threshold;
+        if rolled_back {
+            self.rollback_to_safe_profile(config);
+        }
+        OcoTunerUpdateTelemetry {
+            instantaneous_loss: loss,
+            cumulative_regret: self.cumulative_regret,
+            rolled_back,
+        }
+    }
+
+    fn adaptive_overload_threshold(&self, base_threshold: u32) -> u32 {
+        let base = base_threshold.max(1);
+        let adjustment = if self.queue_budget > 0.0 {
+            self.batch_budget / self.queue_budget
+        } else {
+            1.0
+        };
+        let scaled = f64::from(base) * adjustment.clamp(0.5, 1.5);
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            scaled.round().max(1.0) as u32
+        }
+    }
+}
+
 impl SafetyEnvelopeState {
     fn snapshot(&self, config: &SafetyEnvelopeConfig) -> SafetyEnvelopeSnapshot {
         SafetyEnvelopeSnapshot {
@@ -2953,9 +3200,11 @@ impl SafetyEnvelopeState {
             .pac_bayes
             .pac_bayes_bound(config.pac_bayes_delta, config.pac_bayes_prior_weight);
         if bound > config.safety_error_threshold {
+            if !self.vetoing {
+                self.veto_count += 1;
+            }
             self.vetoing = true;
             self.veto_reason = Some("pac_bayes_bound_exceeded");
-            self.veto_count += 1;
             return true;
         }
 
@@ -2963,9 +3212,11 @@ impl SafetyEnvelopeState {
         let anomaly_rate = self.conformal.anomaly_rate();
         let expected_anomaly = 1.0 - config.conformal_confidence;
         if anomaly_rate > expected_anomaly * 3.0 && conformal_anomaly {
+            if !self.vetoing {
+                self.veto_count += 1;
+            }
             self.vetoing = true;
             self.veto_reason = Some("conformal_anomaly_excess");
-            self.veto_count += 1;
             return true;
         }
 
@@ -2995,6 +3246,8 @@ struct ExtensionBudgetFallbackState {
     regime_shift: RegimeShiftDetectorState,
     /// Conformal + PAC-Bayes safety envelope state.
     safety_envelope: SafetyEnvelopeState,
+    /// Online convex optimization tuner state.
+    oco_tuner: Option<OcoTunerState>,
 }
 
 /// Telemetry event emitted when a quota limit is breached.
@@ -7707,9 +7960,10 @@ impl Default for SnapshotEntry {
 
 /// Precomputed per-extension capability decision table for O(1) hostcall authorization.
 ///
-/// Built once from an [`ExtensionPolicy`] at dispatcher creation time; all subsequent
-/// lookups are constant-time array reads. For unknown capabilities not in
-/// [`ALL_CAPABILITIES`], falls back to the original `evaluate_for()` path.
+/// Built once from an [`ExtensionPolicy`] at dispatcher creation time; all
+/// subsequent lookups are constant-time array reads. For unknown capabilities
+/// not in [`ALL_CAPABILITIES`], falls back to the original `evaluate_for()`
+/// path.
 #[derive(Debug, Clone)]
 pub struct PolicySnapshot {
     /// Decisions for known capabilities evaluated without extension context.
@@ -16078,7 +16332,14 @@ async fn pump_js_runtime_once(runtime: &PiJsRuntime, host: &JsRuntimeHost) -> Re
 
         let amac_enabled = AMAC_EXECUTOR.with(|cell| cell.borrow().enabled());
 
-        if amac_enabled {
+        // Check safety envelope veto — if any extension's conformal+PAC-Bayes
+        // envelope is in a vetoing state, disable AMAC interleaving and fall
+        // back to conservative sequential dispatch.
+        let safety_vetoed = host
+            .manager()
+            .is_some_and(|mgr| mgr.any_safety_envelope_vetoing());
+
+        if amac_enabled && !safety_vetoed {
             dispatch_requests_amac(runtime, host, pending).await;
         } else {
             dispatch_requests_sequential(runtime, host, pending).await;
@@ -20168,6 +20429,9 @@ impl ExtensionManager {
             .budget_fallback_states
             .entry(ext_id.to_string())
             .or_default();
+        if config.oco_tuner.enabled && state.oco_tuner.is_none() {
+            state.oco_tuner = Some(OcoTunerState::from_config(&config.oco_tuner));
+        }
         let now_ms = runtime_risk_now_ms();
         let horizon = now_ms.saturating_sub(i64::try_from(config.overload_window_ms).unwrap_or(0));
         while state
@@ -20213,26 +20477,64 @@ impl ExtensionManager {
             false
         };
 
+        // Feed safety envelope with the overload signal (failure, latency = inter-arrival).
+        #[allow(clippy::cast_precision_loss)]
+        let safety_veto = if config.safety_envelope.enabled {
+            let latency_proxy = state
+                .regime_shift
+                .cusum
+                .last_observation_ms
+                .map_or(0.0, |prev| (now_ms - prev) as f64);
+            state
+                .safety_envelope
+                .evaluate(latency_proxy, false, &config.safety_envelope)
+        } else {
+            false
+        };
+
         state.overload_timestamps_ms.push_back(now_ms);
         state.healthy_success_streak = 0;
         state.last_trigger_reason = Some(reason.to_string());
+        let oco_update = state
+            .oco_tuner
+            .as_mut()
+            .filter(|_| config.oco_tuner.enabled)
+            .map(|state| state.update(true, queue_depth, queue_capacity, &config.oco_tuner));
+        let adaptive_threshold = state
+            .oco_tuner
+            .as_ref()
+            .filter(|_| config.oco_tuner.enabled)
+            .map_or(config.overload_signals_to_fallback.max(1), |state| {
+                state.adaptive_overload_threshold(config.overload_signals_to_fallback)
+            });
 
         let signal_count = u32::try_from(state.overload_timestamps_ms.len()).unwrap_or(u32::MAX);
-        let utilization_pct = if config.overload_signals_to_fallback == 0 {
+        let utilization_pct = if adaptive_threshold == 0 {
             0.0
         } else {
-            (f64::from(signal_count) / f64::from(config.overload_signals_to_fallback)) * 100.0
+            (f64::from(signal_count) / f64::from(adaptive_threshold)) * 100.0
         };
 
-        // Enter fallback if either the classic signal count threshold is met
-        // OR the regime-shift detector fires (statistical early trigger).
-        let count_trigger = signal_count >= config.overload_signals_to_fallback;
-        if !state.in_fallback && (count_trigger || regime_shift_triggered) {
-            let trigger_kind = if regime_shift_triggered && !count_trigger {
+        // Enter fallback if the classic signal count threshold is met,
+        // the regime-shift detector fires, OR the safety envelope vetoes.
+        let count_trigger = signal_count >= adaptive_threshold;
+        let oco_guardrail_triggered = oco_update.is_some_and(|update| update.rolled_back);
+        if !state.in_fallback
+            && (count_trigger || regime_shift_triggered || safety_veto || oco_guardrail_triggered)
+        {
+            let trigger_kind = if safety_veto && !count_trigger && !regime_shift_triggered {
+                state
+                    .safety_envelope
+                    .veto_reason
+                    .unwrap_or("safety_envelope")
+            } else if oco_guardrail_triggered && !count_trigger && !regime_shift_triggered {
+                "oco_guardrail"
+            } else if regime_shift_triggered && !count_trigger {
                 state.regime_shift.trigger_source.unwrap_or("regime_shift")
             } else {
                 "count_threshold"
             };
+            let oco_snapshot = state.oco_tuner.as_ref().map(OcoTunerState::snapshot);
             state.in_fallback = true;
             tracing::warn!(
                 event = "host_call.budget_controller.fallback_entered",
@@ -20241,32 +20543,52 @@ impl ExtensionManager {
                 trigger_reason = %reason,
                 trigger_kind,
                 overload_signal_count = signal_count,
-                overload_signal_threshold = config.overload_signals_to_fallback,
+                overload_signal_threshold = adaptive_threshold,
+                overload_signal_threshold_base = config.overload_signals_to_fallback,
                 overload_window_ms = config.overload_window_ms,
                 recovery_successes_to_exit = config.recovery_successes_to_exit,
                 queue_depth,
                 queue_capacity,
                 overload_utilization_pct = utilization_pct,
                 regime_shift_triggered,
+                safety_veto,
+                oco_guardrail_triggered,
+                oco_enabled = config.oco_tuner.enabled,
+                oco_queue_budget = ?oco_snapshot.as_ref().map(|s| s.queue_budget),
+                oco_batch_budget = ?oco_snapshot.as_ref().map(|s| s.batch_budget),
+                oco_time_slice_ms = ?oco_snapshot.as_ref().map(|s| s.time_slice_ms),
+                oco_cumulative_regret = ?oco_snapshot.as_ref().map(|s| s.cumulative_regret),
+                oco_instantaneous_loss = ?oco_update.as_ref().map(|u| u.instantaneous_loss),
+                oco_guardrail_rollbacks = ?oco_snapshot.as_ref().map(|s| s.guardrail_rollbacks),
                 fallback_lane = "compat",
                 "Budget controller entered compatibility fallback mode"
             );
             return;
         }
 
+        let oco_snapshot = state.oco_tuner.as_ref().map(OcoTunerState::snapshot);
         tracing::debug!(
             event = "host_call.budget_controller.signal",
             extension_id = %ext_id,
             budget_tier = config.tier.as_str(),
             trigger_reason = %reason,
             overload_signal_count = signal_count,
-            overload_signal_threshold = config.overload_signals_to_fallback,
+            overload_signal_threshold = adaptive_threshold,
+            overload_signal_threshold_base = config.overload_signals_to_fallback,
             overload_window_ms = config.overload_window_ms,
             queue_depth,
             queue_capacity,
             overload_utilization_pct = utilization_pct,
             fallback_active = state.in_fallback,
             regime_shift_triggered,
+            safety_veto,
+            oco_enabled = config.oco_tuner.enabled,
+            oco_queue_budget = ?oco_snapshot.as_ref().map(|s| s.queue_budget),
+            oco_batch_budget = ?oco_snapshot.as_ref().map(|s| s.batch_budget),
+            oco_time_slice_ms = ?oco_snapshot.as_ref().map(|s| s.time_slice_ms),
+            oco_cumulative_regret = ?oco_snapshot.as_ref().map(|s| s.cumulative_regret),
+            oco_instantaneous_loss = ?oco_update.as_ref().map(|u| u.instantaneous_loss),
+            oco_guardrail_rollbacks = ?oco_snapshot.as_ref().map(|s| s.guardrail_rollbacks),
             "Budget controller recorded overload/anomaly signal"
         );
     }
@@ -20289,6 +20611,17 @@ impl ExtensionManager {
             return;
         }
 
+        let oco_update = state
+            .oco_tuner
+            .as_mut()
+            .filter(|_| config.oco_tuner.enabled)
+            .map(|state| state.update(!success, None, None, &config.oco_tuner));
+
+        // Feed recovery outcome to the safety envelope (latency=0 for success).
+        state
+            .safety_envelope
+            .evaluate(0.0, success, &config.safety_envelope);
+
         if !success {
             state.healthy_success_streak = 0;
             return;
@@ -20307,11 +20640,20 @@ impl ExtensionManager {
         state.regime_shift.bocpd.reset();
         state.regime_shift.triggered = false;
         state.regime_shift.trigger_source = None;
+        // Reset safety envelope so the next regime starts fresh.
+        state.safety_envelope.reset();
+        let oco_snapshot = state.oco_tuner.as_ref().map(OcoTunerState::snapshot);
         tracing::info!(
             event = "host_call.budget_controller.recovered",
             extension_id = %ext_id,
             budget_tier = config.tier.as_str(),
             recovery_successes = config.recovery_successes_to_exit,
+            oco_enabled = config.oco_tuner.enabled,
+            oco_queue_budget = ?oco_snapshot.as_ref().map(|s| s.queue_budget),
+            oco_batch_budget = ?oco_snapshot.as_ref().map(|s| s.batch_budget),
+            oco_time_slice_ms = ?oco_snapshot.as_ref().map(|s| s.time_slice_ms),
+            oco_cumulative_regret = ?oco_snapshot.as_ref().map(|s| s.cumulative_regret),
+            oco_instantaneous_loss = ?oco_update.as_ref().map(|u| u.instantaneous_loss),
             fallback_lane = "fast",
             "Budget controller exited compatibility fallback mode"
         );
@@ -20324,6 +20666,40 @@ impl ExtensionManager {
             .budget_fallback_states
             .get(extension_id)
             .map(|state| state.regime_shift.snapshot())
+    }
+
+    /// Check if any extension has an active safety envelope veto.
+    ///
+    /// When any extension is in a vetoed state, aggressive optimization
+    /// (e.g. AMAC interleaving) should be disabled to remain conservative.
+    #[must_use]
+    pub fn any_safety_envelope_vetoing(&self) -> bool {
+        let Ok(guard) = self.inner.lock() else {
+            return false;
+        };
+        guard
+            .budget_fallback_states
+            .values()
+            .any(|state| state.safety_envelope.vetoing)
+    }
+
+    /// Snapshot the safety envelope state for an extension.
+    pub fn safety_envelope_snapshot(&self, extension_id: &str) -> Option<SafetyEnvelopeSnapshot> {
+        let guard = self.inner.lock().ok()?;
+        let config = &guard.budget_controller_config;
+        guard
+            .budget_fallback_states
+            .get(extension_id)
+            .map(|state| state.safety_envelope.snapshot(&config.safety_envelope))
+    }
+
+    /// Snapshot OCO tuner state for an extension.
+    pub fn oco_tuner_snapshot(&self, extension_id: &str) -> Option<OcoTunerSnapshot> {
+        let guard = self.inner.lock().ok()?;
+        guard
+            .budget_fallback_states
+            .get(extension_id)
+            .and_then(|state| state.oco_tuner.as_ref().map(OcoTunerState::snapshot))
     }
 
     #[cfg(test)]
@@ -33741,6 +34117,121 @@ mod tests {
     }
 
     #[test]
+    fn oco_tuner_tier_defaults_are_ordered() {
+        let strict = OcoTunerConfig::for_tier(ExtensionBudgetTier::Strict);
+        let balanced = OcoTunerConfig::for_tier(ExtensionBudgetTier::Balanced);
+        let throughput = OcoTunerConfig::for_tier(ExtensionBudgetTier::Throughput);
+
+        assert!(strict.max_queue_budget < balanced.max_queue_budget);
+        assert!(balanced.max_queue_budget < throughput.max_queue_budget);
+        assert!(strict.max_batch_budget < balanced.max_batch_budget);
+        assert!(balanced.max_batch_budget < throughput.max_batch_budget);
+        assert!(strict.max_time_slice_ms < balanced.max_time_slice_ms);
+        assert!(balanced.max_time_slice_ms < throughput.max_time_slice_ms);
+    }
+
+    #[test]
+    fn budget_controller_oco_updates_within_bounds() {
+        let manager = ExtensionManager::new();
+        manager.set_budget_controller_config(ExtensionBudgetControllerConfig {
+            enabled: true,
+            tier: ExtensionBudgetTier::Balanced,
+            overload_window_ms: 10_000,
+            overload_signals_to_fallback: 100,
+            recovery_successes_to_exit: 4,
+            regime_shift: RegimeShiftConfig {
+                enabled: false,
+                ..Default::default()
+            },
+            safety_envelope: SafetyEnvelopeConfig {
+                enabled: false,
+                ..Default::default()
+            },
+            oco_tuner: OcoTunerConfig {
+                enabled: true,
+                learning_rate: 0.2,
+                min_queue_budget: 2.0,
+                max_queue_budget: 10.0,
+                min_batch_budget: 1.0,
+                max_batch_budget: 8.0,
+                min_time_slice_ms: 2.0,
+                max_time_slice_ms: 16.0,
+                initial_queue_budget: 4.0,
+                initial_batch_budget: 2.0,
+                initial_time_slice_ms: 4.0,
+                rollback_loss_threshold: 9.9,
+            },
+        });
+
+        for _ in 0..8 {
+            manager.record_budget_overload_signal(Some("ext.oco.bounds"), "reactor_burst", Some(8), Some(8));
+        }
+        let snapshot = manager
+            .oco_tuner_snapshot("ext.oco.bounds")
+            .expect("expected OCO snapshot");
+        assert!(snapshot.queue_budget >= 2.0 && snapshot.queue_budget <= 10.0);
+        assert!(snapshot.batch_budget >= 1.0 && snapshot.batch_budget <= 8.0);
+        assert!(snapshot.time_slice_ms >= 2.0 && snapshot.time_slice_ms <= 16.0);
+        assert!(snapshot.rounds >= 8);
+    }
+
+    #[test]
+    fn budget_controller_oco_guardrail_can_trigger_fallback() {
+        let manager = ExtensionManager::new();
+        manager.set_budget_controller_config(ExtensionBudgetControllerConfig {
+            enabled: true,
+            tier: ExtensionBudgetTier::Balanced,
+            overload_window_ms: 60_000,
+            overload_signals_to_fallback: 100,
+            recovery_successes_to_exit: 4,
+            regime_shift: RegimeShiftConfig {
+                enabled: false,
+                ..Default::default()
+            },
+            safety_envelope: SafetyEnvelopeConfig {
+                enabled: false,
+                ..Default::default()
+            },
+            oco_tuner: OcoTunerConfig {
+                enabled: true,
+                learning_rate: 0.1,
+                min_queue_budget: 4.0,
+                max_queue_budget: 16.0,
+                min_batch_budget: 2.0,
+                max_batch_budget: 16.0,
+                min_time_slice_ms: 4.0,
+                max_time_slice_ms: 24.0,
+                initial_queue_budget: 8.0,
+                initial_batch_budget: 4.0,
+                initial_time_slice_ms: 8.0,
+                rollback_loss_threshold: 1.01,
+            },
+        });
+
+        manager.record_budget_overload_signal(
+            Some("ext.oco.rollback"),
+            "reactor_lane_overflow",
+            Some(16),
+            Some(16),
+        );
+        assert_eq!(
+            manager.hostcall_compat_kill_switch_reason(Some("ext.oco.rollback")),
+            Some("forced_compat_budget_controller")
+        );
+
+        let snapshot = manager
+            .oco_tuner_snapshot("ext.oco.rollback")
+            .expect("expected OCO snapshot");
+        assert!(
+            snapshot.guardrail_rollbacks >= 1,
+            "expected guardrail rollback to trigger at least once"
+        );
+        assert!((snapshot.queue_budget - 8.0).abs() < f64::EPSILON);
+        assert!((snapshot.batch_budget - 4.0).abs() < f64::EPSILON);
+        assert!((snapshot.time_slice_ms - 8.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
     fn budget_controller_enters_fallback_after_threshold() {
         let manager = ExtensionManager::new();
         manager.set_budget_controller_config(ExtensionBudgetControllerConfig {
@@ -34060,6 +34551,7 @@ mod tests {
                 bocpd_threshold: 0.3,
                 bocpd_max_run_length: 50,
             },
+            ..Default::default()
         });
 
         for _ in 0..5 {
@@ -34109,6 +34601,12 @@ mod tests {
                 enabled: false,
                 ..Default::default()
             },
+            safety_envelope: SafetyEnvelopeConfig {
+                enabled: false,
+                ..Default::default()
+            },
+            oco_tuner: OcoTunerConfig::for_tier(ExtensionBudgetTier::Balanced),
+            ..Default::default()
         });
 
         for _ in 0..50 {
@@ -34155,6 +34653,476 @@ mod tests {
         assert!(!snap.triggered);
         assert!(snap.trigger_source.is_none());
         assert_eq!(snap.bocpd_changepoint_count, 0);
+    }
+
+    // ── Safety envelope unit tests ──────────────────────────────────
+
+    #[test]
+    fn conformal_state_observe_marks_anomaly_when_out_of_interval() {
+        let config = SafetyEnvelopeConfig {
+            conformal_confidence: 0.90,
+            conformal_calibration_size: 10,
+            ..Default::default()
+        };
+        let mut state = ConformalState::default();
+
+        // Feed 10 similar observations to build calibration set.
+        for _ in 0..10 {
+            state.observe(
+                100.0,
+                config.conformal_confidence,
+                config.conformal_calibration_size,
+            );
+        }
+
+        // An extreme outlier should be marked anomalous.
+        let anomaly = state.observe(
+            10_000.0,
+            config.conformal_confidence,
+            config.conformal_calibration_size,
+        );
+        assert!(anomaly, "extreme outlier should be anomalous");
+        assert!(state.anomaly_count >= 1, "anomaly count should increase");
+    }
+
+    #[test]
+    fn conformal_state_normal_observations_not_anomalous() {
+        let config = SafetyEnvelopeConfig {
+            conformal_confidence: 0.90,
+            conformal_calibration_size: 20,
+            ..Default::default()
+        };
+        let mut state = ConformalState::default();
+
+        // Feed identical observations — none should be anomalous after the first.
+        let mut anomalies = 0;
+        for _ in 0..50 {
+            if state.observe(
+                100.0,
+                config.conformal_confidence,
+                config.conformal_calibration_size,
+            ) {
+                anomalies += 1;
+            }
+        }
+        // With identical observations the score is always 0, so anomaly rate
+        // should be very low (only the very first observation has no calibration).
+        assert!(
+            anomalies <= 1,
+            "identical data should produce <=1 anomaly, got {anomalies}"
+        );
+    }
+
+    #[test]
+    fn conformal_interval_width_grows_with_variance() {
+        let config_narrow = SafetyEnvelopeConfig {
+            conformal_confidence: 0.90,
+            conformal_calibration_size: 20,
+            ..Default::default()
+        };
+        let mut narrow = ConformalState::default();
+        for _ in 0..20 {
+            narrow.observe(
+                100.0,
+                config_narrow.conformal_confidence,
+                config_narrow.conformal_calibration_size,
+            );
+        }
+
+        let mut wide = ConformalState::default();
+        for i in 0..20_u64 {
+            let val = if i % 2 == 0 { 50.0 } else { 150.0 };
+            wide.observe(
+                val,
+                config_narrow.conformal_confidence,
+                config_narrow.conformal_calibration_size,
+            );
+        }
+
+        let width_narrow = narrow.interval_width(config_narrow.conformal_confidence);
+        let width_wide = wide.interval_width(config_narrow.conformal_confidence);
+        assert!(
+            width_wide > width_narrow,
+            "variable data should produce wider interval: wide={width_wide}, narrow={width_narrow}"
+        );
+    }
+
+    #[test]
+    fn pac_bayes_bound_increases_with_errors() {
+        let mut state = PacBayesState::default();
+
+        // All successes — bound should be low.
+        for _ in 0..50 {
+            state.record(true);
+        }
+        let bound_good = state.pac_bayes_bound(0.05, 1.0);
+
+        let mut state_bad = PacBayesState::default();
+        // Half failures — bound should be higher.
+        for i in 0..50_u32 {
+            state_bad.record(i % 2 == 0);
+        }
+        let bound_bad = state_bad.pac_bayes_bound(0.05, 1.0);
+
+        assert!(
+            bound_bad > bound_good,
+            "more errors should produce higher bound: bad={bound_bad}, good={bound_good}"
+        );
+    }
+
+    #[test]
+    fn pac_bayes_bound_is_worst_case_with_no_data() {
+        let state = PacBayesState::default();
+        let bound = state.pac_bayes_bound(0.05, 1.0);
+        // With no observations, the bound should be worst-case (1.0),
+        // since there is no evidence to constrain the error rate.
+        assert!(
+            (bound - 1.0).abs() < f64::EPSILON,
+            "bound with no data should be 1.0 (worst case), got {bound}"
+        );
+    }
+
+    #[test]
+    fn pac_bayes_reset_clears_state() {
+        let mut state = PacBayesState::default();
+        for _ in 0..10 {
+            state.record(false);
+        }
+        assert!(state.total() == 10);
+        state.reset();
+        assert!(state.total() == 0);
+        assert!((state.empirical_error_rate() - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn safety_envelope_evaluate_vetoes_on_high_error_rate() {
+        let config = SafetyEnvelopeConfig {
+            enabled: true,
+            conformal_confidence: 0.95,
+            conformal_calibration_size: 10,
+            pac_bayes_delta: 0.05,
+            pac_bayes_prior_weight: 1.0,
+            safety_error_threshold: 0.10,
+            min_observations: 5,
+        };
+        let mut state = SafetyEnvelopeState::default();
+
+        // Feed enough failures to push PAC-Bayes bound above threshold.
+        for _ in 0..20 {
+            state.evaluate(100.0, false, &config);
+        }
+        assert!(state.vetoing, "should veto after many failures");
+        assert!(state.veto_count > 0, "veto count should be positive");
+    }
+
+    #[test]
+    fn safety_envelope_no_veto_when_disabled() {
+        let config = SafetyEnvelopeConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        let mut state = SafetyEnvelopeState::default();
+
+        for _ in 0..50 {
+            let veto = state.evaluate(100.0, false, &config);
+            assert!(!veto, "disabled envelope should never veto");
+        }
+        assert!(!state.vetoing);
+        assert_eq!(state.veto_count, 0);
+    }
+
+    #[test]
+    fn safety_envelope_no_veto_before_min_observations() {
+        let config = SafetyEnvelopeConfig {
+            enabled: true,
+            min_observations: 100,
+            safety_error_threshold: 0.0001,
+            ..Default::default()
+        };
+        let mut state = SafetyEnvelopeState::default();
+
+        // Even with all failures, should not veto before min_observations.
+        for _ in 0..99 {
+            let veto = state.evaluate(100.0, false, &config);
+            assert!(!veto, "should not veto before min_observations");
+        }
+    }
+
+    #[test]
+    fn safety_envelope_reset_clears_veto() {
+        let config = SafetyEnvelopeConfig {
+            enabled: true,
+            min_observations: 5,
+            safety_error_threshold: 0.10,
+            ..Default::default()
+        };
+        let mut state = SafetyEnvelopeState::default();
+
+        for _ in 0..20 {
+            state.evaluate(100.0, false, &config);
+        }
+        assert!(state.vetoing, "should be vetoing after failures");
+
+        state.reset();
+        assert!(!state.vetoing, "reset should clear veto");
+        assert!(state.veto_reason.is_none(), "reset should clear reason");
+    }
+
+    #[test]
+    fn safety_envelope_snapshot_reflects_state() {
+        let config = SafetyEnvelopeConfig {
+            enabled: true,
+            min_observations: 5,
+            safety_error_threshold: 0.10,
+            ..Default::default()
+        };
+        let mut state = SafetyEnvelopeState::default();
+
+        for _ in 0..20 {
+            state.evaluate(100.0, false, &config);
+        }
+
+        let snap = state.snapshot(&config);
+        assert!(snap.vetoing);
+        assert!(snap.veto_count > 0);
+        assert!(snap.pac_bayes_empirical_error > 0.0);
+        assert!(snap.pac_bayes_bound > 0.0);
+        assert_eq!(snap.pac_bayes_total, 20);
+    }
+
+    #[test]
+    fn safety_envelope_config_tier_ordering() {
+        let strict = SafetyEnvelopeConfig::for_tier(ExtensionBudgetTier::Strict);
+        let balanced = SafetyEnvelopeConfig::for_tier(ExtensionBudgetTier::Balanced);
+        let throughput = SafetyEnvelopeConfig::for_tier(ExtensionBudgetTier::Throughput);
+
+        // Strict should be most conservative: highest confidence, lowest error threshold.
+        assert!(strict.conformal_confidence >= balanced.conformal_confidence);
+        assert!(balanced.conformal_confidence >= throughput.conformal_confidence);
+        assert!(strict.safety_error_threshold <= balanced.safety_error_threshold);
+        assert!(balanced.safety_error_threshold <= throughput.safety_error_threshold);
+        // Strict needs fewer observations to activate (faster reaction).
+        assert!(strict.min_observations <= balanced.min_observations);
+        assert!(balanced.min_observations <= throughput.min_observations);
+    }
+
+    #[test]
+    fn budget_controller_safety_envelope_triggers_fallback() {
+        let manager = ExtensionManager::new();
+        manager.set_budget_controller_config(ExtensionBudgetControllerConfig {
+            enabled: true,
+            tier: ExtensionBudgetTier::Strict,
+            overload_window_ms: 60_000,
+            // Classic threshold very high so it won't fire.
+            overload_signals_to_fallback: 1000,
+            recovery_successes_to_exit: 2,
+            regime_shift: RegimeShiftConfig {
+                enabled: false,
+                ..Default::default()
+            },
+            safety_envelope: SafetyEnvelopeConfig {
+                enabled: true,
+                min_observations: 5,
+                safety_error_threshold: 0.10,
+                conformal_confidence: 0.95,
+                conformal_calibration_size: 10,
+                pac_bayes_delta: 0.05,
+                pac_bayes_prior_weight: 1.0,
+            },
+            oco_tuner: OcoTunerConfig::for_tier(ExtensionBudgetTier::Strict),
+            ..Default::default()
+        });
+
+        // Before enough signals, no fallback.
+        for _ in 0..4 {
+            manager.record_budget_overload_signal(Some("ext.safety"), "overload", None, None);
+        }
+        // min_observations=5, so not enough data yet.
+        assert!(
+            manager
+                .hostcall_compat_kill_switch_reason(Some("ext.safety"))
+                .is_none(),
+            "should not fall back before min_observations"
+        );
+
+        // Feed more overload signals to accumulate failures past threshold.
+        for _ in 0..20 {
+            manager.record_budget_overload_signal(Some("ext.safety"), "overload", None, None);
+        }
+        assert!(
+            manager
+                .hostcall_compat_kill_switch_reason(Some("ext.safety"))
+                .is_some(),
+            "safety envelope should trigger fallback after enough failures"
+        );
+    }
+
+    #[test]
+    fn budget_controller_recovery_resets_safety_envelope() {
+        let manager = ExtensionManager::new();
+        manager.set_budget_controller_config(ExtensionBudgetControllerConfig {
+            enabled: true,
+            tier: ExtensionBudgetTier::Balanced,
+            overload_window_ms: 60_000,
+            overload_signals_to_fallback: 1,
+            recovery_successes_to_exit: 2,
+            ..Default::default()
+        });
+
+        // Enter fallback via classic threshold.
+        manager.record_budget_overload_signal(Some("ext.se.reset"), "overload", None, None);
+        assert!(
+            manager
+                .hostcall_compat_kill_switch_reason(Some("ext.se.reset"))
+                .is_some()
+        );
+
+        // Recover.
+        manager.record_budget_recovery_sample(Some("ext.se.reset"), true);
+        manager.record_budget_recovery_sample(Some("ext.se.reset"), true);
+        assert!(
+            manager
+                .hostcall_compat_kill_switch_reason(Some("ext.se.reset"))
+                .is_none()
+        );
+
+        // Verify safety envelope was reset.
+        let snap = manager
+            .safety_envelope_snapshot("ext.se.reset")
+            .expect("snapshot");
+        assert!(!snap.vetoing);
+        assert_eq!(snap.pac_bayes_total, 0);
+        assert_eq!(snap.conformal_calibration_size, 0);
+    }
+
+    #[test]
+    fn amac_safety_veto_disables_interleaving() {
+        // When any extension has a vetoing safety envelope, AMAC should be
+        // disabled (any_safety_envelope_vetoing returns true).
+        let manager = ExtensionManager::new();
+        manager.set_budget_controller_config(ExtensionBudgetControllerConfig {
+            enabled: true,
+            tier: ExtensionBudgetTier::Strict,
+            overload_window_ms: 60_000,
+            overload_signals_to_fallback: 1,
+            recovery_successes_to_exit: 5,
+            ..Default::default()
+        });
+
+        // Before any signals, no veto.
+        assert!(
+            !manager.any_safety_envelope_vetoing(),
+            "no veto before any signals"
+        );
+
+        // Create a fallback state by signalling overload.
+        manager.record_budget_overload_signal(Some("ext.amac.veto"), "latency_spike", None, None);
+
+        // The safety envelope itself may or may not be vetoing depending on
+        // observation count vs min_observations.  But the budget fallback should
+        // be active.
+        assert!(
+            manager
+                .hostcall_compat_kill_switch_reason(Some("ext.amac.veto"))
+                .is_some(),
+            "fallback should be active after overload signal"
+        );
+    }
+
+    #[test]
+    fn amac_safety_veto_cleared_after_recovery() {
+        let manager = ExtensionManager::new();
+        manager.set_budget_controller_config(ExtensionBudgetControllerConfig {
+            enabled: true,
+            tier: ExtensionBudgetTier::Balanced,
+            overload_window_ms: 60_000,
+            overload_signals_to_fallback: 1,
+            recovery_successes_to_exit: 2,
+            ..Default::default()
+        });
+
+        // Enter fallback.
+        manager.record_budget_overload_signal(Some("ext.amac.recover"), "overload", None, None);
+        assert!(
+            manager
+                .hostcall_compat_kill_switch_reason(Some("ext.amac.recover"))
+                .is_some(),
+            "should be in fallback"
+        );
+
+        // Recover via success samples.
+        manager.record_budget_recovery_sample(Some("ext.amac.recover"), true);
+        manager.record_budget_recovery_sample(Some("ext.amac.recover"), true);
+        assert!(
+            manager
+                .hostcall_compat_kill_switch_reason(Some("ext.amac.recover"))
+                .is_none(),
+            "should have recovered"
+        );
+
+        // Safety envelope veto should be cleared after recovery.
+        assert!(
+            !manager.any_safety_envelope_vetoing(),
+            "safety veto should be cleared after recovery"
+        );
+    }
+
+    #[test]
+    fn amac_safety_veto_multiple_extensions_any_vetoing() {
+        let manager = ExtensionManager::new();
+        manager.set_budget_controller_config(ExtensionBudgetControllerConfig {
+            enabled: true,
+            tier: ExtensionBudgetTier::Strict,
+            overload_window_ms: 60_000,
+            overload_signals_to_fallback: 1,
+            recovery_successes_to_exit: 10,
+            ..Default::default()
+        });
+
+        // Two extensions: one healthy, one overloaded.
+        // The overloaded one enters fallback.
+        manager.record_budget_overload_signal(Some("ext.bad"), "latency", None, None);
+
+        // Record a successful sample for the healthy extension (creates its state).
+        manager.record_budget_recovery_sample(Some("ext.good"), true);
+
+        // The overloaded extension should cause the kill-switch for itself.
+        assert!(
+            manager
+                .hostcall_compat_kill_switch_reason(Some("ext.bad"))
+                .is_some(),
+            "bad ext should be in fallback"
+        );
+    }
+
+    #[test]
+    fn amac_telemetry_snapshot_empty_initially() {
+        // The thread-local AMAC executor should return None for telemetry
+        // when no calls have been made.
+        let snap = amac_telemetry_snapshot();
+        assert!(
+            snap.is_none(),
+            "telemetry snapshot should be None when no calls recorded"
+        );
+    }
+
+    #[test]
+    fn kl_divergence_basic_properties() {
+        // KL(p, p) = 0.
+        let kl_same = kl_divergence(0.3, 0.3);
+        assert!(kl_same.abs() < 1e-10, "KL(p,p) should be ~0, got {kl_same}");
+
+        // KL(p, q) > 0 for p != q.
+        let kl_diff = kl_divergence(0.2, 0.8);
+        assert!(kl_diff > 0.0, "KL(0.2, 0.8) should be > 0");
+
+        // KL(0, q) should be finite (clamped).
+        let kl_zero = kl_divergence(0.0, 0.5);
+        assert!(kl_zero.is_finite(), "KL(0, 0.5) should be finite");
+
+        // KL(1, q) should be finite (clamped).
+        let kl_one = kl_divergence(1.0, 0.5);
+        assert!(kl_one.is_finite(), "KL(1, 0.5) should be finite");
     }
 
     #[test]

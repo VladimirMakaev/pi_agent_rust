@@ -2167,6 +2167,7 @@ mem_csv_path = perf_dir / "ext_memory_stress.csv"
 stress_triage_path = perf_dir / "stress_triage.json"
 stress_events_path = perf_dir / "stress_events.jsonl"
 profile_rotation_path = perf_dir / "stress_profile_rotation.json"
+ext_stress_report_path = project_root / "tests" / "perf" / "reports" / "ext_stress_report.json"
 
 
 def read_json(path: Path):
@@ -2231,6 +2232,7 @@ required_targets_executed = not missing_targets and not failed_targets
 mem_report = read_json(mem_report_path)
 stress_triage = read_json(stress_triage_path)
 profile_rotation = read_json(profile_rotation_path)
+ext_stress_report = read_json(ext_stress_report_path)
 
 rss_points = []
 heap_points = []
@@ -2337,6 +2339,55 @@ if isinstance(profile_rotation, dict):
         if isinstance(slice_payload, dict) and slice_payload.get("profile")
     ]
 
+reactor_compare_metrics = {
+    "report_present": isinstance(ext_stress_report, dict),
+    "comparison_present": False,
+    "mode": None,
+    "throughput_gain_pct": None,
+    "p95_delta_us": None,
+    "p99_delta_us": None,
+    "rejected_enqueues_delta": None,
+    "max_queue_depth_total_delta": None,
+    "lane_overflow_stalls_delta": None,
+    "throughput_improved": None,
+    "p95_improved": None,
+    "p99_improved": None,
+    "contention_proxy_improved": None,
+}
+if isinstance(ext_stress_report, dict):
+    comparison_payload = ext_stress_report.get("comparison")
+    if isinstance(comparison_payload, dict):
+        delta_payload = comparison_payload.get("delta", {})
+        if not isinstance(delta_payload, dict):
+            delta_payload = {}
+        improved_payload = comparison_payload.get("improved", {})
+        if not isinstance(improved_payload, dict):
+            improved_payload = {}
+        reactor_compare_metrics["comparison_present"] = True
+        reactor_compare_metrics["mode"] = comparison_payload.get("mode")
+        reactor_compare_metrics["throughput_gain_pct"] = as_float(
+            delta_payload.get("throughput_gain_pct")
+        )
+        reactor_compare_metrics["p95_delta_us"] = as_int(delta_payload.get("p95_us"))
+        reactor_compare_metrics["p99_delta_us"] = as_int(delta_payload.get("p99_us"))
+        reactor_compare_metrics["rejected_enqueues_delta"] = as_int(
+            delta_payload.get("rejected_enqueues")
+        )
+        reactor_compare_metrics["max_queue_depth_total_delta"] = as_int(
+            delta_payload.get("max_queue_depth_total")
+        )
+        reactor_compare_metrics["lane_overflow_stalls_delta"] = as_int(
+            delta_payload.get("lane_overflow_stalls")
+        )
+        reactor_compare_metrics["throughput_improved"] = bool(
+            improved_payload.get("throughput")
+        )
+        reactor_compare_metrics["p95_improved"] = bool(improved_payload.get("p95"))
+        reactor_compare_metrics["p99_improved"] = bool(improved_payload.get("p99"))
+        reactor_compare_metrics["contention_proxy_improved"] = bool(
+            improved_payload.get("contention_proxy")
+        )
+
 thresholds = {
     "rss_growth_factor_max": 2.0,
     "quickjs_growth_factor_max": 2.0,
@@ -2344,6 +2395,10 @@ thresholds = {
     "p99_last_us_max": 25_000,
     "error_rate_pct_max": 25.0,
     "profile_rotation_required": True,
+    "reactor_comparison_throughput_gain_pct_min": 0.0,
+    "reactor_comparison_p95_delta_us_max": 0,
+    "reactor_comparison_p99_delta_us_max": 0,
+    "reactor_comparison_contention_proxy_required": True,
 }
 
 checks = []
@@ -2391,6 +2446,24 @@ add_check(
     isinstance(profile_rotation, dict),
     str(profile_rotation_path),
     "report must exist and parse as JSON",
+)
+add_check(
+    "inputs.ext_stress_report_present",
+    reactor_compare_metrics["report_present"],
+    str(ext_stress_report_path),
+    "optional ext_stress report for shard-comparison evidence",
+    required=False,
+)
+add_check(
+    "inputs.ext_stress_comparison_present",
+    reactor_compare_metrics["comparison_present"],
+    (
+        ext_stress_report_path.name
+        if reactor_compare_metrics["report_present"]
+        else "comparison missing (report absent)"
+    ),
+    "optional comparison payload from ext_stress --compare-shard-baseline",
+    required=False,
 )
 
 rss_growth_factor = memory_metrics["rss_growth_factor"]
@@ -2464,6 +2537,39 @@ add_check(
     "must be true",
 )
 
+if reactor_compare_metrics["comparison_present"]:
+    add_check(
+        "reactor_comparison.throughput_gain_pct",
+        reactor_compare_metrics["throughput_gain_pct"] is not None
+        and reactor_compare_metrics["throughput_gain_pct"]
+        >= thresholds["reactor_comparison_throughput_gain_pct_min"],
+        reactor_compare_metrics["throughput_gain_pct"],
+        f">= {thresholds['reactor_comparison_throughput_gain_pct_min']}",
+    )
+    add_check(
+        "reactor_comparison.p95_delta_us",
+        reactor_compare_metrics["p95_delta_us"] is not None
+        and reactor_compare_metrics["p95_delta_us"]
+        <= thresholds["reactor_comparison_p95_delta_us_max"],
+        reactor_compare_metrics["p95_delta_us"],
+        f"<= {thresholds['reactor_comparison_p95_delta_us_max']}",
+    )
+    add_check(
+        "reactor_comparison.p99_delta_us",
+        reactor_compare_metrics["p99_delta_us"] is not None
+        and reactor_compare_metrics["p99_delta_us"]
+        <= thresholds["reactor_comparison_p99_delta_us_max"],
+        reactor_compare_metrics["p99_delta_us"],
+        f"<= {thresholds['reactor_comparison_p99_delta_us_max']}",
+    )
+    add_check(
+        "reactor_comparison.contention_proxy_improved",
+        reactor_compare_metrics["contention_proxy_improved"]
+        == thresholds["reactor_comparison_contention_proxy_required"],
+        reactor_compare_metrics["contention_proxy_improved"],
+        f"must be {thresholds['reactor_comparison_contention_proxy_required']}",
+    )
+
 overall_pass = len(failed_checks) == 0
 if not required_targets_executed:
     status = "missing_prerequisites"
@@ -2511,6 +2617,16 @@ for elapsed, rss_kb in rss_points:
         }
     )
 
+if reactor_compare_metrics["comparison_present"]:
+    events_payloads.append(
+        {
+            "schema": "pi.e2e.soak_longevity_event.v1",
+            "source": "ext_stress",
+            "event_type": "pi.ext.stress_comparison.v1",
+            "payload": reactor_compare_metrics,
+        }
+    )
+
 events_payloads.append(
     {
         "schema": "pi.e2e.soak_longevity_event.v1",
@@ -2547,11 +2663,13 @@ report_payload = {
         "extensions_stress_triage": str(stress_triage_path),
         "extensions_stress_events": str(stress_events_path),
         "profile_rotation_report": str(profile_rotation_path),
+        "ext_stress_report": str(ext_stress_report_path),
     },
     "metrics": {
         "memory": memory_metrics,
         "timing": timing_metrics,
         "profile_rotation": profile_rotation_metrics,
+        "reactor_comparison": reactor_compare_metrics,
     },
     "thresholds": thresholds,
     "checks": checks,
@@ -2578,6 +2696,16 @@ markdown_lines = [
     f"| extensions_stress error rate (%) | {timing_metrics['error_rate_pct']} |",
     f"| ext_memory_stress error rate (%) | {memory_metrics['error_rate_pct']} |",
     f"| Profile rotation pass | {profile_rotation_metrics['overall_pass']} |",
+    (
+        "| Reactor comparison throughput gain (%) | "
+        f"{reactor_compare_metrics['throughput_gain_pct']} |"
+    ),
+    f"| Reactor comparison p95 delta (us) | {reactor_compare_metrics['p95_delta_us']} |",
+    f"| Reactor comparison p99 delta (us) | {reactor_compare_metrics['p99_delta_us']} |",
+    (
+        "| Reactor contention proxy improved | "
+        f"{reactor_compare_metrics['contention_proxy_improved']} |"
+    ),
     "",
     "## Failed Checks",
     "",

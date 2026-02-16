@@ -469,7 +469,7 @@ async fn run_loop(
         push_reactor_queue_sample(manager, start.elapsed(), &mut reactor_queue_samples);
     }
     let reactor = if collect {
-        build_reactor_report(manager, reactor_queue_samples, telemetry_start_index)
+        build_reactor_report(manager, &reactor_queue_samples, telemetry_start_index)
     } else {
         serde_json::json!({
             "enabled": manager.hostcall_reactor_enabled(),
@@ -539,7 +539,7 @@ fn push_reactor_queue_sample(
 
 fn build_reactor_report(
     manager: &ExtensionManager,
-    queue_samples: Vec<Value>,
+    queue_samples: &[Value],
     telemetry_start_index: usize,
 ) -> Value {
     let telemetry_artifact = manager.runtime_hostcall_telemetry_artifact();
@@ -654,8 +654,7 @@ fn sum_u64_array_field(value: &Value, key: &str) -> u64 {
     value
         .get(key)
         .and_then(Value::as_array)
-        .map(|items| items.iter().filter_map(Value::as_u64).sum())
-        .unwrap_or(0)
+        .map_or(0, |items| items.iter().filter_map(Value::as_u64).sum())
 }
 
 fn build_shard_comparison_report(

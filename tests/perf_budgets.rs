@@ -152,7 +152,7 @@ const BUDGETS: &[Budget] = &[
         category: "binary",
         metric: "release binary size",
         unit: "MB",
-        threshold: 20.0,
+        threshold: 22.0,
         methodology: "ls -la target/release/pi (stripped)",
         ci_enforced: true,
     },

@@ -323,6 +323,34 @@ fn create_recovers_when_final_frame_has_no_trailing_newline() -> PiResult<()> {
     Ok(())
 }
 
+#[test]
+fn create_fails_closed_when_non_eof_segment_frame_is_corrupt() -> PiResult<()> {
+    let dir = tempdir()?;
+    let mut store = SessionStoreV2::create(dir.path(), 4 * 1024)?;
+    append_linear_entries(&mut store, 4)?;
+
+    let seg_path = store.segment_file_path(1);
+    let segment_text = fs::read_to_string(&seg_path)?;
+    let mut lines: Vec<String> = segment_text.lines().map(ToString::to_string).collect();
+    assert!(lines.len() >= 4, "expected at least 4 frames in segment");
+    lines[1] = "{ malformed-json-frame".to_string();
+    let rewritten = format!("{}\n", lines.join("\n"));
+    fs::write(&seg_path, rewritten)?;
+
+    // Force create() into rebuild path.
+    fs::remove_file(store.index_file_path())?;
+    drop(store);
+
+    let err = SessionStoreV2::create(dir.path(), 4 * 1024)
+        .expect_err("non-EOF segment corruption must fail closed");
+    assert!(
+        err.to_string()
+            .contains("failed to parse segment frame while rebuilding index"),
+        "unexpected error: {err}"
+    );
+    Ok(())
+}
+
 // ── O(index+tail) resume path tests ──────────────────────────────────
 
 /// Helper: build a `SessionEntry::Custom` with the given id and parent.
