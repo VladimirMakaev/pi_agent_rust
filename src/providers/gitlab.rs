@@ -100,8 +100,9 @@ impl GitLabProvider {
     #[must_use]
     pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
         let url = url.into();
-        if !url.is_empty() {
-            self.base_url = url;
+        let trimmed = url.trim();
+        if !trimmed.is_empty() {
+            self.base_url = trimmed.to_string();
         }
         self
     }
@@ -467,5 +468,21 @@ mod tests {
     fn test_gitlab_empty_base_url_uses_default() {
         let p = GitLabProvider::new("model").with_base_url("");
         assert_eq!(p.base_url, DEFAULT_GITLAB_BASE);
+    }
+
+    #[test]
+    fn test_gitlab_whitespace_base_url_uses_default() {
+        let p = GitLabProvider::new("model").with_base_url("   \n\t  ");
+        assert_eq!(p.base_url, DEFAULT_GITLAB_BASE);
+    }
+
+    #[test]
+    fn test_gitlab_base_url_is_trimmed() {
+        let p = GitLabProvider::new("model").with_base_url(" https://gitlab.example.com/ ");
+        assert_eq!(p.base_url, "https://gitlab.example.com/");
+        assert_eq!(
+            p.chat_url(),
+            "https://gitlab.example.com/api/v4/chat/completions"
+        );
     }
 }
