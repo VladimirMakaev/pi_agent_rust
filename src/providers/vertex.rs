@@ -182,9 +182,11 @@ impl VertexProvider {
         options: &StreamOptions,
     ) -> GeminiRequest {
         let contents = Self::build_contents(context);
-        let system_instruction = context.system_prompt.as_ref().map(|s| GeminiContent {
+        let system_instruction = context.system_prompt.as_deref().map(|s| GeminiContent {
             role: None,
-            parts: vec![GeminiPart::Text { text: s.clone() }],
+            parts: vec![GeminiPart::Text {
+                text: s.to_string(),
+            }],
         });
 
         let tools: Option<Vec<GeminiTool>> = if context.tools.is_empty() {
@@ -689,14 +691,14 @@ mod tests {
     #[test]
     fn test_build_gemini_request_basic() {
         let provider = VertexProvider::new("gemini-2.0-flash");
-        let context = Context {
-            system_prompt: Some("You are helpful.".to_string()),
-            messages: vec![Message::User(crate::model::UserMessage {
+        let context = Context::owned(
+            Some("You are helpful.".to_string()),
+            vec![Message::User(crate::model::UserMessage {
                 content: UserContent::Text("What is Vertex AI?".to_string()),
                 timestamp: 0,
             })],
-            tools: vec![],
-        };
+            vec![],
+        );
         let options = StreamOptions {
             max_tokens: Some(1024),
             temperature: Some(0.7),
@@ -721,13 +723,13 @@ mod tests {
     #[test]
     fn test_build_gemini_request_with_tools() {
         let provider = VertexProvider::new("gemini-2.0-flash");
-        let context = Context {
-            system_prompt: None,
-            messages: vec![Message::User(crate::model::UserMessage {
+        let context = Context::owned(
+            None,
+            vec![Message::User(crate::model::UserMessage {
                 content: UserContent::Text("Read a file".to_string()),
                 timestamp: 0,
             })],
-            tools: vec![ToolDef {
+            vec![ToolDef {
                 name: "read".to_string(),
                 description: "Read a file".to_string(),
                 parameters: serde_json::json!({
@@ -736,7 +738,7 @@ mod tests {
                     "required": ["path"]
                 }),
             }],
-        };
+        );
         let options = StreamOptions::default();
 
         let req = provider.build_gemini_request(&context, &options);

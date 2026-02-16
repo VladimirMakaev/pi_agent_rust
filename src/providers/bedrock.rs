@@ -959,7 +959,7 @@ mod tests {
 
     fn test_context_with_tools() -> Context<'static> {
         Context {
-            system_prompt: Some("You are concise.".to_string()),
+            system_prompt: Some("You are concise.".to_string().into()),
             messages: vec![
                 Message::User(crate::model::UserMessage {
                     content: UserContent::Text("Ping".to_string()),

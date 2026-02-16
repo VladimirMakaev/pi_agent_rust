@@ -160,7 +160,7 @@ impl AzureOpenAIProvider {
         if let Some(system) = &context.system_prompt {
             messages.push(AzureMessage {
                 role: to_static_role(system_role),
-                content: Some(AzureContent::Text(system.clone())),
+                content: Some(AzureContent::Text(system.to_string())),
                 tool_calls: None,
                 tool_call_id: None,
             });
@@ -878,7 +878,7 @@ mod tests {
     fn test_azure_build_request_includes_system_messages_and_tools() {
         let provider = AzureOpenAIProvider::new("contoso", "gpt-4o");
         let context = Context {
-            system_prompt: Some("You are deterministic.".to_string()),
+            system_prompt: Some("You are deterministic.".to_string().into()),
             messages: vec![
                 Message::User(UserMessage {
                     content: UserContent::Text("Hello".to_string()),

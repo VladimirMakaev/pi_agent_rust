@@ -237,7 +237,7 @@ impl OpenAIProvider {
         if let Some(system) = &context.system_prompt {
             messages.push(OpenAIMessage {
                 role: to_static_role(system_role),
-                content: Some(OpenAIContent::Text(system.clone())),
+                content: Some(OpenAIContent::Text(system.to_string())),
                 tool_calls: None,
                 tool_call_id: None,
             });
@@ -1089,11 +1089,12 @@ mod tests {
     fn test_build_request_includes_system_tools_and_stream_options() {
         let provider = OpenAIProvider::new("gpt-4o");
         let context = Context {
-            system_prompt: Some("You are concise.".to_string()),
+            system_prompt: Some("You are concise.".to_string().into()),
             messages: vec![Message::User(crate::model::UserMessage {
                 content: UserContent::Text("Ping".to_string()),
                 timestamp: 0,
-            })],
+            })]
+            .into(),
             tools: vec![ToolDef {
                 name: "search".to_string(),
                 description: "Search docs".to_string(),
@@ -1104,7 +1105,8 @@ mod tests {
                     },
                     "required": ["q"]
                 }),
-            }],
+            }]
+            .into(),
         };
         let options = StreamOptions {
             temperature: Some(0.2),
@@ -1390,8 +1392,9 @@ mod tests {
             messages: vec![Message::User(crate::model::UserMessage {
                 content: UserContent::Text("Ping".to_string()),
                 timestamp: 0,
-            })],
-            tools: Vec::new(),
+            })]
+            .into(),
+            tools: Vec::new().into(),
         };
         let options = StreamOptions::default();
 
@@ -1544,8 +1547,9 @@ mod tests {
             messages: vec![Message::User(crate::model::UserMessage {
                 content: UserContent::Text("ping".to_string()),
                 timestamp: 0,
-            })],
-            tools: Vec::new(),
+            })]
+            .into(),
+            tools: Vec::new().into(),
         };
 
         let runtime = RuntimeBuilder::current_thread()
@@ -1793,18 +1797,20 @@ mod tests {
 
     // ── bd-3uqg.2.4: compat override behavior ──────────────────────
 
-    fn context_with_tools() -> Context {
+    fn context_with_tools() -> Context<'static> {
         Context {
-            system_prompt: Some("You are helpful.".to_string()),
+            system_prompt: Some("You are helpful.".to_string().into()),
             messages: vec![Message::User(crate::model::UserMessage {
                 content: UserContent::Text("Hi".to_string()),
                 timestamp: 0,
-            })],
+            })]
+            .into(),
             tools: vec![ToolDef {
                 name: "search".to_string(),
                 description: "Search".to_string(),
                 parameters: json!({"type": "object", "properties": {}}),
-            }],
+            }]
+            .into(),
         }
     }
 
@@ -1951,8 +1957,9 @@ mod tests {
             messages: vec![Message::User(crate::model::UserMessage {
                 content: UserContent::Text("ping".to_string()),
                 timestamp: 0,
-            })],
-            tools: Vec::new(),
+            })]
+            .into(),
+            tools: Vec::new().into(),
         };
         let options = StreamOptions {
             api_key: Some("test-key".to_string()),

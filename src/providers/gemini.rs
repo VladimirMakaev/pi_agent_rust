@@ -82,9 +82,11 @@ impl GeminiProvider {
     #[allow(clippy::unused_self)]
     pub fn build_request(&self, context: &Context<'_>, options: &StreamOptions) -> GeminiRequest {
         let contents = Self::build_contents(context);
-        let system_instruction = context.system_prompt.as_ref().map(|s| GeminiContent {
+        let system_instruction = context.system_prompt.as_deref().map(|s| GeminiContent {
             role: None,
-            parts: vec![GeminiPart::Text { text: s.clone() }],
+            parts: vec![GeminiPart::Text {
+                text: s.to_string(),
+            }],
         });
 
         let tools: Option<Vec<GeminiTool>> = if context.tools.is_empty() {
@@ -903,14 +905,14 @@ mod tests {
     #[test]
     fn test_build_request_basic_text() {
         let provider = GeminiProvider::new("gemini-2.0-flash");
-        let context = Context {
-            system_prompt: Some("You are helpful.".to_string()),
-            messages: vec![Message::User(crate::model::UserMessage {
+        let context = Context::owned(
+            Some("You are helpful.".to_string()),
+            vec![Message::User(crate::model::UserMessage {
                 content: UserContent::Text("What is Rust?".to_string()),
                 timestamp: 0,
             })],
-            tools: vec![],
-        };
+            vec![],
+        );
         let options = crate::provider::StreamOptions {
             max_tokens: Some(1024),
             temperature: Some(0.7),
@@ -944,13 +946,13 @@ mod tests {
     #[test]
     fn test_build_request_with_tools() {
         let provider = GeminiProvider::new("gemini-2.0-flash");
-        let context = Context {
-            system_prompt: None,
-            messages: vec![Message::User(crate::model::UserMessage {
+        let context = Context::owned(
+            None,
+            vec![Message::User(crate::model::UserMessage {
                 content: UserContent::Text("Read a file".to_string()),
                 timestamp: 0,
             })],
-            tools: vec![
+            vec![
                 ToolDef {
                     name: "read".to_string(),
                     description: "Read a file".to_string(),
@@ -974,7 +976,7 @@ mod tests {
                     }),
                 },
             ],
-        };
+        );
         let options = crate::provider::StreamOptions::default();
 
         let req = provider.build_request(&context, &options);
@@ -1001,14 +1003,14 @@ mod tests {
     #[test]
     fn test_build_request_default_max_tokens() {
         let provider = GeminiProvider::new("gemini-2.0-flash");
-        let context = Context {
-            system_prompt: None,
-            messages: vec![Message::User(crate::model::UserMessage {
+        let context = Context::owned(
+            None,
+            vec![Message::User(crate::model::UserMessage {
                 content: UserContent::Text("hi".to_string()),
                 timestamp: 0,
             })],
-            tools: vec![],
-        };
+            vec![],
+        );
         let options = crate::provider::StreamOptions::default();
 
         let req = provider.build_request(&context, &options);
@@ -1284,9 +1286,9 @@ mod tests {
     #[test]
     fn test_build_request_full_conversation() {
         let provider = GeminiProvider::new("gemini-2.0-flash");
-        let context = Context {
-            system_prompt: Some("Be concise.".to_string()),
-            messages: vec![
+        let context = Context::owned(
+            Some("Be concise.".to_string()),
+            vec![
                 Message::User(crate::model::UserMessage {
                     content: UserContent::Text("Read /tmp/a.txt".to_string()),
                     timestamp: 0,
@@ -1315,12 +1317,12 @@ mod tests {
                     timestamp: 2,
                 }),
             ],
-            tools: vec![ToolDef {
+            vec![ToolDef {
                 name: "read".to_string(),
                 description: "Read a file".to_string(),
                 parameters: serde_json::json!({"type": "object"}),
             }],
-        };
+        );
         let options = crate::provider::StreamOptions::default();
 
         let req = provider.build_request(&context, &options);

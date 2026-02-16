@@ -618,7 +618,7 @@ fn build_cohere_messages(context: &Context<'_>) -> Vec<CohereMessage> {
 
     if let Some(system) = &context.system_prompt {
         out.push(CohereMessage::System {
-            content: system.clone(),
+            content: system.to_string(),
         });
     }
 
@@ -988,14 +988,13 @@ mod tests {
     #[test]
     fn test_build_request_includes_system_tools_and_v2_shape() {
         let provider = CohereProvider::new("command-r");
-        let context = Context {
-            system_prompt: Some("You are concise.".to_string()),
-            messages: vec![Message::User(crate::model::UserMessage {
+        let context = Context::owned(
+            Some("You are concise.".to_string()),
+            vec![Message::User(crate::model::UserMessage {
                 content: UserContent::Text("Ping".to_string()),
                 timestamp: 0,
-            })]
-            .into(),
-            tools: vec![ToolDef {
+            })],
+            vec![ToolDef {
                 name: "search".to_string(),
                 description: "Search docs".to_string(),
                 parameters: json!({
@@ -1005,9 +1004,8 @@ mod tests {
                     },
                     "required": ["q"]
                 }),
-            }]
-            .into(),
-        };
+            }],
+        );
         let options = StreamOptions {
             temperature: Some(0.2),
             max_tokens: Some(123),
@@ -1257,15 +1255,14 @@ mod tests {
     ) -> Option<CapturedRequest> {
         let (base_url, rx) = spawn_test_server(200, "text/event-stream", &success_sse_body());
         let provider = CohereProvider::new("command-r").with_base_url(base_url);
-        let context = Context {
-            system_prompt: Some("system".to_string()),
-            messages: vec![Message::User(crate::model::UserMessage {
+        let context = Context::owned(
+            Some("system".to_string()),
+            vec![Message::User(crate::model::UserMessage {
                 content: UserContent::Text("ping".to_string()),
                 timestamp: 0,
-            })]
-            .into(),
-            tools: Vec::new().into(),
-        };
+            })],
+            Vec::new(),
+        );
         let options = StreamOptions {
             api_key: api_key.map(str::to_string),
             headers: extra_headers,
@@ -1400,15 +1397,14 @@ mod tests {
     #[test]
     fn test_build_request_no_system_prompt() {
         let provider = CohereProvider::new("command-r-plus");
-        let context = Context {
-            system_prompt: None,
-            messages: vec![Message::User(crate::model::UserMessage {
+        let context = Context::owned(
+            None,
+            vec![Message::User(crate::model::UserMessage {
                 content: UserContent::Text("Hi".to_string()),
                 timestamp: 0,
-            })]
-            .into(),
-            tools: vec![].into(),
-        };
+            })],
+            vec![],
+        );
         let options = StreamOptions::default();
 
         let req = provider.build_request(&context, &options);
@@ -1428,15 +1424,14 @@ mod tests {
     #[test]
     fn test_build_request_default_max_tokens() {
         let provider = CohereProvider::new("command-r");
-        let context = Context {
-            system_prompt: None,
-            messages: vec![Message::User(crate::model::UserMessage {
+        let context = Context::owned(
+            None,
+            vec![Message::User(crate::model::UserMessage {
                 content: UserContent::Text("test".to_string()),
                 timestamp: 0,
-            })]
-            .into(),
-            tools: vec![].into(),
-        };
+            })],
+            vec![],
+        );
         let options = StreamOptions::default();
 
         let req = provider.build_request(&context, &options);
@@ -1448,15 +1443,14 @@ mod tests {
     #[test]
     fn test_build_request_no_tools_omits_tools_field() {
         let provider = CohereProvider::new("command-r");
-        let context = Context {
-            system_prompt: None,
-            messages: vec![Message::User(crate::model::UserMessage {
+        let context = Context::owned(
+            None,
+            vec![Message::User(crate::model::UserMessage {
                 content: UserContent::Text("test".to_string()),
                 timestamp: 0,
-            })]
-            .into(),
-            tools: vec![].into(),
-        };
+            })],
+            vec![],
+        );
         let options = StreamOptions::default();
 
         let req = provider.build_request(&context, &options);
@@ -1471,9 +1465,9 @@ mod tests {
     #[test]
     fn test_build_request_full_conversation_with_tool_call_and_result() {
         let provider = CohereProvider::new("command-r");
-        let context = Context {
-            system_prompt: Some("Be concise.".to_string()),
-            messages: vec![
+        let context = Context::owned(
+            Some("Be concise.".to_string()),
+            vec![
                 Message::User(crate::model::UserMessage {
                     content: UserContent::Text("Read /tmp/a.txt".to_string()),
                     timestamp: 0,
@@ -1501,15 +1495,13 @@ mod tests {
                     is_error: false,
                     timestamp: 2,
                 }),
-            ]
-            .into(),
-            tools: vec![ToolDef {
+            ],
+            vec![ToolDef {
                 name: "read".to_string(),
                 description: "Read a file".to_string(),
                 parameters: json!({"type": "object"}),
-            }]
-            .into(),
-        };
+            }],
+        );
         let options = StreamOptions::default();
 
         let req = provider.build_request(&context, &options);
@@ -1538,18 +1530,17 @@ mod tests {
 
     #[test]
     fn test_convert_custom_message_to_cohere() {
-        let context = Context {
-            system_prompt: None,
-            messages: vec![Message::Custom(crate::model::CustomMessage {
+        let context = Context::owned(
+            None,
+            vec![Message::Custom(crate::model::CustomMessage {
                 custom_type: "extension_note".to_string(),
                 content: "Important context.".to_string(),
                 display: false,
                 details: None,
                 timestamp: 0,
-            })]
-            .into(),
-            tools: vec![].into(),
-        };
+            })],
+            vec![],
+        );
 
         let msgs = build_cohere_messages(&context);
         assert_eq!(msgs.len(), 1);

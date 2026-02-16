@@ -74,18 +74,18 @@ impl AnthropicProvider {
     }
 
     /// Build the request body for the Anthropic API.
-    pub fn build_request(
-        &self,
-        context: &Context<'_>,
+    pub fn build_request<'a>(
+        &'a self,
+        context: &'a Context<'_>,
         options: &StreamOptions,
-    ) -> AnthropicRequest {
+    ) -> AnthropicRequest<'a> {
         let messages = context
             .messages
             .iter()
             .map(convert_message_to_anthropic)
             .collect();
 
-        let tools: Option<Vec<AnthropicTool>> = if context.tools.is_empty() {
+        let tools: Option<Vec<AnthropicTool<'_>>> = if context.tools.is_empty() {
             None
         } else {
             Some(
@@ -128,9 +128,9 @@ impl AnthropicProvider {
         }
 
         AnthropicRequest {
-            model: self.model.clone(),
+            model: &self.model,
             messages,
-            system: context.system_prompt.clone(),
+            system: context.system_prompt.as_deref(),
             max_tokens,
             temperature: options.temperature,
             tools,
@@ -558,16 +558,16 @@ where
 // ============================================================================
 
 #[derive(Debug, Serialize)]
-pub struct AnthropicRequest {
-    model: String,
-    messages: Vec<AnthropicMessage>,
+pub struct AnthropicRequest<'a> {
+    model: &'a str,
+    messages: Vec<AnthropicMessage<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<String>,
+    system: Option<&'a str>,
     max_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<AnthropicTool>>,
+    tools: Option<Vec<AnthropicTool<'a>>>,
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<AnthropicThinking>,
@@ -580,56 +580,56 @@ struct AnthropicThinking {
 }
 
 #[derive(Debug, Serialize)]
-struct AnthropicMessage {
+struct AnthropicMessage<'a> {
     role: &'static str,
-    content: Vec<AnthropicContent>,
+    content: Vec<AnthropicContent<'a>>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum AnthropicContent {
+enum AnthropicContent<'a> {
     Text {
-        text: String,
+        text: &'a str,
     },
     Thinking {
-        thinking: String,
-        signature: String,
+        thinking: &'a str,
+        signature: &'a str,
     },
     Image {
-        source: AnthropicImageSource,
+        source: AnthropicImageSource<'a>,
     },
     ToolUse {
-        id: String,
-        name: String,
-        input: serde_json::Value,
+        id: &'a str,
+        name: &'a str,
+        input: &'a serde_json::Value,
     },
     ToolResult {
-        tool_use_id: String,
-        content: Vec<AnthropicToolResultContent>,
+        tool_use_id: &'a str,
+        content: Vec<AnthropicToolResultContent<'a>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
     },
 }
 
 #[derive(Debug, Serialize)]
-struct AnthropicImageSource {
+struct AnthropicImageSource<'a> {
     r#type: &'static str,
-    media_type: String,
-    data: String,
+    media_type: &'a str,
+    data: &'a str,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum AnthropicToolResultContent {
-    Text { text: String },
-    Image { source: AnthropicImageSource },
+enum AnthropicToolResultContent<'a> {
+    Text { text: &'a str },
+    Image { source: AnthropicImageSource<'a> },
 }
 
 #[derive(Debug, Serialize)]
-struct AnthropicTool {
-    name: String,
-    description: String,
-    input_schema: serde_json::Value,
+struct AnthropicTool<'a> {
+    name: &'a str,
+    description: &'a str,
+    input_schema: &'a serde_json::Value,
 }
 
 // ============================================================================
@@ -759,7 +759,7 @@ struct AnthropicError {
 // Conversion Functions
 // ============================================================================
 
-fn convert_message_to_anthropic(message: &Message) -> AnthropicMessage {
+fn convert_message_to_anthropic(message: &Message) -> AnthropicMessage<'_> {
     match message {
         Message::User(user) => AnthropicMessage {
             role: "user",
@@ -768,7 +768,7 @@ fn convert_message_to_anthropic(message: &Message) -> AnthropicMessage {
         Message::Custom(custom) => AnthropicMessage {
             role: "user",
             content: vec![AnthropicContent::Text {
-                text: custom.content.clone(),
+                text: &custom.content,
             }],
         },
         Message::Assistant(assistant) => AnthropicMessage {
@@ -782,19 +782,19 @@ fn convert_message_to_anthropic(message: &Message) -> AnthropicMessage {
         Message::ToolResult(result) => AnthropicMessage {
             role: "user",
             content: vec![AnthropicContent::ToolResult {
-                tool_use_id: result.tool_call_id.clone(),
+                tool_use_id: &result.tool_call_id,
                 content: result
                     .content
                     .iter()
                     .filter_map(|block| match block {
-                        ContentBlock::Text(t) => Some(AnthropicToolResultContent::Text {
-                            text: t.text.clone(),
-                        }),
+                        ContentBlock::Text(t) => {
+                            Some(AnthropicToolResultContent::Text { text: &t.text })
+                        }
                         ContentBlock::Image(img) => Some(AnthropicToolResultContent::Image {
                             source: AnthropicImageSource {
                                 r#type: "base64",
-                                media_type: img.mime_type.clone(),
-                                data: img.data.clone(),
+                                media_type: &img.mime_type,
+                                data: &img.data,
                             },
                         }),
                         _ => None,
@@ -806,20 +806,18 @@ fn convert_message_to_anthropic(message: &Message) -> AnthropicMessage {
     }
 }
 
-fn convert_user_content(content: &UserContent) -> Vec<AnthropicContent> {
+fn convert_user_content(content: &UserContent) -> Vec<AnthropicContent<'_>> {
     match content {
-        UserContent::Text(text) => vec![AnthropicContent::Text { text: text.clone() }],
+        UserContent::Text(text) => vec![AnthropicContent::Text { text }],
         UserContent::Blocks(blocks) => blocks
             .iter()
             .filter_map(|block| match block {
-                ContentBlock::Text(t) => Some(AnthropicContent::Text {
-                    text: t.text.clone(),
-                }),
+                ContentBlock::Text(t) => Some(AnthropicContent::Text { text: &t.text }),
                 ContentBlock::Image(img) => Some(AnthropicContent::Image {
                     source: AnthropicImageSource {
                         r#type: "base64",
-                        media_type: img.mime_type.clone(),
-                        data: img.data.clone(),
+                        media_type: &img.mime_type,
+                        data: &img.data,
                     },
                 }),
                 _ => None,
@@ -828,15 +826,13 @@ fn convert_user_content(content: &UserContent) -> Vec<AnthropicContent> {
     }
 }
 
-fn convert_content_block_to_anthropic(block: &ContentBlock) -> Option<AnthropicContent> {
+fn convert_content_block_to_anthropic(block: &ContentBlock) -> Option<AnthropicContent<'_>> {
     match block {
-        ContentBlock::Text(t) => Some(AnthropicContent::Text {
-            text: t.text.clone(),
-        }),
+        ContentBlock::Text(t) => Some(AnthropicContent::Text { text: &t.text }),
         ContentBlock::ToolCall(tc) => Some(AnthropicContent::ToolUse {
-            id: tc.id.clone(),
-            name: tc.name.clone(),
-            input: tc.arguments.clone(),
+            id: &tc.id,
+            name: &tc.name,
+            input: &tc.arguments,
         }),
         // Thinking blocks must be echoed back with their signature for
         // multi-turn extended thinking.  Skip blocks without a signature
@@ -845,19 +841,19 @@ fn convert_content_block_to_anthropic(block: &ContentBlock) -> Option<AnthropicC
             t.thinking_signature
                 .as_ref()
                 .map(|sig| AnthropicContent::Thinking {
-                    thinking: t.thinking.clone(),
-                    signature: sig.clone(),
+                    thinking: &t.thinking,
+                    signature: sig,
                 })
         }
         ContentBlock::Image(_) => None,
     }
 }
 
-fn convert_tool_to_anthropic(tool: &ToolDef) -> AnthropicTool {
+fn convert_tool_to_anthropic(tool: &ToolDef) -> AnthropicTool<'_> {
     AnthropicTool {
-        name: tool.name.clone(),
-        description: tool.description.clone(),
-        input_schema: tool.parameters.clone(),
+        name: &tool.name,
+        description: &tool.description,
+        input_schema: &tool.parameters,
     }
 }
 
@@ -904,7 +900,7 @@ mod tests {
     fn test_build_request_includes_system_tools_and_thinking() {
         let provider = AnthropicProvider::new("claude-test");
         let context = Context {
-            system_prompt: Some("System prompt".to_string()),
+            system_prompt: Some("System prompt".to_string().into()),
             messages: vec![Message::User(crate::model::UserMessage {
                 content: UserContent::Text("Ping".to_string()),
                 timestamp: 0,
@@ -939,7 +935,7 @@ mod tests {
 
         let request = provider.build_request(&context, &options);
         assert_eq!(request.model, "claude-test");
-        assert_eq!(request.system.as_deref(), Some("System prompt"));
+        assert_eq!(request.system, Some("System prompt"));
         assert_eq!(request.temperature, Some(0.2));
         assert!(request.stream);
         assert_eq!(request.max_tokens, 13_096);
@@ -952,7 +948,7 @@ mod tests {
         assert_eq!(request.messages[0].role, "user");
         assert_eq!(request.messages[0].content.len(), 1);
         match &request.messages[0].content[0] {
-            AnthropicContent::Text { text } => assert_eq!(text, "Ping"),
+            AnthropicContent::Text { text } => assert_eq!(*text, "Ping"),
             other => panic!("expected text content, got {other:?}"),
         }
 
@@ -961,7 +957,7 @@ mod tests {
         assert_eq!(tools[0].name, "echo");
         assert_eq!(tools[0].description, "Echo a string.");
         assert_eq!(
-            tools[0].input_schema,
+            *tools[0].input_schema,
             json!({
                 "type": "object",
                 "properties": {
@@ -1385,7 +1381,7 @@ mod tests {
         let (base_url, rx) = spawn_test_server(200, "text/event-stream", &success_sse_body());
         let provider = AnthropicProvider::new("claude-test").with_base_url(base_url);
         let context = Context {
-            system_prompt: Some("test system".to_string()),
+            system_prompt: Some("test system".to_string().into()),
             messages: vec![Message::User(crate::model::UserMessage {
                 content: UserContent::Text("ping".to_string()),
                 timestamp: 0,
@@ -1418,7 +1414,7 @@ mod tests {
         let (base_url, _rx) = spawn_test_server(200, "text/event-stream", body);
         let provider = AnthropicProvider::new("claude-test").with_base_url(base_url);
         let context = Context {
-            system_prompt: Some("test system".to_string()),
+            system_prompt: Some("test system".to_string().into()),
             messages: vec![Message::User(crate::model::UserMessage {
                 content: UserContent::Text("ping".to_string()),
                 timestamp: 0,
@@ -1694,7 +1690,7 @@ mod tests {
             .with_compat(Some(compat));
 
         let context = Context {
-            system_prompt: Some("test".to_string()),
+            system_prompt: Some("test".to_string().into()),
             messages: vec![Message::User(crate::model::UserMessage {
                 content: UserContent::Text("hi".to_string()),
                 timestamp: 0,
@@ -1748,7 +1744,7 @@ mod tests {
             .with_compat(None);
 
         let context = Context {
-            system_prompt: Some("test".to_string()),
+            system_prompt: Some("test".to_string().into()),
             messages: vec![Message::User(crate::model::UserMessage {
                 content: UserContent::Text("hi".to_string()),
                 timestamp: 0,

@@ -61,7 +61,10 @@ pub trait Provider: Send + Sync {
 #[derive(Debug, Clone)]
 pub struct Context<'a> {
     /// Provider-specific system prompt content.
-    pub system_prompt: Option<String>,
+    ///
+    /// Uses [`Cow`] to borrow from `AgentConfig.system_prompt` on every turn without
+    /// cloning.  Providers that need an owned `String` can call `.into_owned()`.
+    pub system_prompt: Option<Cow<'a, str>>,
     /// Conversation history (user/assistant/tool results).
     pub messages: Cow<'a, [Message]>,
     /// Tool definitions available to the model for this request.
@@ -88,7 +91,7 @@ impl Context<'_> {
         tools: Vec<ToolDef>,
     ) -> Context<'static> {
         Context {
-            system_prompt,
+            system_prompt: system_prompt.map(Cow::Owned),
             messages: Cow::Owned(messages),
             tools: Cow::Owned(tools),
         }

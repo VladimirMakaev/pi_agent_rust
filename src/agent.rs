@@ -548,7 +548,7 @@ impl Agent {
         let tools = Cow::Borrowed(self.cached_tool_defs.as_deref().unwrap());
 
         Context {
-            system_prompt: self.config.system_prompt.clone(),
+            system_prompt: self.config.system_prompt.as_deref().map(Cow::Borrowed),
             messages,
             tools,
         }
@@ -1377,6 +1377,7 @@ impl Agent {
         Arc::try_unwrap(arc).unwrap_or_else(|a| (*a).clone())
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn execute_tool_calls(
         &mut self,
         tool_calls: &[ToolCall],
@@ -1387,45 +1388,67 @@ impl Agent {
         let mut results = Vec::new();
         let mut steering_messages: Option<Vec<Message>> = None;
 
-        for (index, tool_call) in tool_calls.iter().enumerate() {
-            if abort.as_ref().is_some_and(AbortSignal::is_aborted) {
-                break;
-            }
+        if abort.as_ref().is_some_and(AbortSignal::is_aborted) {
+            return Ok(ToolExecutionOutcome {
+                tool_results: results,
+                steering_messages,
+            });
+        }
 
+        // Phase 1: Emit start events for ALL tools up front.
+        for tool_call in tool_calls {
             on_event(AgentEvent::ToolExecutionStart {
                 tool_call_id: tool_call.id.clone(),
                 tool_name: tool_call.name.clone(),
                 args: tool_call.arguments.clone(),
             });
+        }
 
-            let tool_execution = self.execute_tool(tool_call, on_event);
+        // Phase 2: Execute all tools concurrently.
+        // Reborrow self immutably to create futures, then join_all to run in parallel.
+        let tool_outputs: Vec<(ToolOutput, bool)> = {
+            let self_ref = &*self;
+            let futures: Vec<_> = tool_calls
+                .iter()
+                .map(|tc| self_ref.execute_tool(tc, on_event))
+                .collect();
 
-            let (output, is_error) = if let Some(signal) = abort.as_ref() {
+            if let Some(signal) = abort.as_ref() {
                 use futures::future::{Either, select};
 
-                let tool_fut = tool_execution.fuse();
+                let all_fut = futures::future::join_all(futures).fuse();
                 let abort_fut = signal.wait().fuse();
-                futures::pin_mut!(tool_fut, abort_fut);
+                futures::pin_mut!(all_fut, abort_fut);
 
-                match select(tool_fut, abort_fut).await {
-                    Either::Left((result, _)) => result,
+                match select(all_fut, abort_fut).await {
+                    Either::Left((completed_results, _)) => completed_results,
                     Either::Right(_) => {
-                        // Aborted
-                        let output = ToolOutput {
-                            content: vec![ContentBlock::Text(TextContent::new(
-                                "Tool execution aborted",
-                            ))],
-                            details: None,
-                            is_error: true,
-                        };
-                        (output, true)
+                        // Aborted — return abort placeholders for all tools
+                        tool_calls
+                            .iter()
+                            .map(|_| {
+                                let output = ToolOutput {
+                                    content: vec![ContentBlock::Text(TextContent::new(
+                                        "Tool execution aborted",
+                                    ))],
+                                    details: None,
+                                    is_error: true,
+                                };
+                                (output, true)
+                            })
+                            .collect()
                     }
                 }
             } else {
-                tool_execution.await
-            };
+                futures::future::join_all(futures).await
+            }
+        };
 
-            // Move content into Arc first, then clone from Arc for events.
+        // Phase 3: Process results sequentially (preserves event ordering, pushes to
+        // messages, checks steering). &mut self is available again here.
+        for (index, (tool_call, (output, is_error))) in
+            tool_calls.iter().zip(tool_outputs).enumerate()
+        {
             let tool_result = Arc::new(ToolResultMessage {
                 tool_call_id: tool_call.id.clone(),
                 tool_name: tool_call.name.clone(),
@@ -1460,7 +1483,7 @@ impl Agent {
                 message: msg.clone(),
             });
             let end_msg = msg.clone();
-            new_messages.push(msg); // move, no clone
+            new_messages.push(msg);
             on_event(AgentEvent::MessageEnd { message: end_msg });
 
             results.push(tool_result);
@@ -1474,9 +1497,39 @@ impl Agent {
             if !steering.is_empty() {
                 steering_messages = Some(steering);
 
-                // Skip remaining tool calls
+                // Remaining tools already executed in parallel but their results
+                // are discarded (not added to messages). Emit end events with
+                // a skip placeholder. Start events were already emitted in Phase 1.
                 for skipped in tool_calls.iter().skip(index + 1) {
-                    let skipped_result = self.skip_tool_call(skipped, on_event, new_messages);
+                    let skip_output = ToolOutput {
+                        content: vec![ContentBlock::Text(TextContent::new(
+                            "Skipped due to queued user message.",
+                        ))],
+                        details: None,
+                        is_error: true,
+                    };
+                    on_event(AgentEvent::ToolExecutionEnd {
+                        tool_call_id: skipped.id.clone(),
+                        tool_name: skipped.name.clone(),
+                        result: skip_output.clone(),
+                        is_error: true,
+                    });
+                    let skipped_result = Arc::new(ToolResultMessage {
+                        tool_call_id: skipped.id.clone(),
+                        tool_name: skipped.name.clone(),
+                        content: skip_output.content,
+                        details: None,
+                        is_error: true,
+                        timestamp: Utc::now().timestamp_millis(),
+                    });
+                    let msg = Message::ToolResult(Arc::clone(&skipped_result));
+                    self.messages.push(msg.clone());
+                    let end_msg = msg.clone();
+                    new_messages.push(msg);
+                    on_event(AgentEvent::MessageStart {
+                        message: end_msg.clone(),
+                    });
+                    on_event(AgentEvent::MessageEnd { message: end_msg });
                     results.push(skipped_result);
                 }
                 break;
@@ -2385,7 +2438,11 @@ mod extensions_integration_tests {
                 .await
                 .expect("run_text");
 
-            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            // With parallel tool execution, all tool functions run concurrently,
+            // so both tools execute (calls == 2). The steering message causes
+            // the second tool's result to be replaced with a "Skipped" placeholder
+            // in the conversation, preserving the steering interrupt semantics.
+            assert_eq!(calls.load(Ordering::SeqCst), 2);
         });
     }
 

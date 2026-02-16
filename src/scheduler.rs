@@ -2682,6 +2682,55 @@ mod tests {
     }
 
     #[test]
+    fn reactor_topology_snapshot_normalizes_unsorted_duplicate_pairs() {
+        let topology = ReactorTopologySnapshot::from_core_node_pairs(&[
+            (7, 5),
+            (2, 1),
+            (4, 2),
+            (2, 1),
+            (1, 1),
+            (4, 2),
+        ]);
+        let normalized = topology
+            .cores
+            .iter()
+            .map(|core| (core.core_id, core.numa_node))
+            .collect::<Vec<_>>();
+        assert_eq!(normalized, vec![(1, 1), (2, 1), (4, 2), (7, 5)]);
+    }
+
+    #[test]
+    fn reactor_placement_manifest_non_contiguous_numa_ids_is_stable() {
+        let topology = ReactorTopologySnapshot::from_core_node_pairs(&[
+            (11, 42),
+            (7, 5),
+            (9, 42),
+            (3, 5),
+            (11, 42),
+            (3, 5),
+        ]);
+        let first = ReactorPlacementManifest::plan(8, Some(&topology));
+        let second = ReactorPlacementManifest::plan(8, Some(&topology));
+        assert_eq!(first, second);
+        assert_eq!(first.numa_node_count, 2);
+        assert_eq!(first.fallback_reason, None);
+
+        let observed_nodes = first
+            .bindings
+            .iter()
+            .map(|binding| binding.numa_node)
+            .collect::<Vec<_>>();
+        assert_eq!(observed_nodes, vec![5, 42, 5, 42, 5, 42, 5, 42]);
+
+        let observed_cores = first
+            .bindings
+            .iter()
+            .map(|binding| binding.core_id)
+            .collect::<Vec<_>>();
+        assert_eq!(observed_cores, vec![3, 9, 7, 11, 3, 9, 7, 11]);
+    }
+
+    #[test]
     fn reactor_placement_manifest_spreads_across_numa_nodes_round_robin() {
         let topology =
             ReactorTopologySnapshot::from_core_node_pairs(&[(0, 0), (1, 0), (4, 1), (5, 1)]);

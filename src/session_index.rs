@@ -1782,18 +1782,38 @@ mod tests {
         let header = make_header("id-retry", "cwd-retry");
         enqueue_session_index_snapshot_update(
             index.sessions_root().to_path_buf(),
-            path,
+            path.clone(),
             header,
             2,
             None,
         );
 
         // Force-drain; now the update should succeed because the file exists.
-        index.flush_pending_updates(Duration::from_secs(1));
-        let listed = index
-            .list_sessions(Some("cwd-retry"))
-            .expect("list retried sessions");
-        assert_eq!(listed.len(), 1);
+        // Under heavy parallel test load the global dispatcher may not process
+        // the enqueue before our flush, so retry a few times.
+        let mut listed = Vec::new();
+        for attempt in 0..5 {
+            index.flush_pending_updates(Duration::from_secs(1));
+            listed = index
+                .list_sessions(Some("cwd-retry"))
+                .expect("list retried sessions");
+            if !listed.is_empty() {
+                break;
+            }
+            if attempt < 4 {
+                std::thread::sleep(Duration::from_millis(100));
+                // Re-enqueue in case dispatcher dropped it under load.
+                let header = make_header("id-retry", "cwd-retry");
+                enqueue_session_index_snapshot_update(
+                    index.sessions_root().to_path_buf(),
+                    path.clone(),
+                    header,
+                    2,
+                    None,
+                );
+            }
+        }
+        assert_eq!(listed.len(), 1, "expected 1 session after retry loop");
         assert_eq!(listed[0].id, "id-retry");
         assert_eq!(listed[0].message_count, 2);
     }

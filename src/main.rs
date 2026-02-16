@@ -682,8 +682,15 @@ async fn run(
         extension_paths: cli.extension.clone(),
         theme_paths: cli.theme_path.clone(),
     };
-    let resources = match ResourceLoader::load(&package_manager, &cwd, &config, &resource_cli).await
-    {
+    // Run resource loading and auth loading in parallel — they are independent.
+    let auth_path = Config::auth_path();
+    let (resources_result, auth_result) = futures::future::join(
+        ResourceLoader::load(&package_manager, &cwd, &config, &resource_cli),
+        AuthStorage::load_async(auth_path),
+    )
+    .await;
+
+    let resources = match resources_result {
         Ok(resources) => resources,
         Err(err) => {
             eprintln!("Warning: Failed to load skills/prompts: {err}");
@@ -708,7 +715,7 @@ async fn run(
         .into());
     }
 
-    let mut auth = AuthStorage::load_async(Config::auth_path()).await?;
+    let mut auth = auth_result?;
     auth.refresh_expired_oauth_tokens().await?;
     let global_dir = Config::global_dir();
     let package_dir = Config::package_dir();

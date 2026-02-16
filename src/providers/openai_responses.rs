@@ -712,7 +712,7 @@ fn build_openai_responses_input(context: &Context<'_>) -> Vec<OpenAIResponsesInp
     if let Some(system) = &context.system_prompt {
         input.push(OpenAIResponsesInputItem::System {
             role: "system",
-            content: system.clone(),
+            content: system.to_string(),
         });
     }
 
@@ -942,13 +942,13 @@ mod tests {
     #[test]
     fn test_build_request_includes_system_tools_and_defaults() {
         let provider = OpenAIResponsesProvider::new("gpt-4o");
-        let context = Context {
-            system_prompt: Some("System guidance".to_string()),
-            messages: vec![Message::User(crate::model::UserMessage {
+        let context = Context::owned(
+            Some("System guidance".to_string()),
+            vec![Message::User(crate::model::UserMessage {
                 content: UserContent::Text("Ping".to_string()),
                 timestamp: 0,
             })],
-            tools: vec![
+            vec![
                 ToolDef {
                     name: "search".to_string(),
                     description: "Search docs".to_string(),
@@ -964,7 +964,7 @@ mod tests {
                     parameters: json!({ "type": "object" }),
                 },
             ],
-        };
+        );
         let options = StreamOptions {
             temperature: Some(0.3),
             ..Default::default()
@@ -1180,14 +1180,14 @@ mod tests {
     fn run_stream_and_capture_headers() -> Option<CapturedRequest> {
         let (base_url, rx) = spawn_test_server(200, "text/event-stream", &success_sse_body());
         let provider = OpenAIResponsesProvider::new("gpt-4o").with_base_url(base_url);
-        let context = Context {
-            system_prompt: None,
-            messages: vec![Message::User(crate::model::UserMessage {
+        let context = Context::owned(
+            None,
+            vec![Message::User(crate::model::UserMessage {
                 content: UserContent::Text("ping".to_string()),
                 timestamp: 0,
             })],
-            tools: Vec::new(),
-        };
+            Vec::new(),
+        );
         let options = StreamOptions {
             api_key: Some("test-openai-key".to_string()),
             ..Default::default()

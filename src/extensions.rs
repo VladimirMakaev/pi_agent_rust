@@ -20062,10 +20062,7 @@ impl ExtensionManager {
         let mut seen: HashSet<&str> = HashSet::new();
         // Dynamic flags take priority.
         for flag in &inner.flags {
-            let name = flag
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
+            let name = flag.get("name").and_then(Value::as_str).unwrap_or_default();
             if !name.is_empty() {
                 seen.insert(name);
                 let description = flag
@@ -20087,10 +20084,7 @@ impl ExtensionManager {
         // Extension-payload flags (skip duplicates).
         for ext in &inner.extensions {
             for flag in &ext.flags {
-                let name = flag
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
+                let name = flag.get("name").and_then(Value::as_str).unwrap_or_default();
                 if !name.is_empty() && seen.insert(name) {
                     let description = flag
                         .get("description")

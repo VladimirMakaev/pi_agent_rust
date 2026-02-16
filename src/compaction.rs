@@ -31,6 +31,26 @@ const IMAGE_TOKEN_ESTIMATE: usize = 1200;
 /// Character-equivalent estimate for an image (IMAGE_TOKEN_ESTIMATE * CHARS_PER_TOKEN_ESTIMATE).
 const IMAGE_CHAR_ESTIMATE: usize = IMAGE_TOKEN_ESTIMATE * CHARS_PER_TOKEN_ESTIMATE;
 
+/// Count the serialized JSON byte length of a [`Value`] without allocating a `String`.
+///
+/// Uses `serde_json::to_writer` with a sink that only counts bytes – this gives the
+/// exact same length as `serde_json::to_string(&v).len()` at zero heap cost.
+fn json_byte_len(value: &Value) -> usize {
+    struct Counter(usize);
+    impl std::io::Write for Counter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 += buf.len();
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut c = Counter(0);
+    let _ = serde_json::to_writer(&mut c, value);
+    c.0
+}
+
 // =============================================================================
 // Public types
 // =============================================================================
@@ -261,9 +281,7 @@ fn estimate_tokens(message: &SessionMessage) -> u64 {
                         ContentBlock::Thinking(thinking) => chars += thinking.thinking.len(),
                         ContentBlock::ToolCall(call) => {
                             chars += call.name.len();
-                            chars += serde_json::to_string(&call.arguments)
-                                .map(|s| s.len())
-                                .unwrap_or_default();
+                            chars += json_byte_len(&call.arguments);
                         }
                     }
                 }
@@ -277,9 +295,7 @@ fn estimate_tokens(message: &SessionMessage) -> u64 {
                     ContentBlock::Image(_) => chars += IMAGE_CHAR_ESTIMATE,
                     ContentBlock::ToolCall(call) => {
                         chars += call.name.len();
-                        chars += serde_json::to_string(&call.arguments)
-                            .map(|s| s.len())
-                            .unwrap_or_default();
+                        chars += json_byte_len(&call.arguments);
                     }
                 }
             }
@@ -292,9 +308,7 @@ fn estimate_tokens(message: &SessionMessage) -> u64 {
                     ContentBlock::Image(_) => chars += IMAGE_CHAR_ESTIMATE,
                     ContentBlock::ToolCall(call) => {
                         chars += call.name.len();
-                        chars += serde_json::to_string(&call.arguments)
-                            .map(|s| s.len())
-                            .unwrap_or_default();
+                        chars += json_byte_len(&call.arguments);
                     }
                 }
             }
@@ -593,7 +607,7 @@ async fn complete_simple(
     let max_tokens = max_tokens.max(256);
 
     let context = Context {
-        system_prompt: Some(system_prompt.to_string()),
+        system_prompt: Some(system_prompt.to_string().into()),
         messages: vec![Message::User(UserMessage {
             content: UserContent::Blocks(vec![ContentBlock::Text(TextContent::new(prompt_text))]),
             timestamp: chrono::Utc::now().timestamp_millis(),

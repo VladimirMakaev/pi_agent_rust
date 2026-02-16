@@ -405,7 +405,7 @@ impl ExtensionStreamSimpleProvider {
         if let Some(system_prompt) = &context.system_prompt {
             map.insert(
                 "systemPrompt".to_string(),
-                Value::String(system_prompt.clone()),
+                Value::String(system_prompt.to_string()),
             );
         }
         map.insert(
@@ -1066,14 +1066,15 @@ export default function init(pi) {
         (dir, manager)
     }
 
-    fn basic_context() -> Context {
+    fn basic_context() -> Context<'static> {
         Context {
-            system_prompt: Some("system".to_string()),
+            system_prompt: Some("system".to_string().into()),
             messages: vec![Message::User(UserMessage {
                 content: UserContent::Text("hello".to_string()),
                 timestamp: 0,
-            })],
-            tools: Vec::new(),
+            })]
+            .into(),
+            tools: Vec::new().into(),
         }
     }
 

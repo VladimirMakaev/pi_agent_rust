@@ -389,14 +389,14 @@ mod tests {
 
     #[test]
     fn test_build_request_simple() {
-        let context = Context {
-            system_prompt: Some("Be helpful.".to_string()),
-            messages: vec![Message::User(UserMessage {
+        let context = Context::owned(
+            Some("Be helpful.".to_string()),
+            vec![Message::User(UserMessage {
                 content: UserContent::Text("How do I define a class?".to_string()),
                 timestamp: 0,
             })],
-            tools: Vec::new(),
-        };
+            Vec::new(),
+        );
 
         let req = GitLabProvider::build_request(&context);
         assert_eq!(req.content, "How do I define a class?");
@@ -406,9 +406,9 @@ mod tests {
 
     #[test]
     fn test_build_request_multi_turn() {
-        let context = Context {
-            system_prompt: None,
-            messages: vec![
+        let context = Context::owned(
+            None,
+            vec![
                 Message::User(UserMessage {
                     content: UserContent::Text("What is Rust?".to_string()),
                     timestamp: 0,
@@ -431,8 +431,8 @@ mod tests {
                     timestamp: 0,
                 }),
             ],
-            tools: Vec::new(),
-        };
+            Vec::new(),
+        );
 
         let req = GitLabProvider::build_request(&context);
         assert_eq!(req.content, "Tell me more.");
@@ -442,11 +442,7 @@ mod tests {
 
     #[test]
     fn test_build_request_empty_messages_fallback() {
-        let context = Context {
-            system_prompt: None,
-            messages: Vec::new(),
-            tools: Vec::new(),
-        };
+        let context = Context::owned(None, Vec::new(), Vec::new());
 
         let req = GitLabProvider::build_request(&context);
         assert_eq!(req.content, "Hello"); // fallback

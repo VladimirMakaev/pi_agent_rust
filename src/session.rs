@@ -2843,8 +2843,7 @@ impl From<Message> for SessionMessage {
                 message: Arc::try_unwrap(assistant).unwrap_or_else(|a| (*a).clone()),
             },
             Message::ToolResult(result) => {
-                let result =
-                    Arc::try_unwrap(result).unwrap_or_else(|a| (*a).clone());
+                let result = Arc::try_unwrap(result).unwrap_or_else(|a| (*a).clone());
                 Self::ToolResult {
                     tool_call_id: result.tool_call_id,
                     tool_name: result.tool_name,

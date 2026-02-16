@@ -17220,7 +17220,7 @@ mod tests {
                     cache_key.clone(),
                     CompiledModuleCacheEntry {
                         cache_key: Some("cache-v1".to_string()),
-                        source: b"compiled-source".to_vec(),
+                        source: b"compiled-source".to_vec().into(),
                     },
                 );
                 state.module_cache_counters = ModuleCacheCounters {
@@ -17272,7 +17272,7 @@ mod tests {
                     .get(&cache_key)
                     .expect("compiled source should persist across reset");
                 assert_eq!(cached.cache_key.as_deref(), Some("cache-v1"));
-                assert_eq!(cached.source, b"compiled-source");
+                assert_eq!(cached.source.as_ref(), b"compiled-source");
 
                 assert_eq!(state.module_cache_counters.hits, 0);
                 assert_eq!(state.module_cache_counters.misses, 0);
