@@ -51,6 +51,46 @@
       ".github/workflows/ci.yml"
     ]
   },
+  "evidence_adjudication_contract": {
+    "schema": "pi.perf.evidence_adjudication_contract.v1",
+    "required_input_artifacts": [
+      "summary_json",
+      "baseline_variance_confidence",
+      "extension_benchmark_stratification",
+      "phase1_matrix_validation",
+      "claim_integrity_scenario_cells"
+    ],
+    "canonical_identity_fields": [
+      "run_id",
+      "correlation_id"
+    ],
+    "allowed_verdict_statuses": [
+      "resolved",
+      "conflict",
+      "stale",
+      "non_canonical"
+    ],
+    "confidence_precedence": [
+      "high",
+      "medium",
+      "low"
+    ],
+    "evidence_class_precedence": [
+      "measured",
+      "inferred"
+    ],
+    "freshness_policy": {
+      "max_age_hours": 24,
+      "timezone": "UTC"
+    },
+    "fail_closed_reason_codes": [
+      "missing_input_artifact",
+      "stale_input_artifact",
+      "lineage_mismatch",
+      "confidence_conflict_unresolved",
+      "non_canonical_claim_source"
+    ]
+  },
   "metric_hierarchy": {
     "primary": [
       "sli_e2e_turn_latency_p95_ms",
@@ -1006,7 +1046,8 @@
       "invalid_evidence_class",
       "invalid_confidence_label",
       "microbench_only_claim",
-      "global_claim_missing_partition_coverage"
+      "global_claim_missing_partition_coverage",
+      "unresolved_conflicting_claims"
     ]
   }
 }

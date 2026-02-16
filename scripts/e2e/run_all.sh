@@ -4096,6 +4096,7 @@ validate_evidence_contract() {
         CI_ENV="${CI:-}" \
         python3 - <<'PY'
 import json
+import math
 import os
 import re
 import sys
@@ -6798,6 +6799,7 @@ required_fail_closed_conditions = [
     "invalid_confidence_label",
     "microbench_only_claim",
     "global_claim_missing_partition_coverage",
+    "unresolved_conflicting_claims",
 ]
 
 required_scenarios: list[str] = []
@@ -7047,7 +7049,10 @@ invalid_confidence_label_reasons: list[str] = []
 missing_absolute_or_relative_reasons: list[str] = []
 microbench_only_claim_reasons: list[str] = []
 global_claim_partition_reasons: list[str] = []
+unresolved_conflicting_claim_reasons: list[str] = []
 scenario_partition_coverage: dict[str, set[str]] = {}
+scenario_class_by_id: dict[str, str] = {}
+scenario_partition_confidence_labels: dict[tuple[str, str], set[str]] = {}
 observed_realistic_session_shapes: set[str] = set()
 phase1_realistic_session_shapes_observed: set[str] = set()
 missing_realistic_session_shapes: list[str] = []
@@ -7055,6 +7060,9 @@ realistic_session_shape_coverage_source = "baseline_confidence"
 scenario_cell_status_payload: dict | None = None
 scenario_cell_status_json_path: Path | None = None
 scenario_cell_status_markdown_path: Path | None = None
+adjudication_matrix_payload: dict | None = None
+adjudication_matrix_json_path: Path | None = None
+adjudication_matrix_markdown_path: Path | None = None
 
 expected_claim_correlation_id = summary_correlation_id or environment_correlation_id
 freshness_cutoff = datetime.now(timezone.utc) - timedelta(days=7)
@@ -7123,7 +7131,93 @@ def parse_positive_metric_value(raw: object) -> float | None:
             value = float(text)
         except ValueError:
             return None
-    return value if value > 0 else None
+    return value if math.isfinite(value) and value > 0 else None
+
+
+def metric_value_missing(raw: object) -> bool:
+    if raw is None:
+        return True
+    if isinstance(raw, str):
+        return not raw.strip()
+    return False
+
+
+def confidence_rank(label: object) -> int:
+    normalized = str(label or "").strip().lower()
+    if normalized == "high":
+        return 3
+    if normalized == "medium":
+        return 2
+    if normalized == "low":
+        return 1
+    return 0
+
+
+def normalize_confidence_label(label: object) -> str:
+    normalized = str(label or "").strip().lower()
+    return normalized if normalized in {"high", "medium", "low"} else "unknown"
+
+
+def highest_confidence_label(labels: list[str]) -> str:
+    ranked = sorted(
+        (normalize_confidence_label(label) for label in labels),
+        key=confidence_rank,
+        reverse=True,
+    )
+    return ranked[0] if ranked else "unknown"
+
+
+def normalize_claim_outcome(raw: object) -> str:
+    normalized = str(raw or "").strip().lower()
+    if normalized in {"pass", "passed", "ok", "success", "valid"}:
+        return "pass"
+    if normalized in {"fail", "failed", "error", "invalid"}:
+        return "fail"
+    if normalized in {"warn", "warning"}:
+        return "warn"
+    if normalized in {"missing", "none", "no_data", "unknown", "n/a"}:
+        return "missing"
+    return "unknown"
+
+
+def normalize_bool_outcome(raw: object) -> str:
+    if isinstance(raw, bool):
+        return "pass" if raw else "fail"
+    return normalize_claim_outcome(raw)
+
+
+def build_artifact_claim_metadata(
+    *,
+    source: str,
+    payload: dict | None,
+    path: Path | None,
+) -> dict:
+    generated_at_value = payload.get("generated_at") if isinstance(payload, dict) else None
+    generated_at = parse_iso8601_timestamp(generated_at_value)
+    fresh = generated_at is not None and generated_at >= freshness_cutoff
+    correlation_id = (
+        str(payload.get("correlation_id", "")).strip()
+        if isinstance(payload, dict)
+        else ""
+    )
+    correlation_matches = (
+        bool(expected_claim_correlation_id)
+        and bool(correlation_id)
+        and correlation_id == expected_claim_correlation_id
+    )
+    lineage_payload = payload.get("lineage") if isinstance(payload, dict) else None
+    if not isinstance(lineage_payload, dict):
+        lineage_payload = {}
+    return {
+        "source": source,
+        "schema": payload.get("schema") if isinstance(payload, dict) else None,
+        "path": str(path) if path is not None else None,
+        "generated_at": generated_at_value,
+        "fresh": fresh,
+        "correlation_id": correlation_id,
+        "correlation_matches": correlation_matches,
+        "lineage": lineage_payload,
+    }
 
 
 def parse_shape_to_session_messages(shape: str) -> int | None:
@@ -7517,6 +7611,9 @@ if isinstance(baseline_confidence, dict) and perf_baseline_confidence_path is no
                 f"records[{index}] scenario_metadata must be object"
             )
         else:
+            workflow_class = str(metadata.get("workflow_class", "")).strip()
+            if scenario_id and workflow_class:
+                scenario_class_by_id[scenario_id] = workflow_class
             missing_metadata_fields = [
                 field
                 for field in required_scenario_metadata_fields
@@ -7551,6 +7648,12 @@ if isinstance(baseline_confidence, dict) and perf_baseline_confidence_path is no
             invalid_confidence_label_reasons.append(
                 f"records[{index}] confidence={confidence_label!r}"
             )
+        if scenario_id and workload_partition:
+            normalized_confidence = normalize_confidence_label(confidence_label)
+            if normalized_confidence != "unknown":
+                scenario_partition_confidence_labels.setdefault(
+                    (scenario_id, workload_partition), set()
+                ).add(normalized_confidence)
 
         evidence_state = str(record.get("evidence_state", "")).strip()
         if evidence_state and evidence_state not in allowed_evidence_class:
@@ -7773,6 +7876,222 @@ if isinstance(phase1_matrix_validation, dict) and perf_phase1_matrix_validation_
             "'primary_e2e_before_microbench'"
         )
 
+    regression_guards = phase1_matrix_validation.get("regression_guards")
+    regression_guards_obj = (
+        regression_guards if isinstance(regression_guards, dict) else None
+    )
+    require_condition(
+        "claim_integrity.phase1_matrix_regression_guards_object",
+        path=perf_phase1_matrix_validation_path,
+        ok=regression_guards_obj is not None,
+        ok_msg="phase-1 matrix validation regression_guards object present",
+        fail_msg="phase-1 matrix validation missing regression_guards object",
+        strict=claim_integrity_required,
+        remediation=(
+            "Update scripts/perf/orchestrate.sh to emit regression_guards with "
+            "memory/correctness/security statuses and failure_or_gap_reasons."
+        ),
+    )
+
+    required_regression_guard_fields = [
+        "memory",
+        "correctness",
+        "security",
+        "failure_or_gap_reasons",
+    ]
+    missing_regression_guard_fields = [
+        field
+        for field in required_regression_guard_fields
+        if not (
+            isinstance(regression_guards_obj, dict) and field in regression_guards_obj
+        )
+    ]
+    require_condition(
+        "claim_integrity.phase1_matrix_regression_guards_required_fields",
+        path=perf_phase1_matrix_validation_path,
+        ok=not missing_regression_guard_fields,
+        ok_msg="phase-1 matrix validation regression_guards required fields present",
+        fail_msg=(
+            "phase-1 matrix validation regression_guards missing fields: "
+            f"{missing_regression_guard_fields}"
+        ),
+        strict=claim_integrity_required,
+        remediation=(
+            "Emit regression_guards.memory, regression_guards.correctness, "
+            "regression_guards.security, and regression_guards.failure_or_gap_reasons "
+            "in scripts/perf/orchestrate.sh."
+        ),
+    )
+    if missing_regression_guard_fields and claim_integrity_gate_active:
+        evidence_missing_or_stale_reasons.append(
+            "phase-1 matrix validation regression_guards missing required fields: "
+            f"{missing_regression_guard_fields}"
+        )
+
+    failure_or_gap_reasons_raw = (
+        regression_guards_obj.get("failure_or_gap_reasons")
+        if isinstance(regression_guards_obj, dict)
+        else None
+    )
+    normalized_failure_or_gap_reasons: list[str] = []
+    invalid_failure_or_gap_reasons: list[str] = []
+    duplicate_failure_or_gap_reasons: list[str] = []
+    seen_failure_or_gap_reasons: set[str] = set()
+    if isinstance(failure_or_gap_reasons_raw, list):
+        for index, raw_reason in enumerate(failure_or_gap_reasons_raw):
+            if not isinstance(raw_reason, str):
+                invalid_failure_or_gap_reasons.append(
+                    f"index {index} non-string value {raw_reason!r}"
+                )
+                continue
+            normalized_reason = raw_reason.strip().lower()
+            if not normalized_reason:
+                invalid_failure_or_gap_reasons.append(
+                    f"index {index} empty reason token"
+                )
+                continue
+            normalized_failure_or_gap_reasons.append(normalized_reason)
+            if normalized_reason in seen_failure_or_gap_reasons:
+                duplicate_failure_or_gap_reasons.append(normalized_reason)
+            else:
+                seen_failure_or_gap_reasons.add(normalized_reason)
+    elif regression_guards_obj is not None:
+        invalid_failure_or_gap_reasons.append(
+            f"failure_or_gap_reasons is not an array: {type(failure_or_gap_reasons_raw).__name__}"
+        )
+    duplicate_failure_or_gap_reasons = sorted(set(duplicate_failure_or_gap_reasons))
+    regression_guard_reason_format_ok = (
+        not invalid_failure_or_gap_reasons and not duplicate_failure_or_gap_reasons
+    )
+    require_condition(
+        "claim_integrity.phase1_matrix_regression_guard_reasons_format",
+        path=perf_phase1_matrix_validation_path,
+        ok=regression_guard_reason_format_ok,
+        ok_msg="phase-1 matrix regression guard reasons are non-empty unique strings",
+        fail_msg=(
+            "phase-1 matrix regression guard reasons invalid: "
+            f"invalid={invalid_failure_or_gap_reasons}, "
+            f"duplicates={duplicate_failure_or_gap_reasons}"
+        ),
+        strict=claim_integrity_required,
+        remediation=(
+            "Set phase1_matrix_validation.regression_guards.failure_or_gap_reasons "
+            "to a unique array of non-empty strings in scripts/perf/orchestrate.sh."
+        ),
+    )
+    if not regression_guard_reason_format_ok and claim_integrity_gate_active:
+        evidence_missing_or_stale_reasons.append(
+            "phase-1 matrix validation regression_guards.failure_or_gap_reasons "
+            "must be a unique array of non-empty strings"
+        )
+
+    normalized_failure_or_gap_reason_set = set(normalized_failure_or_gap_reasons)
+    known_regression_guard_reasons = {
+        f"{guard_name}_regression"
+        for guard_name in ("memory", "correctness", "security")
+    } | {
+        f"{guard_name}_regression_unverified"
+        for guard_name in ("memory", "correctness", "security")
+    }
+    unknown_regression_guard_reasons = sorted(
+        reason
+        for reason in normalized_failure_or_gap_reason_set
+        if reason not in known_regression_guard_reasons
+    )
+    require_condition(
+        "claim_integrity.phase1_matrix_regression_guard_reasons_known",
+        path=perf_phase1_matrix_validation_path,
+        ok=not unknown_regression_guard_reasons,
+        ok_msg="phase-1 matrix regression guard reasons use known tokens",
+        fail_msg=(
+            "phase-1 matrix regression guard reasons contain unknown tokens: "
+            f"{unknown_regression_guard_reasons}"
+        ),
+        strict=claim_integrity_required,
+        remediation=(
+            "Use only <guard>_regression and <guard>_regression_unverified tokens "
+            "for regression_guards.failure_or_gap_reasons."
+        ),
+    )
+    if unknown_regression_guard_reasons and claim_integrity_gate_active:
+        evidence_missing_or_stale_reasons.append(
+            "phase-1 matrix validation regression_guards.failure_or_gap_reasons "
+            "contains unknown tokens"
+        )
+
+    invalid_regression_guard_statuses: list[str] = []
+    regression_guard_reason_mismatches: list[str] = []
+    for guard_name in ("memory", "correctness", "security"):
+        status_raw = (
+            regression_guards_obj.get(guard_name)
+            if isinstance(regression_guards_obj, dict)
+            else None
+        )
+        status = str(status_raw or "").strip().lower()
+        if status not in {"pass", "fail", "missing"}:
+            invalid_regression_guard_statuses.append(f"{guard_name}={status_raw!r}")
+            continue
+        fail_reason_token = f"{guard_name}_regression"
+        missing_reason_token = f"{guard_name}_regression_unverified"
+        has_fail_reason = fail_reason_token in normalized_failure_or_gap_reason_set
+        has_missing_reason = (
+            missing_reason_token in normalized_failure_or_gap_reason_set
+        )
+        if status == "pass" and (has_fail_reason or has_missing_reason):
+            regression_guard_reason_mismatches.append(
+                f"{guard_name}=pass with {fail_reason_token}/{missing_reason_token}"
+            )
+        elif status == "fail" and (not has_fail_reason or has_missing_reason):
+            regression_guard_reason_mismatches.append(
+                f"{guard_name}=fail requires {fail_reason_token} only"
+            )
+        elif status == "missing" and (not has_missing_reason or has_fail_reason):
+            regression_guard_reason_mismatches.append(
+                f"{guard_name}=missing requires {missing_reason_token} only"
+            )
+
+    require_condition(
+        "claim_integrity.phase1_matrix_regression_guard_status_valid",
+        path=perf_phase1_matrix_validation_path,
+        ok=not invalid_regression_guard_statuses,
+        ok_msg="phase-1 matrix regression guard statuses are pass/fail/missing",
+        fail_msg=(
+            "phase-1 matrix regression guard status invalid entries: "
+            f"{invalid_regression_guard_statuses}"
+        ),
+        strict=claim_integrity_required,
+        remediation=(
+            "Set regression_guards.memory/correctness/security statuses to one of "
+            "'pass', 'fail', or 'missing' in scripts/perf/orchestrate.sh."
+        ),
+    )
+    if invalid_regression_guard_statuses and claim_integrity_gate_active:
+        evidence_missing_or_stale_reasons.append(
+            "phase-1 matrix validation regression_guards statuses must be "
+            "pass/fail/missing"
+        )
+
+    require_condition(
+        "claim_integrity.phase1_matrix_regression_guard_reason_alignment",
+        path=perf_phase1_matrix_validation_path,
+        ok=not regression_guard_reason_mismatches,
+        ok_msg="phase-1 matrix regression guard statuses align with reason tokens",
+        fail_msg=(
+            "phase-1 matrix regression guard status/reason mismatches: "
+            f"{regression_guard_reason_mismatches}"
+        ),
+        strict=claim_integrity_required,
+        remediation=(
+            "Align regression_guards.failure_or_gap_reasons with guard statuses: "
+            "<guard>_regression for fail, <guard>_regression_unverified for missing, "
+            "and neither token for pass."
+        ),
+    )
+    if regression_guard_reason_mismatches and claim_integrity_gate_active:
+        evidence_missing_or_stale_reasons.append(
+            "phase-1 matrix validation regression_guards status/reason alignment failed"
+        )
+
     matrix_cells = phase1_matrix_validation.get("matrix_cells")
     matrix_cells_list = matrix_cells if isinstance(matrix_cells, list) else []
     invalid_matrix_cell_primary_e2e: list[str] = []
@@ -7780,15 +8099,27 @@ if isinstance(phase1_matrix_validation, dict) and perf_phase1_matrix_validation_
         if not isinstance(cell, dict):
             invalid_matrix_cell_primary_e2e.append(f"cell[{index}] is not an object")
             continue
+        cell_status = normalize_claim_outcome(cell.get("status"))
+        if cell_status not in {"pass", "fail"}:
+            invalid_matrix_cell_primary_e2e.append(
+                f"cell[{index}] status must be pass/fail, got {cell.get('status')!r}"
+            )
+            continue
         primary_e2e = cell.get("primary_e2e")
         primary_e2e_obj = primary_e2e if isinstance(primary_e2e, dict) else None
         invalid_fields: list[str] = []
         for field in ("wall_clock_ms", "rust_vs_node_ratio", "rust_vs_bun_ratio"):
-            metric_value = parse_positive_metric_value(
+            raw_metric = (
                 primary_e2e_obj.get(field) if isinstance(primary_e2e_obj, dict) else None
             )
+            metric_value = parse_positive_metric_value(
+                raw_metric
+            )
             if metric_value is None:
-                invalid_fields.append(field)
+                if cell_status == "pass":
+                    invalid_fields.append(field)
+                elif not metric_value_missing(raw_metric):
+                    invalid_fields.append(f"{field}(non-positive)")
         if invalid_fields:
             invalid_matrix_cell_primary_e2e.append(
                 f"cell[{index}] primary_e2e missing/invalid {invalid_fields}"
@@ -7801,16 +8132,20 @@ if isinstance(phase1_matrix_validation, dict) and perf_phase1_matrix_validation_
         "claim_integrity.phase1_matrix_cells_primary_e2e_metrics_present",
         path=perf_phase1_matrix_validation_path,
         ok=not invalid_matrix_cell_primary_e2e,
-        ok_msg="phase-1 matrix validation matrix_cells include positive primary_e2e metrics",
+        ok_msg=(
+            "phase-1 matrix validation matrix_cells enforce pass/fail-aware "
+            "primary_e2e metric semantics"
+        ),
         fail_msg=(
             "phase-1 matrix validation matrix_cells include missing/invalid "
             f"primary_e2e metrics: {invalid_matrix_cell_primary_e2e_excerpt}"
         ),
         strict=claim_integrity_required,
         remediation=(
-            "Ensure each phase1_matrix_validation.matrix_cells[*].primary_e2e "
-            "contains positive wall_clock_ms, rust_vs_node_ratio, and "
-            "rust_vs_bun_ratio values in scripts/perf/orchestrate.sh."
+            "Set matrix cell status to pass/fail. Pass cells must include positive "
+            "wall_clock_ms, rust_vs_node_ratio, and rust_vs_bun_ratio values; "
+            "fail cells may omit metrics (null/blank) but any provided value must "
+            "still be a positive finite number in scripts/perf/orchestrate.sh."
         ),
     )
     if invalid_matrix_cell_primary_e2e and claim_integrity_gate_active:
@@ -8007,6 +8342,628 @@ if claim_integrity_gate_active:
     )
 
 if claim_integrity_gate_active:
+    artifact_claim_metadata: dict[str, dict] = {}
+    artifact_claim_metadata["baseline_confidence"] = build_artifact_claim_metadata(
+        source="baseline_confidence",
+        payload=baseline_confidence if isinstance(baseline_confidence, dict) else None,
+        path=perf_baseline_confidence_path,
+    )
+    artifact_claim_metadata["extension_stratification"] = build_artifact_claim_metadata(
+        source="extension_stratification",
+        payload=extension_stratification if isinstance(extension_stratification, dict) else None,
+        path=perf_extension_stratification_path,
+    )
+    artifact_claim_metadata["phase1_matrix_validation"] = build_artifact_claim_metadata(
+        source="phase1_matrix_validation",
+        payload=phase1_matrix_validation if isinstance(phase1_matrix_validation, dict) else None,
+        path=perf_phase1_matrix_validation_path,
+    )
+    artifact_claim_metadata["release_readiness_summary"] = build_artifact_claim_metadata(
+        source="release_readiness_summary",
+        payload=release_readiness if isinstance(release_readiness, dict) else None,
+        path=release_readiness_path,
+    )
+    artifact_claim_metadata["scenario_cell_status"] = build_artifact_claim_metadata(
+        source="scenario_cell_status",
+        payload=(
+            scenario_cell_status_payload
+            if isinstance(scenario_cell_status_payload, dict)
+            else None
+        ),
+        path=scenario_cell_status_json_path,
+    )
+
+    claim_observations: list[dict] = []
+
+    def add_claim_observation(
+        *,
+        claim_scope: str,
+        claim_id: str,
+        source: str,
+        metric_scope: str,
+        scenario_class: str,
+        reported_outcome: object,
+        confidence_label: object,
+        scenario_id: str | None = None,
+        workload_partition: str | None = None,
+        details: dict | None = None,
+    ) -> None:
+        artifact_meta = artifact_claim_metadata.get(source, {})
+        noncanonical_reasons: list[str] = []
+        if not artifact_meta:
+            noncanonical_reasons.append("missing_source_artifact_metadata")
+        else:
+            if not artifact_meta.get("fresh"):
+                noncanonical_reasons.append("stale_or_missing_generated_at")
+            if expected_claim_correlation_id and not artifact_meta.get("correlation_matches"):
+                noncanonical_reasons.append("correlation_mismatch")
+        claim_observations.append(
+            {
+                "claim_scope": claim_scope,
+                "claim_id": claim_id,
+                "source": source,
+                "metric_scope": metric_scope,
+                "scenario_class": scenario_class,
+                "scenario_id": scenario_id,
+                "workload_partition": workload_partition,
+                "reported_outcome": normalize_claim_outcome(reported_outcome),
+                "confidence": normalize_confidence_label(confidence_label),
+                "confidence_rank": confidence_rank(confidence_label),
+                "artifact": artifact_meta,
+                "canonical": not noncanonical_reasons,
+                "noncanonical_reasons": noncanonical_reasons,
+                "details": details or {},
+            }
+        )
+
+    if isinstance(release_readiness, dict):
+        readiness_outcome = normalize_bool_outcome(release_readiness.get("overall_ready"))
+        if readiness_outcome == "unknown":
+            readiness_outcome = normalize_claim_outcome(release_readiness.get("status"))
+        add_claim_observation(
+            claim_scope="release_global_claim",
+            claim_id="release_readiness.overall_ready",
+            source="release_readiness_summary",
+            metric_scope="release_readiness",
+            scenario_class="global",
+            reported_outcome=readiness_outcome,
+            confidence_label="medium" if readiness_outcome in {"pass", "fail"} else "low",
+            details={
+                "status": release_readiness.get("status"),
+                "overall_ready": release_readiness.get("overall_ready"),
+            },
+        )
+
+    if isinstance(extension_stratification, dict):
+        layers_payload = extension_stratification.get("layers")
+        layers_list = layers_payload if isinstance(layers_payload, list) else []
+        claim_integrity_payload = extension_stratification.get("claim_integrity")
+        cherry_pick_guard = (
+            claim_integrity_payload.get("cherry_pick_guard", {})
+            if isinstance(claim_integrity_payload, dict)
+            else {}
+        )
+        invalidity_reasons = (
+            cherry_pick_guard.get("invalidity_reasons", [])
+            if isinstance(cherry_pick_guard, dict)
+            else []
+        )
+        layer_confidences = [
+            str(layer.get("confidence", "")).strip()
+            for layer in layers_list
+            if isinstance(layer, dict)
+        ]
+        add_claim_observation(
+            claim_scope="release_global_claim",
+            claim_id="extension_stratification.global_claim_valid",
+            source="extension_stratification",
+            metric_scope="global_claim_validity",
+            scenario_class="global",
+            reported_outcome=normalize_bool_outcome(
+                cherry_pick_guard.get("global_claim_valid")
+            ),
+            confidence_label=highest_confidence_label(layer_confidences),
+            details={
+                "invalidity_reasons": sorted(
+                    str(reason).strip()
+                    for reason in invalidity_reasons
+                    if str(reason).strip()
+                ),
+                "layer_coverage": (
+                    cherry_pick_guard.get("layer_coverage", {})
+                    if isinstance(cherry_pick_guard, dict)
+                    else {}
+                ),
+            },
+        )
+        for layer in layers_list:
+            if not isinstance(layer, dict):
+                continue
+            layer_id = str(layer.get("layer_id", "")).strip() or "unknown-layer"
+            absolute_metrics = layer.get("absolute_metrics")
+            relative_metrics = layer.get("relative_metrics")
+            layer_pass = (
+                isinstance(absolute_metrics, dict)
+                and absolute_metrics.get("value") is not None
+                and isinstance(relative_metrics, dict)
+                and relative_metrics.get("rust_vs_node_ratio") is not None
+                and relative_metrics.get("rust_vs_bun_ratio") is not None
+            )
+            add_claim_observation(
+                claim_scope=f"extension_layer:{layer_id}",
+                claim_id="extension_stratification.layer_coverage",
+                source="extension_stratification",
+                metric_scope="layer_coverage",
+                scenario_class="layer",
+                reported_outcome="pass" if layer_pass else "fail",
+                confidence_label=layer.get("confidence"),
+                details={
+                    "layer_id": layer_id,
+                    "evidence_state": layer.get("evidence_state"),
+                    "relative_metrics": (
+                        relative_metrics if isinstance(relative_metrics, dict) else {}
+                    ),
+                    "absolute_metrics": (
+                        absolute_metrics if isinstance(absolute_metrics, dict) else {}
+                    ),
+                },
+            )
+
+    if isinstance(phase1_matrix_validation, dict):
+        primary_outcomes = phase1_matrix_validation.get("primary_outcomes")
+        primary_outcomes_obj = primary_outcomes if isinstance(primary_outcomes, dict) else {}
+        primary_missing_reasons = (
+            primary_outcomes_obj.get("missing_reasons", [])
+            if isinstance(primary_outcomes_obj, dict)
+            else []
+        )
+        primary_confidence = (
+            "high"
+            if not primary_missing_reasons
+            else "low"
+        )
+        add_claim_observation(
+            claim_scope="release_global_claim",
+            claim_id="phase1_matrix_validation.primary_outcomes.status",
+            source="phase1_matrix_validation",
+            metric_scope="primary_outcomes",
+            scenario_class="global",
+            reported_outcome=primary_outcomes_obj.get("status"),
+            confidence_label=primary_confidence,
+            details={
+                "missing_reasons": (
+                    primary_missing_reasons if isinstance(primary_missing_reasons, list) else []
+                ),
+                "ordering_policy": primary_outcomes_obj.get("ordering_policy"),
+            },
+        )
+        matrix_cells = phase1_matrix_validation.get("matrix_cells")
+        matrix_cells_list = matrix_cells if isinstance(matrix_cells, list) else []
+        for index, cell in enumerate(matrix_cells_list):
+            if not isinstance(cell, dict):
+                continue
+            scenario_id = str(cell.get("scenario_id", "")).strip()
+            workload_partition = str(cell.get("workload_partition", "")).strip()
+            session_messages = parse_session_messages_value(cell.get("session_messages"))
+            scope_suffix = (
+                f"{session_messages}"
+                if session_messages is not None
+                else f"index-{index}"
+            )
+            primary_e2e = cell.get("primary_e2e")
+            primary_e2e_obj = primary_e2e if isinstance(primary_e2e, dict) else {}
+            cell_confidence = (
+                "high"
+                if (
+                    parse_positive_metric_value(primary_e2e_obj.get("wall_clock_ms")) is not None
+                    and parse_positive_metric_value(
+                        primary_e2e_obj.get("rust_vs_node_ratio")
+                    )
+                    is not None
+                    and parse_positive_metric_value(
+                        primary_e2e_obj.get("rust_vs_bun_ratio")
+                    )
+                    is not None
+                )
+                else "low"
+            )
+            add_claim_observation(
+                claim_scope=(
+                    f"phase1_matrix_cell:{workload_partition or 'unknown'}:{scope_suffix}"
+                ),
+                claim_id="phase1_matrix_validation.matrix_cells.status",
+                source="phase1_matrix_validation",
+                metric_scope="matrix_cell_primary_e2e",
+                scenario_class=workload_partition or "unknown",
+                reported_outcome=cell.get("status"),
+                confidence_label=cell_confidence,
+                scenario_id=scenario_id or None,
+                workload_partition=workload_partition or None,
+                details={
+                    "session_messages": session_messages,
+                    "missing_reasons": (
+                        cell.get("missing_reasons", [])
+                        if isinstance(cell.get("missing_reasons"), list)
+                        else []
+                    ),
+                },
+            )
+
+    if isinstance(scenario_cell_status_payload, dict):
+        scenario_cells = scenario_cell_status_payload.get("cells")
+        scenario_cells_list = scenario_cells if isinstance(scenario_cells, list) else []
+        scenario_summary = scenario_cell_status_payload.get("summary")
+        scenario_summary_obj = scenario_summary if isinstance(scenario_summary, dict) else {}
+
+        baseline_confidence_counts = (
+            baseline_confidence.get("summary", {}).get("confidence_counts", {})
+            if isinstance(baseline_confidence, dict)
+            else {}
+        )
+        confidence_from_counts = "unknown"
+        if isinstance(baseline_confidence_counts, dict) and baseline_confidence_counts:
+            sorted_confidence_counts = sorted(
+                (
+                    (normalize_confidence_label(label), int(count))
+                    for label, count in baseline_confidence_counts.items()
+                    if normalize_confidence_label(label) != "unknown"
+                    and isinstance(count, (int, float))
+                ),
+                key=lambda item: (item[1], confidence_rank(item[0])),
+                reverse=True,
+            )
+            if sorted_confidence_counts:
+                confidence_from_counts = sorted_confidence_counts[0][0]
+
+        add_claim_observation(
+            claim_scope="release_global_claim",
+            claim_id="scenario_cell_status.summary.overall_status",
+            source="scenario_cell_status",
+            metric_scope="scenario_partition_coverage",
+            scenario_class="global",
+            reported_outcome=scenario_summary_obj.get("overall_status"),
+            confidence_label=confidence_from_counts,
+            details={
+                "total_cells": scenario_summary_obj.get("total_cells"),
+                "passing_cells": scenario_summary_obj.get("passing_cells"),
+                "failing_cells": scenario_summary_obj.get("failing_cells"),
+            },
+        )
+
+        for cell in scenario_cells_list:
+            if not isinstance(cell, dict):
+                continue
+            scenario_id = str(cell.get("scenario_id", "")).strip()
+            workload_partition = str(cell.get("workload_partition", "")).strip()
+            if not scenario_id or not workload_partition:
+                continue
+            confidence_labels = sorted(
+                scenario_partition_confidence_labels.get(
+                    (scenario_id, workload_partition),
+                    set(),
+                )
+            )
+            confidence_label = highest_confidence_label(confidence_labels)
+            add_claim_observation(
+                claim_scope=(
+                    f"scenario_partition_coverage:{scenario_id}:{workload_partition}"
+                ),
+                claim_id="scenario_cell_status.cells.status",
+                source="scenario_cell_status",
+                metric_scope="scenario_partition_coverage",
+                scenario_class=scenario_class_by_id.get(scenario_id, "unknown"),
+                reported_outcome=cell.get("status"),
+                confidence_label=confidence_label,
+                scenario_id=scenario_id,
+                workload_partition=workload_partition,
+                details={
+                    "reason": cell.get("reason"),
+                    "present_in_records": cell.get("present_in_records"),
+                },
+            )
+
+    baseline_matrix_scenarios: list[str] = (
+        sorted(required_scenarios)
+        if required_scenarios
+        else sorted(scenario_partition_coverage.keys())
+    )
+    baseline_matrix_partitions: list[str] = (
+        list(required_partition_tags)
+        if required_partition_tags
+        else sorted(
+            {
+                partition
+                for partitions in scenario_partition_coverage.values()
+                for partition in partitions
+            }
+        )
+    )
+    for scenario_id in baseline_matrix_scenarios:
+        present_partitions = scenario_partition_coverage.get(scenario_id, set())
+        for workload_partition in baseline_matrix_partitions:
+            confidence_labels = sorted(
+                scenario_partition_confidence_labels.get(
+                    (scenario_id, workload_partition),
+                    set(),
+                )
+            )
+            add_claim_observation(
+                claim_scope=(
+                    f"scenario_partition_coverage:{scenario_id}:{workload_partition}"
+                ),
+                claim_id="baseline_confidence.records.coverage",
+                source="baseline_confidence",
+                metric_scope="scenario_partition_coverage",
+                scenario_class=scenario_class_by_id.get(scenario_id, "unknown"),
+                reported_outcome=(
+                    "pass" if workload_partition in present_partitions else "fail"
+                ),
+                confidence_label=highest_confidence_label(confidence_labels),
+                scenario_id=scenario_id,
+                workload_partition=workload_partition,
+                details={
+                    "present_in_records": workload_partition in present_partitions,
+                },
+            )
+
+    claims_by_scope: dict[str, list[dict]] = {}
+    for observation in claim_observations:
+        claims_by_scope.setdefault(observation["claim_scope"], []).append(observation)
+
+    adjudication_rows: list[dict] = []
+    for claim_scope in sorted(claims_by_scope):
+        observations = sorted(
+            claims_by_scope[claim_scope],
+            key=lambda entry: (
+                str(entry.get("source", "")),
+                str(entry.get("claim_id", "")),
+                str(entry.get("scenario_id", "")),
+                str(entry.get("workload_partition", "")),
+            ),
+        )
+        canonical_observations = [obs for obs in observations if obs.get("canonical")]
+        noncanonical_observations = [
+            obs for obs in observations if not obs.get("canonical")
+        ]
+        observed_outcomes = sorted(
+            {
+                str(obs.get("reported_outcome", "")).strip()
+                for obs in observations
+                if str(obs.get("reported_outcome", "")).strip()
+                and str(obs.get("reported_outcome", "")).strip() not in {"unknown", "missing"}
+            }
+        )
+        canonical_outcomes = sorted(
+            {
+                str(obs.get("reported_outcome", "")).strip()
+                for obs in canonical_observations
+                if str(obs.get("reported_outcome", "")).strip()
+                and str(obs.get("reported_outcome", "")).strip() not in {"unknown", "missing"}
+            }
+        )
+        conflict_detected = len(observed_outcomes) > 1
+        unresolved_conflict = False
+        if canonical_observations:
+            if "fail" in canonical_outcomes:
+                adjudicated_outcome = "fail"
+                rationale = (
+                    "fail-closed adjudication: canonical claim set contains a failing outcome"
+                )
+            elif "warn" in canonical_outcomes:
+                adjudicated_outcome = "warn"
+                rationale = (
+                    "canonical claim set contains warning outcomes without canonical failures"
+                )
+            elif "pass" in canonical_outcomes:
+                adjudicated_outcome = "pass"
+                rationale = "canonical claim set reports pass outcomes"
+            elif any(
+                str(obs.get("reported_outcome", "")).strip() == "missing"
+                for obs in canonical_observations
+            ):
+                adjudicated_outcome = "missing"
+                rationale = "canonical claim set is present but marked missing/no-data"
+            else:
+                adjudicated_outcome = "unknown"
+                rationale = "canonical claim set did not expose a normalized adjudication outcome"
+        else:
+            adjudicated_outcome = "unknown"
+            rationale = "no canonical evidence (fresh + lineage-matched) available for adjudication"
+            if conflict_detected:
+                unresolved_conflict = True
+                unresolved_conflicting_claim_reasons.append(
+                    f"{claim_scope}: conflicting outcomes={observed_outcomes} without canonical evidence"
+                )
+
+        canonical_sources = sorted(
+            {
+                str(obs.get("source", "")).strip()
+                for obs in canonical_observations
+                if str(obs.get("source", "")).strip()
+            }
+        )
+        stale_or_noncanonical_sources = sorted(
+            {
+                str(obs.get("source", "")).strip()
+                for obs in noncanonical_observations
+                if str(obs.get("source", "")).strip()
+            }
+        )
+        confidence_labels = [
+            str(obs.get("confidence", "")).strip()
+            for obs in canonical_observations
+            if str(obs.get("confidence", "")).strip() and str(obs.get("confidence", "")).strip() != "unknown"
+        ]
+        adjudicated_confidence = highest_confidence_label(confidence_labels)
+
+        adjudication_rows.append(
+            {
+                "claim_scope": claim_scope,
+                "claim_ids": sorted(
+                    {
+                        str(obs.get("claim_id", "")).strip()
+                        for obs in observations
+                        if str(obs.get("claim_id", "")).strip()
+                    }
+                ),
+                "metric_scopes": sorted(
+                    {
+                        str(obs.get("metric_scope", "")).strip()
+                        for obs in observations
+                        if str(obs.get("metric_scope", "")).strip()
+                    }
+                ),
+                "scenario_classes": sorted(
+                    {
+                        str(obs.get("scenario_class", "")).strip()
+                        for obs in observations
+                        if str(obs.get("scenario_class", "")).strip()
+                    }
+                ),
+                "scenario_ids": sorted(
+                    {
+                        str(obs.get("scenario_id", "")).strip()
+                        for obs in observations
+                        if str(obs.get("scenario_id", "")).strip()
+                    }
+                ),
+                "workload_partitions": sorted(
+                    {
+                        str(obs.get("workload_partition", "")).strip()
+                        for obs in observations
+                        if str(obs.get("workload_partition", "")).strip()
+                    }
+                ),
+                "observed_outcomes": observed_outcomes,
+                "conflict_detected": conflict_detected,
+                "unresolved_conflict": unresolved_conflict,
+                "adjudicated_outcome": adjudicated_outcome,
+                "adjudicated_confidence": adjudicated_confidence,
+                "adjudication_rationale": rationale,
+                "canonical_sources": canonical_sources,
+                "stale_or_noncanonical_sources": stale_or_noncanonical_sources,
+                "observations": observations,
+            }
+        )
+
+    adjudication_summary = {
+        "total_claims": len(adjudication_rows),
+        "observation_count": len(claim_observations),
+        "conflict_count": sum(1 for row in adjudication_rows if row["conflict_detected"]),
+        "resolved_conflict_count": sum(
+            1
+            for row in adjudication_rows
+            if row["conflict_detected"] and not row["unresolved_conflict"]
+        ),
+        "unresolved_conflict_count": sum(
+            1 for row in adjudication_rows if row["unresolved_conflict"]
+        ),
+        "pass_count": sum(1 for row in adjudication_rows if row["adjudicated_outcome"] == "pass"),
+        "warn_count": sum(1 for row in adjudication_rows if row["adjudicated_outcome"] == "warn"),
+        "fail_count": sum(1 for row in adjudication_rows if row["adjudicated_outcome"] == "fail"),
+        "missing_count": sum(
+            1 for row in adjudication_rows if row["adjudicated_outcome"] == "missing"
+        ),
+        "unknown_count": sum(
+            1 for row in adjudication_rows if row["adjudicated_outcome"] == "unknown"
+        ),
+        "overall_status": (
+            "pass" if not unresolved_conflicting_claim_reasons else "fail"
+        ),
+    }
+
+    adjudication_matrix_payload = {
+        "schema": "pi.claim_integrity.evidence_adjudication_matrix.v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "correlation_id": expected_claim_correlation_id,
+        "artifact_dir": str(artifact_dir),
+        "freshness_cutoff": freshness_cutoff.isoformat(),
+        "adjudication_policy": {
+            "canonical_evidence_rule": (
+                "Evidence is canonical only when generated_at is fresh and "
+                "correlation_id matches the run correlation_id."
+            ),
+            "conflict_resolution_rule": (
+                "Fail-closed precedence applies across canonical outcomes: fail > warn > pass > missing > unknown."
+            ),
+            "unresolved_conflict_rule": (
+                "Conflicts are unresolved when outcomes differ but no canonical evidence is available."
+            ),
+        },
+        "source_artifacts": artifact_claim_metadata,
+        "summary": adjudication_summary,
+        "claims": adjudication_rows,
+    }
+    adjudication_matrix_json_path = (
+        artifact_dir / "claim_integrity_evidence_adjudication_matrix.json"
+    )
+    adjudication_matrix_json_path.write_text(
+        json.dumps(adjudication_matrix_payload, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    adjudication_matrix_markdown_path = (
+        artifact_dir / "claim_integrity_evidence_adjudication_matrix.md"
+    )
+    md_lines = [
+        "# Claim-Integrity Evidence Adjudication Matrix",
+        "",
+        f"- Schema: `{adjudication_matrix_payload['schema']}`",
+        f"- Correlation ID: `{expected_claim_correlation_id}`",
+        f"- Total claims: `{adjudication_summary['total_claims']}`",
+        f"- Observation count: `{adjudication_summary['observation_count']}`",
+        f"- Conflict count: `{adjudication_summary['conflict_count']}`",
+        f"- Unresolved conflicts: `{adjudication_summary['unresolved_conflict_count']}`",
+        f"- Overall status: `{adjudication_summary['overall_status']}`",
+        "",
+        "| Claim Scope | Outcome | Conflict | Canonical Sources | Rationale |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for row in adjudication_rows:
+        conflict_label = (
+            "UNRESOLVED"
+            if row["unresolved_conflict"]
+            else ("CONFLICT" if row["conflict_detected"] else "NONE")
+        )
+        canonical_sources_cell = ", ".join(row["canonical_sources"]) or "none"
+        rationale = str(row["adjudication_rationale"]).replace("|", "\\|")
+        md_lines.append(
+            f"| `{row['claim_scope']}` | `{row['adjudicated_outcome']}` | `{conflict_label}` | `{canonical_sources_cell}` | {rationale} |"
+        )
+    adjudication_matrix_markdown_path.write_text(
+        "\n".join(md_lines) + "\n",
+        encoding="utf-8",
+    )
+
+    require_condition(
+        "claim_integrity.evidence_adjudication_matrix_schema",
+        path=adjudication_matrix_json_path,
+        ok=adjudication_matrix_payload.get("schema")
+        == "pi.claim_integrity.evidence_adjudication_matrix.v1",
+        ok_msg="evidence-adjudication matrix schema matches",
+        fail_msg=(
+            "evidence-adjudication matrix schema mismatch: expected "
+            "'pi.claim_integrity.evidence_adjudication_matrix.v1'"
+        ),
+        strict=claim_integrity_required,
+    )
+    add_check(
+        "claim_integrity.evidence_adjudication_matrix_json",
+        adjudication_matrix_json_path,
+        True,
+        f"evidence-adjudication matrix JSON written: {adjudication_matrix_json_path}",
+    )
+    add_check(
+        "claim_integrity.evidence_adjudication_matrix_markdown",
+        adjudication_matrix_markdown_path,
+        True,
+        (
+            "evidence-adjudication matrix markdown written: "
+            f"{adjudication_matrix_markdown_path}"
+        ),
+    )
+
+if claim_integrity_gate_active:
     require_condition(
         "claim_integrity.missing_or_stale_evidence",
         path=perf_sli_matrix_path,
@@ -8159,6 +9116,23 @@ if claim_integrity_gate_active:
         remediation=(
             "Publish matched-state and realistic rows for every required scenario "
             "before release-facing global claims."
+        ),
+    )
+    require_condition(
+        "claim_integrity.unresolved_conflicting_claims",
+        path=adjudication_matrix_json_path or perf_sli_matrix_path,
+        ok=not unresolved_conflicting_claim_reasons,
+        ok_msg="all conflicting claims have canonical adjudications",
+        fail_msg=(
+            "unresolved conflicting claims detected in evidence-adjudication matrix: "
+            f"{sorted(set(unresolved_conflicting_claim_reasons))}"
+        ),
+        strict=claim_integrity_required,
+        remediation=(
+            "Regenerate baseline_variance_confidence.json, "
+            "extension_benchmark_stratification.json, and "
+            "phase1_matrix_validation.json with shared CI_CORRELATION_ID and fresh "
+            "generated_at timestamps before release-facing claims."
         ),
     )
 
@@ -8409,6 +9383,22 @@ contract_payload = {
         if scenario_cell_status_json_path is not None
         else None
     ),
+    "claim_integrity_adjudication_matrix": (
+        {
+            "schema": "pi.claim_integrity.evidence_adjudication_matrix.v1",
+            "path": str(adjudication_matrix_json_path),
+            "markdown_path": str(adjudication_matrix_markdown_path)
+            if adjudication_matrix_markdown_path is not None
+            else None,
+            "summary": (
+                adjudication_matrix_payload.get("summary", {})
+                if isinstance(adjudication_matrix_payload, dict)
+                else {}
+            ),
+        }
+        if adjudication_matrix_json_path is not None
+        else None
+    ),
 }
 contract_file.parent.mkdir(parents=True, exist_ok=True)
 contract_file.write_text(json.dumps(contract_payload, indent=2) + "\n", encoding="utf-8")
@@ -8433,6 +9423,17 @@ if isinstance(summary, dict):
             if scenario_cell_status_markdown_path is not None
             else None,
             "summary": scenario_cell_status_payload.get("summary", {}),
+        }
+    if adjudication_matrix_json_path is not None and isinstance(
+        adjudication_matrix_payload, dict
+    ):
+        summary["claim_integrity_adjudication_matrix"] = {
+            "schema": "pi.claim_integrity.evidence_adjudication_matrix.v1",
+            "path": str(adjudication_matrix_json_path),
+            "markdown_path": str(adjudication_matrix_markdown_path)
+            if adjudication_matrix_markdown_path is not None
+            else None,
+            "summary": adjudication_matrix_payload.get("summary", {}),
         }
     summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
 

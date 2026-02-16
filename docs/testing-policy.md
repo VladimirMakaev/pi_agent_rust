@@ -373,6 +373,27 @@ claim-integrity fail-closed conditions from `docs/perf_sli_matrix.json#ci_enforc
 when `CLAIM_INTEGRITY_REQUIRED=1` (set in Linux CI lane). This blocks stale,
 partial, missing-partition, invalid-label, and microbench-only global claims.
 
+The evidence-adjudication matrix artifact is also part of the claim-integrity
+contract:
+
+- JSON artifact: `tests/e2e_results/**/claim_integrity_evidence_adjudication_matrix.json`
+- Markdown companion: `tests/e2e_results/**/claim_integrity_evidence_adjudication_matrix.md`
+- Required schema id: `pi.claim_integrity.evidence_adjudication_matrix.v1`
+
+Fail-closed summary invariants (must hold together):
+
+1. `summary.conflict_count = summary.resolved_conflict_count + summary.unresolved_conflict_count`
+2. `summary.total_claims = summary.pass_count + summary.warn_count + summary.fail_count + summary.missing_count + summary.unknown_count`
+3. `summary.overall_status` must be `fail` whenever `summary.unresolved_conflict_count > 0`
+4. `summary.observation_count >= summary.total_claims`
+
+Row-level adjudication invariants:
+
+- `claims[*].conflict_detected = true` implies `claims[*].observed_outcomes` has more than one unique value.
+- `claims[*].unresolved_conflict = true` is valid only when canonical evidence is unavailable and must roll into `summary.unresolved_conflict_count`.
+- `claims[*].adjudicated_confidence` must normalize to one of `high`, `medium`, `low`, `unknown`.
+- `claims[*].adjudicated_outcome` must be one of `pass`, `warn`, `fail`, `missing`, `unknown`.
+
 The step writes a structured verdict at:
 
 - `tests/e2e_results/**/ci_gate_promotion_v1.json`

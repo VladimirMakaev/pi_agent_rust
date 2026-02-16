@@ -165,6 +165,17 @@
         "description": "Run manifest for reproducible benchmark orchestration with suite results and contract references.",
         "required_fields": ["schema", "correlation_id", "run_summary", "suite_results"],
         "supersedes": null
+      },
+      {
+        "schema_id": "pi.qa.evidence_adjudication_matrix.v1",
+        "version": "v1",
+        "status": "canonical",
+        "domain": "evidence",
+        "source_files": ["scripts/e2e/run_all.sh", "tests/ci_full_suite_gate.rs"],
+        "output_format": "json",
+        "description": "Machine-readable reconciliation matrix mapping conflicting claims to canonical artifacts, freshness checks, confidence labels, and adjudication outcomes.",
+        "required_fields": ["schema", "generated_at", "correlation_id", "claims", "adjudication_matrix", "summary"],
+        "supersedes": null
       }
     ],
     "schema_relationships": [
@@ -243,6 +254,18 @@
       {
         "from_schema": "pi.perf.run_manifest.v1",
         "to_schema": "pi.qa.evidence_contract.v1",
+        "relationship": "references",
+        "join_field": "correlation_id"
+      },
+      {
+        "from_schema": "pi.qa.evidence_contract.v1",
+        "to_schema": "pi.qa.evidence_adjudication_matrix.v1",
+        "relationship": "references",
+        "join_field": "correlation_id"
+      },
+      {
+        "from_schema": "pi.perf.run_manifest.v1",
+        "to_schema": "pi.qa.evidence_adjudication_matrix.v1",
         "relationship": "references",
         "join_field": "correlation_id"
       }

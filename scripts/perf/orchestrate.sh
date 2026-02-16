@@ -2053,6 +2053,10 @@ payload = {
             "stratification": str(stratification_path),
             "baseline_variance_confidence": str(baseline_path),
         },
+        "source_identity": {
+            "run_id": run_id,
+            "correlation_id": correlation_id,
+        },
     },
     "consumption_contract": {
         "downstream_beads": [
@@ -2076,18 +2080,10 @@ payload = {
     "lineage": {
         "run_id_lineage": [run_id, correlation_id],
         "source_manifest_path": str(manifest_path),
-        "source_scenario_runner_path": (
-            str(scenario_runner_path) if scenario_runner_path.exists() else None
-        ),
-        "source_stratification_path": (
-            str(stratification_path) if stratification_path.exists() else None
-        ),
-        "source_baseline_confidence_path": (
-            str(baseline_path) if baseline_path.exists() else None
-        ),
-        "source_perf_sli_contract_path": (
-            str(perf_sli_path) if perf_sli_path.exists() else None
-        ),
+        "source_scenario_runner_path": str(scenario_runner_path),
+        "source_stratification_path": str(stratification_path),
+        "source_baseline_confidence_path": str(baseline_path),
+        "source_perf_sli_contract_path": str(perf_sli_path),
     },
 }
 
