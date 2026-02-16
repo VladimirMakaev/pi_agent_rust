@@ -41,8 +41,8 @@ use async_trait::async_trait;
 use chrono::Utc;
 use futures::FutureExt;
 use futures::StreamExt;
-use futures::stream;
 use futures::future::BoxFuture;
+use futures::stream;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::borrow::Cow;
@@ -86,6 +86,8 @@ impl Default for AgentConfig {
 
 /// Async fetcher for queued messages (steering or follow-up).
 pub type MessageFetcher = Arc<dyn Fn() -> BoxFuture<'static, Vec<Message>> + Send + Sync + 'static>;
+
+type AgentEventHandler = Arc<dyn Fn(AgentEvent) + Send + Sync + 'static>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueueMode {
@@ -656,7 +658,7 @@ impl Agent {
     async fn run_loop(
         &mut self,
         prompts: Vec<Message>,
-        on_event: Arc<dyn Fn(AgentEvent) + Send + Sync>,
+        on_event: AgentEventHandler,
         abort: Option<AbortSignal>,
     ) -> Result<AssistantMessage> {
         let session_id = self
@@ -754,7 +756,7 @@ impl Agent {
                 }
 
                 let assistant_message = match self
-                    .stream_assistant_response(&on_event, abort.clone())
+                    .stream_assistant_response(Arc::clone(&on_event), abort.clone())
                     .await
                 {
                     Ok(msg) => msg,
@@ -842,7 +844,7 @@ impl Agent {
                     let outcome = match self
                         .execute_tool_calls(
                             &tool_calls,
-                            &on_event,
+                            Arc::clone(&on_event),
                             &mut new_messages,
                             abort.clone(),
                         )
@@ -967,7 +969,7 @@ impl Agent {
     #[allow(clippy::too_many_lines)]
     async fn stream_assistant_response(
         &mut self,
-        on_event: &Arc<dyn Fn(AgentEvent) + Send + Sync>,
+        on_event: AgentEventHandler,
         abort: Option<AbortSignal>,
     ) -> Result<AssistantMessage> {
         // Build context and stream completion
@@ -1007,7 +1009,7 @@ impl Agent {
                         });
                         return Ok(self.finalize_assistant_message(
                             Arc::try_unwrap(abort_arc).unwrap_or_else(|a| (*a).clone()),
-                            on_event,
+                            &on_event,
                             added_partial,
                         ));
                     }
@@ -1300,10 +1302,10 @@ impl Agent {
                     }
                 }
                 StreamEvent::Done { message, .. } => {
-                    return Ok(self.finalize_assistant_message(message, on_event, added_partial));
+                    return Ok(self.finalize_assistant_message(message, &on_event, added_partial));
                 }
                 StreamEvent::Error { error, .. } => {
-                    return Ok(self.finalize_assistant_message(error, on_event, added_partial));
+                    return Ok(self.finalize_assistant_message(error, &on_event, added_partial));
                 }
             }
         }
@@ -1316,7 +1318,7 @@ impl Agent {
                 let mut final_msg = (**last_msg).clone();
                 final_msg.stop_reason = StopReason::Error;
                 final_msg.error_message = Some("Stream ended without Done event".to_string());
-                return Ok(self.finalize_assistant_message(final_msg, on_event, true));
+                return Ok(self.finalize_assistant_message(final_msg, &on_event, true));
             }
         }
         Err(Error::api("Stream ended without Done event"))
@@ -1384,7 +1386,7 @@ impl Agent {
     async fn execute_tool_calls(
         &mut self,
         tool_calls: &[ToolCall],
-        on_event: &Arc<dyn Fn(AgentEvent) + Send + Sync>,
+        on_event: AgentEventHandler,
         new_messages: &mut Vec<Message>,
         abort: Option<AbortSignal>,
     ) -> Result<ToolExecutionOutcome> {
@@ -1411,9 +1413,10 @@ impl Agent {
         // Reborrow self immutably to create futures, then buffer_unordered to run in parallel.
         let tool_outputs: Vec<(ToolOutput, bool)> = {
             let self_ref = &*self;
-            let futures = tool_calls
-                .iter()
-                .map(|tc| self_ref.execute_tool(tc, on_event));
+            let owned_tool_calls = tool_calls.to_vec();
+            let futures = owned_tool_calls
+                .into_iter()
+                .map(|tc| self_ref.execute_tool_owned(tc, Arc::clone(&on_event)));
 
             if let Some(signal) = abort.as_ref() {
                 use futures::future::{Either, select};
@@ -1552,31 +1555,43 @@ impl Agent {
 
     async fn execute_tool(
         &self,
-        tool_call: &ToolCall,
-        on_event: &Arc<dyn Fn(AgentEvent) + Send + Sync>,
+        tool_call: ToolCall,
+        on_event: AgentEventHandler,
     ) -> (ToolOutput, bool) {
         let extensions = self.extensions.clone();
 
         let (mut output, is_error) = if let Some(extensions) = &extensions {
-            match Self::dispatch_tool_call_hook(extensions, tool_call).await {
+            match Self::dispatch_tool_call_hook(extensions, &tool_call).await {
                 Some(blocked_output) => (blocked_output, true),
-                None => self.execute_tool_without_hooks(tool_call, on_event).await,
+                None => {
+                    self.execute_tool_without_hooks(&tool_call, Arc::clone(&on_event))
+                        .await
+                }
             }
         } else {
-            self.execute_tool_without_hooks(tool_call, on_event).await
+            self.execute_tool_without_hooks(&tool_call, Arc::clone(&on_event))
+                .await
         };
 
         if let Some(extensions) = &extensions {
-            Self::apply_tool_result_hook(extensions, tool_call, &mut output, is_error).await;
+            Self::apply_tool_result_hook(extensions, &tool_call, &mut output, is_error).await;
         }
 
         (output, is_error)
     }
 
+    async fn execute_tool_owned(
+        &self,
+        tool_call: ToolCall,
+        on_event: AgentEventHandler,
+    ) -> (ToolOutput, bool) {
+        self.execute_tool(tool_call, on_event).await
+    }
+
     async fn execute_tool_without_hooks(
         &self,
         tool_call: &ToolCall,
-        on_event: &Arc<dyn Fn(AgentEvent) + Send + Sync>,
+        on_event: AgentEventHandler,
     ) -> (ToolOutput, bool) {
         // Find the tool
         let Some(tool) = self.tools.get(&tool_call.name) else {
@@ -1586,7 +1601,7 @@ impl Agent {
         let tool_name = tool_call.name.clone();
         let tool_id = tool_call.id.clone();
         let tool_args = tool_call.arguments.clone();
-        let on_event = Arc::clone(on_event);
+        let on_event = Arc::clone(&on_event);
 
         let update_callback = move |update: ToolUpdate| {
             on_event(AgentEvent::ToolExecutionUpdate {
@@ -2569,10 +2584,7 @@ mod extensions_integration_tests {
             };
 
             let on_event: Arc<dyn Fn(AgentEvent) + Send + Sync> = Arc::new(|_| {});
-            let (output, is_error) = agent_session
-                .agent
-                .execute_tool(&tool_call, &on_event)
-                .await;
+            let (output, is_error) = agent_session.agent.execute_tool(tool_call, on_event).await;
 
             assert!(is_error);
             assert!(output.is_error);
@@ -2634,10 +2646,7 @@ mod extensions_integration_tests {
             };
 
             let on_event: Arc<dyn Fn(AgentEvent) + Send + Sync> = Arc::new(|_| {});
-            let (output, is_error) = agent_session
-                .agent
-                .execute_tool(&tool_call, &on_event)
-                .await;
+            let (output, is_error) = agent_session.agent.execute_tool(tool_call, on_event).await;
 
             assert!(!is_error);
             assert!(!output.is_error);
@@ -2685,10 +2694,7 @@ mod extensions_integration_tests {
             };
 
             let on_event: Arc<dyn Fn(AgentEvent) + Send + Sync> = Arc::new(|_| {});
-            let (output, is_error) = agent_session
-                .agent
-                .execute_tool(&tool_call, &on_event)
-                .await;
+            let (output, is_error) = agent_session.agent.execute_tool(tool_call, on_event).await;
 
             assert!(!is_error);
             assert!(!output.is_error);
@@ -2738,10 +2744,7 @@ mod extensions_integration_tests {
             };
 
             let on_event: Arc<dyn Fn(AgentEvent) + Send + Sync> = Arc::new(|_| {});
-            let (output, is_error) = agent_session
-                .agent
-                .execute_tool(&tool_call, &on_event)
-                .await;
+            let (output, is_error) = agent_session.agent.execute_tool(tool_call, on_event).await;
 
             assert!(!is_error);
             assert!(!output.is_error);
@@ -2792,10 +2795,7 @@ mod extensions_integration_tests {
             };
 
             let on_event: Arc<dyn Fn(AgentEvent) + Send + Sync> = Arc::new(|_| {});
-            let (output, is_error) = agent_session
-                .agent
-                .execute_tool(&tool_call, &on_event)
-                .await;
+            let (output, is_error) = agent_session.agent.execute_tool(tool_call, on_event).await;
 
             assert!(is_error);
             assert!(output.is_error);
@@ -2865,10 +2865,7 @@ mod extensions_integration_tests {
             };
 
             let on_event: Arc<dyn Fn(AgentEvent) + Send + Sync> = Arc::new(|_| {});
-            let (output, is_error) = agent_session
-                .agent
-                .execute_tool(&tool_call, &on_event)
-                .await;
+            let (output, is_error) = agent_session.agent.execute_tool(tool_call, on_event).await;
 
             assert!(!is_error);
             assert!(!output.is_error);
@@ -2933,10 +2930,7 @@ mod extensions_integration_tests {
             };
 
             let on_event: Arc<dyn Fn(AgentEvent) + Send + Sync> = Arc::new(|_| {});
-            let (output, is_error) = agent_session
-                .agent
-                .execute_tool(&tool_call, &on_event)
-                .await;
+            let (output, is_error) = agent_session.agent.execute_tool(tool_call, on_event).await;
 
             assert!(is_error);
             assert!(output.is_error);
@@ -2997,10 +2991,7 @@ mod extensions_integration_tests {
             };
 
             let on_event: Arc<dyn Fn(AgentEvent) + Send + Sync> = Arc::new(|_| {});
-            let (output, is_error) = agent_session
-                .agent
-                .execute_tool(&tool_call, &on_event)
-                .await;
+            let (output, is_error) = agent_session.agent.execute_tool(tool_call, on_event).await;
 
             assert!(!is_error);
             assert!(!output.is_error);
@@ -3072,10 +3063,7 @@ mod extensions_integration_tests {
             };
 
             let on_event: Arc<dyn Fn(AgentEvent) + Send + Sync> = Arc::new(|_| {});
-            let (output, is_error) = agent_session
-                .agent
-                .execute_tool(&tool_call, &on_event)
-                .await;
+            let (output, is_error) = agent_session.agent.execute_tool(tool_call, on_event).await;
 
             assert!(is_error);
             assert!(output.is_error);
@@ -4238,8 +4226,11 @@ impl AgentSession {
     }
 
     /// Force-run compaction synchronously (used by `/compact` slash command).
-    pub async fn compact_now(&mut self, on_event: impl Fn(AgentEvent) + Send + Sync) -> Result<()> {
-        self.compact_synchronous(&on_event).await
+    pub async fn compact_now(
+        &mut self,
+        on_event: impl Fn(AgentEvent) + Send + Sync + 'static,
+    ) -> Result<()> {
+        self.compact_synchronous(Arc::new(on_event)).await
     }
 
     /// Two-phase non-blocking compaction.
@@ -4247,10 +4238,7 @@ impl AgentSession {
     /// **Phase 1** — apply a completed background compaction result (if any).
     /// **Phase 2** — if quotas allow and the session needs compaction, start a
     /// new background compaction thread.
-    async fn maybe_compact(
-        &mut self,
-        on_event: &(impl Fn(AgentEvent) + Send + Sync),
-    ) -> Result<()> {
+    async fn maybe_compact(&mut self, on_event: AgentEventHandler) -> Result<()> {
         if !self.compaction_settings.enabled {
             return Ok(());
         }
@@ -4259,7 +4247,8 @@ impl AgentSession {
         if let Some(outcome) = self.compaction_worker.try_recv() {
             match outcome {
                 Ok(result) => {
-                    self.apply_compaction_result(result, on_event).await?;
+                    self.apply_compaction_result(result, Arc::clone(&on_event))
+                        .await?;
                 }
                 Err(e) => {
                     on_event(AgentEvent::AutoCompactionEnd {
@@ -4315,7 +4304,7 @@ impl AgentSession {
     async fn apply_compaction_result(
         &self,
         result: compaction::CompactionResult,
-        on_event: &(impl Fn(AgentEvent) + Send + Sync),
+        on_event: AgentEventHandler,
     ) -> Result<()> {
         let cx = crate::agent_cx::AgentCx::for_request();
         let mut session = self
@@ -4352,10 +4341,7 @@ impl AgentSession {
     }
 
     /// Run compaction synchronously (inline), blocking until completion.
-    async fn compact_synchronous(
-        &self,
-        on_event: &(impl Fn(AgentEvent) + Send + Sync),
-    ) -> Result<()> {
+    async fn compact_synchronous(&self, on_event: AgentEventHandler) -> Result<()> {
         if !self.compaction_settings.enabled {
             return Ok(());
         }
@@ -4390,7 +4376,8 @@ impl AgentSession {
 
             match compaction::compact(prep, provider, &api_key, None).await {
                 Ok(result) => {
-                    self.apply_compaction_result(result, on_event).await?;
+                    self.apply_compaction_result(result, Arc::clone(&on_event))
+                        .await?;
                 }
                 Err(e) => {
                     on_event(AgentEvent::AutoCompactionEnd {
@@ -4440,7 +4427,7 @@ impl AgentSession {
         // Either use the pre-warmed JS runtime (booted concurrently with startup)
         // or create a fresh one inline.
         #[allow(unused_variables)]
-        let (manager, _tools) = if let Some(pre) = pre_warmed {
+        let (manager, tools) = if let Some(pre) = pre_warmed {
             pre.manager.set_js_runtime(pre.js_runtime);
             (pre.manager, pre.tools)
         } else {
@@ -4768,6 +4755,7 @@ impl AgentSession {
         abort: Option<AbortSignal>,
         on_event: impl Fn(AgentEvent) + Send + Sync + 'static,
     ) -> Result<AssistantMessage> {
+        let on_event: AgentEventHandler = Arc::new(on_event);
         let session_model = {
             let cx = crate::agent_cx::AgentCx::for_request();
             let session = self
@@ -4785,7 +4773,7 @@ impl AgentSession {
             self.apply_session_model_selection(provider_id.as_str(), model_id.as_str());
         }
 
-        self.maybe_compact(&on_event).await?;
+        self.maybe_compact(Arc::clone(&on_event)).await?;
         let history = {
             let cx = crate::agent_cx::AgentCx::for_request();
             let session = self
@@ -4819,9 +4807,12 @@ impl AgentSession {
         }
 
         self.extensions_is_streaming.store(true, Ordering::SeqCst);
+        let on_event_for_run = Arc::clone(&on_event);
         let result = self
             .agent
-            .run_with_message_with_abort(user_message, abort, on_event)
+            .run_with_message_with_abort(user_message, abort, move |event| {
+                on_event_for_run(event);
+            })
             .await;
         self.extensions_is_streaming.store(false, Ordering::SeqCst);
         let result = result?;
@@ -4836,6 +4827,7 @@ impl AgentSession {
         abort: Option<AbortSignal>,
         on_event: impl Fn(AgentEvent) + Send + Sync + 'static,
     ) -> Result<AssistantMessage> {
+        let on_event: AgentEventHandler = Arc::new(on_event);
         let session_model = {
             let cx = crate::agent_cx::AgentCx::for_request();
             let session = self
@@ -4853,7 +4845,7 @@ impl AgentSession {
             self.apply_session_model_selection(provider_id.as_str(), model_id.as_str());
         }
 
-        self.maybe_compact(&on_event).await?;
+        self.maybe_compact(Arc::clone(&on_event)).await?;
         let history = {
             let cx = crate::agent_cx::AgentCx::for_request();
             let session = self
@@ -4887,9 +4879,12 @@ impl AgentSession {
         }
 
         self.extensions_is_streaming.store(true, Ordering::SeqCst);
+        let on_event_for_run = Arc::clone(&on_event);
         let result = self
             .agent
-            .run_with_message_with_abort(user_message, abort, on_event)
+            .run_with_message_with_abort(user_message, abort, move |event| {
+                on_event_for_run(event);
+            })
             .await;
         self.extensions_is_streaming.store(false, Ordering::SeqCst);
         let result = result?;
