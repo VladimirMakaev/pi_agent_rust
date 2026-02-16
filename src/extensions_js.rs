@@ -63,77 +63,17 @@ use uuid::Uuid;
 // Environment variable filtering (bd-1av0.9)
 // ============================================================================
 
+use crate::extensions::SecretBrokerPolicy;
+
 /// Determine whether an environment variable is safe to expose to extensions.
 ///
-/// Uses a blocklist approach: most vars are allowed, but known sensitive
-/// patterns (API keys, secrets, tokens, passwords, credentials) are blocked.
+/// Uses the default `SecretBrokerPolicy` to block known sensitive patterns
+/// (API keys, secrets, tokens, passwords, credentials).
 pub fn is_env_var_allowed(key: &str) -> bool {
-    const BLOCKED_EXACT: &[&str] = &[
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
-        "GOOGLE_API_KEY",
-        "AZURE_OPENAI_API_KEY",
-        "COHERE_API_KEY",
-        "GROQ_API_KEY",
-        "DEEPINFRA_API_KEY",
-        "CEREBRAS_API_KEY",
-        "OPENROUTER_API_KEY",
-        "MISTRAL_API_KEY",
-        "MOONSHOT_API_KEY",
-        "DASHSCOPE_API_KEY",
-        "DEEPSEEK_API_KEY",
-        "FIREWORKS_API_KEY",
-        "TOGETHER_API_KEY",
-        "PERPLEXITY_API_KEY",
-        "XAI_API_KEY",
-        "DATABASE_URL",
-        "REDIS_URL",
-        "MONGODB_URI",
-        "PRIVATE_KEY",
-        "CARGO_REGISTRY_TOKEN",
-        "NPM_TOKEN",
-        "GH_TOKEN",
-        "GITHUB_TOKEN",
-        "AWS_ACCESS_KEY_ID",
-    ];
-    const BLOCKED_SUFFIXES: &[&str] = &[
-        "_API_KEY",
-        "_SECRET",
-        "_SECRET_KEY",
-        "_ACCESS_KEY",
-        "_PRIVATE_KEY",
-        "_KEY_ID",
-        "_PASSWORD",
-        "_PASSWD",
-        "_CREDENTIAL",
-        "_CREDENTIALS",
-        "_TOKEN",
-    ];
-    const BLOCKED_PREFIXES: &[&str] = &["AWS_SECRET_", "AWS_SESSION_"];
-
-    let upper = key.to_ascii_uppercase();
-
-    // Block sensitive names/patterns first so case variants (and PI_-prefixed
-    // lookalikes) cannot bypass filtering.
-    if BLOCKED_EXACT.contains(&upper.as_str()) {
-        return false;
-    }
-    for suffix in BLOCKED_SUFFIXES {
-        if upper.ends_with(suffix) {
-            return false;
-        }
-    }
-    for prefix in BLOCKED_PREFIXES {
-        if upper.starts_with(prefix) {
-            return false;
-        }
-    }
-
-    if upper.starts_with("PI_") {
-        return true;
-    }
-
-    true
+    let policy = SecretBrokerPolicy::default();
+    // is_secret returns true if it IS a secret (should be blocked).
+    // So we allow it if it is NOT a secret.
+    !policy.is_secret(key)
 }
 
 fn parse_truthy_flag(value: &str) -> bool {
