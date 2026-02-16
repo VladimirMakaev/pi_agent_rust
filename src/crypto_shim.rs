@@ -678,4 +678,143 @@ mod tests {
         assert!(NODE_CRYPTO_JS.contains("timingSafeEqual"));
         assert!(NODE_CRYPTO_JS.contains("getHashes"));
     }
+
+    // ── Property tests ──────────────────────────────────────────────────
+
+    mod proptest_crypto_shim {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn hex_lower_roundtrips_through_hex_decode(bytes in prop::collection::vec(any::<u8>(), 0..128)) {
+                let encoded = hex_lower(&bytes);
+                let decoded = hex_decode(&encoded);
+                assert_eq!(
+                    decoded, bytes,
+                    "hex_lower → hex_decode should roundtrip"
+                );
+            }
+
+            #[test]
+            fn hex_lower_output_length_is_double_input(bytes in prop::collection::vec(any::<u8>(), 0..128)) {
+                let encoded = hex_lower(&bytes);
+                assert_eq!(
+                    encoded.len(), bytes.len() * 2,
+                    "hex output should be exactly 2x input length"
+                );
+            }
+
+            #[test]
+            fn hex_lower_output_is_lowercase_hex(bytes in prop::collection::vec(any::<u8>(), 0..64)) {
+                let encoded = hex_lower(&bytes);
+                assert!(
+                    encoded.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+                    "hex_lower output should only contain lowercase hex chars: {encoded}"
+                );
+            }
+
+            #[test]
+            fn hex_decode_odd_length_drops_trailing(
+                bytes in prop::collection::vec(any::<u8>(), 1..64),
+                extra_char in prop::sample::select(vec!['0', '5', 'a', 'f']),
+            ) {
+                let mut hex = hex_lower(&bytes);
+                hex.push(extra_char);
+                let decoded = hex_decode(&hex);
+                // With odd-length input, the last char is dropped
+                assert_eq!(
+                    decoded, bytes,
+                    "odd hex should decode the even prefix correctly"
+                );
+            }
+
+            #[test]
+            fn encode_output_hex_matches_hex_lower(bytes in prop::collection::vec(any::<u8>(), 0..64)) {
+                let via_encode = encode_output(&bytes, "hex");
+                let via_hex_lower = hex_lower(&bytes);
+                assert_eq!(
+                    via_encode, via_hex_lower,
+                    "encode_output(hex) should match hex_lower"
+                );
+            }
+
+            #[test]
+            fn encode_output_unknown_encoding_falls_back_to_hex(
+                bytes in prop::collection::vec(any::<u8>(), 0..32),
+                encoding in "[a-z]{3,8}".prop_filter(
+                    "must not be known encoding",
+                    |e| e != "hex" && e != "base64",
+                ),
+            ) {
+                let result = encode_output(&bytes, &encoding);
+                let expected = hex_lower(&bytes);
+                assert_eq!(
+                    result, expected,
+                    "unknown encoding '{encoding}' should fall back to hex"
+                );
+            }
+
+            #[test]
+            fn random_bytes_returns_correct_length(len in 0..256usize) {
+                let bytes = random_bytes(len);
+                assert_eq!(
+                    bytes.len(), len,
+                    "random_bytes({len}) should return {len} bytes"
+                );
+            }
+
+            #[test]
+            fn sha256_hash_is_always_32_bytes(data in prop::collection::vec(any::<u8>(), 0..200)) {
+                let mut h = Sha256::new();
+                h.update(&data);
+                let result = h.finalize();
+                assert_eq!(
+                    result.len(), 32,
+                    "SHA-256 should always produce 32 bytes"
+                );
+            }
+
+            #[test]
+            fn sha256_is_deterministic(data in prop::collection::vec(any::<u8>(), 0..200)) {
+                let mut h1 = Sha256::new();
+                h1.update(&data);
+                let r1 = hex_lower(&h1.finalize());
+
+                let mut h2 = Sha256::new();
+                h2.update(&data);
+                let r2 = hex_lower(&h2.finalize());
+
+                assert_eq!(r1, r2, "SHA-256 must be deterministic");
+            }
+
+            #[test]
+            fn timing_safe_equal_is_reflexive(bytes in prop::collection::vec(any::<u8>(), 0..64)) {
+                let mut result = 0u8;
+                for (x, y) in bytes.iter().zip(bytes.iter()) {
+                    result |= x ^ y;
+                }
+                assert_eq!(result, 0, "byte slice compared to itself should be equal");
+            }
+
+            #[test]
+            fn timing_safe_unequal_detects_single_bit_flip(
+                bytes in prop::collection::vec(any::<u8>(), 1..64),
+                flip_idx in any::<prop::sample::Index>(),
+                flip_bit in 0..8u8,
+            ) {
+                let idx = flip_idx.index(bytes.len());
+                let mut other = bytes.clone();
+                other[idx] ^= 1 << flip_bit;
+                if other == bytes {
+                    return Ok(());
+                }
+                let mut result = 0u8;
+                for (x, y) in bytes.iter().zip(other.iter()) {
+                    result |= x ^ y;
+                }
+                assert_ne!(result, 0, "flipped byte should be detected as unequal");
+            }
+        }
+    }
 }

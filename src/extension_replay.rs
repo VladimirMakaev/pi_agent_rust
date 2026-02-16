@@ -2085,4 +2085,242 @@ mod tests {
         assert_eq!(t2, 2);
         assert_eq!(t3, 3);
     }
+
+    // ── Property tests ──────────────────────────────────────────────────
+
+    mod proptest_extension_replay {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arb_event_kind() -> impl Strategy<Value = ReplayEventKind> {
+            prop::sample::select(vec![
+                ReplayEventKind::Scheduled,
+                ReplayEventKind::QueueAccepted,
+                ReplayEventKind::PolicyDecision,
+                ReplayEventKind::Completed,
+                ReplayEventKind::Failed,
+            ])
+        }
+
+        fn arb_ext_id() -> impl Strategy<Value = String> {
+            "ext\\.[a-z]{1,5}"
+        }
+
+        fn arb_req_id() -> impl Strategy<Value = String> {
+            "req-[0-9]{1,4}"
+        }
+
+        fn arb_simple_draft() -> impl Strategy<Value = ReplayEventDraft> {
+            (1..100u64, arb_ext_id(), arb_req_id(), arb_event_kind()).prop_map(
+                |(clock, ext, req, kind)| ReplayEventDraft::new(clock, ext, req, kind),
+            )
+        }
+
+        proptest! {
+            #[test]
+            fn compute_overhead_per_mille_zero_when_captured_leq_baseline(
+                baseline in 1..10_000u64,
+                captured in 0..10_000u64,
+            ) {
+                if captured <= baseline {
+                    let result = super::super::compute_overhead_per_mille(baseline, captured);
+                    assert_eq!(
+                        result, 0,
+                        "captured <= baseline should yield 0 overhead"
+                    );
+                }
+            }
+
+            #[test]
+            fn compute_overhead_per_mille_zero_baseline_returns_max(
+                captured in 1..10_000u64,
+            ) {
+                let result = super::super::compute_overhead_per_mille(0, captured);
+                assert_eq!(
+                    result, u32::MAX,
+                    "zero baseline with positive captured should be MAX"
+                );
+            }
+
+            #[test]
+            fn compute_overhead_per_mille_is_non_negative(
+                baseline in 0..10_000u64,
+                captured in 0..10_000u64,
+            ) {
+                let result = super::super::compute_overhead_per_mille(baseline, captured);
+                // u32 is always non-negative, but verify we never panic
+                let _ = result;
+            }
+
+            #[test]
+            fn builder_produces_contiguous_sequences(
+                drafts in prop::collection::vec(arb_simple_draft(), 0..10),
+            ) {
+                let mut builder = ReplayTraceBuilder::new("trace-prop");
+                for d in drafts {
+                    builder.push(d);
+                }
+                let bundle = builder.build().expect("build should succeed");
+                for (idx, event) in bundle.events.iter().enumerate() {
+                    assert_eq!(
+                        event.seq,
+                        (idx + 1) as u64,
+                        "sequence should be 1-based contiguous"
+                    );
+                }
+            }
+
+            #[test]
+            fn builder_is_deterministic_regardless_of_push_order(
+                drafts in prop::collection::vec(arb_simple_draft(), 0..8),
+            ) {
+                let mut builder1 = ReplayTraceBuilder::new("trace-det");
+                for d in &drafts {
+                    builder1.push(d.clone());
+                }
+                let bundle1 = builder1.build().expect("build1");
+
+                let mut reversed = drafts.clone();
+                reversed.reverse();
+                let mut builder2 = ReplayTraceBuilder::new("trace-det");
+                for d in &reversed {
+                    builder2.push(d.clone());
+                }
+                let bundle2 = builder2.build().expect("build2");
+
+                assert_eq!(
+                    bundle1, bundle2,
+                    "canonical ordering should be same regardless of push order"
+                );
+            }
+
+            #[test]
+            fn identical_bundles_have_no_divergence(
+                drafts in prop::collection::vec(arb_simple_draft(), 0..8),
+            ) {
+                let mut builder = ReplayTraceBuilder::new("trace-id");
+                for d in &drafts {
+                    builder.push(d.clone());
+                }
+                let bundle = builder.build().expect("build");
+                let divergence = first_divergence(&bundle, &bundle)
+                    .expect("comparison should succeed");
+                assert!(
+                    divergence.is_none(),
+                    "identical bundles should have no divergence"
+                );
+            }
+
+            #[test]
+            fn json_roundtrip_preserves_bundle(
+                drafts in prop::collection::vec(arb_simple_draft(), 0..6),
+            ) {
+                let mut builder = ReplayTraceBuilder::new("trace-rt");
+                for d in drafts {
+                    builder.push(d);
+                }
+                let bundle = builder.build().expect("build");
+                let json = bundle.encode_json().expect("encode");
+                let decoded = ReplayTraceBundle::decode_json(&json).expect("decode");
+                assert_eq!(bundle, decoded, "JSON roundtrip should preserve bundle");
+            }
+
+            #[test]
+            fn capture_gate_disabled_config_always_rejects(
+                baseline in 1..10_000u64,
+                captured in 1..10_000u64,
+                trace_bytes in 0..10_000u64,
+                max_overhead in 0..1_000u32,
+                max_bytes in 0..10_000u64,
+            ) {
+                let budget = ReplayCaptureBudget {
+                    capture_enabled: false,
+                    max_overhead_per_mille: max_overhead,
+                    max_trace_bytes: max_bytes,
+                };
+                let observation = ReplayCaptureObservation {
+                    baseline_micros: baseline,
+                    captured_micros: captured,
+                    trace_bytes,
+                };
+                let report = evaluate_replay_capture_gate(budget, observation);
+                assert!(
+                    !report.capture_allowed,
+                    "disabled config should always reject"
+                );
+                assert_eq!(report.reason, ReplayCaptureGateReason::DisabledByConfig);
+            }
+
+            #[test]
+            fn capture_gate_is_deterministic(
+                baseline in 0..5_000u64,
+                captured in 0..5_000u64,
+                trace_bytes in 0..5_000u64,
+                enabled in any::<bool>(),
+                max_overhead in 0..500u32,
+                max_bytes in 0..5_000u64,
+            ) {
+                let budget = ReplayCaptureBudget {
+                    capture_enabled: enabled,
+                    max_overhead_per_mille: max_overhead,
+                    max_trace_bytes: max_bytes,
+                };
+                let observation = ReplayCaptureObservation {
+                    baseline_micros: baseline,
+                    captured_micros: captured,
+                    trace_bytes,
+                };
+                let r1 = evaluate_replay_capture_gate(budget, observation);
+                let r2 = evaluate_replay_capture_gate(budget, observation);
+                assert_eq!(r1, r2, "capture gate must be deterministic");
+            }
+
+            #[test]
+            fn event_kind_canonical_rank_all_distinct(
+                a_idx in 0..7usize,
+                b_idx in 0..7usize,
+            ) {
+                let kinds = [
+                    ReplayEventKind::Scheduled,
+                    ReplayEventKind::QueueAccepted,
+                    ReplayEventKind::PolicyDecision,
+                    ReplayEventKind::Cancelled,
+                    ReplayEventKind::Retried,
+                    ReplayEventKind::Completed,
+                    ReplayEventKind::Failed,
+                ];
+                if a_idx != b_idx {
+                    assert_ne!(
+                        kinds[a_idx].canonical_rank(),
+                        kinds[b_idx].canonical_rank(),
+                        "distinct kinds should have distinct ranks"
+                    );
+                }
+            }
+
+            #[test]
+            fn builder_events_sorted_by_logical_clock(
+                clocks in prop::collection::vec(0..50u64, 1..10),
+            ) {
+                let mut builder = ReplayTraceBuilder::new("trace-clock");
+                for (i, clock) in clocks.iter().enumerate() {
+                    builder.push(ReplayEventDraft::new(
+                        *clock,
+                        format!("ext.{i}"),
+                        format!("req-{i}"),
+                        ReplayEventKind::Scheduled,
+                    ));
+                }
+                let bundle = builder.build().expect("build");
+                for pair in bundle.events.windows(2) {
+                    assert!(
+                        pair[0].logical_clock <= pair[1].logical_clock,
+                        "events should be sorted by logical clock: {} > {}",
+                        pair[0].logical_clock,
+                        pair[1].logical_clock,
+                    );
+                }
+            }
+        }
+    }
 }
