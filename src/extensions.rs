@@ -36093,27 +36093,152 @@ mod tests {
     }
 
     #[test]
-    fn params_hash_parity_request_vs_payload() {
-        let request = HostcallRequest {
-            call_id: "call-hash".to_string(),
-            kind: HostcallKind::Tool {
-                name: "read".to_string(),
-            },
-            payload: json!({ "path": "hello.txt", "offset": 0 }),
-            trace_id: 1,
-            extension_id: None,
-        };
+    #[allow(clippy::too_many_lines)]
+    fn params_hash_parity_request_vs_payload_across_hostcall_kinds() {
+        let cases: Vec<(&str, HostcallRequest, Value)> = vec![
+            (
+                "tool",
+                HostcallRequest {
+                    call_id: "call-hash-tool".to_string(),
+                    kind: HostcallKind::Tool {
+                        name: "read".to_string(),
+                    },
+                    payload: json!({ "path": "hello.txt", "offset": 0 }),
+                    trace_id: 1,
+                    extension_id: None,
+                },
+                json!({
+                    "name": "read",
+                    "input": { "path": "hello.txt", "offset": 0 }
+                }),
+            ),
+            (
+                "exec-object",
+                HostcallRequest {
+                    call_id: "call-hash-exec-object".to_string(),
+                    kind: HostcallKind::Exec {
+                        cmd: "echo".to_string(),
+                    },
+                    payload: json!({
+                        "command": "legacy alias should be ignored",
+                        "args": ["hello"],
+                        "options": { "timeout": 1000 }
+                    }),
+                    trace_id: 2,
+                    extension_id: None,
+                },
+                json!({
+                    "cmd": "echo",
+                    "args": ["hello"],
+                    "options": { "timeout": 1000 }
+                }),
+            ),
+            (
+                "exec-non-object",
+                HostcallRequest {
+                    call_id: "call-hash-exec-non-object".to_string(),
+                    kind: HostcallKind::Exec {
+                        cmd: "printf".to_string(),
+                    },
+                    payload: json!("hello"),
+                    trace_id: 3,
+                    extension_id: None,
+                },
+                json!({
+                    "cmd": "printf",
+                    "payload": "hello"
+                }),
+            ),
+            (
+                "session",
+                HostcallRequest {
+                    call_id: "call-hash-session".to_string(),
+                    kind: HostcallKind::Session {
+                        op: "set_model".to_string(),
+                    },
+                    payload: json!({ "provider": "openai", "modelId": "gpt-4o-mini" }),
+                    trace_id: 4,
+                    extension_id: None,
+                },
+                json!({
+                    "op": "set_model",
+                    "provider": "openai",
+                    "modelId": "gpt-4o-mini"
+                }),
+            ),
+            (
+                "ui-non-object",
+                HostcallRequest {
+                    call_id: "call-hash-ui".to_string(),
+                    kind: HostcallKind::Ui {
+                        op: "set_status".to_string(),
+                    },
+                    payload: json!("thinking"),
+                    trace_id: 5,
+                    extension_id: None,
+                },
+                json!({
+                    "op": "set_status",
+                    "payload": "thinking"
+                }),
+            ),
+            (
+                "events-non-object",
+                HostcallRequest {
+                    call_id: "call-hash-events".to_string(),
+                    kind: HostcallKind::Events {
+                        op: "emit".to_string(),
+                    },
+                    payload: json!(42),
+                    trace_id: 6,
+                    extension_id: None,
+                },
+                json!({
+                    "op": "emit",
+                    "payload": 42
+                }),
+            ),
+            (
+                "log",
+                HostcallRequest {
+                    call_id: "call-hash-log".to_string(),
+                    kind: HostcallKind::Log,
+                    payload: json!({
+                        "level": "info",
+                        "event": "unit.test",
+                        "message": "hello"
+                    }),
+                    trace_id: 7,
+                    extension_id: None,
+                },
+                json!({
+                    "level": "info",
+                    "event": "unit.test",
+                    "message": "hello"
+                }),
+            ),
+        ];
 
-        let payload = hostcall_request_to_payload(&request);
+        for (case_name, request, expected_params) in cases {
+            let payload = hostcall_request_to_payload(&request);
 
-        // The params_hash from the request and from the payload must match,
-        // since both use the same canonical shape.
-        let request_hash = request.params_hash();
-        let payload_hash = hostcall_params_hash(&payload.method, &payload.params);
-        assert_eq!(
-            request_hash, payload_hash,
-            "params_hash must be identical for HostcallRequest and HostCallPayload"
-        );
+            assert_eq!(
+                payload.params, expected_params,
+                "unexpected canonical params for case {case_name}"
+            );
+            assert_eq!(
+                request.params_for_hash(),
+                payload.params,
+                "request->payload canonical params drift for case {case_name}"
+            );
+
+            let request_hash = request.params_hash();
+            let payload_hash = hostcall_params_hash(&payload.method, &payload.params);
+            assert_eq!(
+                request_hash, payload_hash,
+                "params_hash mismatch for case {case_name}"
+            );
+        }
     }
 
     #[test]

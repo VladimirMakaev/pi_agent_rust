@@ -285,27 +285,44 @@ impl ResourceLoader {
         extension_entries.extend(cli_extension_paths);
         let extension_entries = dedupe_paths(extension_entries);
 
-        let skills_result = load_skills(LoadSkillsOptions {
-            cwd: cwd.to_path_buf(),
-            agent_dir: Config::global_dir(),
-            skill_paths,
-            include_defaults: false,
-        });
-
-        let prompt_templates = load_prompt_templates(LoadPromptTemplatesOptions {
-            cwd: cwd.to_path_buf(),
-            agent_dir: Config::global_dir(),
-            prompt_paths,
-            include_defaults: false,
+        // Load skills, prompt templates, and themes in parallel — they are independent
+        // filesystem walks that benefit from overlapped I/O on multi-core machines.
+        let agent_dir = Config::global_dir();
+        let cwd_buf = cwd.to_path_buf();
+        let (skills_result, prompt_templates, themes_result) = std::thread::scope(|s| {
+            let cwd_s = &cwd_buf;
+            let agent_s = &agent_dir;
+            let skills_handle = s.spawn(move || {
+                load_skills(LoadSkillsOptions {
+                    cwd: cwd_s.clone(),
+                    agent_dir: agent_s.clone(),
+                    skill_paths,
+                    include_defaults: false,
+                })
+            });
+            let prompts_handle = s.spawn(move || {
+                load_prompt_templates(LoadPromptTemplatesOptions {
+                    cwd: cwd_s.clone(),
+                    agent_dir: agent_s.clone(),
+                    prompt_paths,
+                    include_defaults: false,
+                })
+            });
+            let themes_handle = s.spawn(move || {
+                load_themes(LoadThemesOptions {
+                    cwd: cwd_s.clone(),
+                    agent_dir: agent_s.clone(),
+                    theme_paths,
+                    include_defaults: false,
+                })
+            });
+            (
+                skills_handle.join().expect("skills loader thread"),
+                prompts_handle.join().expect("prompt loader thread"),
+                themes_handle.join().expect("theme loader thread"),
+            )
         });
         let (prompts, prompt_diagnostics) = dedupe_prompts(prompt_templates);
-
-        let themes_result = load_themes(LoadThemesOptions {
-            cwd: cwd.to_path_buf(),
-            agent_dir: Config::global_dir(),
-            theme_paths,
-            include_defaults: false,
-        });
         let (themes, theme_diagnostics) = dedupe_themes(themes_result.themes);
         let mut theme_diags = themes_result.diagnostics;
         theme_diags.extend(theme_diagnostics);
