@@ -94,6 +94,42 @@ fn ghost_hit_reentry_admits_from_ghost() {
 }
 
 #[test]
+fn ghost_hit_counter_tracks_repeated_reentries_exactly() {
+    let mut policy = S3FifoPolicy::new(S3FifoConfig {
+        live_capacity: 2,
+        small_capacity: 1,
+        ghost_capacity: 4,
+        max_entries_per_owner: 4,
+        fallback_window: 32,
+        min_ghost_hits_in_window: 0,
+        max_budget_rejections_in_window: 32,
+    });
+
+    let sequence = [
+        ("ext-a", "k1"),
+        ("ext-a", "k1"),
+        ("ext-b", "k2"),
+        ("ext-c", "k3"),
+        ("ext-b", "k2"),
+        ("ext-a", "k1"),
+        ("ext-a", "k1"),
+    ];
+
+    let mut expected_ghost_hits = 0u64;
+    for (owner, key) in sequence {
+        let decision = policy.access(owner, key.to_string());
+        if decision.ghost_hit {
+            expected_ghost_hits = expected_ghost_hits.saturating_add(1);
+            assert_eq!(decision.kind, S3FifoDecisionKind::AdmitFromGhost);
+            assert_eq!(decision.tier, S3FifoTier::Main);
+        }
+        assert_eq!(policy.telemetry().ghost_hits_total, expected_ghost_hits);
+    }
+
+    assert_eq!(expected_ghost_hits, 2);
+}
+
+#[test]
 fn telemetry_snapshot_invariants_hold_after_mixed_sequence() {
     let config = S3FifoConfig {
         live_capacity: 6,
