@@ -168,7 +168,7 @@
       "remediation": "Generate fresh extension_benchmark_stratification.json in the current perf run."
     }
   ],
-  "generated_at": "2026-02-16T06:56:15.784476609+00:00",
+  "generated_at": "2026-02-16T16:10:36.119094529+00:00",
   "no_data": 8,
   "pass": 5,
   "schema": "pi.perf.budget_summary.v1",
