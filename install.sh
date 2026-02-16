@@ -190,22 +190,29 @@ pi_ascii_logo_normalized() {
 
 pi_ascii_logo_gum() {
   local logo="$1"
-  local palette=(159 153 147 117 111 81 75 69 63 57 33 27)
   local line=""
-  local total_lines=0
   local idx=0
   local styled=""
 
   while IFS= read -r line; do
-    total_lines=$((total_lines + 1))
-  done <<< "$logo"
-
-  while IFS= read -r line; do
-    local color_idx=0
-    if [ "$total_lines" -gt 1 ]; then
-      color_idx=$(( idx * (${#palette[@]} - 1) / (total_lines - 1) ))
-    fi
-    local color="${palette[$color_idx]}"
+    local color=51
+    case "$idx" in
+      0|1) color=159 ;;
+      2) color=123 ;;
+      3) color=117 ;;
+      4) color=111 ;;
+      5) color=75 ;;
+      6) color=69 ;;
+      7) color=63 ;;
+      8) color=69 ;;
+      9|10) color=75 ;;
+      11) color=160 ;;
+      12) color=166 ;;
+      13) color=172 ;;
+      14) color=178 ;;
+      15) color=208 ;;
+      16) color=214 ;;
+    esac
     local rendered
     rendered="$(gum style --foreground "$color" --bold "$line")"
     if [ -z "$styled" ]; then
@@ -220,21 +227,28 @@ pi_ascii_logo_gum() {
 
 pi_ascii_logo_ansi() {
   local logo="$1"
-  local palette=(159 153 147 117 111 81 75 69 63 57 33 27)
   local line=""
-  local total_lines=0
   local idx=0
 
   while IFS= read -r line; do
-    total_lines=$((total_lines + 1))
-  done <<< "$logo"
-
-  while IFS= read -r line; do
-    local color_idx=0
-    if [ "$total_lines" -gt 1 ]; then
-      color_idx=$(( idx * (${#palette[@]} - 1) / (total_lines - 1) ))
-    fi
-    local color="${palette[$color_idx]}"
+    local color=51
+    case "$idx" in
+      0|1) color=159 ;;
+      2) color=123 ;;
+      3) color=117 ;;
+      4) color=111 ;;
+      5) color=75 ;;
+      6) color=69 ;;
+      7) color=63 ;;
+      8) color=69 ;;
+      9|10) color=75 ;;
+      11) color=160 ;;
+      12) color=166 ;;
+      13) color=172 ;;
+      14) color=178 ;;
+      15) color=208 ;;
+      16) color=214 ;;
+    esac
     printf '\033[1;38;5;%sm%s\033[0m\n' "$color" "$line"
     idx=$((idx + 1))
   done <<< "$logo"
@@ -442,22 +456,22 @@ show_header() {
       "$styled_logo" \
       "$(gum style --foreground 51 --bold "${header_indent}Pi Agent Rust Installer")" \
       "$(gum style --foreground 226 --bold "${header_indent}Install target version: ${header_version}")" \
-      "$(gum style --foreground 201 --bold "${header_indent}Based on Pi Agent by Mario Zechner")" \
-      "$(gum style --foreground 118 --bold "${header_indent}Rust version by Jeffrey Emanuel")" \
-      "$(gum style --foreground 81 --bold "${header_indent}Fast Rust-native coding agent installer")" \
-      "$(gum style --foreground 214 --bold "${header_indent}Checksum verification by default | Optional Sigstore/cosign")" \
-      "$(gum style --foreground 45 --bold "${header_indent}Repository: ${OWNER}/${REPO}")"
+      "$(gum style --foreground 252 "${header_indent}Based on Pi Agent by Mario Zechner")" \
+      "$(gum style --foreground 252 "${header_indent}Rust version by Jeffrey Emanuel")" \
+      "$(gum style --foreground 248 "${header_indent}Fast Rust-native coding agent installer")" \
+      "$(gum style --foreground 248 "${header_indent}Checksum verification by default | Optional Sigstore/cosign")" \
+      "$(gum style --foreground 111 "${header_indent}Repository: ${OWNER}/${REPO}")"
   else
     echo ""
     pi_ascii_logo_ansi "$logo"
     echo ""
     echo -e "\033[1;38;5;51m${header_indent}Pi Agent Rust Installer\033[0m"
     echo -e "\033[1;38;5;226m${header_indent}Install target version: ${header_version}\033[0m"
-    echo -e "\033[1;38;5;201m${header_indent}Based on Pi Agent by Mario Zechner\033[0m"
-    echo -e "\033[1;38;5;118m${header_indent}Rust version by Jeffrey Emanuel\033[0m"
-    echo -e "\033[1;38;5;81m${header_indent}Fast Rust-native coding agent installer\033[0m"
-    echo -e "\033[1;38;5;214m${header_indent}Checksum verification by default | Optional Sigstore/cosign\033[0m"
-    echo -e "\033[1;38;5;45m${header_indent}Repository: ${OWNER}/${REPO}\033[0m"
+    echo -e "\033[0;38;5;252m${header_indent}Based on Pi Agent by Mario Zechner\033[0m"
+    echo -e "\033[0;38;5;252m${header_indent}Rust version by Jeffrey Emanuel\033[0m"
+    echo -e "\033[0;38;5;248m${header_indent}Fast Rust-native coding agent installer\033[0m"
+    echo -e "\033[0;38;5;248m${header_indent}Checksum verification by default | Optional Sigstore/cosign\033[0m"
+    echo -e "\033[0;38;5;111m${header_indent}Repository: ${OWNER}/${REPO}\033[0m"
     echo ""
   fi
 }
