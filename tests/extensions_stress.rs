@@ -87,6 +87,13 @@ struct ReactorQueueSample {
 }
 
 #[derive(Debug, Serialize, Default)]
+struct S3FifoStressDiagnostics {
+    fairness_budget_rejections: u64,
+    lane_overflow_rejections: u64,
+    fallback_event_total: u64,
+}
+
+#[derive(Debug, Serialize, Default)]
 struct ReactorDiagnostics {
     enabled: bool,
     shard_count: usize,
@@ -99,6 +106,7 @@ struct ReactorDiagnostics {
     stall_reasons: BTreeMap<String, u64>,
     migration_event_total: u64,
     migration_events_by_transition: BTreeMap<String, u64>,
+    s3fifo: S3FifoStressDiagnostics,
 }
 
 #[derive(Debug)]
@@ -146,6 +154,8 @@ struct ProfileRotationSlice {
     latency_ok: bool,
     reactor_rejected_enqueues: u64,
     reactor_migration_event_total: u64,
+    reactor_s3fifo_fairness_budget_rejections: u64,
+    reactor_s3fifo_fallback_event_total: u64,
     pass: bool,
 }
 
@@ -340,12 +350,28 @@ fn build_reactor_diagnostics(
         .copied()
         .sum::<u64>();
 
+    let s3fifo_from_reasons = |stall_reasons: &BTreeMap<String, u64>, lane_overflow_rejections| {
+        let fairness_budget_rejections = stall_reasons.get("fairness_budget").copied().unwrap_or(0);
+        let fallback_event_total = stall_reasons
+            .iter()
+            .filter(|(reason, _)| reason.contains("fallback"))
+            .map(|(_, count)| *count)
+            .sum::<u64>();
+        S3FifoStressDiagnostics {
+            fairness_budget_rejections,
+            lane_overflow_rejections,
+            fallback_event_total,
+        }
+    };
+
     let Some(reactor) = manager.reactor_telemetry() else {
+        let s3fifo = s3fifo_from_reasons(&stall_reasons, 0);
         return ReactorDiagnostics {
             queue_samples,
             stall_reasons,
             migration_event_total,
             migration_events_by_transition,
+            s3fifo,
             ..Default::default()
         };
     };
@@ -356,6 +382,8 @@ fn build_reactor_diagnostics(
             .or_insert(0);
         *count = count.saturating_add(reactor.rejected_enqueues);
     }
+
+    let s3fifo = s3fifo_from_reasons(&stall_reasons, reactor.rejected_enqueues);
 
     ReactorDiagnostics {
         enabled: true,
@@ -369,6 +397,7 @@ fn build_reactor_diagnostics(
         stall_reasons,
         migration_event_total,
         migration_events_by_transition,
+        s3fifo,
     }
 }
 
@@ -650,6 +679,11 @@ fn write_stress_report(result: &StressResult, duration_secs: u64, ext_names: &[S
             "stall_reasons": result.reactor.stall_reasons,
             "migration_event_total": result.reactor.migration_event_total,
             "migration_events": result.reactor.migration_events_by_transition,
+            "s3fifo": {
+                "fairness_budget_rejections": result.reactor.s3fifo.fairness_budget_rejections,
+                "lane_overflow_rejections": result.reactor.s3fifo.lane_overflow_rejections,
+                "fallback_event_total": result.reactor.s3fifo.fallback_event_total,
+            },
         },
     });
     lines.push(serde_json::to_string(&summary_entry).unwrap_or_default());
@@ -695,6 +729,11 @@ fn write_stress_report(result: &StressResult, duration_secs: u64, ext_names: &[S
                 "migration_event_total": result.reactor.migration_event_total,
                 "migration_events": result.reactor.migration_events_by_transition,
                 "queue_samples": result.reactor.queue_samples,
+                "s3fifo": {
+                    "fairness_budget_rejections": result.reactor.s3fifo.fairness_budget_rejections,
+                    "lane_overflow_rejections": result.reactor.s3fifo.lane_overflow_rejections,
+                    "fallback_event_total": result.reactor.s3fifo.fallback_event_total,
+                },
             },
         },
         "pass": result.rss_ok && result.latency_ok,
@@ -940,6 +979,7 @@ fn latency_degradation_low_baseline_uses_absolute_cap() {
 // ============================================================================
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn stress_short_10_extensions() {
     let ext_paths = collect_safe_extensions(15);
     assert!(
@@ -1005,6 +1045,18 @@ fn stress_short_10_extensions() {
     assert!(
         triage_json["results"]["reactor"]["migration_events"].is_object(),
         "reactor.migration_events should be present in stress triage report"
+    );
+    assert!(
+        triage_json["results"]["reactor"]["s3fifo"]["fairness_budget_rejections"].is_number(),
+        "reactor.s3fifo.fairness_budget_rejections should be present in stress triage report"
+    );
+    assert!(
+        triage_json["results"]["reactor"]["s3fifo"]["lane_overflow_rejections"].is_number(),
+        "reactor.s3fifo.lane_overflow_rejections should be present in stress triage report"
+    );
+    assert!(
+        triage_json["results"]["reactor"]["s3fifo"]["fallback_event_total"].is_number(),
+        "reactor.s3fifo.fallback_event_total should be present in stress triage report"
     );
 
     // Verify events were dispatched
@@ -1141,6 +1193,11 @@ fn stress_policy_profile_rotation() {
             latency_ok: result.latency_ok,
             reactor_rejected_enqueues: result.reactor.rejected_enqueues,
             reactor_migration_event_total: result.reactor.migration_event_total,
+            reactor_s3fifo_fairness_budget_rejections: result
+                .reactor
+                .s3fifo
+                .fairness_budget_rejections,
+            reactor_s3fifo_fallback_event_total: result.reactor.s3fifo.fallback_event_total,
             pass,
         });
 

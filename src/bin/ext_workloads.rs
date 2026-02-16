@@ -2458,6 +2458,119 @@ fn validate_hotspot_matrix_schema(matrix: &Value) -> Result<()> {
             )));
         }
     }
+    let Some(voi_budget) = voi.get("budget").and_then(Value::as_object) else {
+        return Err(Error::extension(
+            "voi_scheduler.budget must be an object".to_string(),
+        ));
+    };
+    for field in [
+        "max_overhead_ms",
+        "max_experiments",
+        "used_overhead_ms",
+        "remaining_overhead_ms",
+        "feasible",
+    ] {
+        if voi_budget.get(field).is_none() {
+            return Err(Error::extension(format!(
+                "voi_scheduler budget missing field: {field}"
+            )));
+        }
+    }
+
+    let Some(voi_candidates) = voi.get("candidates").and_then(Value::as_array) else {
+        return Err(Error::extension(
+            "voi_scheduler.candidates must be an array".to_string(),
+        ));
+    };
+    for (idx, row) in voi_candidates.iter().enumerate() {
+        let Some(row_obj) = row.as_object() else {
+            return Err(Error::extension(format!(
+                "voi_scheduler candidate {idx} must be an object"
+            )));
+        };
+        for field in [
+            "stage",
+            "rank",
+            "selected",
+            "skip_reason",
+            "cost_ms",
+            "voi_score",
+            "expected_information_gain",
+            "recommended_probe",
+            "utility",
+        ] {
+            if row_obj.get(field).is_none() {
+                return Err(Error::extension(format!(
+                    "voi_scheduler candidate {idx} missing field: {field}"
+                )));
+            }
+        }
+        let Some(utility) = row_obj.get("utility").and_then(Value::as_object) else {
+            return Err(Error::extension(format!(
+                "voi_scheduler candidate {idx} utility must be an object"
+            )));
+        };
+        for field in [
+            "uncertainty_reduction",
+            "user_impact_score",
+            "pressure_bonus",
+            "total",
+        ] {
+            if utility.get(field).is_none() {
+                return Err(Error::extension(format!(
+                    "voi_scheduler candidate {idx} utility missing field: {field}"
+                )));
+            }
+        }
+    }
+
+    let Some(selected_plan) = voi.get("selected_plan").and_then(Value::as_array) else {
+        return Err(Error::extension(
+            "voi_scheduler.selected_plan must be an array".to_string(),
+        ));
+    };
+    for (idx, row) in selected_plan.iter().enumerate() {
+        let Some(row_obj) = row.as_object() else {
+            return Err(Error::extension(format!(
+                "voi_scheduler selected_plan {idx} must be an object"
+            )));
+        };
+        for field in [
+            "stage",
+            "rank",
+            "cost_ms",
+            "expected_information_gain",
+            "recommended_probe",
+        ] {
+            if row_obj.get(field).is_none() {
+                return Err(Error::extension(format!(
+                    "voi_scheduler selected_plan {idx} missing field: {field}"
+                )));
+            }
+        }
+    }
+
+    let Some(realized_gain) = voi
+        .get("realized_information_gain")
+        .and_then(Value::as_object)
+    else {
+        return Err(Error::extension(
+            "voi_scheduler.realized_information_gain must be an object".to_string(),
+        ));
+    };
+    for field in [
+        "expected_total",
+        "realized_total",
+        "correlation_strength",
+        "correlation_multiplier",
+        "regression_penalty",
+    ] {
+        if realized_gain.get(field).is_none() {
+            return Err(Error::extension(format!(
+                "voi_scheduler realized_information_gain missing field: {field}"
+            )));
+        }
+    }
 
     Ok(())
 }
@@ -2684,8 +2797,7 @@ mod tests {
         assert!((parsed.total_us - 14_000.0).abs() < 0.001);
     }
 
-    #[test]
-    fn hotspot_matrix_includes_ev_confidence_and_user_impact() {
+    fn hotspot_matrix_schema_fixture() -> Value {
         let records = vec![
             json!({
                 "schema": BENCH_SCHEMA,
@@ -2702,7 +2814,7 @@ mod tests {
                 "per_call_us": 180.0,
             }),
         ];
-        let matrix = build_hotspot_matrix(
+        build_hotspot_matrix(
             &records,
             &json!({ "run_id": "test-run" }),
             &json!({ "schema": TRACE_EVENT_SCHEMA }),
@@ -2737,7 +2849,12 @@ mod tests {
                 }
             }),
             &json!({ "status": "not_collected" }),
-        );
+        )
+    }
+
+    #[test]
+    fn hotspot_matrix_includes_ev_confidence_and_user_impact() {
+        let matrix = hotspot_matrix_schema_fixture();
         validate_hotspot_matrix_schema(&matrix).expect("schema should validate");
         let hotspots = matrix["hotspot_matrix"]
             .as_array()
@@ -2780,6 +2897,40 @@ mod tests {
                 .and_then(Value::as_str),
             Some(VOI_SCHEDULER_SCHEMA),
             "missing VOI scheduler artifact"
+        );
+    }
+
+    #[test]
+    fn hotspot_matrix_schema_rejects_missing_voi_candidate_utility_total() {
+        let mut matrix = hotspot_matrix_schema_fixture();
+        matrix
+            .pointer_mut("/voi_scheduler/candidates/0/utility")
+            .and_then(Value::as_object_mut)
+            .expect("utility object")
+            .remove("total");
+
+        let err = validate_hotspot_matrix_schema(&matrix).expect_err("expected schema failure");
+        assert!(
+            err.to_string()
+                .contains("voi_scheduler candidate 0 utility missing field: total"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn hotspot_matrix_schema_rejects_missing_voi_selected_plan_probe() {
+        let mut matrix = hotspot_matrix_schema_fixture();
+        matrix
+            .pointer_mut("/voi_scheduler/selected_plan/0")
+            .and_then(Value::as_object_mut)
+            .expect("selected_plan[0] object")
+            .remove("recommended_probe");
+
+        let err = validate_hotspot_matrix_schema(&matrix).expect_err("expected schema failure");
+        assert!(
+            err.to_string()
+                .contains("voi_scheduler selected_plan 0 missing field: recommended_probe"),
+            "unexpected error: {err}"
         );
     }
 
@@ -2931,6 +3082,488 @@ mod tests {
             .expect("feasible");
         assert!(feasible);
         assert!(used <= 40.0 + f64::EPSILON);
+    }
+
+    #[test]
+    fn voi_scheduler_marks_max_experiments_reached_and_preserves_plan_consistency() {
+        let now = DateTime::parse_from_rfc3339("2026-02-16T05:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let hotspots = vec![
+            json!({
+                "stage": "queue",
+                "ev_score": 95.0,
+                "confidence": 0.25,
+                "pmu_multiplier": 1.2,
+                "projected_user_impact": { "turn_latency_p95_ms": 8.0 }
+            }),
+            json!({
+                "stage": "schedule",
+                "ev_score": 84.0,
+                "confidence": 0.30,
+                "pmu_multiplier": 1.1,
+                "projected_user_impact": { "turn_latency_p95_ms": 7.0 }
+            }),
+            json!({
+                "stage": "execute",
+                "ev_score": 72.0,
+                "confidence": 0.35,
+                "pmu_multiplier": 1.0,
+                "projected_user_impact": { "turn_latency_p95_ms": 5.5 }
+            }),
+            json!({
+                "stage": "policy",
+                "ev_score": 50.0,
+                "confidence": 0.45,
+                "pmu_multiplier": 1.0,
+                "projected_user_impact": { "turn_latency_p95_ms": 3.5 }
+            }),
+        ];
+        let budget = VoiBudgetConfig {
+            max_overhead_ms: 300.0,
+            max_experiments: 2,
+            stale_after_hours: 24.0,
+        };
+        let plan = build_voi_scheduler_plan_at(
+            VoiPlannerInputs {
+                hotspot_entries: &hotspots,
+                run_metadata: &json!({ "finished_at": "2026-02-16T04:55:00Z" }),
+                pmu_meta: &json!({
+                    "normalized_counters": {
+                        "frontend_stall_pct": 28.0,
+                        "backend_stall_pct": 24.0,
+                        "llc_miss_pct": 17.0,
+                        "branch_miss_pct": 4.8
+                    }
+                }),
+                pmu_comparison: &json!({
+                    "status": "compared",
+                    "regressions": { "overall": false }
+                }),
+                pmu_outcome_correlation: &json!({
+                    "correlation_strength": "high",
+                    "signals": {
+                        "pmu_worse": false,
+                        "outcome_regression": false
+                    }
+                }),
+                outcome_comparison: &json!({
+                    "regressions": { "overall": false }
+                }),
+            },
+            now,
+            budget,
+        );
+
+        let candidate_rows = plan
+            .get("candidates")
+            .and_then(Value::as_array)
+            .expect("candidate rows");
+        let selected_rows = candidate_rows
+            .iter()
+            .filter(|row| row.get("selected").and_then(Value::as_bool) == Some(true))
+            .collect::<Vec<_>>();
+        let skipped_rows = candidate_rows
+            .iter()
+            .filter(|row| row.get("selected").and_then(Value::as_bool) == Some(false))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            selected_rows.len(),
+            2,
+            "max_experiments should cap selection"
+        );
+        assert!(
+            skipped_rows.iter().all(|row| {
+                row.get("skip_reason").and_then(Value::as_str) == Some("max_experiments_reached")
+            }),
+            "all non-selected rows should report max_experiments_reached"
+        );
+
+        let selected_plan = plan
+            .get("selected_plan")
+            .and_then(Value::as_array)
+            .expect("selected_plan");
+        assert_eq!(
+            selected_plan.len(),
+            selected_rows.len(),
+            "selected_plan length should match selected candidate rows"
+        );
+        for plan_row in selected_plan {
+            let stage = plan_row
+                .get("stage")
+                .and_then(Value::as_str)
+                .expect("selected plan stage");
+            let matching_row = selected_rows
+                .iter()
+                .find(|row| row.get("stage").and_then(Value::as_str) == Some(stage))
+                .expect("matching selected candidate");
+
+            assert_eq!(plan_row.get("rank"), matching_row.get("rank"));
+            assert_eq!(plan_row.get("cost_ms"), matching_row.get("cost_ms"));
+            assert_eq!(
+                plan_row.get("expected_information_gain"),
+                matching_row.get("expected_information_gain")
+            );
+            assert_eq!(
+                plan_row.get("recommended_probe"),
+                matching_row.get("recommended_probe")
+            );
+        }
+
+        let selected_cost = selected_rows
+            .iter()
+            .map(|row| {
+                row.get("cost_ms")
+                    .and_then(Value::as_f64)
+                    .expect("selected cost")
+            })
+            .sum::<f64>();
+        let used_overhead = plan
+            .get("budget")
+            .and_then(|budget_obj| budget_obj.get("used_overhead_ms"))
+            .and_then(Value::as_f64)
+            .expect("used_overhead_ms");
+        let remaining_overhead = plan
+            .get("budget")
+            .and_then(|budget_obj| budget_obj.get("remaining_overhead_ms"))
+            .and_then(Value::as_f64)
+            .expect("remaining_overhead_ms");
+        assert!((used_overhead - selected_cost).abs() < 1e-9);
+        assert!(
+            (remaining_overhead - (budget.max_overhead_ms - selected_cost)).abs() < 1e-9,
+            "remaining overhead must reflect selected cost"
+        );
+    }
+
+    #[test]
+    fn voi_scheduler_marks_budget_exceeded_when_remaining_budget_is_insufficient() {
+        let now = DateTime::parse_from_rfc3339("2026-02-16T05:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let hotspots = vec![
+            json!({
+                "stage": "queue",
+                "ev_score": 95.0,
+                "confidence": 0.25,
+                "pmu_multiplier": 1.0,
+                "projected_user_impact": { "turn_latency_p95_ms": 9.0 }
+            }),
+            json!({
+                "stage": "schedule",
+                "ev_score": 50.0,
+                "confidence": 0.35,
+                "pmu_multiplier": 1.0,
+                "projected_user_impact": { "turn_latency_p95_ms": 4.0 }
+            }),
+            json!({
+                "stage": "marshal",
+                "ev_score": 38.0,
+                "confidence": 0.40,
+                "pmu_multiplier": 1.0,
+                "projected_user_impact": { "turn_latency_p95_ms": 3.0 }
+            }),
+        ];
+        let budget = VoiBudgetConfig {
+            max_overhead_ms: 50.0,
+            max_experiments: 5,
+            stale_after_hours: 24.0,
+        };
+        let plan = build_voi_scheduler_plan_at(
+            VoiPlannerInputs {
+                hotspot_entries: &hotspots,
+                run_metadata: &json!({ "finished_at": "2026-02-16T04:55:00Z" }),
+                pmu_meta: &json!({
+                    "normalized_counters": {
+                        "frontend_stall_pct": 27.0,
+                        "backend_stall_pct": 23.0,
+                        "llc_miss_pct": 16.0,
+                        "branch_miss_pct": 4.5
+                    }
+                }),
+                pmu_comparison: &json!({
+                    "status": "compared",
+                    "regressions": { "overall": false }
+                }),
+                pmu_outcome_correlation: &json!({
+                    "correlation_strength": "high",
+                    "signals": {
+                        "pmu_worse": false,
+                        "outcome_regression": false
+                    }
+                }),
+                outcome_comparison: &json!({
+                    "regressions": { "overall": false }
+                }),
+            },
+            now,
+            budget,
+        );
+
+        let candidate_rows = plan
+            .get("candidates")
+            .and_then(Value::as_array)
+            .expect("candidate rows");
+        let selected_rows = candidate_rows
+            .iter()
+            .filter(|row| row.get("selected").and_then(Value::as_bool) == Some(true))
+            .collect::<Vec<_>>();
+        assert_eq!(selected_rows.len(), 1, "one stage should fit budget");
+
+        let skipped_rows = candidate_rows
+            .iter()
+            .filter(|row| row.get("selected").and_then(Value::as_bool) == Some(false))
+            .collect::<Vec<_>>();
+        assert!(
+            skipped_rows.iter().any(
+                |row| row.get("skip_reason").and_then(Value::as_str) == Some("budget_exceeded")
+            ),
+            "at least one skipped row should report budget_exceeded"
+        );
+        assert!(
+            skipped_rows.iter().all(|row| {
+                row.get("skip_reason").and_then(Value::as_str) != Some("max_experiments_reached")
+            }),
+            "budget-constrained fixture should not use max_experiments_reached"
+        );
+
+        let selected_plan = plan
+            .get("selected_plan")
+            .and_then(Value::as_array)
+            .expect("selected_plan");
+        assert_eq!(selected_plan.len(), 1);
+        assert_eq!(
+            selected_plan[0].get("stage"),
+            selected_rows[0].get("stage"),
+            "selected_plan stage should match selected candidate"
+        );
+    }
+
+    #[test]
+    fn realized_information_gain_applies_correlation_and_regression_penalty() {
+        let selected = vec![
+            VoiCandidate {
+                stage: "queue".to_string(),
+                utility_total: 18.0,
+                uncertainty_reduction: 6.0,
+                user_impact_score: 9.0,
+                pressure_bonus: 3.0,
+                expected_information_gain: 1.8,
+                cost_ms: 42.0,
+                voi_score: 0.42,
+                recommended_probe: stage_probe_recommendation("queue"),
+            },
+            VoiCandidate {
+                stage: "marshal".to_string(),
+                utility_total: 7.0,
+                uncertainty_reduction: 2.5,
+                user_impact_score: 3.0,
+                pressure_bonus: 1.5,
+                expected_information_gain: 0.7,
+                cost_ms: 18.0,
+                voi_score: 0.38,
+                recommended_probe: stage_probe_recommendation("marshal"),
+            },
+        ];
+
+        let expected_total = 2.5;
+
+        let high = realized_information_gain(&selected, "high", false, false);
+        let high_realized = high
+            .get("realized_total")
+            .and_then(Value::as_f64)
+            .expect("high realized_total");
+        assert!((high_realized - expected_total).abs() < 1e-12);
+        assert_eq!(
+            high.get("correlation_multiplier").and_then(Value::as_f64),
+            Some(1.0)
+        );
+        assert_eq!(
+            high.get("regression_penalty").and_then(Value::as_f64),
+            Some(1.0)
+        );
+
+        let low_penalized = realized_information_gain(&selected, "low", true, true);
+        let low_penalized_realized = low_penalized
+            .get("realized_total")
+            .and_then(Value::as_f64)
+            .expect("low realized_total");
+        let expected_low_penalized = expected_total * 0.45 * 0.75;
+        assert!((low_penalized_realized - expected_low_penalized).abs() < 1e-12);
+        assert_eq!(
+            low_penalized
+                .get("correlation_multiplier")
+                .and_then(Value::as_f64),
+            Some(0.45)
+        );
+        assert_eq!(
+            low_penalized
+                .get("regression_penalty")
+                .and_then(Value::as_f64),
+            Some(0.75)
+        );
+
+        for (correlation_strength, outcome_regressed, pmu_regressed) in [
+            ("high", false, false),
+            ("moderate", false, true),
+            ("low", true, false),
+            ("unknown", true, true),
+        ] {
+            let gain = realized_information_gain(
+                &selected,
+                correlation_strength,
+                outcome_regressed,
+                pmu_regressed,
+            );
+            let realized_total = gain
+                .get("realized_total")
+                .and_then(Value::as_f64)
+                .expect("realized_total");
+            assert!(
+                realized_total <= expected_total + 1e-12,
+                "realized gain must not exceed expected gain for {correlation_strength}"
+            );
+        }
+    }
+
+    #[test]
+    fn voi_scheduler_selection_efficiency_beats_naive_always_profile_baseline() {
+        let now = DateTime::parse_from_rfc3339("2026-02-16T05:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let hotspots = vec![
+            json!({
+                "stage": "queue",
+                "ev_score": 95.0,
+                "confidence": 0.25,
+                "pmu_multiplier": 1.8,
+                "projected_user_impact": { "turn_latency_p95_ms": 9.0 }
+            }),
+            json!({
+                "stage": "schedule",
+                "ev_score": 60.0,
+                "confidence": 0.40,
+                "pmu_multiplier": 1.5,
+                "projected_user_impact": { "turn_latency_p95_ms": 6.0 }
+            }),
+            json!({
+                "stage": "marshal",
+                "ev_score": 15.0,
+                "confidence": 0.92,
+                "pmu_multiplier": 1.0,
+                "projected_user_impact": { "turn_latency_p95_ms": 0.3 }
+            }),
+            json!({
+                "stage": "policy",
+                "ev_score": 12.0,
+                "confidence": 0.95,
+                "pmu_multiplier": 1.0,
+                "projected_user_impact": { "turn_latency_p95_ms": 0.2 }
+            }),
+        ];
+        let budget = VoiBudgetConfig {
+            max_overhead_ms: 70.0,
+            max_experiments: 3,
+            stale_after_hours: 24.0,
+        };
+        let plan = build_voi_scheduler_plan_at(
+            VoiPlannerInputs {
+                hotspot_entries: &hotspots,
+                run_metadata: &json!({ "finished_at": "2026-02-16T04:55:00Z" }),
+                pmu_meta: &json!({
+                    "normalized_counters": {
+                        "frontend_stall_pct": 32.0,
+                        "backend_stall_pct": 27.0,
+                        "llc_miss_pct": 18.0,
+                        "branch_miss_pct": 5.0
+                    }
+                }),
+                pmu_comparison: &json!({
+                    "status": "compared",
+                    "regressions": { "overall": false }
+                }),
+                pmu_outcome_correlation: &json!({
+                    "correlation_strength": "high",
+                    "signals": {
+                        "pmu_worse": false,
+                        "outcome_regression": false
+                    }
+                }),
+                outcome_comparison: &json!({
+                    "regressions": { "overall": false }
+                }),
+            },
+            now,
+            budget,
+        );
+
+        let candidate_rows = plan
+            .get("candidates")
+            .and_then(Value::as_array)
+            .expect("candidate rows");
+        let naive_cost = candidate_rows
+            .iter()
+            .map(|row| {
+                row.get("cost_ms")
+                    .and_then(Value::as_f64)
+                    .expect("candidate cost")
+            })
+            .sum::<f64>();
+        let naive_gain = candidate_rows
+            .iter()
+            .map(|row| {
+                row.get("expected_information_gain")
+                    .and_then(Value::as_f64)
+                    .expect("candidate expected gain")
+            })
+            .sum::<f64>();
+
+        let selected_rows = candidate_rows
+            .iter()
+            .filter(|row| row.get("selected").and_then(Value::as_bool) == Some(true))
+            .collect::<Vec<_>>();
+        assert!(
+            !selected_rows.is_empty(),
+            "at least one stage should be selected"
+        );
+
+        let selected_cost = selected_rows
+            .iter()
+            .map(|row| {
+                row.get("cost_ms")
+                    .and_then(Value::as_f64)
+                    .expect("selected cost")
+            })
+            .sum::<f64>();
+        let selected_gain = selected_rows
+            .iter()
+            .map(|row| {
+                row.get("expected_information_gain")
+                    .and_then(Value::as_f64)
+                    .expect("selected gain")
+            })
+            .sum::<f64>();
+
+        let used_overhead = plan
+            .get("budget")
+            .and_then(|budget_obj| budget_obj.get("used_overhead_ms"))
+            .and_then(Value::as_f64)
+            .expect("used_overhead_ms");
+        assert!((used_overhead - selected_cost).abs() < 1e-9);
+        assert!(
+            used_overhead <= budget.max_overhead_ms + f64::EPSILON,
+            "selected plan must satisfy overhead budget"
+        );
+        assert!(
+            naive_cost > budget.max_overhead_ms,
+            "naive always-profile baseline should exceed overhead budget in this fixture"
+        );
+
+        let selected_efficiency = selected_gain / selected_cost.max(1e-9);
+        let naive_efficiency = naive_gain / naive_cost.max(1e-9);
+        assert!(
+            selected_efficiency >= naive_efficiency - 1e-9,
+            "VOI-selected efficiency ({selected_efficiency}) should not regress vs naive baseline ({naive_efficiency})"
+        );
     }
 
     #[test]
@@ -3392,6 +4025,99 @@ mod tests {
                 .is_some_and(|reasons| reasons
                     .iter()
                     .any(|reason| reason.as_str() == Some("missing_telemetry")))
+        );
+    }
+
+    #[test]
+    fn voi_scheduler_safe_mode_marks_non_diagnostic_rows_with_guardrail_reason() {
+        let now = DateTime::parse_from_rfc3339("2026-02-16T05:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let hotspots = vec![
+            json!({
+                "stage": "queue",
+                "ev_score": 80.0,
+                "confidence": 0.30,
+                "pmu_multiplier": 1.4,
+                "projected_user_impact": { "turn_latency_p95_ms": 7.0 }
+            }),
+            json!({
+                "stage": "marshal",
+                "ev_score": 20.0,
+                "confidence": 0.75,
+                "pmu_multiplier": 1.0,
+                "projected_user_impact": { "turn_latency_p95_ms": 1.0 }
+            }),
+            json!({
+                "stage": "policy",
+                "ev_score": 42.0,
+                "confidence": 0.40,
+                "pmu_multiplier": 1.1,
+                "projected_user_impact": { "turn_latency_p95_ms": 3.5 }
+            }),
+        ];
+        let plan = build_voi_scheduler_plan_at(
+            VoiPlannerInputs {
+                hotspot_entries: &hotspots,
+                run_metadata: &json!({ "finished_at": "2026-02-16T04:55:00Z" }),
+                pmu_meta: &json!({
+                    "status": "not_collected"
+                }),
+                pmu_comparison: &json!({
+                    "status": "not_compared",
+                    "reason": "candidate_pmu_counters_unavailable"
+                }),
+                pmu_outcome_correlation: &json!({
+                    "correlation_strength": "moderate",
+                    "signals": {
+                        "pmu_worse": false,
+                        "outcome_regression": false
+                    }
+                }),
+                outcome_comparison: &json!({
+                    "regressions": { "overall": false }
+                }),
+            },
+            now,
+            VoiBudgetConfig {
+                max_overhead_ms: 100.0,
+                max_experiments: 3,
+                stale_after_hours: 24.0,
+            },
+        );
+        assert_eq!(
+            plan.get("status").and_then(Value::as_str),
+            Some("safe_mode")
+        );
+
+        let candidate_rows = plan
+            .get("candidates")
+            .and_then(Value::as_array)
+            .expect("candidate rows");
+        let selected_rows = candidate_rows
+            .iter()
+            .filter(|row| row.get("selected").and_then(Value::as_bool) == Some(true))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            selected_rows.len(),
+            1,
+            "safe mode should select only one diagnostic candidate"
+        );
+        assert_eq!(
+            selected_rows[0].get("stage").and_then(Value::as_str),
+            Some("marshal"),
+            "safe mode should pick min-cost diagnostic stage"
+        );
+
+        let guardrail_rows = candidate_rows
+            .iter()
+            .filter(|row| row.get("selected").and_then(Value::as_bool) == Some(false))
+            .collect::<Vec<_>>();
+        assert!(
+            guardrail_rows.iter().all(|row| {
+                row.get("skip_reason").and_then(Value::as_str) == Some("safe_mode_guardrail")
+            }),
+            "non-diagnostic candidates should be skipped by safe-mode guardrail"
         );
     }
 }

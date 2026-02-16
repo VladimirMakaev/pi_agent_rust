@@ -190,6 +190,65 @@ impl IoUringLaneDecision {
     }
 }
 
+/// Deterministic telemetry envelope for lane decision auditing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct IoUringLaneTelemetry {
+    pub lane: HostcallDispatchLane,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<IoUringFallbackReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_code: Option<String>,
+    pub capability: HostcallCapabilityClass,
+    pub io_hint: HostcallIoHint,
+    pub queue_depth: usize,
+    pub queue_depth_budget: usize,
+    pub queue_depth_budget_remaining: usize,
+    pub force_compat_lane: bool,
+    pub policy_enabled: bool,
+    pub ring_available: bool,
+    pub capability_allowed: bool,
+    pub queue_depth_within_budget: bool,
+}
+
+/// Build deterministic telemetry for a lane decision.
+#[must_use]
+pub fn build_io_uring_lane_telemetry(
+    config: IoUringLanePolicyConfig,
+    input: IoUringLaneDecisionInput,
+    decision: IoUringLaneDecision,
+) -> IoUringLaneTelemetry {
+    let capability_allowed = config.allow_for_capability(input.capability);
+    let queue_depth_within_budget = input.queue_depth < config.max_queue_depth;
+    let queue_depth_budget_remaining = config.max_queue_depth.saturating_sub(input.queue_depth);
+    IoUringLaneTelemetry {
+        lane: decision.lane,
+        fallback_reason: decision.fallback_reason,
+        fallback_code: decision.fallback_code().map(ToString::to_string),
+        capability: input.capability,
+        io_hint: input.io_hint,
+        queue_depth: input.queue_depth,
+        queue_depth_budget: config.max_queue_depth,
+        queue_depth_budget_remaining,
+        force_compat_lane: input.force_compat_lane,
+        policy_enabled: config.enabled,
+        ring_available: config.ring_available,
+        capability_allowed,
+        queue_depth_within_budget,
+    }
+}
+
+/// Decide lane and produce deterministic telemetry in one call.
+#[must_use]
+pub fn decide_io_uring_lane_with_telemetry(
+    config: IoUringLanePolicyConfig,
+    input: IoUringLaneDecisionInput,
+) -> (IoUringLaneDecision, IoUringLaneTelemetry) {
+    let decision = decide_io_uring_lane(config, input);
+    let telemetry = build_io_uring_lane_telemetry(config, input, decision);
+    (decision, telemetry)
+}
+
 /// Decide whether the hostcall should run via the io_uring lane.
 ///
 /// Decision ordering is intentionally strict and deterministic:
@@ -384,5 +443,231 @@ mod tests {
             decision.fallback_reason,
             Some(IoUringFallbackReason::QueueDepthBudgetExceeded)
         );
+    }
+
+    #[test]
+    fn telemetry_builder_omits_fallback_fields_for_io_uring_success() {
+        let config = enabled_config();
+        let input = IoUringLaneDecisionInput {
+            capability: HostcallCapabilityClass::Filesystem,
+            io_hint: HostcallIoHint::IoHeavy,
+            queue_depth: 2,
+            force_compat_lane: false,
+        };
+        let decision = decide_io_uring_lane(config, input);
+        let telemetry = build_io_uring_lane_telemetry(config, input, decision);
+        assert_eq!(telemetry.lane, HostcallDispatchLane::IoUring);
+        assert_eq!(telemetry.fallback_reason, None);
+        assert_eq!(telemetry.fallback_code, None);
+        assert!(telemetry.capability_allowed);
+        assert!(telemetry.queue_depth_within_budget);
+
+        let value = serde_json::to_value(&telemetry).expect("serialize telemetry");
+        let obj = value.as_object().expect("telemetry object");
+        assert!(!obj.contains_key("fallback_reason"));
+        assert!(!obj.contains_key("fallback_code"));
+        assert_eq!(obj.get("queue_depth_budget"), Some(&serde_json::json!(8)));
+        assert_eq!(
+            obj.get("queue_depth_budget_remaining"),
+            Some(&serde_json::json!(6))
+        );
+    }
+
+    #[test]
+    fn telemetry_builder_includes_fallback_fields_for_fast_fallback() {
+        let config = IoUringLanePolicyConfig {
+            enabled: true,
+            ring_available: true,
+            max_queue_depth: 8,
+            allow_filesystem: false,
+            allow_network: true,
+        };
+        let input = IoUringLaneDecisionInput {
+            capability: HostcallCapabilityClass::Filesystem,
+            io_hint: HostcallIoHint::IoHeavy,
+            queue_depth: 0,
+            force_compat_lane: false,
+        };
+        let decision = decide_io_uring_lane(config, input);
+        let telemetry = build_io_uring_lane_telemetry(config, input, decision);
+        assert_eq!(telemetry.lane, HostcallDispatchLane::Fast);
+        assert_eq!(
+            telemetry.fallback_reason,
+            Some(IoUringFallbackReason::UnsupportedCapability)
+        );
+        assert_eq!(
+            telemetry.fallback_code.as_deref(),
+            Some("io_uring_capability_not_supported")
+        );
+        assert!(!telemetry.capability_allowed);
+
+        let value = serde_json::to_value(&telemetry).expect("serialize telemetry");
+        let obj = value.as_object().expect("telemetry object");
+        assert_eq!(
+            obj.get("fallback_code"),
+            Some(&serde_json::json!("io_uring_capability_not_supported"))
+        );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn fallback_reason_matrix_reports_expected_lane_and_code() {
+        struct Case {
+            name: &'static str,
+            config: IoUringLanePolicyConfig,
+            input: IoUringLaneDecisionInput,
+            expected_lane: HostcallDispatchLane,
+            expected_reason: IoUringFallbackReason,
+        }
+
+        let mut disabled = enabled_config();
+        disabled.enabled = false;
+
+        let mut unavailable = enabled_config();
+        unavailable.ring_available = false;
+
+        let mut unsupported_capability = enabled_config();
+        unsupported_capability.allow_network = false;
+
+        let cases = [
+            Case {
+                name: "compat kill-switch",
+                config: enabled_config(),
+                input: IoUringLaneDecisionInput {
+                    capability: HostcallCapabilityClass::Filesystem,
+                    io_hint: HostcallIoHint::IoHeavy,
+                    queue_depth: 0,
+                    force_compat_lane: true,
+                },
+                expected_lane: HostcallDispatchLane::Compat,
+                expected_reason: IoUringFallbackReason::CompatKillSwitch,
+            },
+            Case {
+                name: "disabled",
+                config: disabled,
+                input: IoUringLaneDecisionInput {
+                    capability: HostcallCapabilityClass::Network,
+                    io_hint: HostcallIoHint::IoHeavy,
+                    queue_depth: 0,
+                    force_compat_lane: false,
+                },
+                expected_lane: HostcallDispatchLane::Fast,
+                expected_reason: IoUringFallbackReason::IoUringDisabled,
+            },
+            Case {
+                name: "unavailable ring",
+                config: unavailable,
+                input: IoUringLaneDecisionInput {
+                    capability: HostcallCapabilityClass::Network,
+                    io_hint: HostcallIoHint::IoHeavy,
+                    queue_depth: 0,
+                    force_compat_lane: false,
+                },
+                expected_lane: HostcallDispatchLane::Fast,
+                expected_reason: IoUringFallbackReason::IoUringUnavailable,
+            },
+            Case {
+                name: "missing io hint",
+                config: enabled_config(),
+                input: IoUringLaneDecisionInput {
+                    capability: HostcallCapabilityClass::Network,
+                    io_hint: HostcallIoHint::CpuBound,
+                    queue_depth: 0,
+                    force_compat_lane: false,
+                },
+                expected_lane: HostcallDispatchLane::Fast,
+                expected_reason: IoUringFallbackReason::MissingIoHint,
+            },
+            Case {
+                name: "unsupported capability",
+                config: unsupported_capability,
+                input: IoUringLaneDecisionInput {
+                    capability: HostcallCapabilityClass::Network,
+                    io_hint: HostcallIoHint::IoHeavy,
+                    queue_depth: 0,
+                    force_compat_lane: false,
+                },
+                expected_lane: HostcallDispatchLane::Fast,
+                expected_reason: IoUringFallbackReason::UnsupportedCapability,
+            },
+            Case {
+                name: "queue budget exceeded",
+                config: enabled_config(),
+                input: IoUringLaneDecisionInput {
+                    capability: HostcallCapabilityClass::Filesystem,
+                    io_hint: HostcallIoHint::IoHeavy,
+                    queue_depth: 8,
+                    force_compat_lane: false,
+                },
+                expected_lane: HostcallDispatchLane::Fast,
+                expected_reason: IoUringFallbackReason::QueueDepthBudgetExceeded,
+            },
+        ];
+
+        for case in cases {
+            let decision = decide_io_uring_lane(case.config, case.input);
+            assert_eq!(decision.lane, case.expected_lane, "{}", case.name);
+            assert_eq!(
+                decision.fallback_reason,
+                Some(case.expected_reason),
+                "{}",
+                case.name
+            );
+            assert_eq!(
+                decision.fallback_code(),
+                Some(case.expected_reason.as_code()),
+                "{}",
+                case.name
+            );
+        }
+    }
+
+    #[test]
+    fn telemetry_budget_remaining_saturates_when_queue_depth_exceeds_budget() {
+        let config = IoUringLanePolicyConfig {
+            enabled: true,
+            ring_available: true,
+            max_queue_depth: 4,
+            allow_filesystem: true,
+            allow_network: true,
+        };
+        let input = IoUringLaneDecisionInput {
+            capability: HostcallCapabilityClass::Filesystem,
+            io_hint: HostcallIoHint::IoHeavy,
+            queue_depth: 11,
+            force_compat_lane: false,
+        };
+
+        let decision = decide_io_uring_lane(config, input);
+        let telemetry = build_io_uring_lane_telemetry(config, input, decision);
+
+        assert_eq!(decision.lane, HostcallDispatchLane::Fast);
+        assert_eq!(
+            decision.fallback_reason,
+            Some(IoUringFallbackReason::QueueDepthBudgetExceeded)
+        );
+        assert_eq!(
+            telemetry.fallback_code.as_deref(),
+            Some("io_uring_queue_depth_budget_exceeded")
+        );
+        assert!(!telemetry.queue_depth_within_budget);
+        assert_eq!(telemetry.queue_depth_budget_remaining, 0);
+    }
+
+    #[test]
+    fn decide_with_telemetry_matches_core_decision() {
+        let config = enabled_config();
+        let input = IoUringLaneDecisionInput {
+            capability: HostcallCapabilityClass::Network,
+            io_hint: HostcallIoHint::CpuBound,
+            queue_depth: 1,
+            force_compat_lane: false,
+        };
+        let expected = decide_io_uring_lane(config, input);
+        let (actual, telemetry) = decide_io_uring_lane_with_telemetry(config, input);
+        assert_eq!(actual, expected);
+        assert_eq!(telemetry.lane, expected.lane);
+        assert_eq!(telemetry.fallback_reason, expected.fallback_reason);
+        assert_eq!(telemetry.fallback_code.as_deref(), expected.fallback_code());
     }
 }

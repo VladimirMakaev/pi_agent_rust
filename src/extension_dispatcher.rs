@@ -35,6 +35,10 @@ use crate::extensions::{
 };
 use crate::extensions_js::{HostcallKind, HostcallRequest, PiJsRuntime, js_to_json, json_to_js};
 use crate::hostcall_amac::{AmacBatchExecutor, AmacBatchExecutorConfig};
+use crate::hostcall_io_uring_lane::{
+    HostcallCapabilityClass, HostcallDispatchLane, HostcallIoHint, IoUringLaneDecisionInput,
+    IoUringLanePolicyConfig, decide_io_uring_lane,
+};
 use crate::scheduler::{Clock as SchedulerClock, HostcallOutcome, WallClock};
 use crate::tools::ToolRegistry;
 
@@ -62,6 +66,10 @@ pub struct ExtensionDispatcher<C: SchedulerClock = WallClock> {
     dual_exec_config: DualExecOracleConfig,
     /// Runtime state for sampled dual execution and rollback guards.
     dual_exec_state: RefCell<DualExecOracleState>,
+    /// Decision-only io_uring lane policy for IO-dominant hostcalls.
+    io_uring_lane_config: IoUringLanePolicyConfig,
+    /// Kill switch forcing compatibility lane regardless of policy input.
+    io_uring_force_compat: bool,
     /// Adaptive regime detector for hostcall workload shifts.
     regime_detector: RefCell<RegimeShiftDetector>,
     /// AMAC batch executor for interleaved hostcall dispatch.
@@ -630,6 +638,114 @@ fn is_shadow_safe_request(request: &HostcallRequest) -> bool {
     }
 }
 
+fn parse_env_bool(name: &str, default: bool) -> bool {
+    std::env::var(name).ok().map_or(default, |raw| {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" | "enabled" => true,
+            "0" | "false" | "no" | "off" | "disabled" => false,
+            _ => default,
+        }
+    })
+}
+
+fn io_uring_lane_policy_from_env() -> IoUringLanePolicyConfig {
+    let default = IoUringLanePolicyConfig::conservative();
+    let max_queue_depth = std::env::var("PI_EXT_IO_URING_MAX_QUEUE_DEPTH")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(default.max_queue_depth)
+        .max(1);
+
+    IoUringLanePolicyConfig {
+        enabled: parse_env_bool("PI_EXT_IO_URING_ENABLED", default.enabled),
+        ring_available: parse_env_bool("PI_EXT_IO_URING_RING_AVAILABLE", default.ring_available),
+        max_queue_depth,
+        allow_filesystem: parse_env_bool(
+            "PI_EXT_IO_URING_ALLOW_FILESYSTEM",
+            default.allow_filesystem,
+        ),
+        allow_network: parse_env_bool("PI_EXT_IO_URING_ALLOW_NETWORK", default.allow_network),
+    }
+}
+
+fn io_uring_force_compat_from_env() -> bool {
+    parse_env_bool("PI_EXT_IO_URING_FORCE_COMPAT", false)
+}
+
+fn hostcall_io_hint(kind: &HostcallKind) -> HostcallIoHint {
+    match kind {
+        HostcallKind::Http => HostcallIoHint::IoHeavy,
+        HostcallKind::Tool { name } => match name.trim().to_ascii_lowercase().as_str() {
+            "read" | "write" | "grep" | "find" | "ls" => HostcallIoHint::IoHeavy,
+            _ => HostcallIoHint::Unknown,
+        },
+        HostcallKind::Session { op } => {
+            let normalized = normalized_shadow_op(op);
+            if normalized.contains("save")
+                || normalized.contains("append")
+                || normalized.contains("write")
+                || normalized.contains("export")
+                || normalized.contains("import")
+            {
+                HostcallIoHint::IoHeavy
+            } else {
+                HostcallIoHint::Unknown
+            }
+        }
+        HostcallKind::Exec { .. } => HostcallIoHint::Unknown,
+        HostcallKind::Ui { .. } | HostcallKind::Events { .. } | HostcallKind::Log => {
+            HostcallIoHint::CpuBound
+        }
+    }
+}
+
+const fn hostcall_io_hint_label(io_hint: HostcallIoHint) -> &'static str {
+    match io_hint {
+        HostcallIoHint::Unknown => "unknown",
+        HostcallIoHint::IoHeavy => "io_heavy",
+        HostcallIoHint::CpuBound => "cpu_bound",
+    }
+}
+
+const fn hostcall_capability_label(capability: HostcallCapabilityClass) -> &'static str {
+    match capability {
+        HostcallCapabilityClass::Filesystem => "filesystem",
+        HostcallCapabilityClass::Network => "network",
+        HostcallCapabilityClass::Execution => "execution",
+        HostcallCapabilityClass::Session => "session",
+        HostcallCapabilityClass::Events => "events",
+        HostcallCapabilityClass::Environment => "environment",
+        HostcallCapabilityClass::Tool => "tool",
+        HostcallCapabilityClass::Ui => "ui",
+        HostcallCapabilityClass::Telemetry => "telemetry",
+        HostcallCapabilityClass::Unknown => "unknown",
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IoUringBridgeState {
+    DelegatedFastPath,
+    CancelledBeforeDispatch,
+    CancelledAfterDispatch,
+}
+
+impl IoUringBridgeState {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::DelegatedFastPath => "delegated_fast_path",
+            Self::CancelledBeforeDispatch => "cancelled_before_dispatch",
+            Self::CancelledAfterDispatch => "cancelled_after_dispatch",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct IoUringBridgeDispatch {
+    outcome: HostcallOutcome,
+    state: IoUringBridgeState,
+    fallback_reason: Option<&'static str>,
+}
+
 fn protocol_params_from_request(request: &HostcallRequest) -> Value {
     match &request.kind {
         HostcallKind::Tool { name } => {
@@ -1067,6 +1183,8 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
     ) -> Self {
         let snapshot_version = policy_snapshot_version(&policy);
         let snapshot = PolicySnapshot::compile(&policy);
+        let io_uring_lane_config = io_uring_lane_policy_from_env();
+        let io_uring_force_compat = io_uring_force_compat_from_env();
         Self {
             runtime,
             tool_registry,
@@ -1079,6 +1197,8 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
             snapshot_version,
             dual_exec_config,
             dual_exec_state: RefCell::new(DualExecOracleState::default()),
+            io_uring_lane_config,
+            io_uring_force_compat,
             regime_detector: RefCell::new(RegimeShiftDetector::default()),
             amac_executor: RefCell::new(
                 AmacBatchExecutor::new(AmacBatchExecutorConfig::from_env()),
@@ -1157,6 +1277,59 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
         }
     }
 
+    fn emit_io_uring_lane_telemetry(
+        &self,
+        request: &HostcallRequest,
+        capability_class: HostcallCapabilityClass,
+        io_hint: HostcallIoHint,
+        queue_depth: usize,
+        selected_lane: HostcallDispatchLane,
+        fallback_reason: Option<&'static str>,
+    ) {
+        let queue_budget = self.io_uring_lane_config.max_queue_depth.max(1);
+        let depth_u64 = u64::try_from(queue_depth).unwrap_or(u64::MAX);
+        let budget_u64 = u64::try_from(queue_budget).unwrap_or(u64::MAX).max(1);
+        let occupancy_permille = depth_u64.saturating_mul(1_000).saturating_div(budget_u64);
+        tracing::debug!(
+            target: "pi.extensions.io_uring_lane",
+            call_id = request.call_id,
+            extension_id = %request.extension_id.as_deref().unwrap_or("<none>"),
+            method = request.method(),
+            capability = %request.required_capability(),
+            capability_class = hostcall_capability_label(capability_class),
+            io_hint = hostcall_io_hint_label(io_hint),
+            selected_lane = selected_lane.as_str(),
+            fallback_reason = %fallback_reason.unwrap_or("none"),
+            queue_depth,
+            queue_budget,
+            queue_occupancy_permille = occupancy_permille,
+            io_uring_enabled = self.io_uring_lane_config.enabled,
+            io_uring_ring_available = self.io_uring_lane_config.ring_available,
+            io_uring_force_compat = self.io_uring_force_compat,
+            "Hostcall io_uring lane decision evaluated"
+        );
+    }
+
+    fn emit_io_uring_bridge_telemetry(
+        &self,
+        request: &HostcallRequest,
+        state: IoUringBridgeState,
+        fallback_reason: Option<&'static str>,
+    ) {
+        tracing::debug!(
+            target: "pi.extensions.io_uring_bridge",
+            call_id = request.call_id,
+            extension_id = %request.extension_id.as_deref().unwrap_or("<none>"),
+            method = request.method(),
+            state = state.as_str(),
+            fallback_reason = %fallback_reason.unwrap_or("none"),
+            io_uring_enabled = self.io_uring_lane_config.enabled,
+            io_uring_ring_available = self.io_uring_lane_config.ring_available,
+            io_uring_force_compat = self.io_uring_force_compat,
+            "Hostcall io_uring bridge dispatch completed"
+        );
+    }
+
     /// Drain pending hostcall requests from the JS runtime.
     #[must_use]
     pub fn drain_hostcall_requests(&self) -> VecDeque<HostcallRequest> {
@@ -1205,6 +1378,41 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
                 // Return success here for the legacy dispatcher fallback.
                 HostcallOutcome::Success(serde_json::json!({ "logged": true }))
             }
+        }
+    }
+
+    #[allow(clippy::future_not_send)]
+    async fn dispatch_hostcall_io_uring(&self, request: &HostcallRequest) -> IoUringBridgeDispatch {
+        if !self.runtime.is_hostcall_pending(&request.call_id) {
+            return IoUringBridgeDispatch {
+                outcome: HostcallOutcome::Error {
+                    code: "cancelled".to_string(),
+                    message: "Hostcall cancelled before io_uring dispatch".to_string(),
+                },
+                state: IoUringBridgeState::CancelledBeforeDispatch,
+                fallback_reason: Some("cancelled_before_io_uring_dispatch"),
+            };
+        }
+
+        // io_uring submission/completion wiring is introduced incrementally.
+        // Keep bridge semantics explicit while delegating execution to the
+        // existing fast hostcall path until the ring executor lands.
+        let delegated_outcome = self.dispatch_hostcall_fast(request).await;
+        if !self.runtime.is_hostcall_pending(&request.call_id) {
+            return IoUringBridgeDispatch {
+                outcome: HostcallOutcome::Error {
+                    code: "cancelled".to_string(),
+                    message: "Hostcall cancelled before io_uring completion".to_string(),
+                },
+                state: IoUringBridgeState::CancelledAfterDispatch,
+                fallback_reason: Some("cancelled_before_io_uring_completion"),
+            };
+        }
+
+        IoUringBridgeDispatch {
+            outcome: delegated_outcome,
+            state: IoUringBridgeState::DelegatedFastPath,
+            fallback_reason: Some("io_uring_bridge_delegated_fast_path"),
         }
     }
 
@@ -1334,8 +1542,45 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
             let overflow_rejected_total = queue_snapshot.overflow_rejected_total;
             let dispatch_started_at = Instant::now();
             let opcode_entropy = hostcall_opcode_entropy(&request.kind, &request.payload);
-            let outcome = self.dispatch_hostcall_fast(&request).await;
-            self.run_shadow_dual_exec(&request, &outcome).await;
+            let io_hint = hostcall_io_hint(&request.kind);
+            let capability_class = HostcallCapabilityClass::from_capability(&cap);
+            let lane_decision = decide_io_uring_lane(
+                self.io_uring_lane_config,
+                IoUringLaneDecisionInput {
+                    capability: capability_class,
+                    io_hint,
+                    queue_depth,
+                    force_compat_lane: self.io_uring_force_compat,
+                },
+            );
+            self.emit_io_uring_lane_telemetry(
+                &request,
+                capability_class,
+                io_hint,
+                queue_depth,
+                lane_decision.lane,
+                lane_decision.fallback_code(),
+            );
+
+            let outcome = match lane_decision.lane {
+                HostcallDispatchLane::Fast => self.dispatch_hostcall_fast(&request).await,
+                HostcallDispatchLane::IoUring => {
+                    let bridge_dispatch = self.dispatch_hostcall_io_uring(&request).await;
+                    self.emit_io_uring_bridge_telemetry(
+                        &request,
+                        bridge_dispatch.state,
+                        bridge_dispatch.fallback_reason,
+                    );
+                    bridge_dispatch.outcome
+                }
+                HostcallDispatchLane::Compat => {
+                    self.dispatch_hostcall_compat_shadow(&request).await
+                }
+            };
+
+            if lane_decision.lane != HostcallDispatchLane::Compat {
+                self.run_shadow_dual_exec(&request, &outcome).await;
+            }
 
             let service_time_us = dispatch_started_at.elapsed().as_secs_f64() * 1_000_000.0;
             let llc_miss_rate =
@@ -10249,6 +10494,165 @@ mod tests {
     }
 
     #[test]
+    fn dual_exec_sampling_respects_zero_and_full_scale_boundaries() {
+        let request = HostcallRequest {
+            call_id: "sample-boundary".to_string(),
+            kind: HostcallKind::Session {
+                op: "get_state".to_string(),
+            },
+            payload: serde_json::json!({}),
+            trace_id: 91,
+            extension_id: Some("ext.boundary".to_string()),
+        };
+
+        assert!(!should_sample_shadow_dual_exec(&request, 0));
+        assert!(should_sample_shadow_dual_exec(
+            &request,
+            DUAL_EXEC_SAMPLE_MODULUS_PPM
+        ));
+        assert!(should_sample_shadow_dual_exec(
+            &request,
+            DUAL_EXEC_SAMPLE_MODULUS_PPM.saturating_add(1)
+        ));
+    }
+
+    #[test]
+    fn normalized_shadow_op_is_deterministic_across_format_variants() {
+        assert_eq!(normalized_shadow_op(" get__state "), "getstate");
+        assert_eq!(normalized_shadow_op("GET_STATE"), "getstate");
+        assert_eq!(normalized_shadow_op("GeT_sTaTe"), "getstate");
+        assert_eq!(normalized_shadow_op("list_flags"), "listflags");
+    }
+
+    #[test]
+    fn shadow_safe_classification_accepts_normalized_read_only_ops() {
+        let session_request = HostcallRequest {
+            call_id: "shadow-safe-session".to_string(),
+            kind: HostcallKind::Session {
+                op: "  GET__MESSAGES ".to_string(),
+            },
+            payload: serde_json::json!({}),
+            trace_id: 5,
+            extension_id: Some("ext.shadow.safe".to_string()),
+        };
+        let events_request = HostcallRequest {
+            call_id: "shadow-safe-events".to_string(),
+            kind: HostcallKind::Events {
+                op: " list_flags ".to_string(),
+            },
+            payload: serde_json::json!({}),
+            trace_id: 6,
+            extension_id: Some("ext.shadow.safe".to_string()),
+        };
+        let tool_request = HostcallRequest {
+            call_id: "shadow-safe-tool".to_string(),
+            kind: HostcallKind::Tool {
+                name: " read ".to_string(),
+            },
+            payload: serde_json::json!({}),
+            trace_id: 7,
+            extension_id: Some("ext.shadow.safe".to_string()),
+        };
+
+        assert!(is_shadow_safe_request(&session_request));
+        assert!(is_shadow_safe_request(&events_request));
+        assert!(is_shadow_safe_request(&tool_request));
+    }
+
+    #[test]
+    fn shadow_safe_classification_rejects_mutating_and_unsafe_kinds() {
+        let requests = [
+            (
+                "session mutate",
+                HostcallRequest {
+                    call_id: "shadow-unsafe-session".to_string(),
+                    kind: HostcallKind::Session {
+                        op: "append_message".to_string(),
+                    },
+                    payload: serde_json::json!({}),
+                    trace_id: 11,
+                    extension_id: Some("ext.shadow.unsafe".to_string()),
+                },
+            ),
+            (
+                "events mutate",
+                HostcallRequest {
+                    call_id: "shadow-unsafe-events".to_string(),
+                    kind: HostcallKind::Events {
+                        op: "set_flag".to_string(),
+                    },
+                    payload: serde_json::json!({}),
+                    trace_id: 12,
+                    extension_id: Some("ext.shadow.unsafe".to_string()),
+                },
+            ),
+            (
+                "tool mutate",
+                HostcallRequest {
+                    call_id: "shadow-unsafe-tool".to_string(),
+                    kind: HostcallKind::Tool {
+                        name: "write".to_string(),
+                    },
+                    payload: serde_json::json!({}),
+                    trace_id: 13,
+                    extension_id: Some("ext.shadow.unsafe".to_string()),
+                },
+            ),
+            (
+                "exec",
+                HostcallRequest {
+                    call_id: "shadow-unsafe-exec".to_string(),
+                    kind: HostcallKind::Exec {
+                        cmd: "echo nope".to_string(),
+                    },
+                    payload: serde_json::json!({}),
+                    trace_id: 14,
+                    extension_id: Some("ext.shadow.unsafe".to_string()),
+                },
+            ),
+            (
+                "http",
+                HostcallRequest {
+                    call_id: "shadow-unsafe-http".to_string(),
+                    kind: HostcallKind::Http,
+                    payload: serde_json::json!({}),
+                    trace_id: 15,
+                    extension_id: Some("ext.shadow.unsafe".to_string()),
+                },
+            ),
+            (
+                "ui",
+                HostcallRequest {
+                    call_id: "shadow-unsafe-ui".to_string(),
+                    kind: HostcallKind::Ui {
+                        op: "prompt".to_string(),
+                    },
+                    payload: serde_json::json!({}),
+                    trace_id: 16,
+                    extension_id: Some("ext.shadow.unsafe".to_string()),
+                },
+            ),
+            (
+                "log",
+                HostcallRequest {
+                    call_id: "shadow-unsafe-log".to_string(),
+                    kind: HostcallKind::Log,
+                    payload: serde_json::json!({}),
+                    trace_id: 17,
+                    extension_id: Some("ext.shadow.unsafe".to_string()),
+                },
+            ),
+        ];
+
+        for (case, request) in &requests {
+            assert!(
+                !is_shadow_safe_request(request),
+                "expected non-shadow-safe classification for {case}"
+            );
+        }
+    }
+
+    #[test]
     fn dual_exec_diff_engine_detects_success_output_mismatch() {
         let fast = HostcallOutcome::Success(serde_json::json!({ "value": 1 }));
         let compat = HostcallOutcome::Success(serde_json::json!({ "value": 2 }));
@@ -10513,6 +10917,89 @@ mod tests {
                 after_rollback, baseline_decisions,
                 "rollback path should bypass AMAC planning and keep toggle decisions unchanged"
             );
+        });
+    }
+
+    #[test]
+    fn hostcall_io_hint_marks_expected_kinds_as_io_heavy() {
+        assert_eq!(
+            hostcall_io_hint(&HostcallKind::Http),
+            HostcallIoHint::IoHeavy
+        );
+        assert_eq!(
+            hostcall_io_hint(&HostcallKind::Tool {
+                name: "read".to_string()
+            }),
+            HostcallIoHint::IoHeavy
+        );
+        assert_eq!(
+            hostcall_io_hint(&HostcallKind::Session {
+                op: "append_message".to_string()
+            }),
+            HostcallIoHint::IoHeavy
+        );
+    }
+
+    #[test]
+    fn hostcall_io_hint_marks_non_io_kinds_as_non_heavy() {
+        assert_eq!(
+            hostcall_io_hint(&HostcallKind::Ui {
+                op: "prompt".to_string()
+            }),
+            HostcallIoHint::CpuBound
+        );
+        assert_eq!(
+            hostcall_io_hint(&HostcallKind::Tool {
+                name: "unknown_tool".to_string()
+            }),
+            HostcallIoHint::Unknown
+        );
+        assert_eq!(
+            hostcall_io_hint(&HostcallKind::Session {
+                op: "get_state".to_string()
+            }),
+            HostcallIoHint::Unknown
+        );
+    }
+
+    #[test]
+    fn io_uring_bridge_reports_cancellation_when_request_not_pending() {
+        futures::executor::block_on(async {
+            let runtime = Rc::new(
+                PiJsRuntime::with_clock(DeterministicClock::new(0))
+                    .await
+                    .expect("runtime"),
+            );
+            let dispatcher = build_dispatcher(Rc::clone(&runtime));
+            let request = HostcallRequest {
+                call_id: "cancelled-before-io-uring".to_string(),
+                kind: HostcallKind::Http,
+                payload: serde_json::json!({
+                    "url": "https://example.com",
+                    "method": "GET",
+                }),
+                trace_id: 1,
+                extension_id: Some("ext.cancel".to_string()),
+            };
+            let bridge_dispatch = dispatcher.dispatch_hostcall_io_uring(&request).await;
+            assert_eq!(
+                bridge_dispatch.state,
+                IoUringBridgeState::CancelledBeforeDispatch
+            );
+            assert_eq!(
+                bridge_dispatch.fallback_reason,
+                Some("cancelled_before_io_uring_dispatch")
+            );
+            match bridge_dispatch.outcome {
+                HostcallOutcome::Error { code, message } => {
+                    assert_eq!(code, "cancelled");
+                    assert!(
+                        message.contains("cancelled before io_uring dispatch"),
+                        "unexpected cancellation message: {message}"
+                    );
+                }
+                other => panic!("expected cancellation error outcome, got {other:?}"),
+            }
         });
     }
 }

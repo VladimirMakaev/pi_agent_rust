@@ -975,6 +975,663 @@ fn utility_per_ms(candidate: &VoiCandidate) -> f64 {
     }
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeanFieldShardObservation {
+    pub shard_id: String,
+    pub queue_pressure: f64,
+    pub tail_latency_ratio: f64,
+    pub starvation_risk: f64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeanFieldShardState {
+    pub shard_id: String,
+    pub routing_weight: f64,
+    pub batch_budget: u32,
+    pub help_factor: f64,
+    pub backoff_factor: f64,
+    #[serde(default)]
+    pub last_routing_delta: f64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeanFieldControllerConfig {
+    pub queue_gain: f64,
+    pub latency_gain: f64,
+    pub starvation_gain: f64,
+    pub damping: f64,
+    pub max_step: f64,
+    pub min_routing_weight: f64,
+    pub max_routing_weight: f64,
+    pub min_batch_budget: u32,
+    pub max_batch_budget: u32,
+    pub min_help_factor: f64,
+    pub max_help_factor: f64,
+    pub min_backoff_factor: f64,
+    pub max_backoff_factor: f64,
+    pub convergence_epsilon: f64,
+}
+
+impl Default for MeanFieldControllerConfig {
+    fn default() -> Self {
+        Self {
+            queue_gain: 0.55,
+            latency_gain: 0.35,
+            starvation_gain: 0.50,
+            damping: 0.60,
+            max_step: 0.20,
+            min_routing_weight: 0.10,
+            max_routing_weight: 3.00,
+            min_batch_budget: 1,
+            max_batch_budget: 64,
+            min_help_factor: 0.50,
+            max_help_factor: 2.50,
+            min_backoff_factor: 1.00,
+            max_backoff_factor: 3.50,
+            convergence_epsilon: 0.02,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeanFieldShardControl {
+    pub shard_id: String,
+    pub routing_weight: f64,
+    pub batch_budget: u32,
+    pub help_factor: f64,
+    pub backoff_factor: f64,
+    pub routing_delta: f64,
+    pub stability_margin: f64,
+    pub clipped: bool,
+    pub oscillation_guarded: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeanFieldControllerReport {
+    pub global_pressure: f64,
+    pub converged: bool,
+    pub controls: Vec<MeanFieldShardControl>,
+    pub clipped_count: usize,
+    pub oscillation_guard_count: usize,
+}
+
+pub fn compute_mean_field_controls(
+    observations: &[MeanFieldShardObservation],
+    previous: &[MeanFieldShardState],
+    config: &MeanFieldControllerConfig,
+) -> MeanFieldControllerReport {
+    let mut previous_by_shard = BTreeMap::new();
+    for state in previous {
+        previous_by_shard.insert(state.shard_id.clone(), state.clone());
+    }
+
+    let sanitized = observations
+        .iter()
+        .map(|observation| {
+            (
+                observation.shard_id.clone(),
+                sanitize_observation(observation),
+            )
+        })
+        .collect::<Vec<_>>();
+    let sanitized_config = sanitize_mean_field_config(config);
+    let global_pressure = if sanitized.is_empty() {
+        0.0
+    } else {
+        sanitized
+            .iter()
+            .map(|(_, obs)| obs.composite_pressure)
+            .sum::<f64>()
+            / usize_to_f64(sanitized.len())
+    };
+
+    let mut controls = Vec::with_capacity(sanitized.len());
+    let mut clipped_count = 0_usize;
+    let mut oscillation_guard_count = 0_usize;
+    let mut total_absolute_delta = 0.0;
+
+    for (shard_id, observation) in sanitized {
+        let baseline = previous_by_shard
+            .get(&shard_id)
+            .cloned()
+            .unwrap_or_else(|| default_mean_field_state(&shard_id, &sanitized_config));
+
+        let control = compute_control_for_shard(
+            &shard_id,
+            observation,
+            &baseline,
+            global_pressure,
+            &sanitized_config,
+        );
+        if control.clipped {
+            clipped_count = clipped_count.saturating_add(1);
+        }
+        if control.oscillation_guarded {
+            oscillation_guard_count = oscillation_guard_count.saturating_add(1);
+        }
+        total_absolute_delta += control.routing_delta.abs();
+        controls.push(control);
+    }
+
+    controls.sort_by(|left, right| left.shard_id.cmp(&right.shard_id));
+    let converged = if controls.is_empty() {
+        true
+    } else {
+        (total_absolute_delta / usize_to_f64(controls.len()))
+            <= sanitized_config.convergence_epsilon
+    };
+
+    MeanFieldControllerReport {
+        global_pressure,
+        converged,
+        controls,
+        clipped_count,
+        oscillation_guard_count,
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SanitizedMeanFieldObservation {
+    queue_pressure: f64,
+    latency_pressure: f64,
+    starvation_risk: f64,
+    composite_pressure: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SanitizedMeanFieldConfig {
+    queue_gain: f64,
+    latency_gain: f64,
+    starvation_gain: f64,
+    damping: f64,
+    max_step: f64,
+    min_routing_weight: f64,
+    max_routing_weight: f64,
+    min_batch_budget: u32,
+    max_batch_budget: u32,
+    min_help_factor: f64,
+    max_help_factor: f64,
+    min_backoff_factor: f64,
+    max_backoff_factor: f64,
+    convergence_epsilon: f64,
+}
+
+fn sanitize_observation(observation: &MeanFieldShardObservation) -> SanitizedMeanFieldObservation {
+    let queue_pressure = non_negative_finite(observation.queue_pressure).clamp(0.0, 1.0);
+    let latency_pressure =
+        non_negative_finite(observation.tail_latency_ratio - 1.0).clamp(0.0, 1.0);
+    let starvation_risk = non_negative_finite(observation.starvation_risk).clamp(0.0, 1.0);
+    let composite_pressure = (queue_pressure + latency_pressure + starvation_risk) / 3.0;
+    SanitizedMeanFieldObservation {
+        queue_pressure,
+        latency_pressure,
+        starvation_risk,
+        composite_pressure,
+    }
+}
+
+fn sanitize_mean_field_config(config: &MeanFieldControllerConfig) -> SanitizedMeanFieldConfig {
+    let min_routing_weight = non_negative_finite(config.min_routing_weight);
+    let max_routing_weight = config.max_routing_weight.max(min_routing_weight);
+    let min_batch_budget = config.min_batch_budget.min(config.max_batch_budget);
+    let max_batch_budget = config.max_batch_budget.max(min_batch_budget);
+    let min_help_factor = non_negative_finite(config.min_help_factor);
+    let max_help_factor = config.max_help_factor.max(min_help_factor);
+    let min_backoff_factor = non_negative_finite(config.min_backoff_factor);
+    let max_backoff_factor = config.max_backoff_factor.max(min_backoff_factor);
+    SanitizedMeanFieldConfig {
+        queue_gain: non_negative_finite(config.queue_gain),
+        latency_gain: non_negative_finite(config.latency_gain),
+        starvation_gain: non_negative_finite(config.starvation_gain),
+        damping: non_negative_finite(config.damping).min(1.0),
+        max_step: non_negative_finite(config.max_step),
+        min_routing_weight,
+        max_routing_weight,
+        min_batch_budget,
+        max_batch_budget,
+        min_help_factor,
+        max_help_factor,
+        min_backoff_factor,
+        max_backoff_factor,
+        convergence_epsilon: non_negative_finite(config.convergence_epsilon),
+    }
+}
+
+fn compute_control_for_shard(
+    shard_id: &str,
+    observation: SanitizedMeanFieldObservation,
+    baseline: &MeanFieldShardState,
+    global_pressure: f64,
+    config: &SanitizedMeanFieldConfig,
+) -> MeanFieldShardControl {
+    let pressure_offset = observation.composite_pressure - global_pressure;
+    let instability = config.starvation_gain.mul_add(
+        -observation.starvation_risk,
+        config.latency_gain.mul_add(
+            observation.latency_pressure,
+            config
+                .queue_gain
+                .mul_add(observation.queue_pressure, pressure_offset),
+        ),
+    );
+    let target_routing = baseline.routing_weight - instability;
+    let mut routing_delta = target_routing - baseline.routing_weight;
+    let oscillation_guarded = if baseline.last_routing_delta.signum() != 0.0
+        && routing_delta.signum() != 0.0
+        && baseline.last_routing_delta.signum() != routing_delta.signum()
+    {
+        routing_delta *= 0.5;
+        true
+    } else {
+        false
+    };
+
+    let clipped_delta = routing_delta.clamp(-config.max_step, config.max_step);
+    let step_clipped = (clipped_delta - routing_delta).abs() > f64::EPSILON;
+    let damped_routing = clipped_delta.mul_add(config.damping, baseline.routing_weight);
+    let bounded_routing =
+        damped_routing.clamp(config.min_routing_weight, config.max_routing_weight);
+    let routing_boundary_clipped = (bounded_routing - damped_routing).abs() > f64::EPSILON;
+    let routing_clipped = step_clipped || routing_boundary_clipped;
+
+    let normalized_batch = (-0.4_f64)
+        .mul_add(
+            observation.latency_pressure,
+            (-0.6_f64).mul_add(observation.queue_pressure, 1.0),
+        )
+        .clamp(0.0, 1.0);
+    let desired_batch = f64::from(config.max_batch_budget) * normalized_batch;
+    let batch_budget = quantize_batch_budget(
+        desired_batch,
+        config.min_batch_budget,
+        config.max_batch_budget,
+    );
+
+    let help_factor = config
+        .starvation_gain
+        .mul_add(observation.starvation_risk, 1.0)
+        .clamp(config.min_help_factor, config.max_help_factor);
+    let backoff_factor = config
+        .latency_gain
+        .mul_add(
+            observation.latency_pressure,
+            config.queue_gain.mul_add(observation.queue_pressure, 1.0),
+        )
+        .clamp(config.min_backoff_factor, config.max_backoff_factor);
+    let stability_margin = (config.max_step - routing_delta.abs()).max(0.0);
+
+    MeanFieldShardControl {
+        shard_id: shard_id.to_string(),
+        routing_weight: bounded_routing,
+        batch_budget,
+        help_factor,
+        backoff_factor,
+        routing_delta: bounded_routing - baseline.routing_weight,
+        stability_margin,
+        clipped: routing_clipped,
+        oscillation_guarded,
+    }
+}
+
+fn quantize_batch_budget(desired_batch: f64, min_batch_budget: u32, max_batch_budget: u32) -> u32 {
+    let mut selected = min_batch_budget;
+    let mut smallest_distance = f64::INFINITY;
+    for budget in min_batch_budget..=max_batch_budget {
+        let distance = (desired_batch - f64::from(budget)).abs();
+        if distance < smallest_distance {
+            selected = budget;
+            smallest_distance = distance;
+        }
+    }
+    selected
+}
+
+fn default_mean_field_state(
+    shard_id: &str,
+    config: &SanitizedMeanFieldConfig,
+) -> MeanFieldShardState {
+    MeanFieldShardState {
+        shard_id: shard_id.to_string(),
+        routing_weight: 1.0,
+        batch_budget: u32::midpoint(config.min_batch_budget, config.max_batch_budget),
+        help_factor: 1.0,
+        backoff_factor: 1.0,
+        last_routing_delta: 0.0,
+    }
+}
+
+fn usize_to_f64(value: usize) -> f64 {
+    let bounded = u32::try_from(value).unwrap_or(u32::MAX);
+    f64::from(bounded)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpeGateReason {
+    Approved,
+    NoValidSamples,
+    InsufficientSupport,
+    HighUncertainty,
+    ExcessiveRegret,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpeTraceSample {
+    pub action: String,
+    pub behavior_propensity: f64,
+    pub target_propensity: f64,
+    pub outcome: f64,
+    #[serde(default)]
+    pub baseline_outcome: Option<f64>,
+    #[serde(default)]
+    pub direct_method_prediction: Option<f64>,
+    #[serde(default)]
+    pub context_lineage: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpeEvaluatorConfig {
+    pub max_importance_weight: f64,
+    pub min_effective_sample_size: f64,
+    pub max_standard_error: f64,
+    pub confidence_z: f64,
+    pub max_regret_delta: f64,
+}
+
+impl Default for OpeEvaluatorConfig {
+    fn default() -> Self {
+        Self {
+            max_importance_weight: 25.0,
+            min_effective_sample_size: 8.0,
+            max_standard_error: 0.25,
+            confidence_z: 1.96,
+            max_regret_delta: 0.05,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpeEstimatorSummary {
+    pub estimate: f64,
+    pub variance: f64,
+    pub standard_error: f64,
+    pub ci_low: f64,
+    pub ci_high: f64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpeDiagnostics {
+    pub total_samples: usize,
+    pub valid_samples: usize,
+    pub skipped_invalid_samples: usize,
+    pub direct_method_fallback_samples: usize,
+    pub clipped_weight_samples: usize,
+    pub sum_importance_weight: f64,
+    pub max_importance_weight: f64,
+    pub effective_sample_size: f64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpeGateDecision {
+    pub passed: bool,
+    pub reason: OpeGateReason,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpeEvaluationReport {
+    pub ips: OpeEstimatorSummary,
+    pub wis: OpeEstimatorSummary,
+    pub doubly_robust: OpeEstimatorSummary,
+    pub baseline_mean: f64,
+    pub estimated_regret_delta: f64,
+    pub diagnostics: OpeDiagnostics,
+    pub gate: OpeGateDecision,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NormalizedOpeSample {
+    importance_weight: f64,
+    outcome: f64,
+    baseline: f64,
+    direct_method: f64,
+}
+
+#[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
+pub fn evaluate_off_policy(
+    samples: &[OpeTraceSample],
+    config: &OpeEvaluatorConfig,
+) -> OpeEvaluationReport {
+    let max_importance_weight = non_negative_finite(config.max_importance_weight);
+    let min_effective_sample_size = non_negative_finite(config.min_effective_sample_size);
+    let max_standard_error = non_negative_finite(config.max_standard_error);
+    let confidence_z = positive_finite_or(config.confidence_z, 1.96);
+    let max_regret_delta = non_negative_finite(config.max_regret_delta);
+
+    let mut normalized_samples = Vec::with_capacity(samples.len());
+    let mut skipped_invalid_samples = 0_usize;
+    let mut direct_method_fallback_samples = 0_usize;
+    let mut clipped_weight_samples = 0_usize;
+
+    for sample in samples {
+        if let Some((normalized, clipped_weight, fallback_direct_method)) =
+            normalize_ope_sample(sample, max_importance_weight)
+        {
+            if clipped_weight {
+                clipped_weight_samples = clipped_weight_samples.saturating_add(1);
+            }
+            if fallback_direct_method {
+                direct_method_fallback_samples = direct_method_fallback_samples.saturating_add(1);
+            }
+            normalized_samples.push(normalized);
+        } else {
+            skipped_invalid_samples = skipped_invalid_samples.saturating_add(1);
+        }
+    }
+
+    let valid_samples = normalized_samples.len();
+    let mut sum_importance_weight: f64 = 0.0;
+    let mut sum_importance_weight_sq: f64 = 0.0;
+    let mut max_seen_importance_weight: f64 = 0.0;
+    for sample in &normalized_samples {
+        sum_importance_weight += sample.importance_weight;
+        sum_importance_weight_sq += sample.importance_weight * sample.importance_weight;
+        max_seen_importance_weight = max_seen_importance_weight.max(sample.importance_weight);
+    }
+    let effective_sample_size = if sum_importance_weight_sq > 0.0 {
+        (sum_importance_weight * sum_importance_weight) / sum_importance_weight_sq
+    } else {
+        0.0
+    };
+
+    let valid_samples_f64 = valid_samples as f64;
+    let mut ips_effects = Vec::with_capacity(valid_samples);
+    let mut wis_effects = Vec::with_capacity(valid_samples);
+    let mut doubly_robust_effects = Vec::with_capacity(valid_samples);
+    let mut baseline_values = Vec::with_capacity(valid_samples);
+
+    for sample in &normalized_samples {
+        ips_effects.push(sample.importance_weight * sample.outcome);
+        doubly_robust_effects.push(
+            sample
+                .importance_weight
+                .mul_add(sample.outcome - sample.direct_method, sample.direct_method),
+        );
+        baseline_values.push(sample.baseline);
+    }
+    if sum_importance_weight > 0.0 {
+        for sample in &normalized_samples {
+            wis_effects.push(
+                (sample.importance_weight * sample.outcome * valid_samples_f64)
+                    / sum_importance_weight,
+            );
+        }
+    } else {
+        wis_effects.resize(valid_samples, 0.0);
+    }
+
+    let ips = summarize_estimator(&ips_effects, confidence_z);
+    let wis = summarize_estimator(&wis_effects, confidence_z);
+    let doubly_robust = summarize_estimator(&doubly_robust_effects, confidence_z);
+    let baseline_mean = arithmetic_mean(&baseline_values);
+    let estimated_regret_delta = baseline_mean - doubly_robust.estimate;
+
+    let gate = if valid_samples == 0 {
+        OpeGateDecision {
+            passed: false,
+            reason: OpeGateReason::NoValidSamples,
+        }
+    } else if effective_sample_size < min_effective_sample_size {
+        OpeGateDecision {
+            passed: false,
+            reason: OpeGateReason::InsufficientSupport,
+        }
+    } else if doubly_robust.standard_error > max_standard_error {
+        OpeGateDecision {
+            passed: false,
+            reason: OpeGateReason::HighUncertainty,
+        }
+    } else if estimated_regret_delta > max_regret_delta {
+        OpeGateDecision {
+            passed: false,
+            reason: OpeGateReason::ExcessiveRegret,
+        }
+    } else {
+        OpeGateDecision {
+            passed: true,
+            reason: OpeGateReason::Approved,
+        }
+    };
+
+    OpeEvaluationReport {
+        ips,
+        wis,
+        doubly_robust,
+        baseline_mean,
+        estimated_regret_delta,
+        diagnostics: OpeDiagnostics {
+            total_samples: samples.len(),
+            valid_samples,
+            skipped_invalid_samples,
+            direct_method_fallback_samples,
+            clipped_weight_samples,
+            sum_importance_weight,
+            max_importance_weight: max_seen_importance_weight,
+            effective_sample_size,
+        },
+        gate,
+    }
+}
+
+fn normalize_ope_sample(
+    sample: &OpeTraceSample,
+    max_importance_weight: f64,
+) -> Option<(NormalizedOpeSample, bool, bool)> {
+    if !sample.outcome.is_finite()
+        || !sample.behavior_propensity.is_finite()
+        || sample.behavior_propensity <= 0.0
+        || !sample.target_propensity.is_finite()
+        || sample.target_propensity < 0.0
+    {
+        return None;
+    }
+    let raw_weight = sample.target_propensity / sample.behavior_propensity;
+    if !raw_weight.is_finite() || raw_weight < 0.0 {
+        return None;
+    }
+    let clipped_weight = raw_weight.min(max_importance_weight);
+    let clipped = clipped_weight < raw_weight;
+    let baseline = sample
+        .baseline_outcome
+        .filter(|value| value.is_finite())
+        .unwrap_or(sample.outcome);
+    let (direct_method, fallback_direct_method) = match sample.direct_method_prediction {
+        Some(value) if value.is_finite() => (value, false),
+        _ => (sample.outcome, true),
+    };
+    Some((
+        NormalizedOpeSample {
+            importance_weight: clipped_weight,
+            outcome: sample.outcome,
+            baseline,
+            direct_method,
+        },
+        clipped,
+        fallback_direct_method,
+    ))
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn summarize_estimator(effects: &[f64], confidence_z: f64) -> OpeEstimatorSummary {
+    if effects.is_empty() {
+        return OpeEstimatorSummary {
+            estimate: 0.0,
+            variance: 0.0,
+            standard_error: 0.0,
+            ci_low: 0.0,
+            ci_high: 0.0,
+        };
+    }
+    let sample_count = effects.len() as f64;
+    let estimate = arithmetic_mean(effects);
+    let variance = if effects.len() > 1 {
+        effects
+            .iter()
+            .map(|value| {
+                let centered = *value - estimate;
+                centered * centered
+            })
+            .sum::<f64>()
+            / (sample_count - 1.0)
+    } else {
+        0.0
+    };
+    let standard_error = (variance / sample_count).sqrt();
+    let margin = confidence_z * standard_error;
+    OpeEstimatorSummary {
+        estimate,
+        variance,
+        standard_error,
+        ci_low: estimate - margin,
+        ci_high: estimate + margin,
+    }
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn arithmetic_mean(values: &[f64]) -> f64 {
+    if values.is_empty() {
+        0.0
+    } else {
+        values.iter().sum::<f64>() / values.len() as f64
+    }
+}
+
+const fn non_negative_finite(value: f64) -> f64 {
+    if value.is_finite() {
+        if value > 0.0 { value } else { 0.0 }
+    } else {
+        0.0
+    }
+}
+
+fn positive_finite_or(value: f64, fallback: f64) -> f64 {
+    if value.is_finite() && value > 0.0 {
+        value
+    } else {
+        fallback
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2077,5 +2734,253 @@ mod tests {
         assert_eq!(plan.remaining_overhead_ms, 20);
         assert_eq!(plan.skipped.len(), 1);
         assert_eq!(plan.skipped[0].reason, VoiSkipReason::Disabled);
+    }
+
+    fn ope_sample(
+        action: &str,
+        behavior_propensity: f64,
+        target_propensity: f64,
+        outcome: f64,
+    ) -> OpeTraceSample {
+        OpeTraceSample {
+            action: action.to_string(),
+            behavior_propensity,
+            target_propensity,
+            outcome,
+            baseline_outcome: Some(outcome),
+            direct_method_prediction: Some(outcome),
+            context_lineage: Some(format!("ctx:{action}")),
+        }
+    }
+
+    fn assert_close(left: f64, right: f64, epsilon: f64) {
+        assert!(
+            (left - right).abs() <= epsilon,
+            "values differ: left={left}, right={right}, epsilon={epsilon}"
+        );
+    }
+
+    #[test]
+    fn ope_matches_ground_truth_when_behavior_equals_target() {
+        let config = OpeEvaluatorConfig {
+            max_importance_weight: 50.0,
+            min_effective_sample_size: 1.0,
+            max_standard_error: 10.0,
+            confidence_z: 1.96,
+            max_regret_delta: 1.0,
+        };
+        let samples = vec![
+            ope_sample("a", 0.5, 0.5, 1.0),
+            ope_sample("a", 0.5, 0.5, 0.0),
+            ope_sample("a", 0.5, 0.5, 1.0),
+            ope_sample("a", 0.5, 0.5, 1.0),
+            ope_sample("a", 0.5, 0.5, 0.0),
+            ope_sample("a", 0.5, 0.5, 1.0),
+        ];
+
+        let report = evaluate_off_policy(&samples, &config);
+        let expected_mean = 4.0 / 6.0;
+        assert_close(report.ips.estimate, expected_mean, 1e-9);
+        assert_close(report.wis.estimate, expected_mean, 1e-9);
+        assert_close(report.doubly_robust.estimate, expected_mean, 1e-9);
+        assert_eq!(report.gate.reason, OpeGateReason::Approved);
+        assert!(report.gate.passed);
+    }
+
+    #[test]
+    fn ope_fails_closed_under_extreme_propensity_skew() {
+        let config = OpeEvaluatorConfig {
+            max_importance_weight: 100.0,
+            min_effective_sample_size: 4.0,
+            max_standard_error: 10.0,
+            confidence_z: 1.96,
+            max_regret_delta: 10.0,
+        };
+        let mut samples = vec![ope_sample("candidate", 0.02, 1.0, 0.0)];
+        for _ in 0..9 {
+            samples.push(ope_sample("candidate", 1.0, 0.02, 1.0));
+        }
+
+        let report = evaluate_off_policy(&samples, &config);
+        assert!(report.diagnostics.effective_sample_size < 2.0);
+        assert_eq!(report.gate.reason, OpeGateReason::InsufficientSupport);
+        assert!(!report.gate.passed);
+    }
+
+    #[test]
+    fn ope_fails_closed_when_no_valid_samples_exist() {
+        let config = OpeEvaluatorConfig::default();
+        let samples = vec![
+            ope_sample("invalid", 0.0, 0.5, 1.0),
+            ope_sample("invalid", -1.0, 0.5, 1.0),
+        ];
+
+        let report = evaluate_off_policy(&samples, &config);
+        assert_eq!(report.diagnostics.valid_samples, 0);
+        assert_eq!(report.gate.reason, OpeGateReason::NoValidSamples);
+        assert!(!report.gate.passed);
+    }
+
+    #[test]
+    fn ope_is_stable_across_input_order() {
+        let config = OpeEvaluatorConfig {
+            max_importance_weight: 50.0,
+            min_effective_sample_size: 1.0,
+            max_standard_error: 10.0,
+            confidence_z: 1.96,
+            max_regret_delta: 10.0,
+        };
+        let samples = vec![
+            ope_sample("a", 0.40, 0.30, 0.2),
+            ope_sample("a", 0.50, 0.60, 0.8),
+            ope_sample("a", 0.70, 0.20, 0.1),
+            ope_sample("a", 0.30, 0.50, 0.7),
+        ];
+        let mut reversed = samples.clone();
+        reversed.reverse();
+
+        let original = evaluate_off_policy(&samples, &config);
+        let swapped = evaluate_off_policy(&reversed, &config);
+        assert_close(original.ips.estimate, swapped.ips.estimate, 1e-12);
+        assert_close(original.wis.estimate, swapped.wis.estimate, 1e-12);
+        assert_close(
+            original.doubly_robust.estimate,
+            swapped.doubly_robust.estimate,
+            1e-12,
+        );
+        assert_eq!(original.gate.reason, swapped.gate.reason);
+        assert_close(
+            original.diagnostics.effective_sample_size,
+            swapped.diagnostics.effective_sample_size,
+            1e-12,
+        );
+    }
+
+    fn mean_field_observation(
+        shard_id: &str,
+        queue_pressure: f64,
+        tail_latency_ratio: f64,
+        starvation_risk: f64,
+    ) -> MeanFieldShardObservation {
+        MeanFieldShardObservation {
+            shard_id: shard_id.to_string(),
+            queue_pressure,
+            tail_latency_ratio,
+            starvation_risk,
+        }
+    }
+
+    fn mean_field_state(
+        shard_id: &str,
+        routing_weight: f64,
+        batch_budget: u32,
+        last_routing_delta: f64,
+    ) -> MeanFieldShardState {
+        MeanFieldShardState {
+            shard_id: shard_id.to_string(),
+            routing_weight,
+            batch_budget,
+            help_factor: 1.0,
+            backoff_factor: 1.0,
+            last_routing_delta,
+        }
+    }
+
+    #[test]
+    fn mean_field_controls_are_deterministic_across_input_order() {
+        let config = MeanFieldControllerConfig::default();
+        let observations = vec![
+            mean_field_observation("shard-b", 0.7, 1.3, 0.1),
+            mean_field_observation("shard-a", 0.3, 1.1, 0.2),
+            mean_field_observation("shard-c", 0.5, 1.0, 0.4),
+        ];
+        let previous = vec![
+            mean_field_state("shard-c", 1.2, 24, 0.0),
+            mean_field_state("shard-a", 0.9, 18, 0.0),
+            mean_field_state("shard-b", 1.1, 20, 0.0),
+        ];
+
+        let baseline = compute_mean_field_controls(&observations, &previous, &config);
+        let reversed_observations = observations.iter().rev().cloned().collect::<Vec<_>>();
+        let reversed_previous = previous.iter().rev().cloned().collect::<Vec<_>>();
+        let reversed =
+            compute_mean_field_controls(&reversed_observations, &reversed_previous, &config);
+
+        assert_eq!(
+            baseline
+                .controls
+                .iter()
+                .map(|control| control.shard_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["shard-a", "shard-b", "shard-c"]
+        );
+        assert_eq!(
+            baseline
+                .controls
+                .iter()
+                .map(|control| control.shard_id.clone())
+                .collect::<Vec<_>>(),
+            reversed
+                .controls
+                .iter()
+                .map(|control| control.shard_id.clone())
+                .collect::<Vec<_>>()
+        );
+        assert_close(baseline.global_pressure, reversed.global_pressure, 1e-12);
+    }
+
+    #[test]
+    fn mean_field_clips_unstable_steps_to_max_step() {
+        let config = MeanFieldControllerConfig {
+            max_step: 0.05,
+            ..MeanFieldControllerConfig::default()
+        };
+        let observations = vec![mean_field_observation("shard-a", 1.0, 2.0, 0.0)];
+        let previous = vec![mean_field_state("shard-a", 1.0, 32, 0.0)];
+
+        let report = compute_mean_field_controls(&observations, &previous, &config);
+        assert_eq!(report.controls.len(), 1);
+        let control = &report.controls[0];
+        assert!(control.clipped);
+        assert!(control.routing_delta.abs() <= config.max_step + 1e-12);
+        assert!(control.stability_margin <= config.max_step + 1e-12);
+    }
+
+    #[test]
+    fn mean_field_oscillation_guard_reduces_sign_flip_delta() {
+        let config = MeanFieldControllerConfig {
+            max_step: 0.30,
+            ..MeanFieldControllerConfig::default()
+        };
+        let observations = vec![mean_field_observation("shard-a", 1.0, 1.7, 0.0)];
+        let previous = vec![mean_field_state("shard-a", 1.2, 20, 0.12)];
+
+        let report = compute_mean_field_controls(&observations, &previous, &config);
+        let control = &report.controls[0];
+        assert!(control.oscillation_guarded);
+        assert!(report.oscillation_guard_count >= 1);
+    }
+
+    #[test]
+    fn mean_field_marks_converged_for_small_average_delta() {
+        let config = MeanFieldControllerConfig {
+            queue_gain: 0.0,
+            latency_gain: 0.0,
+            starvation_gain: 0.0,
+            damping: 1.0,
+            convergence_epsilon: 0.05,
+            ..MeanFieldControllerConfig::default()
+        };
+        let observations = vec![
+            mean_field_observation("shard-a", 0.40, 1.0, 0.1),
+            mean_field_observation("shard-b", 0.42, 1.0, 0.1),
+        ];
+        let previous = vec![
+            mean_field_state("shard-a", 1.0, 24, 0.0),
+            mean_field_state("shard-b", 1.0, 24, 0.0),
+        ];
+
+        let report = compute_mean_field_controls(&observations, &previous, &config);
+        assert!(report.converged);
     }
 }

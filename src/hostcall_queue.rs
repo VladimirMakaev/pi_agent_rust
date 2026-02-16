@@ -1200,7 +1200,7 @@ mod tests {
 
     #[test]
     fn s3fifo_ghost_hits_allow_reentry_after_prior_rejection() {
-        let mut queue = HostcallRequestQueue::with_mode(1, 4, HostcallQueueMode::SafeFallback);
+        let mut queue = HostcallRequestQueue::with_mode(1, 3, HostcallQueueMode::SafeFallback);
 
         assert!(matches!(
             queue.push_back(TenantRequest {

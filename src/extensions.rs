@@ -9142,6 +9142,8 @@ pub struct HostResultPayload {
 pub const HOSTCALL_OPCODE_SCHEMA_VERSION: &str = "pi.ext.hostcall_opcode.v1";
 pub const HOSTCALL_OPCODE_VERSION: u16 = 1;
 const HOSTCALL_OPCODE_CONTEXT_KEY: &str = "typed_opcode";
+pub const HOSTCALL_IO_URING_CONTEXT_SCHEMA_VERSION: &str = "pi.ext.io_uring_lane_input.v1";
+const HOSTCALL_IO_URING_CONTEXT_KEY: &str = "io_uring_lane_input";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HostcallOpcodeSource {
@@ -9906,7 +9908,10 @@ pub fn hostcall_request_to_payload(request: &HostcallRequest) -> HostCallPayload
     let capability = request.required_capability();
     let params = request.params_for_hash();
     let timeout_ms = js_hostcall_timeout_ms(request);
-    let context = hostcall_opcode_context_for_params(&method, &params);
+    let context = merge_hostcall_context(
+        hostcall_opcode_context_for_params(&method, &params),
+        hostcall_io_uring_context_for_request(request),
+    );
 
     HostCallPayload {
         call_id: request.call_id.clone(),
@@ -10400,6 +10405,31 @@ fn hostcall_opcode_context_for_params(method: &str, params: &Value) -> Option<Va
             "code": opcode.code(),
         }
     }))
+}
+
+fn hostcall_io_uring_context_for_request(request: &HostcallRequest) -> Value {
+    json!({
+        HOSTCALL_IO_URING_CONTEXT_KEY: {
+            "schema": HOSTCALL_IO_URING_CONTEXT_SCHEMA_VERSION,
+            "capability_class": request.io_uring_capability_class(),
+            "io_hint": request.io_uring_io_hint(),
+        }
+    })
+}
+
+fn merge_hostcall_context(base: Option<Value>, extra: Value) -> Option<Value> {
+    let mut merged = serde_json::Map::new();
+    if let Some(Value::Object(base_obj)) = base {
+        merged.extend(base_obj);
+    }
+    if let Value::Object(extra_obj) = extra {
+        merged.extend(extra_obj);
+    }
+    if merged.is_empty() {
+        None
+    } else {
+        Some(Value::Object(merged))
+    }
 }
 
 fn params_without_key(params: &Value, key: &str) -> Value {
@@ -33243,7 +33273,12 @@ mod tests {
                     "schema": HOSTCALL_OPCODE_SCHEMA_VERSION,
                     "version": HOSTCALL_OPCODE_VERSION,
                     "code": "tool.read"
-                }
+                },
+                "io_uring_lane_input": {
+                    "schema": HOSTCALL_IO_URING_CONTEXT_SCHEMA_VERSION,
+                    "capability_class": "filesystem",
+                    "io_hint": "io_heavy"
+                },
             }))
         );
     }
@@ -33269,9 +33304,15 @@ mod tests {
             Some("ls")
         );
         assert!(payload.params.get("args").is_some());
-        assert!(
-            payload.context.is_none(),
-            "exec is currently routed through legacy dispatcher path"
+        assert_eq!(
+            payload.context,
+            Some(json!({
+                "io_uring_lane_input": {
+                    "schema": HOSTCALL_IO_URING_CONTEXT_SCHEMA_VERSION,
+                    "capability_class": "execution",
+                    "io_hint": "cpu_bound"
+                }
+            }))
         );
     }
 
@@ -33307,7 +33348,12 @@ mod tests {
                     "schema": HOSTCALL_OPCODE_SCHEMA_VERSION,
                     "version": HOSTCALL_OPCODE_VERSION,
                     "code": "session.get_state"
-                }
+                },
+                "io_uring_lane_input": {
+                    "schema": HOSTCALL_IO_URING_CONTEXT_SCHEMA_VERSION,
+                    "capability_class": "session",
+                    "io_hint": "unknown"
+                },
             }))
         );
     }
@@ -33332,7 +33378,12 @@ mod tests {
                     "schema": HOSTCALL_OPCODE_SCHEMA_VERSION,
                     "version": HOSTCALL_OPCODE_VERSION,
                     "code": "session.get_name"
-                }
+                },
+                "io_uring_lane_input": {
+                    "schema": HOSTCALL_IO_URING_CONTEXT_SCHEMA_VERSION,
+                    "capability_class": "session",
+                    "io_hint": "unknown"
+                },
             }))
         );
     }

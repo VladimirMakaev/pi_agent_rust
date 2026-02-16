@@ -24,6 +24,9 @@
 //! ```
 
 use crate::error::{Error, Result};
+use crate::hostcall_io_uring_lane::{
+    HostcallCapabilityClass, HostcallIoHint, IoUringLaneDecisionInput,
+};
 use crate::hostcall_queue::{
     HOSTCALL_FAST_RING_CAPACITY, HOSTCALL_OVERFLOW_CAPACITY, HostcallQueueEnqueueResult,
     HostcallQueueTelemetry, HostcallRequestQueue, QueueTenant,
@@ -301,6 +304,42 @@ impl HostcallRequest {
             HostcallKind::Ui { .. } => "ui".to_string(),
             HostcallKind::Events { .. } => "events".to_string(),
             HostcallKind::Log => "log".to_string(),
+        }
+    }
+
+    #[must_use]
+    pub fn io_uring_capability_class(&self) -> HostcallCapabilityClass {
+        HostcallCapabilityClass::from_capability(&self.required_capability())
+    }
+
+    #[must_use]
+    pub fn io_uring_io_hint(&self) -> HostcallIoHint {
+        match &self.kind {
+            HostcallKind::Http => HostcallIoHint::IoHeavy,
+            HostcallKind::Exec { .. } => HostcallIoHint::CpuBound,
+            HostcallKind::Tool { name } => match name.trim().to_ascii_lowercase().as_str() {
+                "read" | "write" | "edit" | "grep" | "find" | "ls" => HostcallIoHint::IoHeavy,
+                "bash" => HostcallIoHint::CpuBound,
+                _ => HostcallIoHint::Unknown,
+            },
+            HostcallKind::Session { .. }
+            | HostcallKind::Ui { .. }
+            | HostcallKind::Events { .. }
+            | HostcallKind::Log => HostcallIoHint::Unknown,
+        }
+    }
+
+    #[must_use]
+    pub fn io_uring_lane_input(
+        &self,
+        queue_depth: usize,
+        force_compat_lane: bool,
+    ) -> IoUringLaneDecisionInput {
+        IoUringLaneDecisionInput {
+            capability: self.io_uring_capability_class(),
+            io_hint: self.io_uring_io_hint(),
+            queue_depth,
+            force_compat_lane,
         }
     }
 
@@ -18041,6 +18080,107 @@ export default ConfigLoader;
                 request.call_id
             );
         }
+    }
+
+    #[test]
+    fn hostcall_request_io_uring_capability_and_hint_mappings_are_deterministic() {
+        let cases = vec![
+            (
+                HostcallRequest {
+                    call_id: "io-read".to_string(),
+                    kind: HostcallKind::Tool {
+                        name: "read".to_string(),
+                    },
+                    payload: serde_json::Value::Null,
+                    trace_id: 0,
+                    extension_id: None,
+                },
+                HostcallCapabilityClass::Filesystem,
+                HostcallIoHint::IoHeavy,
+            ),
+            (
+                HostcallRequest {
+                    call_id: "io-bash".to_string(),
+                    kind: HostcallKind::Tool {
+                        name: "bash".to_string(),
+                    },
+                    payload: serde_json::Value::Null,
+                    trace_id: 0,
+                    extension_id: None,
+                },
+                HostcallCapabilityClass::Execution,
+                HostcallIoHint::CpuBound,
+            ),
+            (
+                HostcallRequest {
+                    call_id: "io-http".to_string(),
+                    kind: HostcallKind::Http,
+                    payload: serde_json::Value::Null,
+                    trace_id: 0,
+                    extension_id: None,
+                },
+                HostcallCapabilityClass::Network,
+                HostcallIoHint::IoHeavy,
+            ),
+            (
+                HostcallRequest {
+                    call_id: "io-session".to_string(),
+                    kind: HostcallKind::Session {
+                        op: "get_state".to_string(),
+                    },
+                    payload: serde_json::Value::Null,
+                    trace_id: 0,
+                    extension_id: None,
+                },
+                HostcallCapabilityClass::Session,
+                HostcallIoHint::Unknown,
+            ),
+            (
+                HostcallRequest {
+                    call_id: "io-log".to_string(),
+                    kind: HostcallKind::Log,
+                    payload: serde_json::Value::Null,
+                    trace_id: 0,
+                    extension_id: None,
+                },
+                HostcallCapabilityClass::Telemetry,
+                HostcallIoHint::Unknown,
+            ),
+        ];
+
+        for (request, expected_capability, expected_hint) in cases {
+            assert_eq!(
+                request.io_uring_capability_class(),
+                expected_capability,
+                "capability mismatch for {}",
+                request.call_id
+            );
+            assert_eq!(
+                request.io_uring_io_hint(),
+                expected_hint,
+                "io hint mismatch for {}",
+                request.call_id
+            );
+        }
+    }
+
+    #[test]
+    fn hostcall_request_io_uring_lane_input_preserves_queue_and_force_flags() {
+        let request = HostcallRequest {
+            call_id: "io-lane-input".to_string(),
+            kind: HostcallKind::Tool {
+                name: "write".to_string(),
+            },
+            payload: serde_json::json!({ "path": "notes.txt", "content": "ok" }),
+            trace_id: 0,
+            extension_id: Some("ext.test".to_string()),
+        };
+
+        let input = request.io_uring_lane_input(17, true);
+        assert_eq!(input.capability, HostcallCapabilityClass::Filesystem);
+        assert_eq!(input.io_hint, HostcallIoHint::IoHeavy);
+        assert_eq!(input.queue_depth, 17);
+        assert!(input.force_compat_lane);
     }
 
     #[test]
