@@ -34,7 +34,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 use std::io::Read as _;
-use std::path::Path;
+use std::path::{Component, Path};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
@@ -328,25 +328,103 @@ pub enum EvidenceType {
 }
 
 impl BeadCoverageLink {
-    /// Create a new bead coverage link.
-    pub fn new(
+    /// Create a new bead coverage link with fail-closed path hygiene validation.
+    pub fn try_new(
         bead_id: impl Into<String>,
-        test_files: Vec<String>,
+        test_files: &[String],
         evidence_type: EvidenceType,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, String> {
+        let bead_id = bead_id.into().trim().to_string();
+        if bead_id.is_empty() {
+            return Err("bead_id must not be empty".to_string());
+        }
+
+        let test_files = validate_coverage_path_set(test_files, "test_files")?;
+
+        Ok(Self {
             schema: BEAD_COVERAGE_SCHEMA_V1,
-            bead_id: bead_id.into(),
+            bead_id,
             test_files,
             log_artifacts: Vec::new(),
             evidence_type,
-        }
+        })
+    }
+
+    /// Create a new bead coverage link.
+    pub fn new(
+        bead_id: impl Into<String>,
+        test_files: &[String],
+        evidence_type: EvidenceType,
+    ) -> Self {
+        Self::try_new(bead_id, test_files, evidence_type)
+            .expect("BeadCoverageLink::new requires repo-relative, traversal-safe test file paths")
+    }
+
+    /// Validate that all evidence paths are repo-relative and traversal-safe.
+    pub fn validate_path_hygiene(&self) -> Result<(), String> {
+        let _ = validate_coverage_path_set(&self.test_files, "test_files")?;
+        let _ = validate_coverage_path_set(&self.log_artifacts, "log_artifacts")?;
+        Ok(())
     }
 
     /// Serialize to a JSONL line.
     pub fn to_jsonl_line(&self) -> String {
+        self.validate_path_hygiene().expect(
+            "BeadCoverageLink::to_jsonl_line requires repo-relative, traversal-safe evidence paths",
+        );
         serde_json::to_string(self).expect("BeadCoverageLink serialization")
     }
+}
+
+fn validate_coverage_path_set(paths: &[String], field_name: &str) -> Result<Vec<String>, String> {
+    let mut normalized = Vec::with_capacity(paths.len());
+    let mut seen = BTreeMap::new();
+    for (index, path) in paths.iter().enumerate() {
+        let normalized_path = validate_coverage_path(path, field_name, index)?;
+        if let Some(first_index) = seen.insert(normalized_path.clone(), index) {
+            return Err(format!(
+                "{field_name}[{index}] duplicates {field_name}[{first_index}]: {normalized_path}"
+            ));
+        }
+        normalized.push(normalized_path);
+    }
+    Ok(normalized)
+}
+
+fn validate_coverage_path(path: &str, field_name: &str, index: usize) -> Result<String, String> {
+    let candidate = path.trim();
+    if candidate.is_empty() {
+        return Err(format!("{field_name}[{index}] must not be empty"));
+    }
+
+    let parsed = Path::new(candidate);
+    if parsed.is_absolute()
+        || looks_like_windows_absolute_path(candidate)
+        || candidate.starts_with("\\\\")
+    {
+        return Err(format!(
+            "{field_name}[{index}] must be repo-relative, got: {candidate}"
+        ));
+    }
+
+    if parsed
+        .components()
+        .any(|component| component == Component::ParentDir)
+    {
+        return Err(format!(
+            "{field_name}[{index}] must not contain '..' traversal: {candidate}"
+        ));
+    }
+
+    Ok(candidate.to_string())
+}
+
+fn looks_like_windows_absolute_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
 }
 
 fn format_elapsed_ms(elapsed_ms: u64) -> String {
@@ -2758,5 +2836,78 @@ mod tests {
         let record = r#"{"schema":"pi.test.log.v2","type":"log","trace_id":"abc","ci_correlation_id":123,"seq":1,"ts":"x","t_ms":0,"level":"info","category":"c","message":"m"}"#;
         let err = validate_jsonl_line(record, 1).unwrap_err();
         assert_eq!(err.field, "ci_correlation_id");
+    }
+
+    #[test]
+    fn bead_coverage_try_new_rejects_absolute_test_file_path() {
+        let test_files = vec!["/tmp/absolute-path.rs".to_string()];
+        let err = BeadCoverageLink::try_new("bd-3ar8v.6.11", &test_files, EvidenceType::Unit)
+            .expect_err("absolute test-file path must fail closed");
+        assert!(err.contains("repo-relative"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn bead_coverage_try_new_rejects_windows_absolute_test_file_path() {
+        let test_files = vec!["C:/temp/absolute-path.rs".to_string()];
+        let err = BeadCoverageLink::try_new("bd-3ar8v.6.11", &test_files, EvidenceType::Unit)
+            .expect_err("windows absolute test-file path must fail closed");
+        assert!(err.contains("repo-relative"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn bead_coverage_validate_path_hygiene_rejects_parent_traversal_log_artifact() {
+        let test_files = vec!["tests/ci_full_suite_gate.rs".to_string()];
+        let mut link = BeadCoverageLink::new("bd-3ar8v.6.11", &test_files, EvidenceType::Unit);
+        link.log_artifacts = vec!["../secrets/leak.jsonl".to_string()];
+
+        let err = link
+            .validate_path_hygiene()
+            .expect_err("parent traversal must fail closed");
+        assert!(err.contains(".."), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn bead_coverage_validate_path_hygiene_accepts_repo_relative_paths() {
+        let test_files = vec!["tests/ci_full_suite_gate.rs".to_string()];
+        let mut link = BeadCoverageLink::new("bd-3ar8v.6.11", &test_files, EvidenceType::Unit);
+        link.log_artifacts = vec![
+            "tests/full_suite_gate/full_suite_events.jsonl".to_string(),
+            "tests/full_suite_gate/certification_events.jsonl".to_string(),
+        ];
+
+        link.validate_path_hygiene()
+            .expect("repo-relative evidence paths should pass");
+
+        let json = link.to_jsonl_line();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&json).expect("BeadCoverageLink JSON should deserialize");
+        assert_eq!(parsed["schema"], BEAD_COVERAGE_SCHEMA_V1);
+        assert_eq!(parsed["bead_id"], "bd-3ar8v.6.11");
+    }
+
+    #[test]
+    fn bead_coverage_try_new_rejects_duplicate_test_files_after_normalization() {
+        let test_files = vec![
+            "tests/ci_full_suite_gate.rs".to_string(),
+            " tests/ci_full_suite_gate.rs ".to_string(),
+        ];
+        let err = BeadCoverageLink::try_new("bd-3ar8v.6.11", &test_files, EvidenceType::Unit)
+            .expect_err("duplicate normalized test-files must fail closed");
+        assert!(err.contains("duplicates"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn bead_coverage_validate_path_hygiene_rejects_duplicate_log_artifacts() {
+        let test_files = vec!["tests/ci_full_suite_gate.rs".to_string()];
+        let mut link = BeadCoverageLink::new("bd-3ar8v.6.11", &test_files, EvidenceType::Unit);
+        link.log_artifacts = vec![
+            "tests/full_suite_gate/full_suite_events.jsonl".to_string(),
+            " tests/full_suite_gate/full_suite_events.jsonl ".to_string(),
+        ];
+
+        let err = link
+            .validate_path_hygiene()
+            .expect_err("duplicate normalized log artifacts must fail closed");
+        assert!(err.contains("duplicates"), "unexpected error: {err}");
     }
 }
