@@ -2041,11 +2041,10 @@ print_summary() {
 }
 
 main() {
-  show_header
-
   validate_options
   load_existing_state
   resolve_version
+  show_header
   detect_existing_pi
   choose_adoption_mode
   choose_dest_for_adoption
