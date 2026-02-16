@@ -691,6 +691,279 @@ pub enum ReplayTraceCodecError {
     Validation(#[from] ReplayTraceValidationError),
 }
 
+/// Configuration for a replay recording lane.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayLaneConfig {
+    /// Budget constraints for this lane.
+    pub budget: ReplayCaptureBudget,
+    /// Static metadata attached to every trace produced by this lane.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub lane_metadata: BTreeMap<String, String>,
+}
+
+impl ReplayLaneConfig {
+    #[must_use]
+    pub const fn new(budget: ReplayCaptureBudget) -> Self {
+        Self {
+            budget,
+            lane_metadata: BTreeMap::new(),
+        }
+    }
+
+    /// Insert a metadata key-value pair into the lane config.
+    pub fn insert_metadata(&mut self, key: impl Into<String>, value: impl Into<String>) {
+        self.lane_metadata.insert(key.into(), value.into());
+    }
+}
+
+/// Outcome of a completed replay recording session.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayLaneResult {
+    /// The recorded trace bundle (present even when gated, for forensic access).
+    pub bundle: ReplayTraceBundle,
+    /// Budget gate report for this recording.
+    pub gate_report: ReplayCaptureGateReport,
+    /// Diagnostic snapshot with root-cause hints.
+    pub diagnostic: ReplayDiagnosticSnapshot,
+}
+
+/// Outcome of comparing a recorded trace against a reference.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayComparisonResult {
+    /// The reference bundle used for comparison.
+    pub reference_trace_id: String,
+    /// The observed bundle being compared.
+    pub observed_trace_id: String,
+    /// First divergence found, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub divergence: Option<ReplayDivergence>,
+    /// Root-cause hints derived from the comparison.
+    pub root_cause_hints: Vec<ReplayRootCauseHint>,
+}
+
+/// Stateful recorder that accumulates extension runtime events during a
+/// dispatch cycle and produces a deterministic [`ReplayTraceBundle`].
+///
+/// Events are pushed in arrival order; the recorder's [`finish`](Self::finish)
+/// method canonicalizes ordering, applies the budget gate, and builds the
+/// diagnostic snapshot.
+#[derive(Debug)]
+pub struct ReplayRecorder {
+    config: ReplayLaneConfig,
+    builder: ReplayTraceBuilder,
+    logical_clock: u64,
+    event_count: u64,
+}
+
+impl ReplayRecorder {
+    /// Create a new recorder for a single dispatch cycle.
+    #[must_use]
+    pub fn new(trace_id: impl Into<String>, config: ReplayLaneConfig) -> Self {
+        let mut builder = ReplayTraceBuilder::new(trace_id);
+        for (key, value) in &config.lane_metadata {
+            builder.insert_metadata(key.clone(), value.clone());
+        }
+        Self {
+            config,
+            builder,
+            logical_clock: 0,
+            event_count: 0,
+        }
+    }
+
+    /// Current logical clock value.
+    #[must_use]
+    pub const fn logical_clock(&self) -> u64 {
+        self.logical_clock
+    }
+
+    /// Number of events recorded so far.
+    #[must_use]
+    pub const fn event_count(&self) -> u64 {
+        self.event_count
+    }
+
+    /// Advance the logical clock and return the new value.
+    pub const fn tick(&mut self) -> u64 {
+        self.logical_clock = self.logical_clock.saturating_add(1);
+        self.logical_clock
+    }
+
+    /// Record an event at the current logical clock.
+    pub fn record(
+        &mut self,
+        extension_id: impl Into<String>,
+        request_id: impl Into<String>,
+        kind: ReplayEventKind,
+        attributes: BTreeMap<String, String>,
+    ) {
+        let mut draft = ReplayEventDraft::new(
+            self.logical_clock,
+            extension_id,
+            request_id,
+            kind,
+        );
+        draft.attributes = attributes;
+        self.builder.push(draft);
+        self.event_count = self.event_count.saturating_add(1);
+    }
+
+    /// Record a `Scheduled` event.
+    pub fn record_scheduled(
+        &mut self,
+        extension_id: impl Into<String>,
+        request_id: impl Into<String>,
+        attributes: BTreeMap<String, String>,
+    ) {
+        self.record(extension_id, request_id, ReplayEventKind::Scheduled, attributes);
+    }
+
+    /// Record a `QueueAccepted` event.
+    pub fn record_queue_accepted(
+        &mut self,
+        extension_id: impl Into<String>,
+        request_id: impl Into<String>,
+        attributes: BTreeMap<String, String>,
+    ) {
+        self.record(extension_id, request_id, ReplayEventKind::QueueAccepted, attributes);
+    }
+
+    /// Record a `PolicyDecision` event.
+    pub fn record_policy_decision(
+        &mut self,
+        extension_id: impl Into<String>,
+        request_id: impl Into<String>,
+        attributes: BTreeMap<String, String>,
+    ) {
+        self.record(extension_id, request_id, ReplayEventKind::PolicyDecision, attributes);
+    }
+
+    /// Record a `Cancelled` event.
+    pub fn record_cancelled(
+        &mut self,
+        extension_id: impl Into<String>,
+        request_id: impl Into<String>,
+        attributes: BTreeMap<String, String>,
+    ) {
+        self.record(extension_id, request_id, ReplayEventKind::Cancelled, attributes);
+    }
+
+    /// Record a `Retried` event.
+    pub fn record_retried(
+        &mut self,
+        extension_id: impl Into<String>,
+        request_id: impl Into<String>,
+        attributes: BTreeMap<String, String>,
+    ) {
+        self.record(extension_id, request_id, ReplayEventKind::Retried, attributes);
+    }
+
+    /// Record a `Completed` event.
+    pub fn record_completed(
+        &mut self,
+        extension_id: impl Into<String>,
+        request_id: impl Into<String>,
+        attributes: BTreeMap<String, String>,
+    ) {
+        self.record(extension_id, request_id, ReplayEventKind::Completed, attributes);
+    }
+
+    /// Record a `Failed` event.
+    pub fn record_failed(
+        &mut self,
+        extension_id: impl Into<String>,
+        request_id: impl Into<String>,
+        attributes: BTreeMap<String, String>,
+    ) {
+        self.record(extension_id, request_id, ReplayEventKind::Failed, attributes);
+    }
+
+    /// Finalize the recording: canonicalize event ordering, apply budget gate,
+    /// and build the diagnostic snapshot.
+    ///
+    /// The `observation` provides runtime telemetry needed for budget gating.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the trace bundle fails validation.
+    pub fn finish(
+        self,
+        observation: ReplayCaptureObservation,
+    ) -> Result<ReplayLaneResult, ReplayTraceValidationError> {
+        let bundle = self.builder.build()?;
+        let gate_report = evaluate_replay_capture_gate(self.config.budget, observation);
+        let diagnostic = build_replay_diagnostic_snapshot(&bundle, gate_report, None)?;
+
+        Ok(ReplayLaneResult {
+            bundle,
+            gate_report,
+            diagnostic,
+        })
+    }
+
+    /// Finalize and compare against a reference bundle.
+    ///
+    /// Returns the lane result together with a comparison result that
+    /// includes the first divergence (if any) and derived root-cause hints.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either bundle fails validation.
+    pub fn finish_and_compare(
+        self,
+        observation: ReplayCaptureObservation,
+        reference: &ReplayTraceBundle,
+    ) -> Result<(ReplayLaneResult, ReplayComparisonResult), ReplayTraceValidationError> {
+        let bundle = self.builder.build()?;
+        let gate_report = evaluate_replay_capture_gate(self.config.budget, observation);
+        let divergence_opt = first_divergence(reference, &bundle)?;
+        let diagnostic =
+            build_replay_diagnostic_snapshot(&bundle, gate_report, divergence_opt.as_ref())?;
+
+        let comparison = ReplayComparisonResult {
+            reference_trace_id: reference.trace_id.clone(),
+            observed_trace_id: bundle.trace_id.clone(),
+            divergence: divergence_opt,
+            root_cause_hints: diagnostic.root_cause_hints.clone(),
+        };
+
+        let result = ReplayLaneResult {
+            bundle,
+            gate_report,
+            diagnostic,
+        };
+
+        Ok((result, comparison))
+    }
+}
+
+/// Compare two previously-recorded bundles without an active recorder.
+///
+/// # Errors
+///
+/// Returns an error if either bundle fails validation.
+pub fn compare_replay_bundles(
+    reference: &ReplayTraceBundle,
+    observed: &ReplayTraceBundle,
+    gate_report: ReplayCaptureGateReport,
+) -> Result<(ReplayDiagnosticSnapshot, ReplayComparisonResult), ReplayTraceValidationError> {
+    let divergence_opt = first_divergence(reference, observed)?;
+    let diagnostic =
+        build_replay_diagnostic_snapshot(observed, gate_report, divergence_opt.as_ref())?;
+
+    let comparison = ReplayComparisonResult {
+        reference_trace_id: reference.trace_id.clone(),
+        observed_trace_id: observed.trace_id.clone(),
+        divergence: divergence_opt,
+        root_cause_hints: diagnostic.root_cause_hints.clone(),
+    };
+
+    Ok((diagnostic, comparison))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1466,5 +1739,350 @@ mod tests {
     fn overhead_per_mille_zero_baseline_returns_max() {
         assert_eq!(super::compute_overhead_per_mille(0, 1), u32::MAX);
         assert_eq!(super::compute_overhead_per_mille(0, 0), 0);
+    }
+
+    // ── ReplayRecorder tests ──
+
+    fn within_budget_observation() -> ReplayCaptureObservation {
+        ReplayCaptureObservation {
+            baseline_micros: 1_000,
+            captured_micros: 1_050,
+            trace_bytes: 256,
+        }
+    }
+
+    fn standard_lane_config() -> super::ReplayLaneConfig {
+        super::ReplayLaneConfig::new(standard_capture_budget())
+    }
+
+    #[test]
+    fn recorder_empty_produces_valid_bundle() {
+        let recorder = super::ReplayRecorder::new("trace-empty-rec", standard_lane_config());
+        assert_eq!(recorder.event_count(), 0);
+        assert_eq!(recorder.logical_clock(), 0);
+
+        let result = recorder.finish(within_budget_observation()).expect("finish");
+        assert!(result.bundle.events.is_empty());
+        assert!(result.gate_report.capture_allowed);
+        assert_eq!(result.diagnostic.event_count, 0);
+    }
+
+    #[test]
+    fn recorder_captures_events_in_sequence() {
+        let mut recorder = super::ReplayRecorder::new("trace-seq-rec", standard_lane_config());
+        recorder.tick();
+        recorder.record_scheduled("ext.a", "req-1", BTreeMap::new());
+        recorder.tick();
+        recorder.record_queue_accepted("ext.a", "req-1", BTreeMap::new());
+        recorder.tick();
+        recorder.record_policy_decision("ext.a", "req-1", BTreeMap::new());
+        recorder.tick();
+        recorder.record_completed("ext.a", "req-1", BTreeMap::new());
+
+        assert_eq!(recorder.event_count(), 4);
+        assert_eq!(recorder.logical_clock(), 4);
+
+        let result = recorder.finish(within_budget_observation()).expect("finish");
+        assert_eq!(result.bundle.events.len(), 4);
+        assert_eq!(result.bundle.events[0].kind, ReplayEventKind::Scheduled);
+        assert_eq!(result.bundle.events[1].kind, ReplayEventKind::QueueAccepted);
+        assert_eq!(result.bundle.events[2].kind, ReplayEventKind::PolicyDecision);
+        assert_eq!(result.bundle.events[3].kind, ReplayEventKind::Completed);
+
+        // Sequences are 1-based contiguous
+        for (i, event) in result.bundle.events.iter().enumerate() {
+            assert_eq!(event.seq, (i + 1) as u64);
+        }
+    }
+
+    #[test]
+    fn recorder_attributes_flow_through() {
+        let mut recorder = super::ReplayRecorder::new("trace-attrs-rec", standard_lane_config());
+        recorder.tick();
+        let mut attrs = BTreeMap::new();
+        attrs.insert("lane".to_string(), "fast".to_string());
+        attrs.insert("capability".to_string(), "tool".to_string());
+        recorder.record_policy_decision("ext.a", "req-1", attrs);
+
+        let result = recorder.finish(within_budget_observation()).expect("finish");
+        let event = &result.bundle.events[0];
+        assert_eq!(event.attributes.get("lane").map(String::as_str), Some("fast"));
+        assert_eq!(event.attributes.get("capability").map(String::as_str), Some("tool"));
+    }
+
+    #[test]
+    fn recorder_lane_metadata_propagated() {
+        let mut config = standard_lane_config();
+        config.insert_metadata("env", "staging");
+        config.insert_metadata("worker", "w-3");
+        let mut recorder = super::ReplayRecorder::new("trace-meta-rec", config);
+        recorder.tick();
+        recorder.record_scheduled("ext.a", "req-1", BTreeMap::new());
+
+        let result = recorder.finish(within_budget_observation()).expect("finish");
+        assert_eq!(result.bundle.metadata.get("env").map(String::as_str), Some("staging"));
+        assert_eq!(result.bundle.metadata.get("worker").map(String::as_str), Some("w-3"));
+    }
+
+    #[test]
+    fn recorder_cancel_retry_lifecycle() {
+        let mut recorder = super::ReplayRecorder::new("trace-cancel-retry", standard_lane_config());
+        recorder.tick();
+        recorder.record_scheduled("ext.a", "req-1", BTreeMap::new());
+        recorder.tick();
+        recorder.record_cancelled("ext.a", "req-1", BTreeMap::new());
+        recorder.tick();
+        recorder.record_retried("ext.a", "req-1", BTreeMap::new());
+        recorder.tick();
+        recorder.record_completed("ext.a", "req-1", BTreeMap::new());
+
+        let result = recorder.finish(within_budget_observation()).expect("finish");
+        assert_eq!(result.bundle.events.len(), 4);
+        assert_eq!(result.bundle.events[1].kind, ReplayEventKind::Cancelled);
+        assert_eq!(result.bundle.events[2].kind, ReplayEventKind::Retried);
+    }
+
+    #[test]
+    fn recorder_failed_event() {
+        let mut recorder = super::ReplayRecorder::new("trace-fail", standard_lane_config());
+        recorder.tick();
+        recorder.record_scheduled("ext.a", "req-1", BTreeMap::new());
+        recorder.tick();
+        let mut attrs = BTreeMap::new();
+        attrs.insert("error".to_string(), "timeout".to_string());
+        recorder.record_failed("ext.a", "req-1", attrs);
+
+        let result = recorder.finish(within_budget_observation()).expect("finish");
+        assert_eq!(result.bundle.events[1].kind, ReplayEventKind::Failed);
+        assert_eq!(
+            result.bundle.events[1].attributes.get("error").map(String::as_str),
+            Some("timeout")
+        );
+    }
+
+    #[test]
+    fn recorder_gate_report_reflects_budget() {
+        let mut config = super::ReplayLaneConfig::new(ReplayCaptureBudget {
+            capture_enabled: true,
+            max_overhead_per_mille: 50,
+            max_trace_bytes: 10_000,
+        });
+        config.insert_metadata("lane", "shadow");
+        let mut recorder = super::ReplayRecorder::new("trace-gated", config);
+        recorder.tick();
+        recorder.record_scheduled("ext.a", "req-1", BTreeMap::new());
+
+        // Overhead 100 per mille > budget 50 per mille
+        let result = recorder
+            .finish(ReplayCaptureObservation {
+                baseline_micros: 1_000,
+                captured_micros: 1_100,
+                trace_bytes: 64,
+            })
+            .expect("finish");
+
+        assert!(!result.gate_report.capture_allowed);
+        assert_eq!(
+            result.gate_report.reason,
+            ReplayCaptureGateReason::DisabledByOverheadBudget
+        );
+        // Bundle is still present even when gated
+        assert_eq!(result.bundle.events.len(), 1);
+    }
+
+    #[test]
+    fn recorder_diagnostic_snapshot_populated() {
+        let mut recorder = super::ReplayRecorder::new("trace-diag", standard_lane_config());
+        recorder.tick();
+        recorder.record_scheduled("ext.a", "req-1", BTreeMap::new());
+        recorder.tick();
+        recorder.record_completed("ext.a", "req-1", BTreeMap::new());
+
+        let result = recorder.finish(within_budget_observation()).expect("finish");
+        assert_eq!(result.diagnostic.trace_id, "trace-diag");
+        assert_eq!(result.diagnostic.schema, REPLAY_TRACE_SCHEMA_V1);
+        assert_eq!(result.diagnostic.event_count, 2);
+        assert!(result.diagnostic.divergence.is_none());
+        assert!(result.diagnostic.root_cause_hints.is_empty());
+    }
+
+    #[test]
+    fn recorder_finish_and_compare_identical() {
+        let mut rec1 = super::ReplayRecorder::new("trace-cmp", standard_lane_config());
+        rec1.tick();
+        rec1.record_scheduled("ext.a", "req-1", BTreeMap::new());
+        rec1.tick();
+        rec1.record_completed("ext.a", "req-1", BTreeMap::new());
+        let reference = rec1.finish(within_budget_observation()).expect("ref").bundle;
+
+        let mut rec2 = super::ReplayRecorder::new("trace-cmp", standard_lane_config());
+        rec2.tick();
+        rec2.record_scheduled("ext.a", "req-1", BTreeMap::new());
+        rec2.tick();
+        rec2.record_completed("ext.a", "req-1", BTreeMap::new());
+
+        let (result, comparison) = rec2
+            .finish_and_compare(within_budget_observation(), &reference)
+            .expect("compare");
+        assert!(comparison.divergence.is_none());
+        assert!(comparison.root_cause_hints.is_empty());
+        assert_eq!(comparison.reference_trace_id, "trace-cmp");
+        assert_eq!(comparison.observed_trace_id, "trace-cmp");
+        assert!(result.diagnostic.divergence.is_none());
+    }
+
+    #[test]
+    fn recorder_finish_and_compare_detects_divergence() {
+        let mut rec1 = super::ReplayRecorder::new("trace-div", standard_lane_config());
+        rec1.tick();
+        rec1.record_scheduled("ext.a", "req-1", BTreeMap::new());
+        rec1.tick();
+        rec1.record_completed("ext.a", "req-1", BTreeMap::new());
+        let reference = rec1.finish(within_budget_observation()).expect("ref").bundle;
+
+        let mut rec2 = super::ReplayRecorder::new("trace-div", standard_lane_config());
+        rec2.tick();
+        rec2.record_scheduled("ext.a", "req-1", BTreeMap::new());
+        rec2.tick();
+        rec2.record_failed("ext.a", "req-1", BTreeMap::new());
+
+        let (result, comparison) = rec2
+            .finish_and_compare(within_budget_observation(), &reference)
+            .expect("compare");
+        assert!(comparison.divergence.is_some());
+        let div = comparison.divergence.as_ref().unwrap();
+        assert_eq!(div.seq, Some(2));
+        assert!(matches!(
+            div.reason,
+            ReplayDivergenceReason::EventFieldMismatch { ref field, .. } if field == "kind"
+        ));
+        assert!(result.diagnostic.divergence.is_some());
+        assert!(!result.diagnostic.root_cause_hints.is_empty());
+    }
+
+    #[test]
+    fn recorder_multi_extension_interleaving() {
+        let mut recorder = super::ReplayRecorder::new("trace-multi", standard_lane_config());
+        recorder.tick();
+        recorder.record_scheduled("ext.a", "req-1", BTreeMap::new());
+        recorder.record_scheduled("ext.b", "req-2", BTreeMap::new());
+        recorder.tick();
+        recorder.record_policy_decision("ext.a", "req-1", BTreeMap::new());
+        recorder.record_policy_decision("ext.b", "req-2", BTreeMap::new());
+        recorder.tick();
+        recorder.record_completed("ext.a", "req-1", BTreeMap::new());
+        recorder.record_completed("ext.b", "req-2", BTreeMap::new());
+
+        let result = recorder.finish(within_budget_observation()).expect("finish");
+        assert_eq!(result.bundle.events.len(), 6);
+
+        // Canonical ordering: at same clock, ext.a < ext.b
+        let clock_1_events: Vec<_> = result
+            .bundle
+            .events
+            .iter()
+            .filter(|e| e.logical_clock == 1)
+            .collect();
+        assert_eq!(clock_1_events.len(), 2);
+        assert_eq!(clock_1_events[0].extension_id, "ext.a");
+        assert_eq!(clock_1_events[1].extension_id, "ext.b");
+    }
+
+    // ── compare_replay_bundles standalone tests ──
+
+    #[test]
+    fn compare_replay_bundles_no_divergence() {
+        let bundle = standard_bundle();
+        let gate = evaluate_replay_capture_gate(
+            standard_capture_budget(),
+            within_budget_observation(),
+        );
+
+        let (diagnostic, comparison) =
+            super::compare_replay_bundles(&bundle, &bundle, gate).expect("compare");
+        assert!(comparison.divergence.is_none());
+        assert!(comparison.root_cause_hints.is_empty());
+        assert!(diagnostic.divergence.is_none());
+    }
+
+    #[test]
+    fn compare_replay_bundles_with_divergence() {
+        let reference = standard_bundle();
+        let mut observed_builder = ReplayTraceBuilder::new("trace-diagnostic");
+        observed_builder.push(draft(1, "ext.a", "req-1", ReplayEventKind::Scheduled));
+        observed_builder.push(draft(2, "ext.a", "req-1", ReplayEventKind::PolicyDecision));
+        observed_builder.push(draft(3, "ext.a", "req-1", ReplayEventKind::Failed));
+        let observed = observed_builder.build().expect("observed bundle");
+
+        let gate = evaluate_replay_capture_gate(
+            standard_capture_budget(),
+            within_budget_observation(),
+        );
+
+        let (diagnostic, comparison) =
+            super::compare_replay_bundles(&reference, &observed, gate).expect("compare");
+        assert!(comparison.divergence.is_some());
+        assert!(!comparison.root_cause_hints.is_empty());
+        assert!(diagnostic.divergence.is_some());
+    }
+
+    // ── ReplayLaneConfig tests ──
+
+    #[test]
+    fn lane_config_serde_roundtrip() {
+        let mut config = super::ReplayLaneConfig::new(standard_capture_budget());
+        config.insert_metadata("env", "prod");
+
+        let json = serde_json::to_string(&config).expect("serialize");
+        let roundtrip: super::ReplayLaneConfig =
+            serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(config, roundtrip);
+    }
+
+    #[test]
+    fn lane_config_empty_metadata_omitted_in_json() {
+        let config = super::ReplayLaneConfig::new(standard_capture_budget());
+        let json = serde_json::to_string(&config).expect("serialize");
+        assert!(!json.contains("laneMetadata"));
+    }
+
+    #[test]
+    fn lane_result_serde_roundtrip() {
+        let mut recorder = super::ReplayRecorder::new("trace-serde", standard_lane_config());
+        recorder.tick();
+        recorder.record_scheduled("ext.a", "req-1", BTreeMap::new());
+        recorder.tick();
+        recorder.record_completed("ext.a", "req-1", BTreeMap::new());
+
+        let result = recorder.finish(within_budget_observation()).expect("finish");
+        let json = serde_json::to_string(&result).expect("serialize");
+        let roundtrip: super::ReplayLaneResult =
+            serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(result, roundtrip);
+    }
+
+    #[test]
+    fn comparison_result_serde_roundtrip() {
+        let comparison = super::ReplayComparisonResult {
+            reference_trace_id: "ref-1".to_string(),
+            observed_trace_id: "obs-1".to_string(),
+            divergence: None,
+            root_cause_hints: vec![],
+        };
+        let json = serde_json::to_string(&comparison).expect("serialize");
+        let roundtrip: super::ReplayComparisonResult =
+            serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(comparison, roundtrip);
+    }
+
+    #[test]
+    fn recorder_tick_is_monotonic() {
+        let mut recorder = super::ReplayRecorder::new("trace-tick", standard_lane_config());
+        let t1 = recorder.tick();
+        let t2 = recorder.tick();
+        let t3 = recorder.tick();
+        assert_eq!(t1, 1);
+        assert_eq!(t2, 2);
+        assert_eq!(t3, 3);
     }
 }
