@@ -10246,6 +10246,46 @@ mod tests {
     }
 
     #[test]
+    fn hostcall_outcome_to_protocol_result_error_normalizes_mixed_case_code() {
+        let payload = test_protocol_payload("call-6b");
+        let result = hostcall_outcome_to_protocol_result(
+            &payload.call_id,
+            HostcallOutcome::Error {
+                code: "  Invalid_Request  ".to_string(),
+                message: "normalized".to_string(),
+            },
+        );
+        let error = result.error.expect("should have error");
+        assert_eq!(error.code, HostCallErrorCode::InvalidRequest);
+        assert_eq!(error.message, "normalized");
+    }
+
+    #[test]
+    fn hostcall_outcome_to_protocol_result_error_normalizes_denied_timeout_and_tool_error_alias() {
+        let cases = [
+            ("  DeNied ", HostCallErrorCode::Denied),
+            ("  TimeOut ", HostCallErrorCode::Timeout),
+            ("  TOOL_ERROR ", HostCallErrorCode::Io),
+        ];
+
+        for (idx, (raw_code, expected_code)) in cases.into_iter().enumerate() {
+            let payload = test_protocol_payload(&format!("call-plain-normalize-{idx}"));
+            let message = format!("normalized-{idx}");
+            let result = hostcall_outcome_to_protocol_result(
+                &payload.call_id,
+                HostcallOutcome::Error {
+                    code: raw_code.to_string(),
+                    message: message.clone(),
+                },
+            );
+
+            let error = result.error.expect("should have error");
+            assert_eq!(error.code, expected_code, "raw code: {raw_code}");
+            assert_eq!(error.message, message);
+        }
+    }
+
+    #[test]
     fn hostcall_outcome_to_protocol_result_with_trace_success_equivalent_to_plain() {
         let payload = test_protocol_payload("call-trace-success");
         let outcome = HostcallOutcome::Success(serde_json::json!({
@@ -10313,6 +10353,144 @@ mod tests {
         assert_eq!(
             details["extensionOutput"]["code"],
             serde_json::json!("invalid_request")
+        );
+    }
+
+    #[test]
+    fn hostcall_outcome_to_protocol_result_with_trace_normalizes_invalid_request_taxonomy() {
+        let mut known_method_payload = test_protocol_payload("call-trace-error-known");
+        known_method_payload.method = " TOOL ".to_string();
+        let known_method_result = hostcall_outcome_to_protocol_result_with_trace(
+            &known_method_payload,
+            HostcallOutcome::Error {
+                code: "  INVALID_REQUEST ".to_string(),
+                message: "bad request".to_string(),
+            },
+        );
+        let known_method_error = known_method_result.error.expect("expected error");
+        assert_eq!(known_method_error.code, HostCallErrorCode::InvalidRequest);
+        let known_details = known_method_error.details.expect("expected details");
+        assert_eq!(
+            known_details["dispatcherDecisionTrace"]["fallbackReason"],
+            serde_json::json!("schema_validation_failed")
+        );
+
+        let mut unknown_method_payload = test_protocol_payload("call-trace-error-unknown");
+        unknown_method_payload.method = "custom_method".to_string();
+        let unknown_method_result = hostcall_outcome_to_protocol_result_with_trace(
+            &unknown_method_payload,
+            HostcallOutcome::Error {
+                code: "  INVALID_REQUEST ".to_string(),
+                message: "bad request".to_string(),
+            },
+        );
+        let unknown_method_error = unknown_method_result.error.expect("expected error");
+        assert_eq!(unknown_method_error.code, HostCallErrorCode::InvalidRequest);
+        let unknown_details = unknown_method_error.details.expect("expected details");
+        assert_eq!(
+            unknown_details["dispatcherDecisionTrace"]["fallbackReason"],
+            serde_json::json!("unsupported_method_fallback")
+        );
+    }
+
+    #[test]
+    fn hostcall_outcome_to_protocol_result_with_trace_normalizes_tool_error_taxonomy() {
+        let mut payload = test_protocol_payload("call-trace-error-tool");
+        payload.method = "tool".to_string();
+        let result = hostcall_outcome_to_protocol_result_with_trace(
+            &payload,
+            HostcallOutcome::Error {
+                code: "  TOOL_ERROR ".to_string(),
+                message: "handler exploded".to_string(),
+            },
+        );
+
+        let error = result.error.expect("expected error");
+        assert_eq!(error.code, HostCallErrorCode::Io);
+        let details = error.details.expect("expected details");
+        assert_eq!(
+            details["dispatcherDecisionTrace"]["fallbackReason"],
+            serde_json::json!("handler_error")
+        );
+        assert_eq!(
+            details["extensionOutput"]["code"],
+            serde_json::json!("  TOOL_ERROR ")
+        );
+    }
+
+    #[test]
+    fn hostcall_outcome_to_protocol_result_with_trace_normalizes_timeout_taxonomy() {
+        let mut payload = test_protocol_payload("call-trace-error-timeout");
+        payload.method = "exec".to_string();
+        let result = hostcall_outcome_to_protocol_result_with_trace(
+            &payload,
+            HostcallOutcome::Error {
+                code: "  TimeOut  ".to_string(),
+                message: "handler timed out".to_string(),
+            },
+        );
+
+        let error = result.error.expect("expected error");
+        assert_eq!(error.code, HostCallErrorCode::Timeout);
+        let details = error.details.expect("expected details");
+        assert_eq!(
+            details["dispatcherDecisionTrace"]["fallbackReason"],
+            serde_json::json!("handler_timeout")
+        );
+        assert_eq!(
+            details["extensionOutput"]["code"],
+            serde_json::json!("  TimeOut  ")
+        );
+    }
+
+    #[test]
+    fn hostcall_outcome_to_protocol_result_with_trace_normalizes_denied_taxonomy() {
+        let mut payload = test_protocol_payload("call-trace-error-denied");
+        payload.method = "session".to_string();
+        let result = hostcall_outcome_to_protocol_result_with_trace(
+            &payload,
+            HostcallOutcome::Error {
+                code: "  DeNied ".to_string(),
+                message: "blocked by policy".to_string(),
+            },
+        );
+
+        let error = result.error.expect("expected error");
+        assert_eq!(error.code, HostCallErrorCode::Denied);
+        let details = error.details.expect("expected details");
+        assert_eq!(
+            details["dispatcherDecisionTrace"]["fallbackReason"],
+            serde_json::json!("policy_denied")
+        );
+        assert_eq!(
+            details["extensionOutput"]["code"],
+            serde_json::json!("  DeNied ")
+        );
+    }
+
+    #[test]
+    fn hostcall_outcome_to_protocol_result_with_trace_normalizes_unknown_code_to_internal_taxonomy()
+    {
+        let mut payload = test_protocol_payload("call-trace-error-unknown-code");
+        payload.method = "tool".to_string();
+        let result = hostcall_outcome_to_protocol_result_with_trace(
+            &payload,
+            HostcallOutcome::Error {
+                code: "  SOME_NEW_CODE ".to_string(),
+                message: "unexpected runtime state".to_string(),
+            },
+        );
+
+        let error = result.error.expect("expected error");
+        assert_eq!(error.code, HostCallErrorCode::Internal);
+        let details = error.details.expect("expected details");
+        assert_eq!(
+            details["dispatcherDecisionTrace"]["fallbackReason"],
+            serde_json::json!("runtime_internal_error")
+        );
+        assert_eq!(
+            details["extensionOutput"]["code"],
+            serde_json::json!("  SOME_NEW_CODE ")
         );
     }
 

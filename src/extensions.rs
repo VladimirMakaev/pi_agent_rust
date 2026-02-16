@@ -19661,6 +19661,10 @@ pub(crate) struct RegistrySnapshot {
     pub shortcut_key_ids: HashSet<String>,
     /// Pre-computed sorted event hook names from all extensions.
     pub all_event_hooks: Vec<String>,
+    /// Pre-computed tool definitions from all extensions (avoids mutex + clone cascade).
+    pub all_tool_defs: Vec<Value>,
+    /// Pre-computed set of normalized command names for O(1) `has_command()` lookup.
+    pub command_names: HashSet<String>,
     /// Whether a UI sender is configured (stable after startup).
     pub has_ui: bool,
 }
@@ -20021,6 +20025,8 @@ impl ExtensionManager {
         let all_commands = Self::precompute_all_commands(inner);
         let (all_shortcuts, shortcut_key_ids) = Self::precompute_all_shortcuts(inner);
         let all_event_hooks = Self::precompute_all_event_hooks(inner);
+        let all_tool_defs = Self::precompute_all_tool_defs(inner);
+        let command_names = Self::precompute_command_names(inner);
 
         RegistrySnapshot {
             hook_bitmap: inner.hook_bitmap.clone(),
@@ -20044,6 +20050,8 @@ impl ExtensionManager {
             all_shortcuts,
             shortcut_key_ids,
             all_event_hooks,
+            all_tool_defs,
+            command_names,
             has_ui: inner.ui_sender.is_some(),
         }
     }
@@ -20051,16 +20059,15 @@ impl ExtensionManager {
     /// Pre-compute the merged flag list from dynamic flags + extension payloads.
     fn precompute_all_flags(inner: &ExtensionManagerInner) -> Vec<Value> {
         let mut flags = Vec::new();
-        let mut seen = HashSet::new();
+        let mut seen: HashSet<&str> = HashSet::new();
         // Dynamic flags take priority.
         for flag in &inner.flags {
             let name = flag
                 .get("name")
                 .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
+                .unwrap_or_default();
             if !name.is_empty() {
-                seen.insert(name.clone());
+                seen.insert(name);
                 let description = flag
                     .get("description")
                     .and_then(Value::as_str)
@@ -20083,9 +20090,8 @@ impl ExtensionManager {
                 let name = flag
                     .get("name")
                     .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string();
-                if !name.is_empty() && seen.insert(name.clone()) {
+                    .unwrap_or_default();
+                if !name.is_empty() && seen.insert(name) {
                     let description = flag
                         .get("description")
                         .and_then(Value::as_str)
@@ -20153,15 +20159,35 @@ impl ExtensionManager {
     /// Pre-compute deduplicated event hook names from all extensions.
     fn precompute_all_event_hooks(inner: &ExtensionManagerInner) -> Vec<String> {
         let mut hooks = Vec::new();
-        let mut seen = HashSet::new();
+        let mut seen: HashSet<&str> = HashSet::new();
         for ext in &inner.extensions {
             for hook in &ext.event_hooks {
-                if seen.insert(hook.clone()) {
+                if seen.insert(hook.as_str()) {
                     hooks.push(hook.clone());
                 }
             }
         }
         hooks
+    }
+
+    /// Pre-compute tool definitions from all extensions (flat list).
+    fn precompute_all_tool_defs(inner: &ExtensionManagerInner) -> Vec<Value> {
+        inner
+            .extensions
+            .iter()
+            .flat_map(|ext| ext.tools.iter().cloned())
+            .collect()
+    }
+
+    /// Pre-compute normalized command names for O(1) `has_command()` lookup.
+    fn precompute_command_names(inner: &ExtensionManagerInner) -> HashSet<String> {
+        inner
+            .extensions
+            .iter()
+            .flat_map(|ext| ext.slash_commands.iter())
+            .filter_map(extract_slash_command_name)
+            .map(|cmd| normalize_command(&cmd))
+            .collect()
     }
 
     /// Atomically publish a new snapshot, replacing the old one.
@@ -22761,15 +22787,10 @@ impl ExtensionManager {
     }
 
     /// Collect tool definitions from all registered extensions.
+    ///
+    /// Uses the pre-computed snapshot (RCU) instead of locking the mutex.
     pub fn extension_tool_defs(&self) -> Vec<Value> {
-        let guard = self.inner.lock().unwrap();
-        let result = guard
-            .extensions
-            .iter()
-            .flat_map(|ext| ext.tools.iter().cloned())
-            .collect();
-        drop(guard);
-        result
+        self.read_snapshot().all_tool_defs.clone()
     }
 
     pub fn register(&self, payload: RegisterPayload) {
@@ -22784,13 +22805,7 @@ impl ExtensionManager {
 
     pub fn has_command(&self, name: &str) -> bool {
         let needle = normalize_command(name);
-        let guard = self.inner.lock().unwrap();
-        guard
-            .extensions
-            .iter()
-            .flat_map(|ext| ext.slash_commands.iter())
-            .filter_map(extract_slash_command_name)
-            .any(|cmd| normalize_command(&cmd) == needle)
+        self.read_snapshot().command_names.contains(&needle)
     }
 
     /// Dynamically register a slash command at runtime (from a hostcall).
@@ -22860,9 +22875,10 @@ impl ExtensionManager {
     }
 
     /// Return extension-registered providers as raw JSON specs.
+    ///
+    /// Uses the pre-computed snapshot (RCU) instead of locking the mutex.
     pub fn extension_providers(&self) -> Vec<Value> {
-        let guard = self.inner.lock().unwrap();
-        guard.providers.clone()
+        self.read_snapshot().providers.clone()
     }
 
     /// Return true if an extension provider is backed by a JS `streamSimple` handler.
@@ -36165,6 +36181,60 @@ mod tests {
     }
 
     #[test]
+    fn host_result_to_outcome_error_without_error_payload_defaults_internal_message() {
+        let result = HostResultPayload {
+            call_id: "call-err-missing".to_string(),
+            output: json!({"ignored": true}),
+            is_error: true,
+            error: None,
+            chunk: None,
+        };
+
+        let outcome = host_result_to_outcome(result);
+        match outcome {
+            HostcallOutcome::Error { code, message } => {
+                assert_eq!(code, "internal");
+                assert_eq!(message, "Unknown error");
+            }
+            other => panic!("expected Error fallback, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn host_result_to_outcome_chunk_precedes_error_flag_when_chunk_present() {
+        let result = HostResultPayload {
+            call_id: "call-stream-over-error".to_string(),
+            output: json!({"delta": "chunk"}),
+            is_error: true,
+            error: Some(HostCallError {
+                code: HostCallErrorCode::Io,
+                message: "should not win when chunk exists".to_string(),
+                details: None,
+                retryable: None,
+            }),
+            chunk: Some(HostStreamChunk {
+                index: 2,
+                is_last: true,
+                backpressure: None,
+            }),
+        };
+
+        let outcome = host_result_to_outcome(result);
+        match outcome {
+            HostcallOutcome::StreamChunk {
+                sequence,
+                chunk,
+                is_final,
+            } => {
+                assert_eq!(sequence, 2);
+                assert_eq!(chunk, json!({"delta": "chunk"}));
+                assert!(is_final);
+            }
+            other => panic!("expected StreamChunk precedence, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn outcome_to_host_result_preserves_taxonomy() {
         let outcome = HostcallOutcome::Error {
             code: "timeout".to_string(),
@@ -36188,6 +36258,60 @@ mod tests {
         assert!(result.is_error);
         let err = result.error.unwrap();
         assert_eq!(err.code, HostCallErrorCode::Internal);
+    }
+
+    #[test]
+    fn outcome_to_host_result_canonical_codes_preserve_taxonomy() {
+        let cases = [
+            ("timeout", HostCallErrorCode::Timeout),
+            ("denied", HostCallErrorCode::Denied),
+            ("io", HostCallErrorCode::Io),
+            ("invalid_request", HostCallErrorCode::InvalidRequest),
+            ("internal", HostCallErrorCode::Internal),
+        ];
+
+        for (code, expected) in cases {
+            let outcome = HostcallOutcome::Error {
+                code: code.to_string(),
+                message: format!("msg-{code}"),
+            };
+            let result = outcome_to_host_result("call-canonical", &outcome);
+            let err = result
+                .error
+                .expect("canonical code must produce error payload");
+            assert_eq!(err.code, expected, "canonical code must map exactly");
+            assert_eq!(err.message, format!("msg-{code}"));
+        }
+    }
+
+    #[test]
+    fn outcome_to_host_result_non_canonical_code_variants_fail_closed() {
+        let variants = [
+            " TIMEOUT ",
+            "Timeout",
+            "DENIED",
+            " io ",
+            "INVALID_REQUEST",
+            "invalid request",
+            "internal ",
+        ];
+
+        for code in variants {
+            let outcome = HostcallOutcome::Error {
+                code: code.to_string(),
+                message: "variant".to_string(),
+            };
+            let result = outcome_to_host_result("call-variant", &outcome);
+            let err = result
+                .error
+                .expect("variant code must still produce error payload");
+            assert_eq!(
+                err.code,
+                HostCallErrorCode::Internal,
+                "non-canonical code variant must fail closed to internal"
+            );
+            assert_eq!(err.message, "variant");
+        }
     }
 
     // ========================================================================

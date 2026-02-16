@@ -4531,11 +4531,12 @@ impl HostcallTracker {
 
     fn register(&mut self, call_id: String, timer_id: Option<u64>, enqueued_at_ms: u64) {
         self.pending.insert(call_id.clone());
-        self.enqueued_at_ms.insert(call_id.clone(), enqueued_at_ms);
         if let Some(timer_id) = timer_id {
             self.call_to_timer.insert(call_id.clone(), timer_id);
-            self.timer_to_call.insert(timer_id, call_id);
+            self.timer_to_call.insert(timer_id, call_id.clone());
         }
+        // Last insert consumes call_id, avoiding one clone.
+        self.enqueued_at_ms.insert(call_id, enqueued_at_ms);
     }
 
     fn pending_count(&self) -> usize {
@@ -4686,7 +4687,7 @@ enum ProxyStubSourceTier {
 #[derive(Debug, Clone)]
 struct CompiledModuleCacheEntry {
     cache_key: Option<String>,
-    source: Vec<u8>,
+    source: Arc<[u8]>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
