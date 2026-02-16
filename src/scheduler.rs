@@ -3048,4 +3048,325 @@ mod tests {
         assert_eq!(AffinityEnforcement::Strict.as_code(), "strict");
         assert_eq!(AffinityEnforcement::Disabled.as_code(), "disabled");
     }
+
+    // ── Additional coverage for untested public APIs ──
+
+    #[test]
+    fn enqueue_hostcall_completions_batch_preserves_order() {
+        let mut sched = Scheduler::with_clock(DeterministicClock::new(0));
+        let completions = vec![
+            ("c-1".to_string(), HostcallOutcome::Success(serde_json::json!(1))),
+            ("c-2".to_string(), HostcallOutcome::Success(serde_json::json!(2))),
+            ("c-3".to_string(), HostcallOutcome::Success(serde_json::json!(3))),
+        ];
+        sched.enqueue_hostcall_completions(completions);
+        assert_eq!(sched.macrotask_count(), 3);
+
+        // Verify FIFO order: c-1, c-2, c-3
+        for expected in ["c-1", "c-2", "c-3"] {
+            let task = sched.tick().expect("should have macrotask");
+            match task.kind {
+                MacrotaskKind::HostcallComplete { ref call_id, .. } => {
+                    assert_eq!(call_id, expected);
+                }
+                _ => panic!("expected HostcallComplete"),
+            }
+        }
+        assert!(sched.tick().is_none());
+    }
+
+    #[test]
+    fn time_until_next_timer_positive_case() {
+        let mut sched = Scheduler::with_clock(DeterministicClock::new(100));
+        sched.set_timeout(50); // deadline = 150
+        assert_eq!(sched.time_until_next_timer(), Some(50));
+
+        sched.clock.advance(20); // now = 120, remaining = 30
+        assert_eq!(sched.time_until_next_timer(), Some(30));
+    }
+
+    #[test]
+    fn deterministic_clock_set_overrides_current_time() {
+        let clock = DeterministicClock::new(0);
+        assert_eq!(clock.now_ms(), 0);
+        clock.advance(50);
+        assert_eq!(clock.now_ms(), 50);
+        clock.set(1000);
+        assert_eq!(clock.now_ms(), 1000);
+        clock.advance(5);
+        assert_eq!(clock.now_ms(), 1005);
+    }
+
+    #[test]
+    fn reactor_mesh_queue_depth_per_shard() {
+        let config = ReactorMeshConfig {
+            shard_count: 4,
+            lane_capacity: 64,
+            topology: None,
+        };
+        let mut mesh = ReactorMesh::new(config);
+
+        // All shards start empty
+        for shard in 0..4 {
+            assert_eq!(mesh.queue_depth(shard), Some(0));
+        }
+        // Out of range returns None
+        assert_eq!(mesh.queue_depth(99), None);
+
+        // Enqueue events via round-robin (hits shards 0, 1, 2, 3 in order)
+        for i in 0..4 {
+            mesh.enqueue_event(format!("evt-{i}"), serde_json::json!(null))
+                .expect("enqueue should succeed");
+        }
+        // Each shard should have exactly 1
+        for shard in 0..4 {
+            assert_eq!(mesh.queue_depth(shard), Some(1), "shard {shard} depth");
+        }
+    }
+
+    #[test]
+    fn reactor_mesh_shard_count_and_total_depth() {
+        let config = ReactorMeshConfig {
+            shard_count: 3,
+            lane_capacity: 16,
+            topology: None,
+        };
+        let mut mesh = ReactorMesh::new(config);
+        assert_eq!(mesh.shard_count(), 3);
+        assert_eq!(mesh.total_depth(), 0);
+        assert!(!mesh.has_pending());
+
+        mesh.enqueue_event("e1".to_string(), serde_json::json!(null))
+            .unwrap();
+        mesh.enqueue_event("e2".to_string(), serde_json::json!(null))
+            .unwrap();
+        assert_eq!(mesh.total_depth(), 2);
+        assert!(mesh.has_pending());
+    }
+
+    #[test]
+    fn reactor_mesh_drain_shard_out_of_range_returns_empty() {
+        let config = ReactorMeshConfig {
+            shard_count: 2,
+            lane_capacity: 16,
+            topology: None,
+        };
+        let mut mesh = ReactorMesh::new(config);
+        mesh.enqueue_event("e1".to_string(), serde_json::json!(null))
+            .unwrap();
+        let drained = mesh.drain_shard(99, 10);
+        assert!(drained.is_empty());
+    }
+
+    #[test]
+    fn reactor_placement_manifest_zero_shards() {
+        let manifest = ReactorPlacementManifest::plan(0, None);
+        assert_eq!(manifest.shard_count, 0);
+        assert!(manifest.bindings.is_empty());
+        assert!(manifest.fallback_reason.is_none());
+    }
+
+    #[test]
+    fn reactor_placement_manifest_as_json_has_expected_fields() {
+        let topology = ReactorTopologySnapshot::from_core_node_pairs(&[(0, 0), (1, 0), (2, 1), (3, 1)]);
+        let manifest = ReactorPlacementManifest::plan(4, Some(&topology));
+        let json = manifest.as_json();
+
+        assert_eq!(json["shard_count"], 4);
+        assert_eq!(json["numa_node_count"], 2);
+        assert!(json["fallback_reason"].is_null());
+        let bindings = json["bindings"].as_array().expect("bindings array");
+        assert_eq!(bindings.len(), 4);
+        for binding in bindings {
+            assert!(binding.get("shard_id").is_some());
+            assert!(binding.get("core_id").is_some());
+            assert!(binding.get("numa_node").is_some());
+        }
+    }
+
+    #[test]
+    fn reactor_placement_manifest_single_node_fallback() {
+        let topology = ReactorTopologySnapshot::from_core_node_pairs(&[(0, 0), (1, 0)]);
+        let manifest = ReactorPlacementManifest::plan(2, Some(&topology));
+        assert_eq!(
+            manifest.fallback_reason,
+            Some(ReactorPlacementFallbackReason::SingleNumaNode)
+        );
+    }
+
+    #[test]
+    fn reactor_placement_manifest_empty_topology_fallback() {
+        let topology = ReactorTopologySnapshot { cores: vec![] };
+        let manifest = ReactorPlacementManifest::plan(2, Some(&topology));
+        assert_eq!(
+            manifest.fallback_reason,
+            Some(ReactorPlacementFallbackReason::TopologyEmpty)
+        );
+    }
+
+    #[test]
+    fn reactor_placement_fallback_reason_as_code_all_variants() {
+        assert_eq!(
+            ReactorPlacementFallbackReason::TopologyUnavailable.as_code(),
+            "topology_unavailable"
+        );
+        assert_eq!(
+            ReactorPlacementFallbackReason::TopologyEmpty.as_code(),
+            "topology_empty"
+        );
+        assert_eq!(
+            ReactorPlacementFallbackReason::SingleNumaNode.as_code(),
+            "single_numa_node"
+        );
+    }
+
+    #[test]
+    fn hugepage_fallback_reason_as_code_all_variants() {
+        assert_eq!(
+            HugepageFallbackReason::Disabled.as_code(),
+            "hugepage_disabled"
+        );
+        assert_eq!(
+            HugepageFallbackReason::DetectionUnavailable.as_code(),
+            "detection_unavailable"
+        );
+        assert_eq!(
+            HugepageFallbackReason::InsufficientHugepages.as_code(),
+            "insufficient_hugepages"
+        );
+        assert_eq!(
+            HugepageFallbackReason::AlignmentMismatch.as_code(),
+            "alignment_mismatch"
+        );
+    }
+
+    #[test]
+    fn numa_slab_pool_set_hugepage_status_and_node_count() {
+        let manifest = ReactorPlacementManifest::plan(4, None);
+        let mut pool = NumaSlabPool::from_manifest(&manifest, NumaSlabConfig::default());
+        assert_eq!(pool.node_count(), 1);
+
+        let status = HugepageStatus::evaluate(
+            &HugepageConfig { page_size_bytes: 2 * 1024 * 1024, enabled: true },
+            512,
+            256,
+        );
+        assert!(status.active);
+        pool.set_hugepage_status(status);
+
+        let telem = pool.telemetry();
+        assert!(telem.hugepage_status.active);
+        assert_eq!(telem.hugepage_status.free_pages, 256);
+    }
+
+    #[test]
+    fn numa_slab_pool_multi_node_node_count() {
+        let topology = ReactorTopologySnapshot::from_core_node_pairs(&[(0, 0), (1, 1), (2, 2)]);
+        let manifest = ReactorPlacementManifest::plan(3, Some(&topology));
+        let pool = NumaSlabPool::from_manifest(&manifest, NumaSlabConfig::default());
+        assert_eq!(pool.node_count(), 3);
+    }
+
+    #[test]
+    fn reactor_mesh_telemetry_as_json_has_expected_shape() {
+        let config = ReactorMeshConfig {
+            shard_count: 2,
+            lane_capacity: 8,
+            topology: None,
+        };
+        let mesh = ReactorMesh::new(config);
+        let telem = mesh.telemetry();
+        let json = telem.as_json();
+
+        let depths = json["queue_depths"].as_array().expect("queue_depths");
+        assert_eq!(depths.len(), 2);
+        assert_eq!(json["rejected_enqueues"], 0);
+        let bindings = json["shard_bindings"].as_array().expect("shard_bindings");
+        assert_eq!(bindings.len(), 2);
+        assert!(json.get("fallback_reason").is_some());
+    }
+
+    #[test]
+    fn numa_slab_in_use_and_has_capacity() {
+        let mut slab = NumaSlab::new(0, 3);
+        assert_eq!(slab.in_use(), 0);
+        assert!(slab.has_capacity());
+
+        let h1 = slab.allocate().expect("alloc 1");
+        assert_eq!(slab.in_use(), 1);
+        assert!(slab.has_capacity());
+
+        let h2 = slab.allocate().expect("alloc 2");
+        let _h3 = slab.allocate().expect("alloc 3");
+        assert_eq!(slab.in_use(), 3);
+        assert!(!slab.has_capacity());
+        assert!(slab.allocate().is_none());
+
+        slab.deallocate(&h1);
+        assert_eq!(slab.in_use(), 2);
+        assert!(slab.has_capacity());
+
+        slab.deallocate(&h2);
+        assert_eq!(slab.in_use(), 1);
+    }
+
+    #[test]
+    fn scheduler_macrotask_count_tracks_queue_size() {
+        let mut sched = Scheduler::with_clock(DeterministicClock::new(0));
+        assert_eq!(sched.macrotask_count(), 0);
+
+        sched.enqueue_event("e1".to_string(), serde_json::json!(null));
+        sched.enqueue_event("e2".to_string(), serde_json::json!(null));
+        assert_eq!(sched.macrotask_count(), 2);
+
+        sched.tick();
+        assert_eq!(sched.macrotask_count(), 1);
+
+        sched.tick();
+        assert_eq!(sched.macrotask_count(), 0);
+    }
+
+    #[test]
+    fn scheduler_timer_count_reflects_pending_timers() {
+        let mut sched = Scheduler::with_clock(DeterministicClock::new(0));
+        assert_eq!(sched.timer_count(), 0);
+
+        sched.set_timeout(100);
+        sched.set_timeout(200);
+        assert_eq!(sched.timer_count(), 2);
+
+        // Advance past first timer and tick to move it
+        sched.clock.advance(150);
+        sched.tick();
+        assert_eq!(sched.timer_count(), 1);
+    }
+
+    #[test]
+    fn scheduler_current_seq_advances_with_operations() {
+        let mut sched = Scheduler::with_clock(DeterministicClock::new(0));
+        let initial = sched.current_seq();
+        assert_eq!(initial.value(), 0);
+
+        sched.set_timeout(100); // uses one seq
+        assert!(sched.current_seq().value() > initial.value());
+
+        let after_timer = sched.current_seq();
+        sched.enqueue_event("evt".to_string(), serde_json::json!(null)); // uses another seq
+        assert!(sched.current_seq().value() > after_timer.value());
+    }
+
+    #[test]
+    fn thread_affinity_advice_as_json_structure() {
+        let advice = ThreadAffinityAdvice {
+            shard_id: 2,
+            recommended_core: 5,
+            recommended_numa_node: 1,
+            enforcement: AffinityEnforcement::Strict,
+        };
+        let json = advice.as_json();
+        assert_eq!(json["shard_id"], 2);
+        assert_eq!(json["recommended_core"], 5);
+        assert_eq!(json["recommended_numa_node"], 1);
+        assert_eq!(json["enforcement"], "strict");
+    }
 }
