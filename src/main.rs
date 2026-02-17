@@ -773,6 +773,18 @@ async fn run(
 
     let mut auth = auth_result?;
     auth.refresh_expired_oauth_tokens().await?;
+
+    // Prune stale credentials that are well past expiry and lack refresh metadata.
+    // 7-day cutoff (in milliseconds).
+    let pruned = auth.prune_stale_credentials(7 * 24 * 60 * 60 * 1000);
+    if !pruned.is_empty() {
+        tracing::info!(
+            pruned_providers = ?pruned,
+            "Pruned stale credentials during startup"
+        );
+        auth.save()?;
+    }
+
     let global_dir = Config::global_dir();
     let package_dir = Config::package_dir();
     let models_path = default_models_path(&global_dir);
@@ -1222,6 +1234,9 @@ async fn handle_subcommand(command: cli::Commands, cwd: &Path) -> Result<()> {
                 fix,
                 only.as_deref(),
             )?;
+        }
+        cli::Commands::Migrate { path, dry_run } => {
+            handle_session_migrate(&path, dry_run)?;
         }
     }
 
@@ -2519,6 +2534,91 @@ async fn handle_config(
     Ok(())
 }
 
+fn handle_session_migrate(path: &str, dry_run: bool) -> Result<()> {
+    let path = std::path::Path::new(path);
+    if !path.exists() {
+        bail!("Path does not exist: {}", path.display());
+    }
+
+    // Collect JSONL files to migrate.
+    let jsonl_files: Vec<std::path::PathBuf> = if path.is_dir() {
+        let mut files = Vec::new();
+        for entry in std::fs::read_dir(path)? {
+            let entry = entry?;
+            let p = entry.path();
+            if p.extension().is_some_and(|e| e == "jsonl") {
+                files.push(p);
+            }
+        }
+        if files.is_empty() {
+            bail!("No .jsonl session files found in {}", path.display());
+        }
+        files
+    } else {
+        vec![path.to_path_buf()]
+    };
+
+    let mut migrated = 0u64;
+    let mut errors = 0u64;
+
+    for jsonl_path in &jsonl_files {
+        if dry_run {
+            match pi::session::migrate_dry_run(jsonl_path) {
+                Ok(verification) => {
+                    let status = if verification.entry_count_match
+                        && verification.hash_chain_match
+                        && verification.index_consistent
+                    {
+                        "OK"
+                    } else {
+                        "MISMATCH"
+                    };
+                    println!(
+                        "[dry-run] {}: {} (entries_match={}, hash_match={}, index_ok={})",
+                        jsonl_path.display(),
+                        status,
+                        verification.entry_count_match,
+                        verification.hash_chain_match,
+                        verification.index_consistent,
+                    );
+                    migrated += 1;
+                }
+                Err(e) => {
+                    eprintln!("[dry-run] {}: ERROR: {e}", jsonl_path.display());
+                    errors += 1;
+                }
+            }
+        } else {
+            let correlation_id = uuid::Uuid::new_v4().to_string();
+            match pi::session::migrate_jsonl_to_v2(jsonl_path, &correlation_id) {
+                Ok(event) => {
+                    println!(
+                        "[migrated] {}: migration_id={}, entries_match={}, hash_match={}, index_ok={}",
+                        jsonl_path.display(),
+                        event.migration_id,
+                        event.verification.entry_count_match,
+                        event.verification.hash_chain_match,
+                        event.verification.index_consistent,
+                    );
+                    migrated += 1;
+                }
+                Err(e) => {
+                    eprintln!("[error] {}: {e}", jsonl_path.display());
+                    errors += 1;
+                }
+            }
+        }
+    }
+
+    println!(
+        "\nSession migration complete: {migrated} succeeded, {errors} failed (dry_run={dry_run})"
+    );
+    if errors > 0 {
+        bail!("{errors} session(s) failed migration");
+    }
+    Ok(())
+}
+
 fn handle_doctor(
     cwd: &Path,
     extension_path: Option<&str>,
@@ -3187,19 +3287,25 @@ async fn run_print_mode(
                 .unwrap_or_else(|| "Request error".to_string());
             bail!(message);
         }
-        let mut markdown = String::new();
-        for block in &last_message.content {
-            if let ContentBlock::Text(text) = block {
-                markdown.push_str(&text.text);
-                if !markdown.ends_with('\n') {
-                    markdown.push('\n');
+        // When stdout is a terminal, render markdown with formatting.
+        // When piped, emit plain text via output_final_text to avoid escape codes.
+        if std::io::IsTerminal::is_terminal(&io::stdout()) {
+            let mut markdown = String::new();
+            for block in &last_message.content {
+                if let ContentBlock::Text(text) = block {
+                    markdown.push_str(&text.text);
+                    if !markdown.ends_with('\n') {
+                        markdown.push('\n');
+                    }
                 }
             }
-        }
 
-        if !markdown.is_empty() {
-            let console = PiConsole::new();
-            console.render_markdown(&markdown);
+            if !markdown.is_empty() {
+                let console = PiConsole::new();
+                console.render_markdown(&markdown);
+            }
+        } else {
+            pi::app::output_final_text(&last_message);
         }
     }
 

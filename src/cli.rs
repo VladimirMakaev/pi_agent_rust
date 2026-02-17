@@ -1597,6 +1597,15 @@ pub enum Commands {
         #[arg(long)]
         only: Option<String>,
     },
+
+    /// Migrate session files from JSONL v1 to v2 segment format
+    Migrate {
+        /// Path to specific session JSONL file (or directory to migrate all)
+        path: String,
+        /// Dry-run: validate migration without persisting changes
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 impl Cli {

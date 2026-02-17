@@ -302,6 +302,11 @@ fn command_value(command: Option<&Commands>) -> Value {
             "format": format,
             "policy": policy,
         }),
+        Some(Commands::Migrate { path, dry_run }) => json!({
+            "name": "migrate",
+            "path": path,
+            "dry_run": dry_run,
+        }),
         None => Value::Null,
     }
 }
