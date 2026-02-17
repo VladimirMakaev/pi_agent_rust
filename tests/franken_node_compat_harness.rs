@@ -473,6 +473,19 @@ macro_rules! require_bun {
     };
 }
 
+#[test]
+fn node_detection_rejects_bun_node_shim_when_present() {
+    let bun_node_shim = "/home/ubuntu/.bun/bin/node";
+    if !Path::new(bun_node_shim).exists() {
+        eprintln!("SKIP: Bun node shim not present on this machine");
+        return;
+    }
+    assert!(
+        !is_real_node(bun_node_shim),
+        "Bun's node shim must never be accepted as a real Node runtime: {bun_node_shim}"
+    );
+}
+
 fn assert_fixture_all_pass(result: &RuntimeResult, label: &str) {
     assert!(
         result.error.is_none(),
