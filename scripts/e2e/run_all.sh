@@ -7175,6 +7175,8 @@ adjudication_matrix_json_path: Path | None = None
 adjudication_matrix_markdown_path: Path | None = None
 franken_node_claim_gate_status_payload: dict | None = None
 franken_node_claim_gate_status_json_path: Path | None = None
+franken_node_kernel_boundary_drift_report_payload: dict | None = None
+franken_node_kernel_boundary_drift_report_json_path: Path | None = None
 
 expected_claim_correlation_id = summary_correlation_id or environment_correlation_id
 freshness_cutoff = datetime.now(timezone.utc) - timedelta(days=7)
@@ -10476,6 +10478,288 @@ if isinstance(franken_node_mission_contract, dict):
         for artifact in strict_required_artifacts_raw
         if str(artifact).strip()
     ]
+    kernel_boundary_manifest_rel_path = "docs/franken-node-kernel-extraction-boundary-manifest.json"
+    kernel_boundary_drift_report_rel_path = (
+        "tests/full_suite_gate/franken_node_kernel_boundary_drift_report.json"
+    )
+    kernel_boundary_manifest_path = project_root / kernel_boundary_manifest_rel_path
+    franken_node_kernel_boundary_drift_report_json_path = (
+        project_root / kernel_boundary_drift_report_rel_path
+    )
+    kernel_boundary_required_checks = [
+        "kernel_boundary.all_modules_mapped_or_deferred",
+        "kernel_boundary.no_duplicate_domain_ownership",
+        "kernel_boundary.banned_cross_boundary_pairs_absent",
+        "kernel_boundary.reintegration_target_list_complete",
+        "kernel_boundary.reintegration_module_mappings_complete",
+    ]
+    kernel_boundary_manifest = load_json(
+        "claim_integrity.franken_node_kernel_boundary_manifest_json",
+        kernel_boundary_manifest_path,
+        strict=claim_integrity_required,
+    )
+    kernel_boundary_schema = ""
+    kernel_boundary_schema_ok = False
+    kernel_boundary_report_artifact_ok = False
+    kernel_boundary_failure_policy_ok = False
+    kernel_boundary_required_checks_set: set[str] = set()
+    kernel_boundary_missing_required_checks = list(kernel_boundary_required_checks)
+    kernel_boundary_required_checks_ok = False
+    kernel_boundary_module_mappings_ok = False
+    kernel_boundary_replacement_targets_count = 0
+    kernel_boundary_module_mapping_count = 0
+    if isinstance(kernel_boundary_manifest, dict):
+        kernel_boundary_schema = str(kernel_boundary_manifest.get("schema", "")).strip()
+        kernel_boundary_schema_ok = (
+            kernel_boundary_schema == "pi.frankennode.kernel_extraction_boundary_manifest.v1"
+        )
+        require_condition(
+            "claim_integrity.franken_node_kernel_boundary_manifest_schema",
+            path=kernel_boundary_manifest_path,
+            ok=kernel_boundary_schema_ok,
+            ok_msg="kernel-boundary manifest schema matches expected contract",
+            fail_msg=(
+                "kernel-boundary manifest schema must be "
+                "'pi.frankennode.kernel_extraction_boundary_manifest.v1'"
+            ),
+            strict=claim_integrity_required,
+        )
+
+        drift_detection_contract = kernel_boundary_manifest.get("drift_detection_contract")
+        drift_detection_contract_obj = (
+            drift_detection_contract if isinstance(drift_detection_contract, dict) else None
+        )
+        declared_report_artifact = (
+            str(drift_detection_contract_obj.get("report_artifact", "")).strip()
+            if drift_detection_contract_obj is not None
+            else ""
+        )
+        kernel_boundary_report_artifact_ok = (
+            declared_report_artifact == kernel_boundary_drift_report_rel_path
+        )
+        require_condition(
+            "claim_integrity.franken_node_kernel_boundary_report_artifact_declared",
+            path=kernel_boundary_manifest_path,
+            ok=kernel_boundary_report_artifact_ok,
+            ok_msg="kernel-boundary manifest declares expected drift report artifact",
+            fail_msg=(
+                "kernel-boundary manifest drift_detection_contract.report_artifact must be "
+                f"{kernel_boundary_drift_report_rel_path!r} (got {declared_report_artifact!r})"
+            ),
+            strict=claim_integrity_required,
+        )
+
+        declared_required_checks_raw = (
+            drift_detection_contract_obj.get("required_checks", [])
+            if drift_detection_contract_obj is not None
+            else []
+        )
+        kernel_boundary_required_checks_set = {
+            str(check_id).strip()
+            for check_id in declared_required_checks_raw
+            if str(check_id).strip()
+        }
+        kernel_boundary_missing_required_checks = sorted(
+            check_id
+            for check_id in kernel_boundary_required_checks
+            if check_id not in kernel_boundary_required_checks_set
+        )
+        kernel_boundary_required_checks_ok = not kernel_boundary_missing_required_checks
+        require_condition(
+            "claim_integrity.franken_node_kernel_boundary_required_checks_declared",
+            path=kernel_boundary_manifest_path,
+            ok=kernel_boundary_required_checks_ok,
+            ok_msg="kernel-boundary manifest declares required drift checks",
+            fail_msg=(
+                "kernel-boundary manifest missing required drift checks: "
+                f"{kernel_boundary_missing_required_checks}"
+            ),
+            strict=claim_integrity_required,
+        )
+
+        drift_failure_policy = (
+            str(drift_detection_contract_obj.get("failure_policy", "")).strip().lower()
+            if drift_detection_contract_obj is not None
+            else ""
+        )
+        kernel_boundary_failure_policy_ok = drift_failure_policy == "hard_fail"
+        require_condition(
+            "claim_integrity.franken_node_kernel_boundary_failure_policy_hard_fail",
+            path=kernel_boundary_manifest_path,
+            ok=kernel_boundary_failure_policy_ok,
+            ok_msg="kernel-boundary drift detection contract is hard_fail",
+            fail_msg=(
+                "kernel-boundary drift_detection_contract.failure_policy must be hard_fail "
+                f"(got {drift_failure_policy or 'missing'})"
+            ),
+            strict=claim_integrity_required,
+        )
+
+        reintegration_linkage = kernel_boundary_manifest.get("reintegration_linkage")
+        reintegration_linkage_obj = (
+            reintegration_linkage if isinstance(reintegration_linkage, dict) else None
+        )
+        replacement_targets_raw = (
+            reintegration_linkage_obj.get("replacement_targets", [])
+            if reintegration_linkage_obj is not None
+            else []
+        )
+        module_mappings_raw = (
+            reintegration_linkage_obj.get("module_mappings", [])
+            if reintegration_linkage_obj is not None
+            else []
+        )
+        require_explicit_module_mappings = (
+            reintegration_linkage_obj.get("require_explicit_module_mappings") is True
+            if reintegration_linkage_obj is not None
+            else False
+        )
+        kernel_boundary_replacement_targets_count = len(
+            [
+                target
+                for target in replacement_targets_raw
+                if str(target).strip()
+            ]
+        )
+        kernel_boundary_module_mapping_count = len(
+            [entry for entry in module_mappings_raw if isinstance(entry, dict)]
+        )
+        kernel_boundary_module_mappings_ok = (
+            require_explicit_module_mappings
+            and kernel_boundary_replacement_targets_count > 0
+            and kernel_boundary_module_mapping_count > 0
+        )
+        require_condition(
+            "claim_integrity.franken_node_kernel_boundary_module_mappings_present",
+            path=kernel_boundary_manifest_path,
+            ok=kernel_boundary_module_mappings_ok,
+            ok_msg="kernel-boundary manifest declares explicit reintegration module mappings",
+            fail_msg=(
+                "kernel-boundary reintegration_linkage must declare explicit non-empty "
+                "replacement_targets and module_mappings"
+            ),
+            strict=claim_integrity_required,
+        )
+
+    kernel_boundary_check_statuses: list[dict[str, str]] = []
+    for check_id in kernel_boundary_required_checks:
+        declared = check_id in kernel_boundary_required_checks_set
+        status = "pass" if declared else "fail"
+        reason = (
+            "declared in drift_detection_contract.required_checks"
+            if declared
+            else "missing from drift_detection_contract.required_checks"
+        )
+        if (
+            status == "pass"
+            and check_id
+            in {
+                "kernel_boundary.all_modules_mapped_or_deferred",
+                "kernel_boundary.reintegration_target_list_complete",
+                "kernel_boundary.reintegration_module_mappings_complete",
+            }
+            and not kernel_boundary_module_mappings_ok
+        ):
+            status = "fail"
+            reason = "reintegration module mappings/replacement targets are incomplete"
+        kernel_boundary_check_statuses.append(
+            {
+                "check_id": check_id,
+                "status": status,
+                "reason": reason,
+            }
+        )
+
+    kernel_boundary_pass_count = sum(
+        1 for row in kernel_boundary_check_statuses if row["status"] == "pass"
+    )
+    kernel_boundary_fail_count = len(kernel_boundary_check_statuses) - kernel_boundary_pass_count
+    kernel_boundary_overall_status = (
+        "pass"
+        if (
+            kernel_boundary_schema_ok
+            and kernel_boundary_report_artifact_ok
+            and kernel_boundary_failure_policy_ok
+            and kernel_boundary_required_checks_ok
+            and kernel_boundary_module_mappings_ok
+            and kernel_boundary_fail_count == 0
+        )
+        else "fail"
+    )
+
+    franken_node_kernel_boundary_drift_report_payload = {
+        "schema": "pi.franken_node.kernel_boundary_drift_report.v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "run_id": run_id,
+        "correlation_id": expected_claim_correlation_id,
+        "manifest": {
+            "path": str(kernel_boundary_manifest_path),
+            "schema": kernel_boundary_schema,
+            "contract_version": (
+                kernel_boundary_manifest.get("contract_version")
+                if isinstance(kernel_boundary_manifest, dict)
+                else None
+            ),
+            "support_bead_ids": (
+                kernel_boundary_manifest.get("support_bead_ids", [])
+                if isinstance(kernel_boundary_manifest, dict)
+                else []
+            ),
+        },
+        "checks": kernel_boundary_check_statuses,
+        "summary": {
+            "required_checks_count": len(kernel_boundary_required_checks),
+            "passing_checks": kernel_boundary_pass_count,
+            "failing_checks": kernel_boundary_fail_count,
+            "replacement_targets_count": kernel_boundary_replacement_targets_count,
+            "module_mappings_count": kernel_boundary_module_mapping_count,
+            "overall_status": kernel_boundary_overall_status,
+        },
+    }
+    franken_node_kernel_boundary_drift_report_json_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    franken_node_kernel_boundary_drift_report_json_path.write_text(
+        json.dumps(franken_node_kernel_boundary_drift_report_payload, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    add_check(
+        "claim_integrity.franken_node_kernel_boundary_drift_report_json",
+        franken_node_kernel_boundary_drift_report_json_path,
+        True,
+        "kernel-boundary drift report JSON written",
+    )
+    require_condition(
+        "claim_integrity.franken_node_kernel_boundary_drift_report_schema",
+        path=franken_node_kernel_boundary_drift_report_json_path,
+        ok=(
+            franken_node_kernel_boundary_drift_report_payload.get("schema")
+            == "pi.franken_node.kernel_boundary_drift_report.v1"
+        ),
+        ok_msg="kernel-boundary drift report schema matches",
+        fail_msg=(
+            "kernel-boundary drift report schema must be "
+            "'pi.franken_node.kernel_boundary_drift_report.v1'"
+        ),
+        strict=claim_integrity_required,
+    )
+    require_condition(
+        "claim_integrity.franken_node_kernel_boundary_drift_report_pass",
+        path=franken_node_kernel_boundary_drift_report_json_path,
+        ok=kernel_boundary_overall_status == "pass",
+        ok_msg="kernel-boundary drift report overall_status is pass",
+        fail_msg=(
+            "kernel-boundary drift report overall_status is fail; "
+            f"missing checks={kernel_boundary_missing_required_checks}"
+        ),
+        strict=claim_integrity_required,
+    )
+    if kernel_boundary_overall_status != "pass":
+        strict_replacement_blocking_reasons.append(
+            "kernel-boundary drift report indicates unresolved extraction drift checks"
+        )
+
     missing_strict_required_artifacts = sorted(
         artifact
         for artifact in strict_required_artifacts
@@ -10943,6 +11227,77 @@ if claim_integrity_gate_active:
         ),
     )
 
+# 6b) Kernel-boundary drift report validation
+kernel_boundary_manifest_path = (
+    project_root / "docs" / "franken-node-kernel-extraction-boundary-manifest.json"
+)
+kernel_boundary_drift_report_path = (
+    project_root / "tests" / "full_suite_gate"
+    / "franken_node_kernel_boundary_drift_report.json"
+)
+kernel_boundary_manifest = load_json(
+    "claim_integrity.kernel_boundary_manifest_json",
+    kernel_boundary_manifest_path,
+    strict=True,
+)
+kernel_boundary_drift_report = load_json(
+    "claim_integrity.kernel_boundary_drift_report_json",
+    kernel_boundary_drift_report_path,
+    strict=True,
+)
+if isinstance(kernel_boundary_drift_report, dict):
+    require_condition(
+        "claim_integrity.kernel_boundary_drift_report_schema",
+        path=kernel_boundary_drift_report_path,
+        ok=(
+            kernel_boundary_drift_report.get("schema")
+            == "pi.frankennode.kernel_boundary_drift_report.v1"
+        ),
+        ok_msg="kernel-boundary drift report schema is correct",
+        fail_msg=(
+            "kernel-boundary drift report has wrong schema: "
+            f"{kernel_boundary_drift_report.get('schema')!r}"
+        ),
+        strict=True,
+    )
+    drift_summary = kernel_boundary_drift_report.get("summary", {})
+    require_condition(
+        "claim_integrity.kernel_boundary_drift_report_verdict_pass",
+        path=kernel_boundary_drift_report_path,
+        ok=drift_summary.get("verdict") == "pass",
+        ok_msg="kernel-boundary drift report verdict is pass",
+        fail_msg=(
+            "kernel-boundary drift report verdict is not pass: "
+            f"{drift_summary.get('verdict')!r}; "
+            f"fail_count={drift_summary.get('fail_count', '?')}"
+        ),
+        strict=True,
+        remediation=(
+            "Run kernel-boundary drift checks against the manifest and update "
+            "tests/full_suite_gate/franken_node_kernel_boundary_drift_report.json."
+        ),
+    )
+    drift_checks = kernel_boundary_drift_report.get("checks", [])
+    required_drift_check_ids = {
+        "kernel_boundary.all_modules_mapped_or_deferred",
+        "kernel_boundary.no_duplicate_domain_ownership",
+        "kernel_boundary.banned_cross_boundary_pairs_absent",
+        "kernel_boundary.reintegration_target_list_complete",
+        "kernel_boundary.reintegration_module_mappings_complete",
+    }
+    found_drift_check_ids = {
+        c.get("check_id") for c in drift_checks if isinstance(c, dict)
+    }
+    missing_drift_checks = required_drift_check_ids - found_drift_check_ids
+    require_condition(
+        "claim_integrity.kernel_boundary_drift_report_checks_complete",
+        path=kernel_boundary_drift_report_path,
+        ok=not missing_drift_checks,
+        ok_msg=f"all {len(required_drift_check_ids)} required drift checks present",
+        fail_msg=f"missing required drift checks: {sorted(missing_drift_checks)}",
+        strict=True,
+    )
+
 
 # 7) Exception-policy coverage for non-pass conformance outcomes
 full_conformance_report_path = reports_dir / "conformance" / "conformance_report.json"
@@ -11236,6 +11591,19 @@ contract_payload = {
         if franken_node_claim_gate_status_json_path is not None
         else None
     ),
+    "franken_node_kernel_boundary_drift_report": (
+        {
+            "schema": "pi.franken_node.kernel_boundary_drift_report.v1",
+            "path": str(franken_node_kernel_boundary_drift_report_json_path),
+            "summary": (
+                franken_node_kernel_boundary_drift_report_payload.get("summary", {})
+                if isinstance(franken_node_kernel_boundary_drift_report_payload, dict)
+                else {}
+            ),
+        }
+        if franken_node_kernel_boundary_drift_report_json_path is not None
+        else None
+    ),
 }
 contract_file.parent.mkdir(parents=True, exist_ok=True)
 contract_file.write_text(json.dumps(contract_payload, indent=2) + "\n", encoding="utf-8")
@@ -11289,6 +11657,17 @@ if isinstance(summary, dict):
                 [],
             ),
             "tiers": franken_node_claim_gate_status_payload.get("tiers", {}),
+        }
+    if franken_node_kernel_boundary_drift_report_json_path is not None and isinstance(
+        franken_node_kernel_boundary_drift_report_payload, dict
+    ):
+        summary["franken_node_kernel_boundary_drift_report"] = {
+            "schema": "pi.franken_node.kernel_boundary_drift_report.v1",
+            "path": str(franken_node_kernel_boundary_drift_report_json_path),
+            "summary": franken_node_kernel_boundary_drift_report_payload.get(
+                "summary",
+                {},
+            ),
         }
     summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
 

@@ -58,6 +58,8 @@ const FRANKEN_NODE_TIER2_REQUIRED_EVIDENCE_TOKENS: &[&str] = &[
 ];
 const FRANKEN_NODE_TIER3_REQUIRED_EVIDENCE_TOKENS: &[&str] = &[
     "package/ecosystem interoperability strict-tier evidence and claim-tier linkage",
+    "kernel extraction boundary manifest and reintegration mapping evidence",
+    "runtime-substrate generalization evidence for bd-3ar8v.7.5",
     "crate reintegration evidence into pi_agent_rust",
 ];
 
@@ -1662,7 +1664,7 @@ fn franken_node_claim_contract_fails_closed_on_missing_package_interop_evidence_
         .get_mut("claim_tiers")
         .and_then(Value::as_array_mut)
         .expect("claim_tiers must be an array");
-    let tier2 = tiers
+    let targeted_runtime_tier = tiers
         .iter_mut()
         .find(|tier| {
             tier.get("tier_id")
@@ -1671,7 +1673,7 @@ fn franken_node_claim_contract_fails_closed_on_missing_package_interop_evidence_
                 .is_some_and(|tier_id| tier_id == "TIER-2-TARGETED-RUNTIME-PARITY")
         })
         .expect("TIER-2-TARGETED-RUNTIME-PARITY must exist");
-    let evidence = tier2
+    let evidence = targeted_runtime_tier
         .get_mut("required_evidence")
         .and_then(Value::as_array_mut)
         .expect("TIER-2 required_evidence must be an array");
@@ -1687,6 +1689,78 @@ fn franken_node_claim_contract_fails_closed_on_missing_package_interop_evidence_
         err.contains("required_evidence missing token")
             && err.contains("package/ecosystem interoperability contract evidence"),
         "error should identify missing package interop token, got: {err}"
+    );
+}
+
+#[test]
+fn franken_node_claim_contract_fails_closed_on_missing_kernel_mapping_evidence_token() {
+    let mut contract = require_json(FRANKEN_NODE_CLAIM_CONTRACT_PATH);
+    let tiers = contract
+        .get_mut("claim_tiers")
+        .and_then(Value::as_array_mut)
+        .expect("claim_tiers must be an array");
+    let target_tier = tiers
+        .iter_mut()
+        .find(|tier| {
+            tier.get("tier_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .is_some_and(|tier_id| tier_id == "TIER-3-FULL-NODE-BUN-REPLACEMENT")
+        })
+        .expect("TIER-3-FULL-NODE-BUN-REPLACEMENT must exist");
+    let evidence = target_tier
+        .get_mut("required_evidence")
+        .and_then(Value::as_array_mut)
+        .expect("TIER-3 required_evidence must be an array");
+    evidence.retain(|entry| {
+        !entry.as_str().map_or("", str::trim).eq_ignore_ascii_case(
+            "kernel extraction boundary manifest and reintegration mapping evidence",
+        )
+    });
+
+    let err = validate_franken_node_claim_contract(&contract)
+        .expect_err("missing kernel mapping evidence token must fail closed");
+    assert!(
+        err.contains("required_evidence missing token")
+            && err
+                .contains("kernel extraction boundary manifest and reintegration mapping evidence"),
+        "error should identify missing kernel mapping token, got: {err}"
+    );
+}
+
+#[test]
+fn franken_node_claim_contract_fails_closed_on_missing_runtime_substrate_evidence_token() {
+    let mut contract = require_json(FRANKEN_NODE_CLAIM_CONTRACT_PATH);
+    let tiers = contract
+        .get_mut("claim_tiers")
+        .and_then(Value::as_array_mut)
+        .expect("claim_tiers must be an array");
+    let target_tier = tiers
+        .iter_mut()
+        .find(|tier| {
+            tier.get("tier_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .is_some_and(|tier_id| tier_id == "TIER-3-FULL-NODE-BUN-REPLACEMENT")
+        })
+        .expect("TIER-3-FULL-NODE-BUN-REPLACEMENT must exist");
+    let evidence = target_tier
+        .get_mut("required_evidence")
+        .and_then(Value::as_array_mut)
+        .expect("TIER-3 required_evidence must be an array");
+    evidence.retain(|entry| {
+        !entry
+            .as_str()
+            .map_or("", str::trim)
+            .eq_ignore_ascii_case("runtime-substrate generalization evidence for bd-3ar8v.7.5")
+    });
+
+    let err = validate_franken_node_claim_contract(&contract)
+        .expect_err("missing runtime substrate evidence token must fail closed");
+    assert!(
+        err.contains("required_evidence missing token")
+            && err.contains("runtime-substrate generalization evidence for bd-3ar8v.7.5"),
+        "error should identify missing runtime substrate evidence token, got: {err}"
     );
 }
 

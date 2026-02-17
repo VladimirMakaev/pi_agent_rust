@@ -366,7 +366,7 @@ fn semantic_compat_contract_declares_incremental_tiering_and_explicit_unsupporte
     for required in ["tier0-core", "tier1-expanded", "tier2-longtail"] {
         assert!(tier_ids.contains(required), "missing tier_id {required}");
     }
-    let tier1 = tier_supported_scenarios
+    let tier1_expanded_scenarios = tier_supported_scenarios
         .get("tier1-expanded")
         .expect("tier1-expanded must be present in tier_definitions");
     for required in [
@@ -374,7 +374,7 @@ fn semantic_compat_contract_declares_incremental_tiering_and_explicit_unsupporte
         "SCN-package-interop-cjs-esm-npm",
     ] {
         assert!(
-            tier1.contains(required),
+            tier1_expanded_scenarios.contains(required),
             "tier1-expanded supported_scenario_ids missing required scenario: {required}"
         );
     }
