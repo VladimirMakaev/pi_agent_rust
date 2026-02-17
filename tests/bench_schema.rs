@@ -826,6 +826,7 @@ fn validate_phase1_matrix_validation_record(record: &Value) -> Result<(), String
         "matrix_requirements",
         "matrix_cells",
         "stage_summary",
+        "weighted_bottleneck_attribution",
         "primary_outcomes",
         "regression_guards",
         "evidence_links",
@@ -971,6 +972,8 @@ fn validate_phase1_matrix_validation_record(record: &Value) -> Result<(), String
     let mut observed_missing_stage_cell_keys: HashSet<(String, u64)> = HashSet::new();
     let mut observed_missing_stage_reasons_by_key: HashMap<(String, u64), BTreeSet<String>> =
         HashMap::new();
+    let mut observed_weighted_valid_cell_count = 0_u64;
+    let mut observed_weighted_present_cell_keys: HashSet<(String, u64)> = HashSet::new();
     let mut seen_partition_size_cells = HashSet::new();
     for cell in matrix_cells {
         let cell_obj = cell
@@ -1037,6 +1040,17 @@ fn validate_phase1_matrix_validation_record(record: &Value) -> Result<(), String
                 return Err(format!("matrix cell stage_attribution missing {field}"));
             }
         }
+        let total_stage_ms = stage
+            .get("total_stage_ms")
+            .and_then(Value::as_f64)
+            .ok_or_else(|| {
+                "matrix cell stage_attribution.total_stage_ms must be a finite number".to_string()
+            })?;
+        if !total_stage_ms.is_finite() || total_stage_ms <= 0.0 {
+            return Err(format!(
+                "matrix cell stage_attribution.total_stage_ms must be > 0, got: {total_stage_ms}"
+            ));
+        }
         let mut missing_stage_metrics = 0_u64;
         for key in &expected_required_stage_keys {
             if stage.get(*key).is_some_and(|value| !value.is_null()) {
@@ -1089,7 +1103,8 @@ fn validate_phase1_matrix_validation_record(record: &Value) -> Result<(), String
                     "matrix cell ({workload_partition}, {session_messages}) missing_reasons must include at least one missing_stage_metrics:* reason when stage attribution is incomplete"
                 ));
             }
-            observed_missing_stage_reasons_by_key.insert(partition_size_key, missing_reason_set);
+            observed_missing_stage_reasons_by_key
+                .insert(partition_size_key.clone(), missing_reason_set);
         }
 
         let primary = cell_obj
@@ -1108,6 +1123,11 @@ fn validate_phase1_matrix_validation_record(record: &Value) -> Result<(), String
                 let _ =
                     require_nullable_positive_metric(primary, "matrix cell primary_e2e", field)?;
             }
+        }
+
+        if status == "pass" {
+            observed_weighted_valid_cell_count += 1;
+            observed_weighted_present_cell_keys.insert(partition_size_key);
         }
     }
 
@@ -1295,6 +1315,496 @@ fn validate_phase1_matrix_validation_record(record: &Value) -> Result<(), String
         if &reason_set != observed_reason_set {
             return Err(format!(
                 "stage_summary.missing_cells entry ({workload_partition}, {session_messages}) reasons {reason_set:?} must equal matrix cell missing_reasons {observed_reason_set:?}",
+            ));
+        }
+    }
+
+    let weighted_bottleneck_attribution = record
+        .get("weighted_bottleneck_attribution")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "weighted_bottleneck_attribution must be an object".to_string())?;
+    for field in &[
+        "schema",
+        "status",
+        "weighting_policy",
+        "confidence_method",
+        "per_scale",
+        "global_ranking",
+        "lineage",
+    ] {
+        if !weighted_bottleneck_attribution.contains_key(*field) {
+            return Err(format!("weighted_bottleneck_attribution missing {field}"));
+        }
+    }
+    let weighted_schema = weighted_bottleneck_attribution
+        .get("schema")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if weighted_schema != "pi.perf.phase1_weighted_bottleneck_attribution.v1" {
+        return Err(format!(
+            "weighted_bottleneck_attribution.schema must be pi.perf.phase1_weighted_bottleneck_attribution.v1, got: {weighted_schema}"
+        ));
+    }
+    let weighted_status = weighted_bottleneck_attribution
+        .get("status")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "weighted_bottleneck_attribution.status must be a string".to_string())?;
+    if !matches!(weighted_status, "computed" | "missing") {
+        return Err(format!(
+            "weighted_bottleneck_attribution.status must be one of computed/missing, got: {weighted_status}"
+        ));
+    }
+    let weighting_policy = weighted_bottleneck_attribution
+        .get("weighting_policy")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if weighting_policy != "session_messages" {
+        return Err(format!(
+            "weighted_bottleneck_attribution.weighting_policy must be session_messages, got: {weighting_policy}"
+        ));
+    }
+    let confidence_method = weighted_bottleneck_attribution
+        .get("confidence_method")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if confidence_method != "weighted_normal_approx_95" {
+        return Err(format!(
+            "weighted_bottleneck_attribution.confidence_method must be weighted_normal_approx_95, got: {confidence_method}"
+        ));
+    }
+
+    let weighted_lineage = weighted_bottleneck_attribution
+        .get("lineage")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "weighted_bottleneck_attribution.lineage must be an object".to_string())?;
+    for field in &["source_stream", "source_cell_count", "valid_cell_count"] {
+        if !weighted_lineage.contains_key(*field) {
+            return Err(format!(
+                "weighted_bottleneck_attribution.lineage missing {field}"
+            ));
+        }
+    }
+    let source_stream = weighted_lineage
+        .get("source_stream")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if source_stream != "phase1_matrix_validation.matrix_cells" {
+        return Err(format!(
+            "weighted_bottleneck_attribution.lineage.source_stream must be phase1_matrix_validation.matrix_cells, got: {source_stream}"
+        ));
+    }
+    let source_cell_count = weighted_lineage
+        .get("source_cell_count")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            "weighted_bottleneck_attribution.lineage.source_cell_count must be an integer"
+                .to_string()
+        })?;
+    if source_cell_count != matrix_cells.len() as u64 {
+        return Err(format!(
+            "weighted_bottleneck_attribution.lineage.source_cell_count ({source_cell_count}) must equal matrix_cells length ({})",
+            matrix_cells.len()
+        ));
+    }
+    let valid_cell_count = weighted_lineage
+        .get("valid_cell_count")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            "weighted_bottleneck_attribution.lineage.valid_cell_count must be an integer"
+                .to_string()
+        })?;
+    if valid_cell_count > source_cell_count {
+        return Err(format!(
+            "weighted_bottleneck_attribution.lineage.valid_cell_count ({valid_cell_count}) must be <= source_cell_count ({source_cell_count})"
+        ));
+    }
+    if valid_cell_count != observed_weighted_valid_cell_count {
+        return Err(format!(
+            "weighted_bottleneck_attribution.lineage.valid_cell_count ({valid_cell_count}) must equal observed pass-cell count with valid stage totals ({observed_weighted_valid_cell_count})"
+        ));
+    }
+
+    let weighted_per_scale = weighted_bottleneck_attribution
+        .get("per_scale")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "weighted_bottleneck_attribution.per_scale must be an array".to_string())?;
+    let weighted_global_ranking = weighted_bottleneck_attribution
+        .get("global_ranking")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            "weighted_bottleneck_attribution.global_ranking must be an array".to_string()
+        })?;
+
+    if weighted_status == "missing" {
+        if valid_cell_count != 0 {
+            return Err(format!(
+                "weighted_bottleneck_attribution.status is missing but lineage.valid_cell_count is {valid_cell_count} (expected 0)"
+            ));
+        }
+        if !weighted_per_scale.is_empty() {
+            return Err(
+                "weighted_bottleneck_attribution.status=missing requires empty per_scale"
+                    .to_string(),
+            );
+        }
+        if !weighted_global_ranking.is_empty() {
+            return Err(
+                "weighted_bottleneck_attribution.status=missing requires empty global_ranking"
+                    .to_string(),
+            );
+        }
+    } else {
+        if valid_cell_count == 0 {
+            return Err(
+                "weighted_bottleneck_attribution.status=computed requires lineage.valid_cell_count > 0"
+                    .to_string(),
+            );
+        }
+        if weighted_per_scale.len() != required_sizes.len() {
+            return Err(format!(
+                "weighted_bottleneck_attribution.per_scale length ({}) must equal required session size count ({})",
+                weighted_per_scale.len(),
+                required_sizes.len()
+            ));
+        }
+        let mut seen_weighted_scales = HashSet::new();
+        let mut observed_weighted_present_keys_from_per_scale: HashSet<(String, u64)> =
+            HashSet::new();
+        for per_scale_row in weighted_per_scale {
+            let row_obj = per_scale_row.as_object().ok_or_else(|| {
+                "weighted_bottleneck_attribution.per_scale entries must be objects".to_string()
+            })?;
+            let session_messages = row_obj
+                .get("session_messages")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| {
+                    "weighted_bottleneck_attribution.per_scale.session_messages must be an integer"
+                        .to_string()
+                })?;
+            if !required_sizes.contains(&session_messages) {
+                return Err(format!(
+                    "weighted_bottleneck_attribution.per_scale session_messages ({session_messages}) must be listed in matrix_requirements.required_session_message_sizes"
+                ));
+            }
+            if !seen_weighted_scales.insert(session_messages) {
+                return Err(format!(
+                    "weighted_bottleneck_attribution.per_scale must not contain duplicate session_messages entries: {session_messages}"
+                ));
+            }
+            let partitions = row_obj
+                .get("partitions")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    "weighted_bottleneck_attribution.per_scale.partitions must be an array"
+                        .to_string()
+                })?;
+            if partitions.len() != required_partitions.len() {
+                return Err(format!(
+                    "weighted_bottleneck_attribution.per_scale(session_messages={session_messages}) partitions length ({}) must equal required partition count ({})",
+                    partitions.len(),
+                    required_partitions.len()
+                ));
+            }
+            let mut seen_partitions_for_scale = HashSet::new();
+            for partition_row in partitions {
+                let partition_obj = partition_row.as_object().ok_or_else(|| {
+                    "weighted_bottleneck_attribution.per_scale.partitions entries must be objects"
+                        .to_string()
+                })?;
+                for field in &["workload_partition", "present", "scenario_id", "stage_pct"] {
+                    if !partition_obj.contains_key(*field) {
+                        return Err(format!(
+                            "weighted_bottleneck_attribution.per_scale.partitions entry missing {field}"
+                        ));
+                    }
+                }
+                let workload_partition = partition_obj
+                    .get("workload_partition")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        "weighted_bottleneck_attribution.per_scale.partitions.workload_partition must be a string"
+                            .to_string()
+                    })?;
+                if !required_partitions.contains(workload_partition) {
+                    return Err(format!(
+                        "weighted_bottleneck_attribution.per_scale includes partition '{workload_partition}' not declared in matrix_requirements.required_partition_tags"
+                    ));
+                }
+                if !seen_partitions_for_scale.insert(workload_partition.to_string()) {
+                    return Err(format!(
+                        "weighted_bottleneck_attribution.per_scale(session_messages={session_messages}) has duplicate partition entry: {workload_partition}"
+                    ));
+                }
+                let present = partition_obj
+                    .get("present")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| {
+                        "weighted_bottleneck_attribution.per_scale.partitions.present must be a boolean"
+                            .to_string()
+                    })?;
+                let scenario_id = partition_obj
+                    .get("scenario_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        "weighted_bottleneck_attribution.per_scale.partitions.scenario_id must be a string"
+                            .to_string()
+                    })?;
+                if scenario_id.trim().is_empty() {
+                    return Err(
+                        "weighted_bottleneck_attribution.per_scale.partitions.scenario_id must be non-empty"
+                            .to_string(),
+                    );
+                }
+                let stage_pct = partition_obj
+                    .get("stage_pct")
+                    .and_then(Value::as_object)
+                    .ok_or_else(|| {
+                        "weighted_bottleneck_attribution.per_scale.partitions.stage_pct must be an object"
+                            .to_string()
+                    })?;
+                for stage in &expected_required_stage_keys {
+                    if !stage_pct.contains_key(*stage) {
+                        return Err(format!(
+                            "weighted_bottleneck_attribution.per_scale.partitions.stage_pct missing {stage}"
+                        ));
+                    }
+                }
+                let unexpected_stage_keys = stage_pct
+                    .keys()
+                    .filter(|key| !expected_required_stage_keys.contains(&key.as_str()))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if !unexpected_stage_keys.is_empty() {
+                    return Err(format!(
+                        "weighted_bottleneck_attribution.per_scale.partitions.stage_pct has unexpected keys: {unexpected_stage_keys:?}"
+                    ));
+                }
+                let mut non_null_stage_pct_count = 0_u64;
+                let mut stage_pct_sum = 0.0_f64;
+                for stage in &expected_required_stage_keys {
+                    match stage_pct.get(*stage) {
+                        Some(value) if value.is_null() => {}
+                        Some(value) => {
+                            let value = value.as_f64().ok_or_else(|| {
+                                format!(
+                                    "weighted_bottleneck_attribution.per_scale.partitions.stage_pct.{stage} must be null or finite number"
+                                )
+                            })?;
+                            if !value.is_finite() || !(0.0..=100.0).contains(&value) {
+                                return Err(format!(
+                                    "weighted_bottleneck_attribution.per_scale.partitions.stage_pct.{stage} must be in [0, 100], got: {value}"
+                                ));
+                            }
+                            non_null_stage_pct_count += 1;
+                            stage_pct_sum += value;
+                        }
+                        None => {
+                            return Err(format!(
+                                "weighted_bottleneck_attribution.per_scale.partitions.stage_pct missing {stage}"
+                            ));
+                        }
+                    }
+                }
+                let has_total_stage_ms = partition_obj.contains_key("total_stage_ms")
+                    && !partition_obj
+                        .get("total_stage_ms")
+                        .is_some_and(Value::is_null);
+                if present {
+                    observed_weighted_present_keys_from_per_scale
+                        .insert((workload_partition.to_string(), session_messages));
+                    if non_null_stage_pct_count > 0
+                        && non_null_stage_pct_count != expected_required_stage_keys.len() as u64
+                    {
+                        return Err(format!(
+                            "weighted_bottleneck_attribution.per_scale(session_messages={session_messages}, workload_partition={workload_partition}) must provide either all stage_pct values or all nulls"
+                        ));
+                    }
+                    if non_null_stage_pct_count == expected_required_stage_keys.len() as u64
+                        && (stage_pct_sum - 100.0).abs() > 0.5
+                    {
+                        return Err(format!(
+                            "weighted_bottleneck_attribution.per_scale(session_messages={session_messages}, workload_partition={workload_partition}) stage_pct sum ({stage_pct_sum}) must be approximately 100"
+                        ));
+                    }
+                    if has_total_stage_ms {
+                        let total_stage_ms = partition_obj
+                            .get("total_stage_ms")
+                            .and_then(Value::as_f64)
+                            .ok_or_else(|| {
+                                "weighted_bottleneck_attribution.per_scale.partitions.total_stage_ms must be a positive number when present"
+                                    .to_string()
+                            })?;
+                        if !total_stage_ms.is_finite() || total_stage_ms <= 0.0 {
+                            return Err(format!(
+                                "weighted_bottleneck_attribution.per_scale.partitions.total_stage_ms must be > 0, got: {total_stage_ms}"
+                            ));
+                        }
+                    } else if non_null_stage_pct_count > 0 {
+                        return Err(format!(
+                            "weighted_bottleneck_attribution.per_scale(session_messages={session_messages}, workload_partition={workload_partition}) must include total_stage_ms when stage_pct values are present"
+                        ));
+                    }
+                } else {
+                    if non_null_stage_pct_count != 0 {
+                        return Err(format!(
+                            "weighted_bottleneck_attribution.per_scale(session_messages={session_messages}, workload_partition={workload_partition}) with present=false must provide null stage_pct values"
+                        ));
+                    }
+                    if has_total_stage_ms {
+                        return Err(format!(
+                            "weighted_bottleneck_attribution.per_scale(session_messages={session_messages}, workload_partition={workload_partition}) with present=false must not include total_stage_ms"
+                        ));
+                    }
+                }
+            }
+        }
+        if seen_weighted_scales != required_sizes {
+            return Err(format!(
+                "weighted_bottleneck_attribution.per_scale must cover all required session sizes; observed {:?}, required {:?}",
+                seen_weighted_scales, required_sizes
+            ));
+        }
+        if observed_weighted_present_keys_from_per_scale != observed_weighted_present_cell_keys {
+            return Err(format!(
+                "weighted_bottleneck_attribution.per_scale present keys {:?} must match observed pass-cell keys {:?}",
+                observed_weighted_present_keys_from_per_scale, observed_weighted_present_cell_keys
+            ));
+        }
+
+        if weighted_global_ranking.len() != expected_required_stage_keys.len() {
+            return Err(format!(
+                "weighted_bottleneck_attribution.global_ranking length ({}) must equal stage key count ({})",
+                weighted_global_ranking.len(),
+                expected_required_stage_keys.len()
+            ));
+        }
+        let mut seen_weighted_ranking_stages = HashSet::new();
+        let mut previous_weighted_contribution_pct = f64::INFINITY;
+        let mut weighted_contribution_sum = 0.0_f64;
+        for ranking_row in weighted_global_ranking {
+            let ranking_obj = ranking_row.as_object().ok_or_else(|| {
+                "weighted_bottleneck_attribution.global_ranking entries must be objects".to_string()
+            })?;
+            for field in &[
+                "stage",
+                "weighted_stage_ms",
+                "weighted_contribution_pct",
+                "mean_share_pct",
+                "ci95_lower_pct",
+                "ci95_upper_pct",
+                "sample_size",
+            ] {
+                if !ranking_obj.contains_key(*field) {
+                    return Err(format!(
+                        "weighted_bottleneck_attribution.global_ranking entry missing {field}"
+                    ));
+                }
+            }
+            let stage = ranking_obj
+                .get("stage")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    "weighted_bottleneck_attribution.global_ranking.stage must be a string"
+                        .to_string()
+                })?;
+            if !expected_required_stage_keys.contains(&stage) {
+                return Err(format!(
+                    "weighted_bottleneck_attribution.global_ranking has unknown stage: {stage}"
+                ));
+            }
+            if !seen_weighted_ranking_stages.insert(stage.to_string()) {
+                return Err(format!(
+                    "weighted_bottleneck_attribution.global_ranking must not contain duplicate stage entries: {stage}"
+                ));
+            }
+            let weighted_stage_ms = require_non_negative_metric(
+                ranking_obj,
+                "weighted_bottleneck_attribution.global_ranking",
+                "weighted_stage_ms",
+            )?;
+            if weighted_stage_ms == 0.0 {
+                return Err(format!(
+                    "weighted_bottleneck_attribution.global_ranking stage {stage} has zero weighted_stage_ms"
+                ));
+            }
+            let weighted_contribution_pct = require_non_negative_metric(
+                ranking_obj,
+                "weighted_bottleneck_attribution.global_ranking",
+                "weighted_contribution_pct",
+            )?;
+            if weighted_contribution_pct > 100.0 {
+                return Err(format!(
+                    "weighted_bottleneck_attribution.global_ranking stage {stage} has weighted_contribution_pct > 100: {weighted_contribution_pct}"
+                ));
+            }
+            if weighted_contribution_pct > previous_weighted_contribution_pct + 1e-9 {
+                return Err(format!(
+                    "weighted_bottleneck_attribution.global_ranking must be sorted descending by weighted_contribution_pct; stage {stage} has {weighted_contribution_pct} after {previous_weighted_contribution_pct}"
+                ));
+            }
+            previous_weighted_contribution_pct = weighted_contribution_pct;
+            weighted_contribution_sum += weighted_contribution_pct;
+
+            let mean_share_pct = require_nullable_percentage_metric(
+                ranking_obj,
+                "weighted_bottleneck_attribution.global_ranking",
+                "mean_share_pct",
+            )?;
+            let ci95_lower_pct = require_nullable_percentage_metric(
+                ranking_obj,
+                "weighted_bottleneck_attribution.global_ranking",
+                "ci95_lower_pct",
+            )?;
+            let ci95_upper_pct = require_nullable_percentage_metric(
+                ranking_obj,
+                "weighted_bottleneck_attribution.global_ranking",
+                "ci95_upper_pct",
+            )?;
+            if ci95_lower_pct.is_some() != ci95_upper_pct.is_some() {
+                return Err(format!(
+                    "weighted_bottleneck_attribution.global_ranking stage {stage} must provide both ci95_lower_pct and ci95_upper_pct together"
+                ));
+            }
+            if let (Some(lower), Some(upper)) = (ci95_lower_pct, ci95_upper_pct) {
+                if lower > upper {
+                    return Err(format!(
+                        "weighted_bottleneck_attribution.global_ranking stage {stage} has ci95_lower_pct ({lower}) > ci95_upper_pct ({upper})"
+                    ));
+                }
+                if let Some(mean) = mean_share_pct {
+                    if mean < lower || mean > upper {
+                        return Err(format!(
+                            "weighted_bottleneck_attribution.global_ranking stage {stage} mean_share_pct ({mean}) must lie within CI [{lower}, {upper}]"
+                        ));
+                    }
+                }
+            }
+            let sample_size = ranking_obj
+                .get("sample_size")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| {
+                    "weighted_bottleneck_attribution.global_ranking.sample_size must be an integer"
+                        .to_string()
+                })?;
+            if sample_size == 0 {
+                return Err(format!(
+                    "weighted_bottleneck_attribution.global_ranking stage {stage} sample_size must be > 0"
+                ));
+            }
+            if sample_size > valid_cell_count {
+                return Err(format!(
+                    "weighted_bottleneck_attribution.global_ranking stage {stage} sample_size ({sample_size}) must be <= lineage.valid_cell_count ({valid_cell_count})"
+                ));
+            }
+            if sample_size > 1 && (ci95_lower_pct.is_none() || ci95_upper_pct.is_none()) {
+                return Err(format!(
+                    "weighted_bottleneck_attribution.global_ranking stage {stage} sample_size ({sample_size}) > 1 requires CI bounds"
+                ));
+            }
+        }
+        if (weighted_contribution_sum - 100.0).abs() > 0.5 {
+            return Err(format!(
+                "weighted_bottleneck_attribution.global_ranking weighted_contribution_pct values must sum to approximately 100 (observed {weighted_contribution_sum})"
             ));
         }
     }
@@ -1607,6 +2117,23 @@ fn require_positive_metric(
     Ok(value)
 }
 
+fn require_non_negative_metric(
+    obj: &serde_json::Map<String, Value>,
+    context: &str,
+    field: &str,
+) -> Result<f64, String> {
+    let value = obj
+        .get(field)
+        .and_then(Value::as_f64)
+        .ok_or_else(|| format!("{context}.{field} must be a non-negative finite number"))?;
+    if !value.is_finite() || value < 0.0 {
+        return Err(format!(
+            "{context}.{field} must be a non-negative finite number, got: {value}"
+        ));
+    }
+    Ok(value)
+}
+
 fn require_nullable_positive_metric(
     obj: &serde_json::Map<String, Value>,
     context: &str,
@@ -1626,6 +2153,30 @@ fn require_nullable_positive_metric(
     if !value.is_finite() || value <= 0.0 {
         return Err(format!(
             "{context}.{field} must be null or a positive finite number, got: {value}"
+        ));
+    }
+    Ok(Some(value))
+}
+
+fn require_nullable_percentage_metric(
+    obj: &serde_json::Map<String, Value>,
+    context: &str,
+    field: &str,
+) -> Result<Option<f64>, String> {
+    let Some(raw_value) = obj.get(field) else {
+        return Err(format!(
+            "{context}.{field} must be null or a finite percentage in [0, 100]"
+        ));
+    };
+    if raw_value.is_null() {
+        return Ok(None);
+    }
+    let value = raw_value.as_f64().ok_or_else(|| {
+        format!("{context}.{field} must be null or a finite percentage in [0, 100]")
+    })?;
+    if !value.is_finite() || !(0.0..=100.0).contains(&value) {
+        return Err(format!(
+            "{context}.{field} must be null or a finite percentage in [0, 100], got: {value}"
         ));
     }
     Ok(Some(value))
@@ -1653,7 +2204,7 @@ fn phase1_matrix_validation_golden_fixture() -> Value {
         "correlation_id": "abc123def456",
         "matrix_requirements": {
             "required_partition_tags": ["matched-state", "realistic"],
-            "required_session_message_sizes": [100_000, 200_000, 500_000, 1_000_000, 5_000_000],
+            "required_session_message_sizes": [100_000],
             "required_cell_count": 2
         },
         "matrix_cells": [
@@ -1724,6 +2275,86 @@ fn phase1_matrix_validation_golden_fixture() -> Value {
             "cells_missing_stage_breakdown": 0,
             "covered_cells": 2,
             "missing_cells": []
+        },
+        "weighted_bottleneck_attribution": {
+            "schema": "pi.perf.phase1_weighted_bottleneck_attribution.v1",
+            "status": "computed",
+            "weighting_policy": "session_messages",
+            "confidence_method": "weighted_normal_approx_95",
+            "per_scale": [
+                {
+                    "session_messages": 100_000,
+                    "partitions": [
+                        {
+                            "workload_partition": "matched-state",
+                            "present": true,
+                            "scenario_id": "matched-state/session_100000",
+                            "total_stage_ms": 117.0,
+                            "stage_pct": {
+                                "open_ms": 41.02564102564102,
+                                "append_ms": 30.76923076923077,
+                                "save_ms": 18.803418803418804,
+                                "index_ms": 9.401709401709402
+                            }
+                        },
+                        {
+                            "workload_partition": "realistic",
+                            "present": true,
+                            "scenario_id": "realistic/session_100000",
+                            "total_stage_ms": 105.0,
+                            "stage_pct": {
+                                "open_ms": 41.904761904761905,
+                                "append_ms": 30.476190476190478,
+                                "save_ms": 18.095238095238095,
+                                "index_ms": 9.523809523809524
+                            }
+                        }
+                    ]
+                }
+            ],
+            "global_ranking": [
+                {
+                    "stage": "open_ms",
+                    "weighted_stage_ms": 9200000.0,
+                    "weighted_contribution_pct": 41.44144144144144,
+                    "mean_share_pct": 41.46520146520146,
+                    "ci95_lower_pct": 40.856001776794585,
+                    "ci95_upper_pct": 42.074401153608335,
+                    "sample_size": 2
+                },
+                {
+                    "stage": "append_ms",
+                    "weighted_stage_ms": 6800000.0,
+                    "weighted_contribution_pct": 30.630630630630627,
+                    "mean_share_pct": 30.622710622710624,
+                    "ci95_lower_pct": 30.419644059908336,
+                    "ci95_upper_pct": 30.825777185512916,
+                    "sample_size": 2
+                },
+                {
+                    "stage": "save_ms",
+                    "weighted_stage_ms": 4100000.0,
+                    "weighted_contribution_pct": 18.46846846846847,
+                    "mean_share_pct": 18.449328449328455,
+                    "ci95_lower_pct": 17.958584255889583,
+                    "ci95_upper_pct": 18.940072642767323,
+                    "sample_size": 2
+                },
+                {
+                    "stage": "index_ms",
+                    "weighted_stage_ms": 2100000.0,
+                    "weighted_contribution_pct": 9.45945945945946,
+                    "mean_share_pct": 9.462759462759463,
+                    "ci95_lower_pct": 9.378148394925175,
+                    "ci95_upper_pct": 9.547370530593751,
+                    "sample_size": 2
+                }
+            ],
+            "lineage": {
+                "source_stream": "phase1_matrix_validation.matrix_cells",
+                "source_cell_count": 2,
+                "valid_cell_count": 2
+            }
         },
         "primary_outcomes": {
             "status": "pass",
@@ -2334,6 +2965,87 @@ fn phase1_matrix_validator_accepts_golden_fixture() {
     assert!(
         validate_phase1_matrix_validation_record(&golden).is_ok(),
         "golden phase1 matrix fixture should pass validation"
+    );
+}
+
+#[test]
+fn phase1_matrix_validator_rejects_missing_weighted_bottleneck_attribution() {
+    let mut malformed = phase1_matrix_validation_golden_fixture();
+    malformed
+        .as_object_mut()
+        .expect("phase1 matrix object")
+        .remove("weighted_bottleneck_attribution");
+
+    let err = validate_phase1_matrix_validation_record(&malformed).expect_err("fixture must fail");
+    assert!(
+        err.contains("weighted_bottleneck_attribution"),
+        "expected weighted_bottleneck_attribution missing failure, got: {err}"
+    );
+}
+
+#[test]
+fn phase1_matrix_validator_rejects_weighted_lineage_valid_cell_count_mismatch() {
+    let mut malformed = phase1_matrix_validation_golden_fixture();
+    malformed["weighted_bottleneck_attribution"]["lineage"]["valid_cell_count"] = json!(1);
+
+    let err = validate_phase1_matrix_validation_record(&malformed).expect_err("fixture must fail");
+    assert!(
+        err.contains("lineage.valid_cell_count")
+            && err.contains("observed pass-cell count with valid stage totals"),
+        "expected weighted lineage count parity failure, got: {err}"
+    );
+}
+
+#[test]
+fn phase1_matrix_validator_rejects_weighted_per_scale_present_key_mismatch() {
+    let mut malformed = phase1_matrix_validation_golden_fixture();
+    malformed["weighted_bottleneck_attribution"]["per_scale"][0]["partitions"][1]["present"] =
+        json!(false);
+    malformed["weighted_bottleneck_attribution"]["per_scale"][0]["partitions"][1]["stage_pct"] = json!({
+        "open_ms": null,
+        "append_ms": null,
+        "save_ms": null,
+        "index_ms": null
+    });
+    malformed["weighted_bottleneck_attribution"]["per_scale"][0]["partitions"][1]
+        .as_object_mut()
+        .expect("partition row")
+        .remove("total_stage_ms");
+
+    let err = validate_phase1_matrix_validation_record(&malformed).expect_err("fixture must fail");
+    assert!(
+        err.contains("per_scale present keys"),
+        "expected weighted per_scale present-key parity failure, got: {err}"
+    );
+}
+
+#[test]
+fn phase1_matrix_validator_rejects_weighted_global_ranking_not_sorted() {
+    let mut malformed = phase1_matrix_validation_golden_fixture();
+    let tmp = malformed["weighted_bottleneck_attribution"]["global_ranking"][0].clone();
+    malformed["weighted_bottleneck_attribution"]["global_ranking"][0] =
+        malformed["weighted_bottleneck_attribution"]["global_ranking"][1].clone();
+    malformed["weighted_bottleneck_attribution"]["global_ranking"][1] = tmp;
+
+    let err = validate_phase1_matrix_validation_record(&malformed).expect_err("fixture must fail");
+    assert!(
+        err.contains("sorted descending by weighted_contribution_pct"),
+        "expected weighted global ranking order failure, got: {err}"
+    );
+}
+
+#[test]
+fn phase1_matrix_validator_rejects_weighted_global_ranking_ci_inversion() {
+    let mut malformed = phase1_matrix_validation_golden_fixture();
+    malformed["weighted_bottleneck_attribution"]["global_ranking"][0]["ci95_lower_pct"] =
+        json!(45.0);
+    malformed["weighted_bottleneck_attribution"]["global_ranking"][0]["ci95_upper_pct"] =
+        json!(40.0);
+
+    let err = validate_phase1_matrix_validation_record(&malformed).expect_err("fixture must fail");
+    assert!(
+        err.contains("ci95_lower_pct") && err.contains("ci95_upper_pct") && err.contains(">"),
+        "expected weighted global ranking CI inversion failure, got: {err}"
     );
 }
 
@@ -3214,6 +3926,11 @@ fn orchestrate_script_emits_phase1_matrix_validation_contract() {
         "required_stage_keys = [\"open_ms\", \"append_ms\", \"save_ms\", \"index_ms\"]",
         "\"required_session_message_sizes\"",
         "\"cells_with_complete_stage_breakdown\"",
+        "\"weighted_bottleneck_attribution\"",
+        "\"pi.perf.phase1_weighted_bottleneck_attribution.v1\"",
+        "\"global_ranking\"",
+        "\"weighted_contribution_pct\"",
+        "\"confidence_method\"",
         "\"primary_e2e_before_microbench\"",
         "\"artifact_ready_for_phase5\"",
         "\"failure_or_gap_reasons\"",
@@ -3557,6 +4274,120 @@ fn orchestrate_generates_phase1_matrix_validation_artifact() {
         seen_sizes,
         REALISTIC_SESSION_SIZES.iter().copied().collect(),
         "phase1 matrix must cover canonical 100k..5M sizes"
+    );
+
+    let weighted = matrix["weighted_bottleneck_attribution"]
+        .as_object()
+        .expect("weighted_bottleneck_attribution object");
+    assert_eq!(
+        weighted["schema"].as_str(),
+        Some("pi.perf.phase1_weighted_bottleneck_attribution.v1"),
+        "weighted attribution schema must be pinned"
+    );
+    assert_eq!(
+        weighted["status"].as_str(),
+        Some("computed"),
+        "stub phase1 matrix should emit computed weighted attribution"
+    );
+    assert_eq!(
+        weighted["weighting_policy"].as_str(),
+        Some("session_messages"),
+        "weighted attribution must use session_messages weighting"
+    );
+    assert_eq!(
+        weighted["confidence_method"].as_str(),
+        Some("weighted_normal_approx_95"),
+        "weighted attribution confidence method must be explicit"
+    );
+    let weighted_lineage = weighted["lineage"]
+        .as_object()
+        .expect("weighted lineage object");
+    assert_eq!(
+        weighted_lineage["source_stream"].as_str(),
+        Some("phase1_matrix_validation.matrix_cells"),
+        "weighted lineage source stream must point to matrix_cells"
+    );
+    assert_eq!(
+        weighted_lineage["source_cell_count"].as_u64(),
+        Some(cells.len() as u64),
+        "weighted lineage source_cell_count must match matrix cell count"
+    );
+    assert_eq!(
+        weighted_lineage["valid_cell_count"].as_u64(),
+        Some(cells.len() as u64),
+        "stub matrix should have all cells counted as valid for weighted attribution"
+    );
+
+    let per_scale = weighted["per_scale"]
+        .as_array()
+        .expect("weighted per_scale array");
+    assert_eq!(
+        per_scale.len(),
+        REALISTIC_SESSION_SIZES.len(),
+        "weighted per_scale must cover every required session size"
+    );
+    let observed_per_scale_sizes: HashSet<u64> = per_scale
+        .iter()
+        .filter_map(|row| row.get("session_messages").and_then(Value::as_u64))
+        .collect();
+    assert_eq!(
+        observed_per_scale_sizes,
+        REALISTIC_SESSION_SIZES.iter().copied().collect(),
+        "weighted per_scale session_messages must match canonical size set"
+    );
+    for row in per_scale {
+        let partitions = row["partitions"]
+            .as_array()
+            .expect("per_scale.partitions array");
+        assert_eq!(
+            partitions.len(),
+            2,
+            "weighted per_scale rows must include matched-state + realistic partitions"
+        );
+        let partition_set: HashSet<&str> = partitions
+            .iter()
+            .filter_map(|entry| entry.get("workload_partition").and_then(Value::as_str))
+            .collect();
+        assert!(partition_set.contains("matched-state"));
+        assert!(partition_set.contains("realistic"));
+    }
+
+    let global_ranking = weighted["global_ranking"]
+        .as_array()
+        .expect("weighted global_ranking array");
+    assert_eq!(
+        global_ranking.len(),
+        4,
+        "weighted global_ranking must include open/append/save/index"
+    );
+    let observed_stages: HashSet<&str> = global_ranking
+        .iter()
+        .filter_map(|row| row.get("stage").and_then(Value::as_str))
+        .collect();
+    let expected_stages: HashSet<&str> = ["open_ms", "append_ms", "save_ms", "index_ms"]
+        .iter()
+        .copied()
+        .collect();
+    assert_eq!(
+        observed_stages, expected_stages,
+        "weighted global_ranking stage coverage must match required stage keys"
+    );
+    let mut previous_contribution = f64::INFINITY;
+    let mut contribution_sum = 0.0_f64;
+    for row in global_ranking {
+        let contribution = row["weighted_contribution_pct"]
+            .as_f64()
+            .expect("weighted_contribution_pct number");
+        assert!(
+            contribution <= previous_contribution + 1e-9,
+            "weighted global_ranking must be sorted descending by weighted_contribution_pct"
+        );
+        previous_contribution = contribution;
+        contribution_sum += contribution;
+    }
+    assert!(
+        (contribution_sum - 100.0).abs() <= 0.5,
+        "weighted global_ranking weighted_contribution_pct values should sum to ~100, got {contribution_sum}"
     );
 
     let _ = fs::remove_dir_all(temp_root);
