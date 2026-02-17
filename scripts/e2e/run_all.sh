@@ -6804,6 +6804,7 @@ required_fail_closed_conditions = [
 
 required_scenarios: list[str] = []
 required_partition_tags: list[str] = ["matched-state", "realistic"]
+BUN_KILLER_MAX_RUST_VS_BUN_RATIO = 0.33
 required_realistic_session_shapes: list[str] = [
     "realistic_100k",
     "realistic_200k",
@@ -7467,13 +7468,25 @@ if isinstance(extension_stratification, dict) and perf_extension_stratification_
         absolute_value = absolute_metrics.get("value")
         node_ratio = relative_metrics.get("rust_vs_node_ratio")
         bun_ratio = relative_metrics.get("rust_vs_bun_ratio")
+        absolute_metric_value = parse_positive_metric_value(absolute_value)
+        node_ratio_value = parse_positive_metric_value(node_ratio)
+        bun_ratio_value = parse_positive_metric_value(bun_ratio)
         if (
-            absolute_value is None
-            or node_ratio is None
-            or bun_ratio is None
+            absolute_metric_value is None
+            or node_ratio_value is None
+            or bun_ratio_value is None
         ):
             missing_absolute_or_relative_reasons.append(
                 f"layer {layer_id} missing absolute/relative metrics"
+            )
+        elif (
+            layer_id == "full_e2e_long_session"
+            and bun_ratio_value > BUN_KILLER_MAX_RUST_VS_BUN_RATIO
+        ):
+            missing_absolute_or_relative_reasons.append(
+                "layer full_e2e_long_session rust_vs_bun_ratio "
+                f"{bun_ratio_value:.6g} exceeds Bun-killer release gate "
+                f"<= {BUN_KILLER_MAX_RUST_VS_BUN_RATIO:.2f}"
             )
 
     partition_coverage = (
@@ -7843,6 +7856,40 @@ if isinstance(phase1_matrix_validation, dict) and perf_phase1_matrix_validation_
         evidence_missing_or_stale_reasons.append(
             "phase-1 matrix validation primary outcomes missing/invalid metrics: "
             f"{invalid_primary_metric_fields}"
+        )
+
+    primary_bun_ratio = parse_positive_metric_value(
+        primary_outcomes_obj.get("rust_vs_bun_ratio")
+        if isinstance(primary_outcomes_obj, dict)
+        else None
+    )
+    bun_killer_primary_ratio_ok = (
+        primary_bun_ratio is not None
+        and primary_bun_ratio <= BUN_KILLER_MAX_RUST_VS_BUN_RATIO
+    )
+    require_condition(
+        "claim_integrity.phase1_matrix_primary_outcomes_bun_killer_threshold",
+        path=perf_phase1_matrix_validation_path,
+        ok=bun_killer_primary_ratio_ok,
+        ok_msg=(
+            "phase-1 matrix validation rust_vs_bun_ratio satisfies "
+            "Bun-killer release gate"
+        ),
+        fail_msg=(
+            "phase-1 matrix validation rust_vs_bun_ratio exceeds Bun-killer "
+            f"release gate <= {BUN_KILLER_MAX_RUST_VS_BUN_RATIO:.2f} "
+            f"(got {primary_bun_ratio!r})"
+        ),
+        strict=claim_integrity_required,
+        remediation=(
+            "Reduce phase1_matrix_validation.primary_outcomes.rust_vs_bun_ratio "
+            f"to <= {BUN_KILLER_MAX_RUST_VS_BUN_RATIO:.2f} before release promotion."
+        ),
+    )
+    if not bun_killer_primary_ratio_ok and claim_integrity_gate_active:
+        evidence_missing_or_stale_reasons.append(
+            "phase-1 matrix validation rust_vs_bun_ratio exceeds Bun-killer "
+            "release gate"
         )
 
     ordering_policy = str(

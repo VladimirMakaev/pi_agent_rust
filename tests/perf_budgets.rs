@@ -170,6 +170,7 @@ const BUDGETS: &[Budget] = &[
 ];
 
 const DEFAULT_MAX_ARTIFACT_AGE_HOURS: f64 = 24.0;
+const BUN_KILLER_MAX_RUST_VS_BUN_RATIO: f64 = 0.33;
 
 // ─── Data Readers ────────────────────────────────────────────────────────────
 
@@ -487,6 +488,35 @@ fn required_e2e_metric_failure(
     })
 }
 
+fn bun_killer_ratio_release_gate_failure(
+    path: &Path,
+    full_e2e: Option<&Value>,
+) -> Option<DataContractFailure> {
+    let bun_ratio_value = full_e2e
+        .and_then(|row| row.pointer("/relative_metrics/rust_vs_bun_ratio"))
+        .and_then(Value::as_f64);
+    let Some(bun_ratio_value) = bun_ratio_value else {
+        return None;
+    };
+    if !is_positive_finite_metric(Some(bun_ratio_value)) {
+        // Non-positive/non-finite values are handled by required_e2e_metric_failure.
+        return None;
+    }
+    (bun_ratio_value > BUN_KILLER_MAX_RUST_VS_BUN_RATIO).then(|| DataContractFailure {
+        contract_id: "bun_killer_ratio_release_gate".to_string(),
+        budget_name: None,
+        detail: format!(
+            "full_e2e_long_session rust_vs_bun_ratio={bun_ratio_value:.6} exceeds Bun-killer release gate <= {:.2} in {}",
+            BUN_KILLER_MAX_RUST_VS_BUN_RATIO,
+            path.display()
+        ),
+        remediation: format!(
+            "Reduce full_e2e_long_session rust_vs_bun_ratio to <= {:.2} before release promotion.",
+            BUN_KILLER_MAX_RUST_VS_BUN_RATIO
+        ),
+    })
+}
+
 fn claim_integrity_guard_failure(path: &Path, payload: &Value) -> Option<DataContractFailure> {
     let global_claim_valid = payload
         .pointer("/claim_integrity/cherry_pick_guard/global_claim_valid")
@@ -584,6 +614,9 @@ fn evaluate_required_e2e_ratio_contract(
         failures.push(failure);
     }
     if let Some(failure) = required_e2e_metric_failure(&path, full_e2e_rows.first().copied()) {
+        failures.push(failure);
+    }
+    if let Some(failure) = bun_killer_ratio_release_gate_failure(&path, full_e2e_rows.first().copied()) {
         failures.push(failure);
     }
     if let Some(failure) = claim_integrity_guard_failure(&path, &payload) {
@@ -1831,6 +1864,50 @@ fn required_e2e_ratio_contract_fails_when_layer_coverage_missing() {
                     .contains("full_e2e_layer_coverage=missing_or_non_boolean")
         }),
         "expected invalid_claim_integrity_guard failure for missing layer coverage, got: {failures:?}",
+    );
+}
+
+#[test]
+fn required_e2e_ratio_contract_fails_when_bun_killer_ratio_exceeds_threshold() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let perf_dir = tmp.path().join("target/perf");
+    std::fs::create_dir_all(&perf_dir).expect("create perf dir");
+    let artifact = perf_dir.join("extension_benchmark_stratification.json");
+    let full_e2e_layer = json!({
+        "layer_id": "full_e2e_long_session",
+        "absolute_metrics": {"value": 120.0},
+        "relative_metrics": {"rust_vs_node_ratio": 0.40, "rust_vs_bun_ratio": 0.34}
+    });
+    write_stratification_artifact_with_full_e2e_layer(&artifact, &[], Some(full_e2e_layer));
+
+    let failures = evaluate_required_e2e_ratio_contract(tmp.path(), 24.0);
+    assert!(
+        failures
+            .iter()
+            .any(|failure| failure.contract_id == "bun_killer_ratio_release_gate"),
+        "expected bun_killer_ratio_release_gate failure, got: {failures:?}",
+    );
+}
+
+#[test]
+fn required_e2e_ratio_contract_accepts_bun_killer_ratio_at_threshold() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let perf_dir = tmp.path().join("target/perf");
+    std::fs::create_dir_all(&perf_dir).expect("create perf dir");
+    let artifact = perf_dir.join("extension_benchmark_stratification.json");
+    let full_e2e_layer = json!({
+        "layer_id": "full_e2e_long_session",
+        "absolute_metrics": {"value": 120.0},
+        "relative_metrics": {"rust_vs_node_ratio": 0.30, "rust_vs_bun_ratio": 0.33}
+    });
+    write_stratification_artifact_with_full_e2e_layer(&artifact, &[], Some(full_e2e_layer));
+
+    let failures = evaluate_required_e2e_ratio_contract(tmp.path(), 24.0);
+    assert!(
+        !failures
+            .iter()
+            .any(|failure| failure.contract_id == "bun_killer_ratio_release_gate"),
+        "did not expect bun_killer_ratio_release_gate failure, got: {failures:?}",
     );
 }
 
