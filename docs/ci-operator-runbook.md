@@ -438,6 +438,35 @@ rch exec -- cargo test --test release_evidence_gate -- \
 3. Keep strict replacement gating fail-closed (`overall_verdict = CERTIFIED` required)
    and regenerate `franken_node_claim_verdict.json` before incident closure.
 
+### FrankenNode kernel-boundary signature: `kernel_boundary_drift`
+
+**Signature:** kernel-extraction boundary contract/report drift is detected in
+manifest validation output, especially missing module ownership coverage,
+duplicate ownership, or banned cross-boundary pair regressions.
+
+**Artifacts:**
+- `docs/franken-node-kernel-extraction-boundary-manifest.json`
+- `tests/full_suite_gate/franken_node_kernel_boundary_drift_report.json`
+- `tests/full_suite_gate/practical_finish_checkpoint.json`
+
+**Replay:**
+```bash
+rch exec -- cargo test --test franken_node_kernel_extraction_boundary_manifest -- \
+  kernel_boundary_manifest_ -- --nocapture
+rch exec -- cargo test --test qa_docs_policy_validation -- \
+  franken_node_mission_contract_tier_mapping_declares_required_checks_and_phase6_beads -- --nocapture
+```
+
+**Remediation:**
+1. Ensure drift report checks remain present and fail-closed:
+   `kernel_boundary.all_modules_mapped_or_deferred`,
+   `kernel_boundary.no_duplicate_domain_ownership`,
+   and `kernel_boundary.banned_cross_boundary_pairs_absent`.
+2. Restore strict tier evidence linkage tokens in mission contract:
+   `docs/franken-node-kernel-extraction-boundary-manifest.json` and
+   `tests/full_suite_gate/franken_node_kernel_boundary_drift_report.json`.
+3. Re-run the replay commands and attach refreshed artifacts before clearing the incident.
+
 ---
 
 ## Evidence Artifact Interpretation

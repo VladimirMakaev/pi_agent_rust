@@ -332,6 +332,28 @@ fn ci_operator_runbook_retains_franken_node_claim_tier_order_signature_tokens() 
     }
 }
 
+#[test]
+fn ci_operator_runbook_retains_franken_node_kernel_boundary_drift_signature_tokens() {
+    let runbook = load_text(CI_OPERATOR_RUNBOOK_PATH);
+    for token in [
+        "### FrankenNode kernel-boundary signature: `kernel_boundary_drift`",
+        "docs/franken-node-kernel-extraction-boundary-manifest.json",
+        "tests/full_suite_gate/franken_node_kernel_boundary_drift_report.json",
+        "kernel_boundary.all_modules_mapped_or_deferred",
+        "kernel_boundary.no_duplicate_domain_ownership",
+        "kernel_boundary.banned_cross_boundary_pairs_absent",
+        "rch exec -- cargo test --test franken_node_kernel_extraction_boundary_manifest --",
+        "kernel_boundary_manifest_ -- --nocapture",
+        "rch exec -- cargo test --test qa_docs_policy_validation --",
+        "franken_node_mission_contract_tier_mapping_declares_required_checks_and_phase6_beads -- --nocapture",
+    ] {
+        assert!(
+            runbook.contains(token),
+            "CI operator runbook must retain franken-node kernel-boundary drift token: {token}"
+        );
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Section 5: Full suite gate has blocking gates
 // ═══════════════════════════════════════════════════════════════════════════
