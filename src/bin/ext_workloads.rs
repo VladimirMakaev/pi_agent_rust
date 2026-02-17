@@ -2576,8 +2576,7 @@ fn validate_hotspot_matrix_schema(matrix: &Value) -> Result<()> {
         };
         if !STAGE_DECOMPOSITION.contains(&stage) {
             return Err(Error::extension(format!(
-                "hotspot entry {idx} field stage must be one of {:?}, got {stage}",
-                STAGE_DECOMPOSITION
+                "hotspot entry {idx} field stage must be one of {STAGE_DECOMPOSITION:?}, got {stage}"
             )));
         }
         if !seen_stages.insert(stage.to_string()) {
@@ -2646,8 +2645,7 @@ fn validate_hotspot_matrix_schema(matrix: &Value) -> Result<()> {
             .copied()
             .collect::<Vec<_>>();
         return Err(Error::extension(format!(
-            "hotspot_matrix missing stage entries for {:?}",
-            missing
+            "hotspot_matrix missing stage entries for {missing:?}"
         )));
     }
     let Some(voi) = matrix.get("voi_scheduler").and_then(Value::as_object) else {

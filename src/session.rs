@@ -32,6 +32,8 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 /// Current session file format version.
 pub const SESSION_VERSION: u8 = 3;
 
+type JsonlSaveResult = std::result::Result<Vec<SessionEntry>, (Error, Vec<SessionEntry>)>;
+
 /// Handle to a thread-safe shared session.
 #[derive(Clone, Debug)]
 pub struct SessionHandle(pub Arc<Mutex<Session>>);
@@ -1414,7 +1416,8 @@ impl Session {
         self.entry_index = finalized.entry_index;
         self.cached_message_count = finalized.message_count;
         self.cached_name = finalized.name;
-        self.persisted_entry_count.store(persisted_entry_count, Ordering::SeqCst);
+        self.persisted_entry_count
+            .store(persisted_entry_count, Ordering::SeqCst);
         self.v2_partial_hydration = false;
         self.v2_resume_mode = Some(V2OpenMode::Full);
 
@@ -1533,9 +1536,7 @@ impl Session {
                 if self.should_full_rewrite() {
                     let session_name = self.cached_name.clone();
                     // === Full rewrite path (first save, header change, compaction, checkpoint) ===
-                    let (tx, rx) = oneshot::channel::<
-                        std::result::Result<Vec<SessionEntry>, (Error, Vec<SessionEntry>)>,
-                    >();
+                    let (tx, rx) = oneshot::channel::<JsonlSaveResult>();
 
                     let header_snapshot = self.header.clone();
                     let header_for_index = header_snapshot.clone();
@@ -1544,7 +1545,7 @@ impl Session {
                     let path_for_thread = path_clone.clone();
                     let handle = thread::spawn(move || {
                         let entries = entries_to_save;
-                        let res: Result<()> = {
+                        let res = (|| -> Result<()> {
                             let parent = path_for_thread.parent().unwrap_or_else(|| Path::new("."));
                             let temp_file = tempfile::NamedTempFile::new_in(parent)?;
                             {
@@ -1570,7 +1571,7 @@ impl Session {
                                 session_name,
                             );
                             Ok(())
-                        };
+                        })();
                         let cx = AgentCx::for_request();
                         let _ = tx.send(
                             cx.cx(),
@@ -1596,7 +1597,8 @@ impl Session {
                         Ok(entries) => {
                             self.entries = entries;
                             self.rebuild_all_caches();
-                            self.persisted_entry_count.store(self.entries.len(), Ordering::SeqCst);
+                            self.persisted_entry_count
+                                .store(self.entries.len(), Ordering::SeqCst);
                             self.header_dirty = false;
                             self.appends_since_checkpoint = 0;
                             Ok(())
@@ -1658,7 +1660,8 @@ impl Session {
                         }
 
                         if result.is_ok() {
-                            self.persisted_entry_count.store(new_count, Ordering::SeqCst);
+                            self.persisted_entry_count
+                                .store(new_count, Ordering::SeqCst);
                             self.appends_since_checkpoint += 1;
                         }
                         result?;
@@ -1675,7 +1678,8 @@ impl Session {
                     // === Full rewrite path (first save, header change, compaction, checkpoint) ===
                     crate::session_sqlite::save_session(&path_clone, &self.header, &self.entries)
                         .await?;
-                    self.persisted_entry_count.store(self.entries.len(), Ordering::SeqCst);
+                    self.persisted_entry_count
+                        .store(self.entries.len(), Ordering::SeqCst);
                     self.header_dirty = false;
                     self.appends_since_checkpoint = 0;
                 } else {
@@ -1690,7 +1694,8 @@ impl Session {
                             session_name.as_deref(),
                         )
                         .await?;
-                        self.persisted_entry_count.store(self.entries.len(), Ordering::SeqCst);
+                        self.persisted_entry_count
+                            .store(self.entries.len(), Ordering::SeqCst);
                         self.appends_since_checkpoint += 1;
                     }
                     // No new entries → no-op, nothing to write.
@@ -2194,9 +2199,7 @@ impl Session {
         }
 
         let path = self.get_path_to_entry(leaf_id);
-        path.iter()
-            .filter_map(|id| self.get_entry(id))
-            .collect()
+        path.iter().filter_map(|id| self.get_entry(id)).collect()
     }
 
     /// Convert session entries along the current path to model messages.
