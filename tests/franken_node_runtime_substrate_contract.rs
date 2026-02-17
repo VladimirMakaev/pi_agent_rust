@@ -147,8 +147,7 @@ fn collect_lane_ids(contract: &Value) -> ValidationResult<HashSet<String>> {
         let lane_id = lane
             .get("lane_id")
             .and_then(Value::as_str)
-            .map(str::trim)
-            .unwrap_or("<missing>");
+            .map_or("<missing>", str::trim);
         let degrade_to = lane
             .get("degrade_to")
             .and_then(Value::as_str)
