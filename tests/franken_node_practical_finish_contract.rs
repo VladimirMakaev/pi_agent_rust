@@ -118,9 +118,7 @@ fn validate_completion_criteria(contract: &Value) -> ValidationResult<()> {
 
     let residual = contract["completion_criteria"]["residual_bead_threshold"]
         .as_u64()
-        .ok_or_else(|| {
-            "residual_bead_threshold must be a non-negative integer".to_string()
-        })?;
+        .ok_or_else(|| "residual_bead_threshold must be a non-negative integer".to_string())?;
     if residual != 0 {
         return Err(format!(
             "residual_bead_threshold must be 0, got: {residual}"

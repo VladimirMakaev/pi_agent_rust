@@ -117,9 +117,7 @@ fn validate_integration_boundary(contract: &Value) -> ValidationResult<()> {
     )?;
 
     if contract["integration_boundary"]["fail_closed_on_missing_crate"].as_bool() != Some(true) {
-        return Err(
-            "integration_boundary.fail_closed_on_missing_crate must be true".to_string(),
-        );
+        return Err("integration_boundary.fail_closed_on_missing_crate must be true".to_string());
     }
 
     let boundary_trait = contract["integration_boundary"]["runtime_boundary_trait"]
@@ -152,9 +150,7 @@ fn validate_retirement_and_validation(contract: &Value) -> ValidationResult<()> 
     )?;
 
     if contract["duplicate_path_retirement"]["rollback_supported"].as_bool() != Some(true) {
-        return Err(
-            "duplicate_path_retirement.rollback_supported must be true".to_string(),
-        );
+        return Err("duplicate_path_retirement.rollback_supported must be true".to_string());
     }
 
     if contract["validation_gates"]["fail_closed"].as_bool() != Some(true) {
