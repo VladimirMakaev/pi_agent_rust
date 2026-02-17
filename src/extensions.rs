@@ -13947,6 +13947,8 @@ impl std::fmt::Display for ExtensionEventName {
 #[serde(rename_all = "lowercase")]
 pub enum ExtensionRuntime {
     Js,
+    #[serde(rename = "native-rust")]
+    NativeRust,
     Wasm,
 }
 
@@ -14014,6 +14016,7 @@ impl ExtensionManifestSource {
 #[derive(Debug, Clone)]
 pub enum ExtensionLoadSpec {
     Js(JsExtensionLoadSpec),
+    NativeRust(NativeRustExtensionLoadSpec),
     #[cfg(feature = "wasm-host")]
     Wasm(WasmExtensionLoadSpec),
 }
@@ -14054,6 +14057,12 @@ fn validate_extension_manifest(manifest: &ExtensionManifest) -> Result<()> {
 
     if manifest.name.trim().is_empty() {
         return Err(Error::validation("Extension manifest name is empty"));
+    }
+    if matches!(manifest.runtime, ExtensionRuntime::Js) {
+        return Err(Error::validation(format!(
+            "Extension runtime `js` is no longer supported for `{}`. Use `runtime: \"native-rust\"` with a `.native.json` entrypoint.",
+            manifest.extension_id
+        )));
     }
     if manifest.version.trim().is_empty() {
         return Err(Error::validation("Extension manifest version is empty"));
@@ -14160,6 +14169,10 @@ pub fn load_extension_manifest(root: &Path) -> Result<Option<ExtensionManifestSo
 }
 
 fn resolve_extension_index(root: &Path) -> Option<PathBuf> {
+    let index_native = root.join("index.native.json");
+    if index_native.exists() {
+        return Some(index_native);
+    }
     let index_ts = root.join("index.ts");
     if index_ts.exists() {
         return Some(index_ts);
@@ -14182,10 +14195,13 @@ impl ExtensionManifestSource {
         }
 
         match self.manifest.runtime {
-            ExtensionRuntime::Js => Ok(ExtensionLoadSpec::Js(JsExtensionLoadSpec::from_manifest(
-                &self.manifest,
-                &self.root,
-            )?)),
+            ExtensionRuntime::Js => Err(Error::validation(format!(
+                "Extension manifest runtime `js` is no longer supported: {}. Use `runtime: \"native-rust\"` with a `.native.json` entrypoint.",
+                self.manifest_path.display()
+            ))),
+            ExtensionRuntime::NativeRust => Ok(ExtensionLoadSpec::NativeRust(
+                NativeRustExtensionLoadSpec::from_manifest(&self.manifest, &self.root)?,
+            )),
             ExtensionRuntime::Wasm => {
                 #[cfg(feature = "wasm-host")]
                 {
@@ -14213,9 +14229,19 @@ pub fn resolve_extension_load_spec(entry: &Path) -> Result<ExtensionLoadSpec> {
             return source.to_load_spec();
         }
         if let Some(index) = resolve_extension_index(entry) {
-            return Ok(ExtensionLoadSpec::Js(JsExtensionLoadSpec::from_entry_path(
-                index,
-            )?));
+            if index
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name == "index.native.json")
+            {
+                return Ok(ExtensionLoadSpec::NativeRust(
+                    NativeRustExtensionLoadSpec::from_entry_path(index)?,
+                ));
+            }
+            return Err(Error::validation(format!(
+                "JS/TS extension entrypoints are no longer supported: {}. Provide extension.json with `runtime: \"native-rust\"` and a `.native.json` entrypoint.",
+                index.display()
+            )));
         }
         return Err(Error::validation(format!(
             "Extension directory has no manifest or entrypoint: {}",
@@ -14233,6 +14259,16 @@ pub fn resolve_extension_load_spec(entry: &Path) -> Result<ExtensionLoadSpec> {
             if let Some(source) = load_extension_manifest(root)? {
                 return source.to_load_spec();
             }
+        }
+
+        if entry
+            .file_name()
+            .and_then(|s| s.to_str())
+            .is_some_and(|s| s.ends_with(".native.json"))
+        {
+            return Ok(ExtensionLoadSpec::NativeRust(
+                NativeRustExtensionLoadSpec::from_entry_path(entry)?,
+            ));
         }
 
         if let Some(ext) = entry.extension().and_then(|s| s.to_str()) {
@@ -14272,9 +14308,10 @@ pub fn resolve_extension_load_spec(entry: &Path) -> Result<ExtensionLoadSpec> {
                     }
                 }
                 "js" | "ts" | "mjs" | "cjs" => {
-                    return Ok(ExtensionLoadSpec::Js(JsExtensionLoadSpec::from_entry_path(
-                        entry,
-                    )?));
+                    return Err(Error::validation(format!(
+                        "JS/TS extension entrypoints are no longer supported: {}. Use a `.native.json` descriptor and `runtime: \"native-rust\"`.",
+                        entry.display()
+                    )));
                 }
                 _ => {}
             }
@@ -14401,6 +14438,967 @@ impl JsExtensionLoadSpec {
             version: manifest.version.clone(),
             api_version: manifest.api_version.clone(),
         })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct NativeRustExtensionLoadSpec {
+    pub extension_id: String,
+    pub entry_path: PathBuf,
+    pub name: String,
+    pub version: String,
+    pub api_version: String,
+}
+
+impl NativeRustExtensionLoadSpec {
+    pub fn from_entry_path(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        if !path.exists() {
+            return Err(Error::validation(format!(
+                "Native extension entry does not exist: {}",
+                path.display()
+            )));
+        }
+
+        let entry_path = safe_canonicalize(path);
+        let mut extension_id = entry_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if let Some(stripped) = extension_id.strip_suffix(".native") {
+            extension_id = stripped.to_string();
+        }
+        if extension_id.is_empty() {
+            extension_id = entry_path
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+        }
+        if extension_id.is_empty() {
+            return Err(Error::validation(format!(
+                "Native extension entry has no resolvable id: {}",
+                entry_path.display()
+            )));
+        }
+
+        let mut name = extension_id.clone();
+        let mut version = "0.0.0".to_string();
+        let mut api_version = PROTOCOL_VERSION.to_string();
+        if let Some(parent) = entry_path.parent() {
+            if let Ok(Some(manifest)) = load_extension_manifest(parent) {
+                if manifest.manifest.runtime == ExtensionRuntime::NativeRust {
+                    name.clone_from(&manifest.manifest.name);
+                    version.clone_from(&manifest.manifest.version);
+                    api_version.clone_from(&manifest.manifest.api_version);
+                }
+            }
+        }
+
+        Ok(Self {
+            extension_id,
+            entry_path,
+            name,
+            version,
+            api_version,
+        })
+    }
+
+    pub fn from_manifest(manifest: &ExtensionManifest, root: &Path) -> Result<Self> {
+        let entry_path = root.join(manifest.entrypoint.trim());
+        if !entry_path.exists() {
+            return Err(Error::validation(format!(
+                "Native extension entry does not exist: {}",
+                entry_path.display()
+            )));
+        }
+
+        let entry_path = safe_canonicalize(&entry_path);
+        if manifest.extension_id.trim().is_empty() {
+            return Err(Error::validation(
+                "Native extension manifest extension_id is empty".to_string(),
+            ));
+        }
+
+        Ok(Self {
+            extension_id: manifest.extension_id.clone(),
+            entry_path,
+            name: manifest.name.clone(),
+            version: manifest.version.clone(),
+            api_version: manifest.api_version.clone(),
+        })
+    }
+}
+
+#[cfg(any())]
+mod native_runtime_experimental {
+    use super::*;
+
+    const NATIVE_RUST_EXTENSION_SCHEMA: &str = "pi.ext.native-rust.v1";
+
+    fn default_native_rust_extension_schema() -> String {
+        NATIVE_RUST_EXTENSION_SCHEMA.to_string()
+    }
+
+    #[derive(Debug, Clone, Deserialize, Default)]
+    #[serde(default)]
+    struct NativeRustExtensionEntrypoint {
+        #[serde(default = "default_native_rust_extension_schema")]
+        schema: String,
+        tools: Vec<Value>,
+        slash_commands: Vec<Value>,
+        shortcuts: Vec<Value>,
+        providers: Vec<Value>,
+        flags: Vec<Value>,
+        event_hooks: Vec<String>,
+        active_tools: Option<Vec<String>>,
+        handlers: NativeRustExtensionHandlers,
+    }
+
+    #[derive(Debug, Clone, Deserialize, Default)]
+    #[serde(default)]
+    struct NativeRustExtensionHandlers {
+        events: HashMap<String, Value>,
+        tools: HashMap<String, Value>,
+        commands: HashMap<String, Value>,
+        shortcuts: HashMap<String, Value>,
+        providers: HashMap<String, NativeRustProviderHandler>,
+    }
+
+    #[derive(Debug, Clone, Deserialize, Default)]
+    #[serde(default)]
+    struct NativeRustProviderHandler {
+        chunks: Vec<Value>,
+    }
+
+    #[derive(Debug, Clone)]
+    struct NativeRustExtensionSnapshot {
+        id: String,
+        name: String,
+        version: String,
+        api_version: String,
+        tools: Vec<Value>,
+        slash_commands: Vec<Value>,
+        shortcuts: Vec<Value>,
+        providers: Vec<Value>,
+        flags: Vec<Value>,
+        event_hooks: Vec<String>,
+        active_tools: Option<Vec<String>>,
+    }
+
+    #[derive(Debug, Clone)]
+    struct NativeRustProviderStreamState {
+        chunks: Vec<Value>,
+        cursor: usize,
+    }
+
+    #[derive(Debug, Default)]
+    struct NativeRustRuntimeState {
+        snapshots: Vec<NativeRustExtensionSnapshot>,
+        handlers_by_extension: HashMap<String, NativeRustExtensionHandlers>,
+        provider_streams: HashMap<String, NativeRustProviderStreamState>,
+        flag_values: HashMap<(String, String), Value>,
+        next_stream_id: u64,
+    }
+
+    fn resolve_native_template_ref<'a>(
+        bindings: &'a HashMap<String, Value>,
+        path: &str,
+    ) -> Option<&'a Value> {
+        let mut segments = path.split('.');
+        let first = segments.next()?;
+        let mut current = bindings.get(first)?;
+        for segment in segments {
+            if segment.is_empty() {
+                return None;
+            }
+            if let Ok(index) = segment.parse::<usize>() {
+                current = current.get(index)?;
+            } else {
+                current = current.get(segment)?;
+            }
+        }
+        Some(current)
+    }
+
+    fn render_native_template_value(template: &Value, bindings: &HashMap<String, Value>) -> Value {
+        match template {
+            Value::String(text) => {
+                if let Some(path) = text.strip_prefix('$') {
+                    resolve_native_template_ref(bindings, path)
+                        .cloned()
+                        .unwrap_or_else(|| template.clone())
+                } else {
+                    template.clone()
+                }
+            }
+            Value::Array(items) => Value::Array(
+                items
+                    .iter()
+                    .map(|item| render_native_template_value(item, bindings))
+                    .collect(),
+            ),
+            Value::Object(map) => {
+                if let Some(path) = map.get("$ref").and_then(Value::as_str) {
+                    resolve_native_template_ref(bindings, path)
+                        .cloned()
+                        .unwrap_or(Value::Null)
+                } else {
+                    let mut out = serde_json::Map::with_capacity(map.len());
+                    for (key, value) in map {
+                        out.insert(key.clone(), render_native_template_value(value, bindings));
+                    }
+                    Value::Object(out)
+                }
+            }
+            _ => template.clone(),
+        }
+    }
+
+    fn normalize_native_provider_specs(
+        providers: &mut Vec<Value>,
+        handlers: &NativeRustExtensionHandlers,
+    ) -> Result<()> {
+        let mut seen = HashSet::new();
+        for provider in providers.iter_mut() {
+            let Some(obj) = provider.as_object_mut() else {
+                continue;
+            };
+            let Some(provider_id) = obj.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            seen.insert(provider_id.to_string());
+            if handlers.providers.contains_key(provider_id) {
+                obj.insert("hasStreamSimple".to_string(), Value::Bool(true));
+                obj.insert("streamSimple".to_string(), Value::Bool(true));
+            }
+        }
+
+        for provider_id in handlers.providers.keys() {
+            if seen.contains(provider_id) {
+                continue;
+            }
+            providers.push(json!({
+                "id": provider_id,
+                "name": provider_id,
+                "streamSimple": true,
+                "hasStreamSimple": true,
+                "models": []
+            }));
+        }
+
+        // Validate all provider specs still parse as objects with IDs.
+        for provider in providers {
+            let Some(provider_id) = provider.get("id").and_then(Value::as_str) else {
+                return Err(Error::validation(
+                    "Native Rust provider spec missing required string field `id`",
+                ));
+            };
+            if provider_id.trim().is_empty() {
+                return Err(Error::validation(
+                    "Native Rust provider spec has empty `id`",
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn load_native_rust_entrypoint(
+        spec: &NativeRustExtensionLoadSpec,
+    ) -> Result<NativeRustExtensionEntrypoint> {
+        let raw = fs::read_to_string(&spec.entry_path).map_err(|err| {
+            Error::validation(format!(
+                "Failed to read native Rust extension entry {}: {err}",
+                spec.entry_path.display()
+            ))
+        })?;
+
+        let mut entrypoint: NativeRustExtensionEntrypoint =
+            serde_json::from_str(&raw).map_err(|err| {
+                Error::validation(format!(
+                    "Failed to parse native Rust extension entry {}: {err}",
+                    spec.entry_path.display()
+                ))
+            })?;
+
+        if entrypoint.schema != NATIVE_RUST_EXTENSION_SCHEMA {
+            return Err(Error::validation(format!(
+                "Unsupported native Rust extension entry schema '{}' in {} (expected '{}')",
+                entrypoint.schema,
+                spec.entry_path.display(),
+                NATIVE_RUST_EXTENSION_SCHEMA
+            )));
+        }
+
+        normalize_native_provider_specs(&mut entrypoint.providers, &entrypoint.handlers)?;
+        Ok(entrypoint)
+    }
+
+    /// Handle to the native Rust extension runtime.
+    ///
+    /// This runtime is a deterministic Rust-native execution path for extension
+    /// hooks/tool handlers/provider streamSimple behavior expressed as structured
+    /// JSON templates in `*.native.json` entry files.
+    #[derive(Clone)]
+    pub struct NativeRustExtensionRuntimeHandle {
+        state: Arc<Mutex<NativeRustRuntimeState>>,
+    }
+
+    impl NativeRustExtensionRuntimeHandle {
+        pub async fn start() -> Result<Self> {
+            Ok(Self {
+                state: Arc::new(Mutex::new(NativeRustRuntimeState::default())),
+            })
+        }
+
+        pub async fn shutdown(&self, _budget: Duration) -> bool {
+            true
+        }
+
+        async fn load_extensions_snapshots(
+            &self,
+            specs: Vec<NativeRustExtensionLoadSpec>,
+        ) -> Result<Vec<NativeRustExtensionSnapshot>> {
+            let mut snapshots = Vec::with_capacity(specs.len());
+            let mut handlers_by_extension = HashMap::with_capacity(specs.len());
+
+            for spec in specs {
+                let entrypoint = load_native_rust_entrypoint(&spec)?;
+                let snapshot = NativeRustExtensionSnapshot {
+                    id: spec.extension_id.clone(),
+                    name: spec.name.clone(),
+                    version: spec.version.clone(),
+                    api_version: spec.api_version.clone(),
+                    tools: entrypoint.tools,
+                    slash_commands: entrypoint.slash_commands,
+                    shortcuts: entrypoint.shortcuts,
+                    providers: entrypoint.providers,
+                    flags: entrypoint.flags,
+                    event_hooks: entrypoint.event_hooks,
+                    active_tools: entrypoint.active_tools,
+                };
+                handlers_by_extension.insert(spec.extension_id, entrypoint.handlers);
+                snapshots.push(snapshot);
+            }
+
+            {
+                let mut guard = self.state.lock().unwrap();
+                guard.snapshots = snapshots.clone();
+                guard.handlers_by_extension = handlers_by_extension;
+                guard.provider_streams.clear();
+                guard.next_stream_id = 0;
+                guard.flag_values.clear();
+            }
+
+            Ok(snapshots)
+        }
+
+        pub async fn get_registered_tools(&self) -> Result<Vec<ExtensionToolDef>> {
+            let guard = self.state.lock().unwrap();
+            let mut defs = Vec::new();
+            for snapshot in &guard.snapshots {
+                defs.extend(parse_extension_tool_defs(&snapshot.tools));
+            }
+            Ok(defs)
+        }
+
+        fn find_handler_template(
+            state: &NativeRustRuntimeState,
+            kind: NativeRustHandlerKind,
+            key: &str,
+        ) -> Option<Value> {
+            for snapshot in &state.snapshots {
+                let Some(handlers) = state.handlers_by_extension.get(&snapshot.id) else {
+                    continue;
+                };
+                let template = match kind {
+                    NativeRustHandlerKind::Event => handlers.events.get(key),
+                    NativeRustHandlerKind::Tool => handlers.tools.get(key),
+                    NativeRustHandlerKind::Command => handlers.commands.get(key),
+                    NativeRustHandlerKind::Shortcut => handlers.shortcuts.get(key),
+                };
+                if let Some(template) = template {
+                    return Some(template.clone());
+                }
+            }
+            None
+        }
+
+        pub async fn dispatch_event(
+            &self,
+            event_name: String,
+            event_payload: Value,
+            ctx_payload: Arc<Value>,
+            _timeout_ms: u64,
+        ) -> Result<Value> {
+            let guard = self.state.lock().unwrap();
+            let template =
+                Self::find_handler_template(&guard, NativeRustHandlerKind::Event, &event_name);
+            let Some(template) = template else {
+                return Ok(Value::Null);
+            };
+
+            let mut bindings = HashMap::new();
+            bindings.insert("event".to_string(), event_payload);
+            bindings.insert("ctx".to_string(), (*ctx_payload).clone());
+            bindings.insert("event_name".to_string(), Value::String(event_name));
+            Ok(render_native_template_value(&template, &bindings))
+        }
+
+        pub async fn dispatch_event_batch(
+            &self,
+            events: Vec<(String, Value)>,
+            ctx_payload: Arc<Value>,
+            timeout_ms: u64,
+        ) -> Result<Vec<Result<Value>>> {
+            let mut out = Vec::with_capacity(events.len());
+            for (event_name, event_payload) in events {
+                out.push(
+                    self.dispatch_event(
+                        event_name,
+                        event_payload,
+                        Arc::clone(&ctx_payload),
+                        timeout_ms,
+                    )
+                    .await,
+                );
+            }
+            Ok(out)
+        }
+
+        pub async fn execute_tool(
+            &self,
+            tool_name: String,
+            tool_call_id: String,
+            input: Value,
+            ctx_payload: Arc<Value>,
+            _timeout_ms: u64,
+        ) -> Result<Value> {
+            let guard = self.state.lock().unwrap();
+            let template =
+                Self::find_handler_template(&guard, NativeRustHandlerKind::Tool, &tool_name)
+                    .ok_or_else(|| {
+                        Error::extension(format!(
+                            "Native Rust extension tool handler not found for '{}'",
+                            tool_name
+                        ))
+                    })?;
+            let mut bindings = HashMap::new();
+            bindings.insert("tool_name".to_string(), Value::String(tool_name));
+            bindings.insert("tool_call_id".to_string(), Value::String(tool_call_id));
+            bindings.insert("input".to_string(), input);
+            bindings.insert("ctx".to_string(), (*ctx_payload).clone());
+            Ok(render_native_template_value(&template, &bindings))
+        }
+
+        pub async fn execute_command(
+            &self,
+            command_name: String,
+            args: String,
+            ctx_payload: Arc<Value>,
+            _timeout_ms: u64,
+        ) -> Result<Value> {
+            let guard = self.state.lock().unwrap();
+            let template =
+                Self::find_handler_template(&guard, NativeRustHandlerKind::Command, &command_name)
+                    .ok_or_else(|| {
+                        Error::extension(format!(
+                            "Native Rust extension command handler not found for '{}'",
+                            command_name
+                        ))
+                    })?;
+            let mut bindings = HashMap::new();
+            bindings.insert("command_name".to_string(), Value::String(command_name));
+            bindings.insert("args".to_string(), Value::String(args));
+            bindings.insert("ctx".to_string(), (*ctx_payload).clone());
+            Ok(render_native_template_value(&template, &bindings))
+        }
+
+        pub async fn execute_shortcut(
+            &self,
+            key_id: String,
+            ctx_payload: Arc<Value>,
+            _timeout_ms: u64,
+        ) -> Result<Value> {
+            let guard = self.state.lock().unwrap();
+            let template =
+                Self::find_handler_template(&guard, NativeRustHandlerKind::Shortcut, &key_id)
+                    .ok_or_else(|| {
+                        Error::extension(format!(
+                            "Native Rust extension shortcut handler not found for '{}'",
+                            key_id
+                        ))
+                    })?;
+            let mut bindings = HashMap::new();
+            bindings.insert("key_id".to_string(), Value::String(key_id));
+            bindings.insert("ctx".to_string(), (*ctx_payload).clone());
+            Ok(render_native_template_value(&template, &bindings))
+        }
+
+        pub async fn set_flag_value(
+            &self,
+            extension_id: String,
+            flag_name: String,
+            value: Value,
+        ) -> Result<()> {
+            let mut guard = self.state.lock().unwrap();
+            guard.flag_values.insert((extension_id, flag_name), value);
+            Ok(())
+        }
+
+        pub async fn drain_repair_events(&self) -> Vec<ExtensionRepairEvent> {
+            Vec::new()
+        }
+
+        pub async fn provider_stream_simple_start(
+            &self,
+            provider_id: String,
+            model: Value,
+            context: Value,
+            options: Value,
+            _timeout_ms: u64,
+        ) -> Result<String> {
+            let mut guard = self.state.lock().unwrap();
+            let mut chunks = None;
+            for snapshot in &guard.snapshots {
+                let Some(handlers) = guard.handlers_by_extension.get(&snapshot.id) else {
+                    continue;
+                };
+                if let Some(provider) = handlers.providers.get(&provider_id) {
+                    chunks = Some(provider.chunks.clone());
+                    break;
+                }
+            }
+
+            let templates = chunks.ok_or_else(|| {
+                Error::extension(format!(
+                    "Native Rust provider '{}' has no streamSimple handler",
+                    provider_id
+                ))
+            })?;
+
+            let mut bindings = HashMap::new();
+            bindings.insert("provider_id".to_string(), Value::String(provider_id));
+            bindings.insert("model".to_string(), model);
+            bindings.insert("context".to_string(), context);
+            bindings.insert("options".to_string(), options);
+            let rendered_chunks = templates
+                .iter()
+                .map(|chunk| render_native_template_value(chunk, &bindings))
+                .collect::<Vec<_>>();
+
+            guard.next_stream_id = guard.next_stream_id.saturating_add(1);
+            let stream_id = format!("native-rust-stream-{}", guard.next_stream_id);
+            guard.provider_streams.insert(
+                stream_id.clone(),
+                NativeRustProviderStreamState {
+                    chunks: rendered_chunks,
+                    cursor: 0,
+                },
+            );
+            Ok(stream_id)
+        }
+
+        pub async fn provider_stream_simple_next(
+            &self,
+            stream_id: String,
+            _timeout_ms: u64,
+        ) -> Result<Option<Value>> {
+            let mut guard = self.state.lock().unwrap();
+            let done = {
+                let Some(stream) = guard.provider_streams.get_mut(&stream_id) else {
+                    return Err(Error::extension(format!(
+                        "Native Rust provider stream not found: {stream_id}"
+                    )));
+                };
+                if stream.cursor >= stream.chunks.len() {
+                    true
+                } else {
+                    let value = stream.chunks[stream.cursor].clone();
+                    stream.cursor = stream.cursor.saturating_add(1);
+                    return Ok(Some(value));
+                }
+            };
+
+            if done {
+                guard.provider_streams.remove(&stream_id);
+            }
+            Ok(None)
+        }
+
+        pub async fn provider_stream_simple_cancel(
+            &self,
+            stream_id: String,
+            _timeout_ms: u64,
+        ) -> Result<()> {
+            let mut guard = self.state.lock().unwrap();
+            guard.provider_streams.remove(&stream_id);
+            Ok(())
+        }
+
+        pub fn provider_stream_simple_cancel_best_effort(&self, stream_id: String) {
+            let mut guard = self.state.lock().unwrap();
+            guard.provider_streams.remove(&stream_id);
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum NativeRustHandlerKind {
+        Event,
+        Tool,
+        Command,
+        Shortcut,
+    }
+
+    /// Runtime-agnostic extension runtime handle.
+    #[derive(Clone)]
+    pub enum ExtensionRuntimeHandle {
+        Js(JsExtensionRuntimeHandle),
+        NativeRust(NativeRustExtensionRuntimeHandle),
+    }
+
+    impl From<JsExtensionRuntimeHandle> for ExtensionRuntimeHandle {
+        fn from(value: JsExtensionRuntimeHandle) -> Self {
+            Self::Js(value)
+        }
+    }
+
+    impl From<NativeRustExtensionRuntimeHandle> for ExtensionRuntimeHandle {
+        fn from(value: NativeRustExtensionRuntimeHandle) -> Self {
+            Self::NativeRust(value)
+        }
+    }
+
+    impl ExtensionRuntimeHandle {
+        pub const fn runtime_kind(&self) -> ExtensionRuntime {
+            match self {
+                Self::Js(_) => ExtensionRuntime::Js,
+                Self::NativeRust(_) => ExtensionRuntime::NativeRust,
+            }
+        }
+
+        pub const fn runtime_name(&self) -> &'static str {
+            match self {
+                Self::Js(_) => "quickjs",
+                Self::NativeRust(_) => "native-rust",
+            }
+        }
+
+        async fn load_js_extensions_snapshots(
+            &self,
+            specs: Vec<JsExtensionLoadSpec>,
+        ) -> Result<Vec<JsExtensionSnapshot>> {
+            match self {
+                Self::Js(runtime) => runtime.load_extensions_snapshots(specs).await,
+                Self::NativeRust(_) => Err(Error::extension(
+                    "Native-rust runtime does not support JS extension load specs".to_string(),
+                )),
+            }
+        }
+
+        async fn load_native_extensions_snapshots(
+            &self,
+            specs: Vec<NativeRustExtensionLoadSpec>,
+        ) -> Result<Vec<JsExtensionSnapshot>> {
+            match self {
+                Self::Js(_) => Err(Error::extension(
+                    "QuickJS runtime does not support native-rust extension load specs".to_string(),
+                )),
+                Self::NativeRust(runtime) => {
+                    runtime
+                        .load_extensions_snapshots(specs)
+                        .await
+                        .map(|snapshots| {
+                            snapshots
+                                .into_iter()
+                                .map(|snapshot| JsExtensionSnapshot {
+                                    id: snapshot.id,
+                                    name: snapshot.name,
+                                    version: snapshot.version,
+                                    api_version: snapshot.api_version,
+                                    tools: snapshot.tools,
+                                    slash_commands: snapshot.slash_commands,
+                                    shortcuts: snapshot.shortcuts,
+                                    providers: snapshot.providers,
+                                    flags: snapshot.flags,
+                                    event_hooks: snapshot.event_hooks,
+                                    active_tools: snapshot.active_tools,
+                                })
+                                .collect()
+                        })
+                }
+            }
+        }
+
+        pub async fn shutdown(&self, budget: Duration) -> bool {
+            match self {
+                Self::Js(runtime) => runtime.shutdown(budget).await,
+                Self::NativeRust(runtime) => runtime.shutdown(budget).await,
+            }
+        }
+
+        pub async fn get_registered_tools(&self) -> Result<Vec<ExtensionToolDef>> {
+            match self {
+                Self::Js(runtime) => runtime.get_registered_tools().await,
+                Self::NativeRust(runtime) => runtime.get_registered_tools().await,
+            }
+        }
+
+        pub async fn dispatch_event(
+            &self,
+            event_name: String,
+            event_payload: Value,
+            ctx_payload: Arc<Value>,
+            timeout_ms: u64,
+        ) -> Result<Value> {
+            match self {
+                Self::Js(runtime) => {
+                    runtime
+                        .dispatch_event(event_name, event_payload, ctx_payload, timeout_ms)
+                        .await
+                }
+                Self::NativeRust(runtime) => {
+                    runtime
+                        .dispatch_event(event_name, event_payload, ctx_payload, timeout_ms)
+                        .await
+                }
+            }
+        }
+
+        pub async fn dispatch_event_batch(
+            &self,
+            events: Vec<(String, Value)>,
+            ctx_payload: Arc<Value>,
+            timeout_ms: u64,
+        ) -> Result<Vec<Result<Value>>> {
+            match self {
+                Self::Js(runtime) => {
+                    runtime
+                        .dispatch_event_batch(events, ctx_payload, timeout_ms)
+                        .await
+                }
+                Self::NativeRust(runtime) => {
+                    runtime
+                        .dispatch_event_batch(events, ctx_payload, timeout_ms)
+                        .await
+                }
+            }
+        }
+
+        pub async fn execute_tool(
+            &self,
+            tool_name: String,
+            tool_call_id: String,
+            input: Value,
+            ctx_payload: Arc<Value>,
+            timeout_ms: u64,
+        ) -> Result<Value> {
+            match self {
+                Self::Js(runtime) => {
+                    runtime
+                        .execute_tool(tool_name, tool_call_id, input, ctx_payload, timeout_ms)
+                        .await
+                }
+                Self::NativeRust(runtime) => {
+                    runtime
+                        .execute_tool(tool_name, tool_call_id, input, ctx_payload, timeout_ms)
+                        .await
+                }
+            }
+        }
+
+        pub async fn execute_command(
+            &self,
+            command_name: String,
+            args: String,
+            ctx_payload: Arc<Value>,
+            timeout_ms: u64,
+        ) -> Result<Value> {
+            match self {
+                Self::Js(runtime) => {
+                    runtime
+                        .execute_command(command_name, args, ctx_payload, timeout_ms)
+                        .await
+                }
+                Self::NativeRust(runtime) => {
+                    runtime
+                        .execute_command(command_name, args, ctx_payload, timeout_ms)
+                        .await
+                }
+            }
+        }
+
+        pub async fn execute_shortcut(
+            &self,
+            key_id: String,
+            ctx_payload: Arc<Value>,
+            timeout_ms: u64,
+        ) -> Result<Value> {
+            match self {
+                Self::Js(runtime) => {
+                    runtime
+                        .execute_shortcut(key_id, ctx_payload, timeout_ms)
+                        .await
+                }
+                Self::NativeRust(runtime) => {
+                    runtime
+                        .execute_shortcut(key_id, ctx_payload, timeout_ms)
+                        .await
+                }
+            }
+        }
+
+        pub async fn set_flag_value(
+            &self,
+            extension_id: String,
+            flag_name: String,
+            value: Value,
+        ) -> Result<()> {
+            match self {
+                Self::Js(runtime) => runtime.set_flag_value(extension_id, flag_name, value).await,
+                Self::NativeRust(runtime) => {
+                    runtime.set_flag_value(extension_id, flag_name, value).await
+                }
+            }
+        }
+
+        pub async fn provider_stream_simple_start(
+            &self,
+            provider_id: String,
+            model: Value,
+            context: Value,
+            options: Value,
+            timeout_ms: u64,
+        ) -> Result<String> {
+            match self {
+                Self::Js(runtime) => {
+                    runtime
+                        .provider_stream_simple_start(
+                            provider_id,
+                            model,
+                            context,
+                            options,
+                            timeout_ms,
+                        )
+                        .await
+                }
+                Self::NativeRust(runtime) => {
+                    runtime
+                        .provider_stream_simple_start(
+                            provider_id,
+                            model,
+                            context,
+                            options,
+                            timeout_ms,
+                        )
+                        .await
+                }
+            }
+        }
+
+        pub async fn provider_stream_simple_next(
+            &self,
+            stream_id: String,
+            timeout_ms: u64,
+        ) -> Result<Option<Value>> {
+            match self {
+                Self::Js(runtime) => {
+                    runtime
+                        .provider_stream_simple_next(stream_id, timeout_ms)
+                        .await
+                }
+                Self::NativeRust(runtime) => {
+                    runtime
+                        .provider_stream_simple_next(stream_id, timeout_ms)
+                        .await
+                }
+            }
+        }
+
+        pub async fn provider_stream_simple_cancel(
+            &self,
+            stream_id: String,
+            timeout_ms: u64,
+        ) -> Result<()> {
+            match self {
+                Self::Js(runtime) => {
+                    runtime
+                        .provider_stream_simple_cancel(stream_id, timeout_ms)
+                        .await
+                }
+                Self::NativeRust(runtime) => {
+                    runtime
+                        .provider_stream_simple_cancel(stream_id, timeout_ms)
+                        .await
+                }
+            }
+        }
+
+        pub fn provider_stream_simple_cancel_best_effort(&self, stream_id: String) {
+            match self {
+                Self::Js(runtime) => runtime.provider_stream_simple_cancel_best_effort(stream_id),
+                Self::NativeRust(runtime) => {
+                    runtime.provider_stream_simple_cancel_best_effort(stream_id);
+                }
+            }
+        }
+
+        pub async fn drain_repair_events(&self) -> Vec<ExtensionRepairEvent> {
+            match self {
+                Self::Js(runtime) => runtime.drain_repair_events().await,
+                Self::NativeRust(runtime) => runtime.drain_repair_events().await,
+            }
+        }
+
+        pub fn as_js(&self) -> Option<JsExtensionRuntimeHandle> {
+            match self {
+                Self::Js(runtime) => Some(runtime.clone()),
+                Self::NativeRust(_) => None,
+            }
+        }
+
+        pub fn as_native_rust(&self) -> Option<NativeRustExtensionRuntimeHandle> {
+            match self {
+                Self::NativeRust(runtime) => Some(runtime.clone()),
+                Self::Js(_) => None,
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ExtensionRuntimeEngineSelection {
+        QuickJs,
+        NativeRust,
+    }
+
+    impl ExtensionRuntimeEngineSelection {
+        pub const ENV_VAR: &'static str = "PI_EXTENSION_RUNTIME_ENGINE";
+
+        pub const fn as_str(self) -> &'static str {
+            match self {
+                Self::QuickJs => "quickjs",
+                Self::NativeRust => "native-rust",
+            }
+        }
+
+        pub fn from_env_value(value: &str) -> Self {
+            if matches!(value.trim().to_ascii_lowercase().as_str(), "quickjs" | "js") {
+                Self::QuickJs
+            } else {
+                Self::NativeRust
+            }
+        }
+
+        #[must_use]
+        pub fn from_env() -> Self {
+            let value = std::env::var(Self::ENV_VAR).unwrap_or_default();
+            Self::from_env_value(&value)
+        }
     }
 }
 
@@ -14644,14 +15642,14 @@ enum JsRuntimeCommand {
     DispatchEvent {
         event_name: String,
         event_payload: Value,
-        ctx_payload: Value,
+        ctx_payload: Arc<Value>,
         timeout_ms: u64,
         reply: oneshot::Sender<Result<Value>>,
     },
     /// Dispatch multiple events in a single JS bridge call with shared context.
     DispatchEventBatch {
         events: Vec<(String, Value)>,
-        ctx_payload: Value,
+        ctx_payload: Arc<Value>,
         timeout_ms: u64,
         reply: oneshot::Sender<Result<Vec<Result<Value>>>>,
     },
@@ -14659,20 +15657,20 @@ enum JsRuntimeCommand {
         tool_name: String,
         tool_call_id: String,
         input: Value,
-        ctx_payload: Value,
+        ctx_payload: Arc<Value>,
         timeout_ms: u64,
         reply: oneshot::Sender<Result<Value>>,
     },
     ExecuteCommand {
         command_name: String,
         args: String,
-        ctx_payload: Value,
+        ctx_payload: Arc<Value>,
         timeout_ms: u64,
         reply: oneshot::Sender<Result<Value>>,
     },
     ExecuteShortcut {
         key_id: String,
-        ctx_payload: Value,
+        ctx_payload: Arc<Value>,
         timeout_ms: u64,
         reply: oneshot::Sender<Result<Value>>,
     },
@@ -14959,7 +15957,7 @@ impl JsExtensionRuntimeHandle {
                                 &host,
                                 &event_name,
                                 event_payload,
-                                ctx_payload,
+                                ctx_payload.as_ref(),
                                 timeout_ms,
                             )
                             .await;
@@ -14975,7 +15973,7 @@ impl JsExtensionRuntimeHandle {
                                 &js_runtime,
                                 &host,
                                 events,
-                                ctx_payload,
+                                ctx_payload.as_ref(),
                                 timeout_ms,
                             )
                             .await;
@@ -14995,7 +15993,7 @@ impl JsExtensionRuntimeHandle {
                                 &tool_name,
                                 &tool_call_id,
                                 input,
-                                ctx_payload,
+                                ctx_payload.as_ref(),
                                 timeout_ms,
                             )
                             .await;
@@ -15013,7 +16011,7 @@ impl JsExtensionRuntimeHandle {
                                 &host,
                                 &command_name,
                                 &args,
-                                ctx_payload,
+                                ctx_payload.as_ref(),
                                 timeout_ms,
                             )
                             .await;
@@ -15029,7 +16027,7 @@ impl JsExtensionRuntimeHandle {
                                 &js_runtime,
                                 &host,
                                 &key_id,
-                                ctx_payload,
+                                ctx_payload.as_ref(),
                                 timeout_ms,
                             )
                             .await;
@@ -15271,7 +16269,7 @@ impl JsExtensionRuntimeHandle {
         &self,
         event_name: String,
         event_payload: Value,
-        ctx_payload: Value,
+        ctx_payload: Arc<Value>,
         timeout_ms: u64,
     ) -> Result<Value> {
         let cx = cx_with_deadline(timeout_ms);
@@ -15307,7 +16305,7 @@ impl JsExtensionRuntimeHandle {
     pub async fn dispatch_event_batch(
         &self,
         events: Vec<(String, Value)>,
-        ctx_payload: Value,
+        ctx_payload: Arc<Value>,
         timeout_ms: u64,
     ) -> Result<Vec<Result<Value>>> {
         if events.is_empty() {
@@ -15346,7 +16344,7 @@ impl JsExtensionRuntimeHandle {
         tool_name: String,
         tool_call_id: String,
         input: Value,
-        ctx_payload: Value,
+        ctx_payload: Arc<Value>,
         timeout_ms: u64,
     ) -> Result<Value> {
         let cx = cx_with_deadline(timeout_ms);
@@ -15383,7 +16381,7 @@ impl JsExtensionRuntimeHandle {
         &self,
         command_name: String,
         args: String,
-        ctx_payload: Value,
+        ctx_payload: Arc<Value>,
         timeout_ms: u64,
     ) -> Result<Value> {
         let cx = cx_with_deadline(timeout_ms);
@@ -15418,7 +16416,7 @@ impl JsExtensionRuntimeHandle {
     pub async fn execute_shortcut(
         &self,
         key_id: String,
-        ctx_payload: Value,
+        ctx_payload: Arc<Value>,
         timeout_ms: u64,
     ) -> Result<Value> {
         let cx = cx_with_deadline(timeout_ms);
@@ -15656,6 +16654,1113 @@ impl JsExtensionRuntimeHandle {
             });
     }
 }
+
+mod native_runtime_duplicate_scaffold {
+    use super::*;
+
+    #[derive(Debug, Clone, Deserialize, Default)]
+    #[serde(rename_all = "camelCase")]
+    struct NativeRustExtensionDescriptor {
+        #[serde(default)]
+        id: String,
+        #[serde(default)]
+        name: String,
+        #[serde(default)]
+        version: String,
+        #[serde(default)]
+        api_version: String,
+        #[serde(default)]
+        tools: Vec<Value>,
+        #[serde(default)]
+        slash_commands: Vec<Value>,
+        #[serde(default)]
+        shortcuts: Vec<Value>,
+        #[serde(default)]
+        providers: Vec<Value>,
+        #[serde(default)]
+        flags: Vec<Value>,
+        #[serde(default)]
+        event_hooks: Vec<String>,
+        #[serde(default)]
+        active_tools: Option<Vec<String>>,
+        #[serde(default)]
+        event_responses: HashMap<String, Value>,
+        #[serde(default)]
+        tool_outputs: HashMap<String, Value>,
+        #[serde(default)]
+        command_outputs: HashMap<String, Value>,
+        #[serde(default)]
+        shortcut_outputs: HashMap<String, Value>,
+        #[serde(default)]
+        provider_streams: HashMap<String, Vec<Value>>,
+    }
+
+    #[derive(Debug, Clone)]
+    struct NativeRustLoadedExtension {
+        snapshot: JsExtensionSnapshot,
+        event_responses: HashMap<String, Value>,
+        tool_outputs: HashMap<String, Value>,
+        command_outputs: HashMap<String, Value>,
+        shortcut_outputs: HashMap<String, Value>,
+        provider_streams: HashMap<String, Vec<Value>>,
+    }
+
+    #[derive(Debug, Default)]
+    struct NativeRustRuntimeState {
+        extensions: Vec<NativeRustLoadedExtension>,
+        streams: HashMap<String, VecDeque<Value>>,
+        next_stream_id: u64,
+        flags: HashMap<(String, String), Value>,
+        repair_events: Vec<ExtensionRepairEvent>,
+    }
+
+    impl NativeRustRuntimeState {
+        fn find_tool_extension(&self, tool_name: &str) -> Option<&NativeRustLoadedExtension> {
+            self.extensions.iter().find(|ext| {
+                ext.snapshot.tools.iter().any(|tool| {
+                    tool.get("name")
+                        .and_then(Value::as_str)
+                        .is_some_and(|name| name == tool_name)
+                })
+            })
+        }
+
+        fn find_command_extension(&self, command_name: &str) -> Option<&NativeRustLoadedExtension> {
+            self.extensions.iter().find(|ext| {
+                ext.snapshot.slash_commands.iter().any(|cmd| {
+                    extract_slash_command_name(cmd).is_some_and(|name| name == command_name)
+                })
+            })
+        }
+
+        fn find_shortcut_extension(&self, key_id: &str) -> Option<&NativeRustLoadedExtension> {
+            self.extensions.iter().find(|ext| {
+                ext.snapshot.shortcuts.iter().any(|shortcut| {
+                    shortcut
+                        .get("key_id")
+                        .and_then(Value::as_str)
+                        .is_some_and(|value| value == key_id)
+                })
+            })
+        }
+
+        fn dispatch_event(
+            &self,
+            event_name: &str,
+            event_payload: &Value,
+            ctx_payload: &Value,
+        ) -> Value {
+            let mut response = Value::Null;
+            for extension in &self.extensions {
+                if !extension
+                    .snapshot
+                    .event_hooks
+                    .iter()
+                    .any(|hook| hook == event_name)
+                {
+                    continue;
+                }
+
+                if let Some(explicit) = extension.event_responses.get(event_name) {
+                    response = explicit.clone();
+                    continue;
+                }
+
+                response = json!({
+                    "type": event_name,
+                    "nativeRuntime": true,
+                    "extensionId": extension.snapshot.id,
+                    "event": event_payload,
+                    "ctx": ctx_payload,
+                });
+            }
+            response
+        }
+    }
+
+    #[derive(Debug)]
+    enum NativeRustRuntimeCommand {
+        LoadExtensions {
+            specs: Vec<NativeRustExtensionLoadSpec>,
+            reply: oneshot::Sender<Result<Vec<JsExtensionSnapshot>>>,
+        },
+        GetRegisteredTools {
+            reply: oneshot::Sender<Result<Vec<ExtensionToolDef>>>,
+        },
+        PumpOnce {
+            reply: oneshot::Sender<Result<bool>>,
+        },
+        DispatchEvent {
+            event_name: String,
+            event_payload: Value,
+            ctx_payload: Arc<Value>,
+            reply: oneshot::Sender<Result<Value>>,
+        },
+        DispatchEventBatch {
+            events: Vec<(String, Value)>,
+            ctx_payload: Arc<Value>,
+            reply: oneshot::Sender<Result<Vec<Result<Value>>>>,
+        },
+        ExecuteTool {
+            tool_name: String,
+            tool_call_id: String,
+            input: Value,
+            reply: oneshot::Sender<Result<Value>>,
+        },
+        ExecuteCommand {
+            command_name: String,
+            args: String,
+            reply: oneshot::Sender<Result<Value>>,
+        },
+        ExecuteShortcut {
+            key_id: String,
+            reply: oneshot::Sender<Result<Value>>,
+        },
+        ProviderStreamSimpleStart {
+            provider_id: String,
+            model: Value,
+            context: Value,
+            options: Value,
+            reply: oneshot::Sender<Result<String>>,
+        },
+        ProviderStreamSimpleNext {
+            stream_id: String,
+            reply: oneshot::Sender<Result<Option<Value>>>,
+        },
+        ProviderStreamSimpleCancel {
+            stream_id: String,
+            reply: Option<oneshot::Sender<Result<()>>>,
+        },
+        SetFlagValue {
+            extension_id: String,
+            flag_name: String,
+            value: Value,
+            reply: oneshot::Sender<Result<()>>,
+        },
+        DrainRepairEvents {
+            reply: oneshot::Sender<Vec<ExtensionRepairEvent>>,
+        },
+        ResetTransientState {
+            reply: oneshot::Sender<Result<()>>,
+        },
+        Shutdown,
+    }
+
+    #[derive(Clone)]
+    pub struct NativeRustExtensionRuntimeHandle {
+        sender: mpsc::Sender<NativeRustRuntimeCommand>,
+        exit_signal: Arc<Mutex<Option<oneshot::Receiver<()>>>>,
+    }
+
+    impl NativeRustExtensionRuntimeHandle {
+        #[allow(clippy::too_many_lines, clippy::option_if_let_else)]
+        pub async fn start() -> Result<Self> {
+            let (tx, rx) = mpsc::channel(64);
+            let (init_tx, init_rx) = oneshot::channel::<Result<()>>();
+            let (exit_tx, exit_rx) = oneshot::channel();
+
+            thread::spawn(move || {
+                let runtime = RuntimeBuilder::current_thread()
+                    .build()
+                    .expect("native extension runtime build");
+                runtime.block_on(async move {
+                let cx = Cx::for_request();
+                let _ = init_tx.send(&cx, Ok(()));
+                let mut state = NativeRustRuntimeState::default();
+                while let Ok(command) = rx.recv(&cx).await {
+                    match command {
+                        NativeRustRuntimeCommand::Shutdown => break,
+                        NativeRustRuntimeCommand::LoadExtensions { specs, reply } => {
+                            let result = load_native_extensions_from_specs(&specs).map(|loaded| {
+                                let snapshots = loaded
+                                    .iter()
+                                    .map(|extension| extension.snapshot.clone())
+                                    .collect::<Vec<_>>();
+                                state.extensions = loaded;
+                                state.streams.clear();
+                                state.next_stream_id = 0;
+                                snapshots
+                            });
+                            let _ = reply.send(&cx, result);
+                        }
+                        NativeRustRuntimeCommand::GetRegisteredTools { reply } => {
+                            let defs = state
+                                .extensions
+                                .iter()
+                                .flat_map(|extension| parse_extension_tool_defs(&extension.snapshot.tools))
+                                .collect::<Vec<_>>();
+                            let _ = reply.send(&cx, Ok(defs));
+                        }
+                        NativeRustRuntimeCommand::PumpOnce { reply } => {
+                            let _ = reply.send(&cx, Ok(false));
+                        }
+                        NativeRustRuntimeCommand::DispatchEvent {
+                            event_name,
+                            event_payload,
+                            ctx_payload,
+                            reply,
+                        } => {
+                            let response =
+                                state.dispatch_event(&event_name, &event_payload, ctx_payload.as_ref());
+                            let _ = reply.send(&cx, Ok(response));
+                        }
+                        NativeRustRuntimeCommand::DispatchEventBatch {
+                            events,
+                            ctx_payload,
+                            reply,
+                        } => {
+                            let mut out = Vec::with_capacity(events.len());
+                            for (event_name, payload) in events {
+                                out.push(Ok(state.dispatch_event(
+                                    &event_name,
+                                    &payload,
+                                    ctx_payload.as_ref(),
+                                )));
+                            }
+                            let _ = reply.send(&cx, Ok(out));
+                        }
+                        NativeRustRuntimeCommand::ExecuteTool {
+                            tool_name,
+                            tool_call_id,
+                            input,
+                            reply,
+                        } => {
+                            let result = if let Some(extension) = state.find_tool_extension(&tool_name)
+                            {
+                                if let Some(value) = extension.tool_outputs.get(&tool_name) {
+                                    Ok(value.clone())
+                                } else {
+                                    Ok(json!({
+                                        "content": [
+                                            {
+                                                "type": "text",
+                                                "text": format!("native-rust tool `{tool_name}` executed")
+                                            }
+                                        ],
+                                        "details": {
+                                            "runtime": "native-rust",
+                                            "toolName": tool_name,
+                                            "toolCallId": tool_call_id,
+                                            "input": input
+                                        }
+                                    }))
+                                }
+                            } else {
+                                Err(Error::extension(format!(
+                                    "native-rust tool `{tool_name}` is not registered"
+                                )))
+                            };
+                            let _ = reply.send(&cx, result);
+                        }
+                        NativeRustRuntimeCommand::ExecuteCommand {
+                            command_name,
+                            args,
+                            reply,
+                        } => {
+                            let result =
+                                if let Some(extension) = state.find_command_extension(&command_name) {
+                                    if let Some(value) =
+                                        extension.command_outputs.get(&command_name)
+                                    {
+                                        Ok(value.clone())
+                                    } else {
+                                        Ok(json!({
+                                            "runtime": "native-rust",
+                                            "command": command_name,
+                                            "args": args,
+                                        }))
+                                    }
+                                } else {
+                                    Err(Error::extension(format!(
+                                        "native-rust command `{command_name}` is not registered"
+                                    )))
+                                };
+                            let _ = reply.send(&cx, result);
+                        }
+                        NativeRustRuntimeCommand::ExecuteShortcut { key_id, reply } => {
+                            let result = if let Some(extension) = state.find_shortcut_extension(&key_id)
+                            {
+                                if let Some(value) = extension.shortcut_outputs.get(&key_id) {
+                                    Ok(value.clone())
+                                } else {
+                                    Ok(json!({
+                                        "runtime": "native-rust",
+                                        "shortcut": key_id,
+                                    }))
+                                }
+                            } else {
+                                Err(Error::extension(format!(
+                                    "native-rust shortcut `{key_id}` is not registered"
+                                )))
+                            };
+                            let _ = reply.send(&cx, result);
+                        }
+                        NativeRustRuntimeCommand::ProviderStreamSimpleStart {
+                            provider_id,
+                            model,
+                            context,
+                            options,
+                            reply,
+                        } => {
+                            let mut chunks = None;
+                            for extension in &state.extensions {
+                                if let Some(stream) = extension.provider_streams.get(&provider_id) {
+                                    chunks = Some(stream.clone());
+                                    break;
+                                }
+                            }
+
+                            let Some(stream_chunks) = chunks else {
+                                let _ = reply.send(
+                                    &cx,
+                                    Err(Error::extension(format!(
+                                        "native-rust provider `{provider_id}` has no streamSimple handler"
+                                    ))),
+                                );
+                                continue;
+                            };
+
+                            state.next_stream_id = state.next_stream_id.saturating_add(1);
+                            let stream_id = format!("native-stream-{}", state.next_stream_id);
+                            state.streams.insert(
+                                stream_id.clone(),
+                                stream_chunks.into_iter().collect::<VecDeque<_>>(),
+                            );
+                            tracing::debug!(
+                                event = "native_extension_runtime.provider_stream.start",
+                                provider_id = %provider_id,
+                                stream_id = %stream_id,
+                                model = %model,
+                                context = %context,
+                                options = %options,
+                                "Started native-rust streamSimple stream"
+                            );
+                            let _ = reply.send(&cx, Ok(stream_id));
+                        }
+                        NativeRustRuntimeCommand::ProviderStreamSimpleNext { stream_id, reply } => {
+                            let value = state
+                                .streams
+                                .get_mut(&stream_id)
+                                .and_then(VecDeque::pop_front);
+                            let _ = reply.send(&cx, Ok(value));
+                        }
+                        NativeRustRuntimeCommand::ProviderStreamSimpleCancel { stream_id, reply } => {
+                            state.streams.remove(&stream_id);
+                            if let Some(reply) = reply {
+                                let _ = reply.send(&cx, Ok(()));
+                            }
+                        }
+                        NativeRustRuntimeCommand::SetFlagValue {
+                            extension_id,
+                            flag_name,
+                            value,
+                            reply,
+                        } => {
+                            state.flags.insert((extension_id, flag_name), value);
+                            let _ = reply.send(&cx, Ok(()));
+                        }
+                        NativeRustRuntimeCommand::DrainRepairEvents { reply } => {
+                            let mut drained = Vec::new();
+                            std::mem::swap(&mut drained, &mut state.repair_events);
+                            let _ = reply.send(&cx, drained);
+                        }
+                        NativeRustRuntimeCommand::ResetTransientState { reply } => {
+                            state.streams.clear();
+                            state.flags.clear();
+                            state.repair_events.clear();
+                            let _ = reply.send(&cx, Ok(()));
+                        }
+                    }
+                }
+
+                let _ = exit_tx.send(&cx, ());
+                tracing::info!(
+                    event = "native_extension_runtime.exit",
+                    "Native-rust extension runtime thread exiting"
+                );
+            });
+            });
+
+            let cx = Cx::for_request();
+            init_rx
+                .recv(&cx)
+                .await
+                .map_err(|_| Error::extension("native-rust extension runtime init cancelled"))??;
+
+            Ok(Self {
+                sender: tx,
+                exit_signal: Arc::new(Mutex::new(Some(exit_rx))),
+            })
+        }
+
+        pub async fn shutdown(&self, budget: Duration) -> bool {
+            let cx = Cx::for_request();
+            let _ = self
+                .sender
+                .send(&cx, NativeRustRuntimeCommand::Shutdown)
+                .await;
+
+            let exit_rx = {
+                let Ok(mut guard) = self.exit_signal.lock() else {
+                    return false;
+                };
+                guard.take()
+            };
+            let Some(rx) = exit_rx else {
+                return true;
+            };
+
+            timeout(wall_now(), budget, rx.recv(&cx)).await.is_ok()
+        }
+
+        async fn send_with_timeout<T>(
+            &self,
+            timeout_ms: u64,
+            command_builder: impl FnOnce(oneshot::Sender<Result<T>>) -> NativeRustRuntimeCommand,
+            timeout_label: &str,
+        ) -> Result<T> {
+            let cx = cx_with_deadline(timeout_ms);
+            let (reply_tx, reply_rx) = oneshot::channel();
+            let command = command_builder(reply_tx);
+            let fut = async move {
+                self.sender.send(&cx, command).await.map_err(|_| {
+                    Error::extension("native-rust extension runtime channel closed")
+                })?;
+                reply_rx
+                    .recv(&cx)
+                    .await
+                    .map_err(|_| Error::extension("native-rust extension runtime task cancelled"))?
+            };
+
+            timeout(wall_now(), Duration::from_millis(timeout_ms), Box::pin(fut))
+                .await
+                .unwrap_or_else(|_| Err(Error::extension(timeout_label.to_string())))
+        }
+
+        async fn load_extensions_snapshots(
+            &self,
+            specs: Vec<NativeRustExtensionLoadSpec>,
+        ) -> Result<Vec<JsExtensionSnapshot>> {
+            let timeout_ms = EXTENSION_LOAD_BUDGET_MS;
+            self.send_with_timeout(
+                timeout_ms,
+                |reply| NativeRustRuntimeCommand::LoadExtensions { specs, reply },
+                &format!("native-rust extension runtime load timed out after {timeout_ms}ms"),
+            )
+            .await
+        }
+
+        pub async fn get_registered_tools(&self) -> Result<Vec<ExtensionToolDef>> {
+            let timeout_ms = EXTENSION_QUERY_BUDGET_MS;
+            self.send_with_timeout(
+                timeout_ms,
+                |reply| NativeRustRuntimeCommand::GetRegisteredTools { reply },
+                &format!(
+                    "native-rust extension runtime tools query timed out after {timeout_ms}ms"
+                ),
+            )
+            .await
+        }
+
+        pub async fn pump_once(&self) -> Result<bool> {
+            let timeout_ms = EXTENSION_QUERY_BUDGET_MS;
+            self.send_with_timeout(
+                timeout_ms,
+                |reply| NativeRustRuntimeCommand::PumpOnce { reply },
+                &format!("native-rust extension runtime pump timed out after {timeout_ms}ms"),
+            )
+            .await
+        }
+
+        pub async fn dispatch_event(
+            &self,
+            event_name: String,
+            event_payload: Value,
+            ctx_payload: Arc<Value>,
+            timeout_ms: u64,
+        ) -> Result<Value> {
+            self.send_with_timeout(
+                timeout_ms,
+                |reply| NativeRustRuntimeCommand::DispatchEvent {
+                    event_name,
+                    event_payload,
+                    ctx_payload,
+                    reply,
+                },
+                &format!("native-rust extension runtime event timed out after {timeout_ms}ms"),
+            )
+            .await
+        }
+
+        pub async fn dispatch_event_batch(
+            &self,
+            events: Vec<(String, Value)>,
+            ctx_payload: Arc<Value>,
+            timeout_ms: u64,
+        ) -> Result<Vec<Result<Value>>> {
+            self.send_with_timeout(
+                timeout_ms,
+                |reply| NativeRustRuntimeCommand::DispatchEventBatch {
+                    events,
+                    ctx_payload,
+                    reply,
+                },
+                &format!(
+                    "native-rust extension runtime batch event timed out after {timeout_ms}ms"
+                ),
+            )
+            .await
+        }
+
+        pub async fn execute_tool(
+            &self,
+            tool_name: String,
+            tool_call_id: String,
+            input: Value,
+            timeout_ms: u64,
+        ) -> Result<Value> {
+            self.send_with_timeout(
+                timeout_ms,
+                |reply| NativeRustRuntimeCommand::ExecuteTool {
+                    tool_name,
+                    tool_call_id,
+                    input,
+                    reply,
+                },
+                &format!("native-rust extension runtime tool timed out after {timeout_ms}ms"),
+            )
+            .await
+        }
+
+        pub async fn execute_command(
+            &self,
+            command_name: String,
+            args: String,
+            timeout_ms: u64,
+        ) -> Result<Value> {
+            self.send_with_timeout(
+                timeout_ms,
+                |reply| NativeRustRuntimeCommand::ExecuteCommand {
+                    command_name,
+                    args,
+                    reply,
+                },
+                &format!("native-rust extension runtime command timed out after {timeout_ms}ms"),
+            )
+            .await
+        }
+
+        pub async fn execute_shortcut(&self, key_id: String, timeout_ms: u64) -> Result<Value> {
+            self.send_with_timeout(
+                timeout_ms,
+                |reply| NativeRustRuntimeCommand::ExecuteShortcut { key_id, reply },
+                &format!("native-rust extension runtime shortcut timed out after {timeout_ms}ms"),
+            )
+            .await
+        }
+
+        pub async fn set_flag_value(
+            &self,
+            extension_id: String,
+            flag_name: String,
+            value: Value,
+        ) -> Result<()> {
+            let timeout_ms = EXTENSION_QUERY_BUDGET_MS;
+            self.send_with_timeout(
+                timeout_ms,
+                |reply| NativeRustRuntimeCommand::SetFlagValue {
+                    extension_id,
+                    flag_name,
+                    value,
+                    reply,
+                },
+                &format!(
+                    "native-rust extension runtime flag update timed out after {timeout_ms}ms"
+                ),
+            )
+            .await
+        }
+
+        pub async fn drain_repair_events(&self) -> Vec<ExtensionRepairEvent> {
+            let cx = cx_with_deadline(EXTENSION_QUERY_BUDGET_MS);
+            let (reply_tx, reply_rx) = oneshot::channel();
+            let command = NativeRustRuntimeCommand::DrainRepairEvents { reply: reply_tx };
+            let Ok(()) = self.sender.send(&cx, command).await else {
+                return Vec::new();
+            };
+            reply_rx.recv(&cx).await.unwrap_or_default()
+        }
+
+        pub async fn reset_transient_state(&self) -> Result<()> {
+            let timeout_ms = EXTENSION_QUERY_BUDGET_MS;
+            self.send_with_timeout(
+                timeout_ms,
+                |reply| NativeRustRuntimeCommand::ResetTransientState { reply },
+                &format!("native-rust extension runtime reset timed out after {timeout_ms}ms"),
+            )
+            .await
+        }
+
+        pub async fn provider_stream_simple_start(
+            &self,
+            provider_id: String,
+            model: Value,
+            context: Value,
+            options: Value,
+            timeout_ms: u64,
+        ) -> Result<String> {
+            self.send_with_timeout(
+            timeout_ms,
+            |reply| NativeRustRuntimeCommand::ProviderStreamSimpleStart {
+                provider_id,
+                model,
+                context,
+                options,
+                reply,
+            },
+            &format!(
+                "native-rust extension runtime provider stream start timed out after {timeout_ms}ms"
+            ),
+        )
+        .await
+        }
+
+        pub async fn provider_stream_simple_next(
+            &self,
+            stream_id: String,
+            timeout_ms: u64,
+        ) -> Result<Option<Value>> {
+            self.send_with_timeout(
+            timeout_ms,
+            |reply| NativeRustRuntimeCommand::ProviderStreamSimpleNext { stream_id, reply },
+            &format!(
+                "native-rust extension runtime provider stream next timed out after {timeout_ms}ms"
+            ),
+        )
+        .await
+        }
+
+        pub async fn provider_stream_simple_cancel(
+            &self,
+            stream_id: String,
+            timeout_ms: u64,
+        ) -> Result<()> {
+            self.send_with_timeout(
+            timeout_ms,
+            |reply| NativeRustRuntimeCommand::ProviderStreamSimpleCancel {
+                stream_id,
+                reply: Some(reply),
+            },
+            &format!(
+                "native-rust extension runtime provider stream cancel timed out after {timeout_ms}ms"
+            ),
+        )
+        .await
+        }
+
+        pub fn provider_stream_simple_cancel_best_effort(&self, stream_id: String) {
+            let _ = self
+                .sender
+                .try_send(NativeRustRuntimeCommand::ProviderStreamSimpleCancel {
+                    stream_id,
+                    reply: None,
+                });
+        }
+    }
+
+    fn load_native_extensions_from_specs(
+        specs: &[NativeRustExtensionLoadSpec],
+    ) -> Result<Vec<NativeRustLoadedExtension>> {
+        let mut loaded = Vec::with_capacity(specs.len());
+        for spec in specs {
+            loaded.push(load_native_extension_from_spec(spec)?);
+        }
+        Ok(loaded)
+    }
+
+    fn load_native_extension_from_spec(
+        spec: &NativeRustExtensionLoadSpec,
+    ) -> Result<NativeRustLoadedExtension> {
+        let descriptor_json = fs::read_to_string(&spec.entry_path).map_err(|err| {
+            Error::extension(format!(
+                "Failed to read native-rust extension descriptor {}: {err}",
+                spec.entry_path.display()
+            ))
+        })?;
+        let descriptor: NativeRustExtensionDescriptor = serde_json::from_str(&descriptor_json)
+            .map_err(|err| {
+                Error::extension(format!(
+                    "Failed to parse native-rust extension descriptor {}: {err}",
+                    spec.entry_path.display()
+                ))
+            })?;
+
+        let extension_id = if descriptor.id.trim().is_empty() {
+            spec.extension_id.clone()
+        } else {
+            descriptor.id.clone()
+        };
+        let name = if descriptor.name.trim().is_empty() {
+            spec.name.clone()
+        } else {
+            descriptor.name.clone()
+        };
+        let version = if descriptor.version.trim().is_empty() {
+            spec.version.clone()
+        } else {
+            descriptor.version.clone()
+        };
+        let api_version = if descriptor.api_version.trim().is_empty() {
+            spec.api_version.clone()
+        } else {
+            descriptor.api_version.clone()
+        };
+
+        Ok(NativeRustLoadedExtension {
+            snapshot: JsExtensionSnapshot {
+                id: extension_id,
+                name,
+                version,
+                api_version,
+                tools: descriptor.tools,
+                slash_commands: descriptor.slash_commands,
+                shortcuts: descriptor.shortcuts,
+                providers: descriptor.providers,
+                flags: descriptor.flags,
+                event_hooks: descriptor.event_hooks,
+                active_tools: descriptor.active_tools,
+            },
+            event_responses: descriptor.event_responses,
+            tool_outputs: descriptor.tool_outputs,
+            command_outputs: descriptor.command_outputs,
+            shortcut_outputs: descriptor.shortcut_outputs,
+            provider_streams: descriptor.provider_streams,
+        })
+    }
+
+    #[derive(Clone)]
+    pub enum ExtensionRuntimeHandle {
+        Js(JsExtensionRuntimeHandle),
+        NativeRust(NativeRustExtensionRuntimeHandle),
+    }
+
+    impl From<JsExtensionRuntimeHandle> for ExtensionRuntimeHandle {
+        fn from(value: JsExtensionRuntimeHandle) -> Self {
+            Self::Js(value)
+        }
+    }
+
+    impl From<NativeRustExtensionRuntimeHandle> for ExtensionRuntimeHandle {
+        fn from(value: NativeRustExtensionRuntimeHandle) -> Self {
+            Self::NativeRust(value)
+        }
+    }
+
+    impl ExtensionRuntimeHandle {
+        pub const fn runtime_name(&self) -> &'static str {
+            match self {
+                Self::Js(_) => "quickjs",
+                Self::NativeRust(_) => "native-rust",
+            }
+        }
+
+        pub async fn shutdown(&self, budget: Duration) -> bool {
+            match self {
+                Self::Js(runtime) => runtime.shutdown(budget).await,
+                Self::NativeRust(runtime) => runtime.shutdown(budget).await,
+            }
+        }
+
+        pub(super) async fn load_js_extensions_snapshots(
+            &self,
+            specs: Vec<JsExtensionLoadSpec>,
+        ) -> Result<Vec<JsExtensionSnapshot>> {
+            match self {
+                Self::Js(runtime) => runtime.load_extensions_snapshots(specs).await,
+                Self::NativeRust(_) => Err(Error::extension(
+                    "Native-rust runtime does not support JS extension load specs".to_string(),
+                )),
+            }
+        }
+
+        pub(super) async fn load_native_extensions_snapshots(
+            &self,
+            specs: Vec<NativeRustExtensionLoadSpec>,
+        ) -> Result<Vec<JsExtensionSnapshot>> {
+            match self {
+                Self::Js(_) => Err(Error::extension(
+                    "QuickJS runtime does not support native-rust extension load specs".to_string(),
+                )),
+                Self::NativeRust(runtime) => runtime.load_extensions_snapshots(specs).await,
+            }
+        }
+
+        pub async fn get_registered_tools(&self) -> Result<Vec<ExtensionToolDef>> {
+            match self {
+                Self::Js(runtime) => runtime.get_registered_tools().await,
+                Self::NativeRust(runtime) => runtime.get_registered_tools().await,
+            }
+        }
+
+        pub async fn pump_once(&self) -> Result<bool> {
+            match self {
+                Self::Js(runtime) => runtime.pump_once().await,
+                Self::NativeRust(runtime) => runtime.pump_once().await,
+            }
+        }
+
+        pub async fn dispatch_event(
+            &self,
+            event_name: String,
+            event_payload: Value,
+            ctx_payload: Arc<Value>,
+            timeout_ms: u64,
+        ) -> Result<Value> {
+            match self {
+                Self::Js(runtime) => {
+                    runtime
+                        .dispatch_event(event_name, event_payload, ctx_payload, timeout_ms)
+                        .await
+                }
+                Self::NativeRust(runtime) => {
+                    runtime
+                        .dispatch_event(event_name, event_payload, ctx_payload, timeout_ms)
+                        .await
+                }
+            }
+        }
+
+        pub async fn dispatch_event_batch(
+            &self,
+            events: Vec<(String, Value)>,
+            ctx_payload: Arc<Value>,
+            timeout_ms: u64,
+        ) -> Result<Vec<Result<Value>>> {
+            match self {
+                Self::Js(runtime) => {
+                    runtime
+                        .dispatch_event_batch(events, ctx_payload, timeout_ms)
+                        .await
+                }
+                Self::NativeRust(runtime) => {
+                    runtime
+                        .dispatch_event_batch(events, ctx_payload, timeout_ms)
+                        .await
+                }
+            }
+        }
+
+        pub async fn execute_tool(
+            &self,
+            tool_name: String,
+            tool_call_id: String,
+            input: Value,
+            ctx_payload: Arc<Value>,
+            timeout_ms: u64,
+        ) -> Result<Value> {
+            match self {
+                Self::Js(runtime) => {
+                    runtime
+                        .execute_tool(tool_name, tool_call_id, input, ctx_payload, timeout_ms)
+                        .await
+                }
+                Self::NativeRust(runtime) => {
+                    let _ = ctx_payload;
+                    runtime
+                        .execute_tool(tool_name, tool_call_id, input, timeout_ms)
+                        .await
+                }
+            }
+        }
+
+        pub async fn execute_command(
+            &self,
+            command_name: String,
+            args: String,
+            ctx_payload: Arc<Value>,
+            timeout_ms: u64,
+        ) -> Result<Value> {
+            match self {
+                Self::Js(runtime) => {
+                    runtime
+                        .execute_command(command_name, args, ctx_payload, timeout_ms)
+                        .await
+                }
+                Self::NativeRust(runtime) => {
+                    let _ = ctx_payload;
+                    runtime
+                        .execute_command(command_name, args, timeout_ms)
+                        .await
+                }
+            }
+        }
+
+        pub async fn execute_shortcut(
+            &self,
+            key_id: String,
+            ctx_payload: Arc<Value>,
+            timeout_ms: u64,
+        ) -> Result<Value> {
+            match self {
+                Self::Js(runtime) => {
+                    runtime
+                        .execute_shortcut(key_id, ctx_payload, timeout_ms)
+                        .await
+                }
+                Self::NativeRust(runtime) => {
+                    let _ = ctx_payload;
+                    runtime.execute_shortcut(key_id, timeout_ms).await
+                }
+            }
+        }
+
+        pub async fn set_flag_value(
+            &self,
+            extension_id: String,
+            flag_name: String,
+            value: Value,
+        ) -> Result<()> {
+            match self {
+                Self::Js(runtime) => runtime.set_flag_value(extension_id, flag_name, value).await,
+                Self::NativeRust(runtime) => {
+                    runtime.set_flag_value(extension_id, flag_name, value).await
+                }
+            }
+        }
+
+        pub async fn drain_repair_events(&self) -> Vec<ExtensionRepairEvent> {
+            match self {
+                Self::Js(runtime) => runtime.drain_repair_events().await,
+                Self::NativeRust(runtime) => runtime.drain_repair_events().await,
+            }
+        }
+
+        pub async fn reset_transient_state(&self) -> Result<()> {
+            match self {
+                Self::Js(runtime) => runtime.reset_transient_state().await,
+                Self::NativeRust(runtime) => runtime.reset_transient_state().await,
+            }
+        }
+
+        pub async fn provider_stream_simple_start(
+            &self,
+            provider_id: String,
+            model: Value,
+            context: Value,
+            options: Value,
+            timeout_ms: u64,
+        ) -> Result<String> {
+            match self {
+                Self::Js(runtime) => {
+                    runtime
+                        .provider_stream_simple_start(
+                            provider_id,
+                            model,
+                            context,
+                            options,
+                            timeout_ms,
+                        )
+                        .await
+                }
+                Self::NativeRust(runtime) => {
+                    runtime
+                        .provider_stream_simple_start(
+                            provider_id,
+                            model,
+                            context,
+                            options,
+                            timeout_ms,
+                        )
+                        .await
+                }
+            }
+        }
+
+        pub async fn provider_stream_simple_next(
+            &self,
+            stream_id: String,
+            timeout_ms: u64,
+        ) -> Result<Option<Value>> {
+            match self {
+                Self::Js(runtime) => {
+                    runtime
+                        .provider_stream_simple_next(stream_id, timeout_ms)
+                        .await
+                }
+                Self::NativeRust(runtime) => {
+                    runtime
+                        .provider_stream_simple_next(stream_id, timeout_ms)
+                        .await
+                }
+            }
+        }
+
+        pub async fn provider_stream_simple_cancel(
+            &self,
+            stream_id: String,
+            timeout_ms: u64,
+        ) -> Result<()> {
+            match self {
+                Self::Js(runtime) => {
+                    runtime
+                        .provider_stream_simple_cancel(stream_id, timeout_ms)
+                        .await
+                }
+                Self::NativeRust(runtime) => {
+                    runtime
+                        .provider_stream_simple_cancel(stream_id, timeout_ms)
+                        .await
+                }
+            }
+        }
+
+        pub fn provider_stream_simple_cancel_best_effort(&self, stream_id: String) {
+            match self {
+                Self::Js(runtime) => runtime.provider_stream_simple_cancel_best_effort(stream_id),
+                Self::NativeRust(runtime) => {
+                    runtime.provider_stream_simple_cancel_best_effort(stream_id);
+                }
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ExtensionRuntimeEngineSelection {
+        QuickJs,
+        NativeRust,
+    }
+
+    impl ExtensionRuntimeEngineSelection {
+        pub const ENV_VAR: &'static str = "PI_EXTENSION_RUNTIME_ENGINE";
+
+        pub const fn as_str(self) -> &'static str {
+            match self {
+                Self::QuickJs => "quickjs",
+                Self::NativeRust => "native-rust",
+            }
+        }
+
+        pub fn from_env_value(value: &str) -> Self {
+            if matches!(value.trim().to_ascii_lowercase().as_str(), "quickjs" | "js") {
+                Self::QuickJs
+            } else {
+                Self::NativeRust
+            }
+        }
+
+        #[must_use]
+        pub fn from_env() -> Self {
+            let value = std::env::var(Self::ENV_VAR).unwrap_or_default();
+            Self::from_env_value(&value)
+        }
+    }
+}
+
+pub type ExtensionRuntimeEngineSelection =
+    native_runtime_duplicate_scaffold::ExtensionRuntimeEngineSelection;
+pub type ExtensionRuntimeHandle = native_runtime_duplicate_scaffold::ExtensionRuntimeHandle;
+pub type NativeRustExtensionRuntimeHandle =
+    native_runtime_duplicate_scaffold::NativeRustExtensionRuntimeHandle;
 
 const JS_EXTENSION_ENTRY_EXTS: &[&str] = &["ts", "tsx", "js", "mjs", "cjs", "mts", "cts"];
 const MAX_BUNDLE_CLUSTER_DIRS: usize = 40;
@@ -16275,7 +18380,7 @@ async fn load_one_extension(
     for (entry_index, entry_path) in entry_paths.into_iter().enumerate() {
         // QuickJS module resolver requires forward-slash paths.
         let entry_specifier = entry_path.display().to_string().replace('\\', "/");
-        let task_id = format!("task-load-{}", Uuid::new_v4());
+        let task_id = next_runtime_task_id("task-load");
         let meta_value = meta.clone();
 
         let bootstrap_result = runtime
@@ -16286,7 +18391,7 @@ async fn load_one_extension(
                 let meta_js = json_to_js(&ctx, &meta_value)?;
                 let promise: rquickjs::Value<'_> =
                     load_fn.call((spec.extension_id.clone(), entry_specifier.clone(), meta_js))?;
-                let _task: String = task_start.call((task_id.clone(), promise))?;
+                let _task: String = task_start.call((task_id.as_str(), promise))?;
                 Ok(())
             })
             .await;
@@ -16331,16 +18436,23 @@ async fn snapshot_extensions(runtime: &PiJsRuntime) -> Result<Vec<JsExtensionSna
     Ok(snapshots)
 }
 
+#[inline]
+fn next_runtime_task_id(prefix: &str) -> String {
+    static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
+    let id = NEXT_TASK_ID.fetch_add(1, StdOrdering::Relaxed);
+    format!("{prefix}-{id}")
+}
+
 #[allow(clippy::future_not_send)]
 async fn dispatch_extension_event(
     runtime: &PiJsRuntime,
     host: &JsRuntimeHost,
     event_name: &str,
     event_payload: Value,
-    ctx_payload: Value,
+    ctx_payload: &Value,
     timeout_ms: u64,
 ) -> Result<Value> {
-    let task_id = format!("task-event-{}", Uuid::new_v4());
+    let task_id = next_runtime_task_id("task-event");
     runtime
         .with_ctx(|ctx| {
             let global = ctx.globals();
@@ -16348,10 +18460,9 @@ async fn dispatch_extension_event(
                 global.get("__pi_dispatch_extension_event")?;
             let task_start: rquickjs::Function<'_> = global.get("__pi_task_start")?;
             let event_js = json_to_js(&ctx, &event_payload)?;
-            let ctx_js = json_to_js(&ctx, &ctx_payload)?;
-            let promise: rquickjs::Value<'_> =
-                dispatch_fn.call((event_name.to_string(), event_js, ctx_js))?;
-            let _task: String = task_start.call((task_id.clone(), promise))?;
+            let ctx_js = json_to_js(&ctx, ctx_payload)?;
+            let promise: rquickjs::Value<'_> = dispatch_fn.call((event_name, event_js, ctx_js))?;
+            let _task: String = task_start.call((task_id.as_str(), promise))?;
             Ok(())
         })
         .await?;
@@ -16367,7 +18478,7 @@ async fn dispatch_extension_event_batch(
     runtime: &PiJsRuntime,
     host: &JsRuntimeHost,
     events: Vec<(String, Value)>,
-    ctx_payload: Value,
+    ctx_payload: &Value,
     timeout_ms: u64,
 ) -> Result<Vec<Result<Value>>> {
     if events.is_empty() {
@@ -16382,7 +18493,7 @@ async fn dispatch_extension_event_batch(
         return Ok(vec![result]);
     }
 
-    let task_id = format!("task-event-batch-{}", Uuid::new_v4());
+    let task_id = next_runtime_task_id("task-event-batch");
 
     runtime
         .with_ctx(|ctx| {
@@ -16401,9 +18512,9 @@ async fn dispatch_extension_event_batch(
                 events_array.set(i, entry)?;
             }
 
-            let ctx_js = json_to_js(&ctx, &ctx_payload)?;
+            let ctx_js = json_to_js(&ctx, ctx_payload)?;
             let promise: rquickjs::Value<'_> = batch_fn.call((events_array, ctx_js))?;
-            let _task: String = task_start.call((task_id.clone(), promise))?;
+            let _task: String = task_start.call((task_id.as_str(), promise))?;
             Ok(())
         })
         .await?;
@@ -16441,7 +18552,7 @@ async fn execute_extension_tool(
     tool_name: &str,
     tool_call_id: &str,
     input: Value,
-    ctx_payload: Value,
+    ctx_payload: &Value,
     timeout_ms: u64,
 ) -> Result<Value> {
     let started_at = Instant::now();
@@ -16452,21 +18563,17 @@ async fn execute_extension_tool(
         timeout_ms,
         "Extension tool execution start"
     );
-    let task_id = format!("task-tool-{}", Uuid::new_v4());
+    let task_id = next_runtime_task_id("task-tool");
     runtime
         .with_ctx(|ctx| {
             let global = ctx.globals();
             let exec_fn: rquickjs::Function<'_> = global.get("__pi_execute_tool")?;
             let task_start: rquickjs::Function<'_> = global.get("__pi_task_start")?;
             let input_js = json_to_js(&ctx, &input)?;
-            let ctx_js = json_to_js(&ctx, &ctx_payload)?;
-            let promise: rquickjs::Value<'_> = exec_fn.call((
-                tool_name.to_string(),
-                tool_call_id.to_string(),
-                input_js,
-                ctx_js,
-            ))?;
-            let _task: String = task_start.call((task_id.clone(), promise))?;
+            let ctx_js = json_to_js(&ctx, ctx_payload)?;
+            let promise: rquickjs::Value<'_> =
+                exec_fn.call((tool_name, tool_call_id, input_js, ctx_js))?;
+            let _task: String = task_start.call((task_id.as_str(), promise))?;
             Ok(())
         })
         .await?;
@@ -16491,7 +18598,7 @@ async fn execute_extension_command(
     host: &JsRuntimeHost,
     command_name: &str,
     args: &str,
-    ctx_payload: Value,
+    ctx_payload: &Value,
     timeout_ms: u64,
 ) -> Result<Value> {
     let started_at = Instant::now();
@@ -16501,16 +18608,15 @@ async fn execute_extension_command(
         timeout_ms,
         "Extension command execution start"
     );
-    let task_id = format!("task-cmd-{}", Uuid::new_v4());
+    let task_id = next_runtime_task_id("task-cmd");
     runtime
         .with_ctx(|ctx| {
             let global = ctx.globals();
             let exec_fn: rquickjs::Function<'_> = global.get("__pi_execute_command")?;
             let task_start: rquickjs::Function<'_> = global.get("__pi_task_start")?;
-            let ctx_js = json_to_js(&ctx, &ctx_payload)?;
-            let promise: rquickjs::Value<'_> =
-                exec_fn.call((command_name.to_string(), args.to_string(), ctx_js))?;
-            let _task: String = task_start.call((task_id.clone(), promise))?;
+            let ctx_js = json_to_js(&ctx, ctx_payload)?;
+            let promise: rquickjs::Value<'_> = exec_fn.call((command_name, args, ctx_js))?;
+            let _task: String = task_start.call((task_id.as_str(), promise))?;
             Ok(())
         })
         .await?;
@@ -16533,7 +18639,7 @@ async fn execute_extension_shortcut(
     runtime: &PiJsRuntime,
     host: &JsRuntimeHost,
     key_id: &str,
-    ctx_payload: Value,
+    ctx_payload: &Value,
     timeout_ms: u64,
 ) -> Result<Value> {
     let started_at = Instant::now();
@@ -16543,15 +18649,15 @@ async fn execute_extension_shortcut(
         timeout_ms,
         "Extension shortcut execution start"
     );
-    let task_id = format!("task-shortcut-{}", Uuid::new_v4());
+    let task_id = next_runtime_task_id("task-shortcut");
     runtime
         .with_ctx(|ctx| {
             let global = ctx.globals();
             let exec_fn: rquickjs::Function<'_> = global.get("__pi_execute_shortcut")?;
             let task_start: rquickjs::Function<'_> = global.get("__pi_task_start")?;
-            let ctx_js = json_to_js(&ctx, &ctx_payload)?;
-            let promise: rquickjs::Value<'_> = exec_fn.call((key_id.to_string(), ctx_js))?;
-            let _task: String = task_start.call((task_id.clone(), promise))?;
+            let ctx_js = json_to_js(&ctx, ctx_payload)?;
+            let promise: rquickjs::Value<'_> = exec_fn.call((key_id, ctx_js))?;
+            let _task: String = task_start.call((task_id.as_str(), promise))?;
             Ok(())
         })
         .await?;
@@ -16586,7 +18692,7 @@ async fn start_extension_provider_stream_simple(
     options: Value,
     timeout_ms: u64,
 ) -> Result<String> {
-    let task_id = format!("task-provider-stream-start-{}", Uuid::new_v4());
+    let task_id = next_runtime_task_id("task-provider-stream-start");
     runtime
         .with_ctx(|ctx| {
             let global = ctx.globals();
@@ -16597,8 +18703,8 @@ async fn start_extension_provider_stream_simple(
             let context_js = json_to_js(&ctx, &context)?;
             let options_js = json_to_js(&ctx, &options)?;
             let promise: rquickjs::Value<'_> =
-                start_fn.call((provider_id.to_string(), model_js, context_js, options_js))?;
-            let _task: String = task_start.call((task_id.clone(), promise))?;
+                start_fn.call((provider_id, model_js, context_js, options_js))?;
+            let _task: String = task_start.call((task_id.as_str(), promise))?;
             Ok(())
         })
         .await?;
@@ -16617,14 +18723,14 @@ async fn next_extension_provider_stream_simple(
     stream_id: &str,
     timeout_ms: u64,
 ) -> Result<Option<Value>> {
-    let task_id = format!("task-provider-stream-next-{}", Uuid::new_v4());
+    let task_id = next_runtime_task_id("task-provider-stream-next");
     runtime
         .with_ctx(|ctx| {
             let global = ctx.globals();
             let next_fn: rquickjs::Function<'_> = global.get("__pi_provider_stream_simple_next")?;
             let task_start: rquickjs::Function<'_> = global.get("__pi_task_start")?;
-            let promise: rquickjs::Value<'_> = next_fn.call((stream_id.to_string(),))?;
-            let _task: String = task_start.call((task_id.clone(), promise))?;
+            let promise: rquickjs::Value<'_> = next_fn.call((stream_id,))?;
+            let _task: String = task_start.call((task_id.as_str(), promise))?;
             Ok(())
         })
         .await?;
@@ -16650,15 +18756,15 @@ async fn cancel_extension_provider_stream_simple(
     stream_id: &str,
     timeout_ms: u64,
 ) -> Result<()> {
-    let task_id = format!("task-provider-stream-cancel-{}", Uuid::new_v4());
+    let task_id = next_runtime_task_id("task-provider-stream-cancel");
     runtime
         .with_ctx(|ctx| {
             let global = ctx.globals();
             let cancel_fn: rquickjs::Function<'_> =
                 global.get("__pi_provider_stream_simple_cancel")?;
             let task_start: rquickjs::Function<'_> = global.get("__pi_task_start")?;
-            let promise: rquickjs::Value<'_> = cancel_fn.call((stream_id.to_string(),))?;
-            let _task: String = task_start.call((task_id.clone(), promise))?;
+            let promise: rquickjs::Value<'_> = cancel_fn.call((stream_id,))?;
+            let _task: String = task_start.call((task_id.as_str(), promise))?;
             Ok(())
         })
         .await?;
@@ -19875,13 +21981,25 @@ async fn dispatch_hostcall_events(
     }
 }
 
-#[allow(clippy::future_not_send)]
+#[allow(clippy::future_not_send, clippy::too_many_lines)]
 async fn await_js_task(
     runtime: &PiJsRuntime,
     host: &JsRuntimeHost,
     task_id: &str,
     timeout: Duration,
 ) -> Result<Value> {
+    enum TaskTakeResult {
+        Missing,
+        Pending,
+        Resolved(Value),
+        Rejected {
+            code: Option<String>,
+            message: String,
+            stack: Option<String>,
+        },
+        Snapshot(Value),
+    }
+
     let start = Instant::now();
 
     loop {
@@ -19894,40 +22012,79 @@ async fn await_js_task(
 
         let _has_pending = pump_js_runtime_once(runtime, host).await?;
 
-        let state_json = runtime
+        let task_take = runtime
             .with_ctx(|ctx| {
                 let global = ctx.globals();
                 let take_fn: rquickjs::Function<'_> = global.get("__pi_task_take")?;
-                let value: rquickjs::Value<'_> = take_fn.call((task_id.to_string(),))?;
-                js_to_json(&value)
+                let value: rquickjs::Value<'_> = take_fn.call((task_id,))?;
+                if value.is_null() || value.is_undefined() {
+                    return Ok(TaskTakeResult::Missing);
+                }
+                if let Some(obj) = value.as_object() {
+                    if let Ok(status) = obj.get::<_, String>("status") {
+                        match status.as_str() {
+                            "pending" => return Ok(TaskTakeResult::Pending),
+                            "resolved" => {
+                                let resolved_js = obj.get::<_, rquickjs::Value<'_>>("value").ok();
+                                let resolved_json = if let Some(v) = resolved_js {
+                                    js_to_json(&v)?
+                                } else {
+                                    Value::Null
+                                };
+                                return Ok(TaskTakeResult::Resolved(resolved_json));
+                            }
+                            "rejected" => {
+                                let (code, message, stack) = obj
+                                    .get::<_, rquickjs::Value<'_>>("error")
+                                    .ok()
+                                    .and_then(|error_value| error_value.as_object().cloned())
+                                    .map_or_else(
+                                        || (None, "Unknown JS task error".to_string(), None),
+                                        |error_obj| {
+                                            (
+                                                error_obj.get::<_, String>("code").ok(),
+                                                error_obj
+                                                    .get::<_, String>("message")
+                                                    .unwrap_or_else(|_| {
+                                                        "Unknown JS task error".to_string()
+                                                    }),
+                                                error_obj.get::<_, String>("stack").ok(),
+                                            )
+                                        },
+                                    );
+                                return Ok(TaskTakeResult::Rejected {
+                                    code,
+                                    message,
+                                    stack,
+                                });
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Ok(TaskTakeResult::Snapshot(js_to_json(&value)?))
             })
             .await?;
 
-        if state_json.is_null() {
-            return Err(Error::extension("JS task state missing".to_string()));
-        }
-
-        let state: JsTaskState =
-            serde_json::from_value(state_json).map_err(|err| Error::extension(err.to_string()))?;
-
-        match state.status.as_str() {
-            "pending" => {
+        match task_take {
+            TaskTakeResult::Missing => {
+                return Err(Error::extension("JS task state missing".to_string()));
+            }
+            TaskTakeResult::Pending => {
                 if !runtime.has_pending() {
                     sleep(wall_now(), Duration::from_millis(1)).await;
                 }
             }
-            "resolved" => return Ok(state.value.unwrap_or(Value::Null)),
-            "rejected" => {
-                let err = state.error.unwrap_or_else(|| JsTaskError {
-                    code: None,
-                    message: "Unknown JS task error".to_string(),
-                    stack: None,
-                });
-                let mut message = err.message;
-                if let Some(code) = err.code {
+            TaskTakeResult::Resolved(value) => return Ok(value),
+            TaskTakeResult::Rejected {
+                code,
+                mut message,
+                stack,
+            } => {
+                if let Some(code) = code {
                     message = format!("{code}: {message}");
                 }
-                if let Some(stack) = err.stack {
+                if let Some(stack) = stack {
                     if !stack.is_empty() {
                         message.push('\n');
                         message.push_str(&stack);
@@ -19935,14 +22092,43 @@ async fn await_js_task(
                 }
                 return Err(Error::extension(message));
             }
-            other => {
-                return Err(Error::extension(format!(
-                    "Unexpected JS task status: {other}"
-                )));
+            TaskTakeResult::Snapshot(state_json) => {
+                let state: JsTaskState = serde_json::from_value(state_json)
+                    .map_err(|err| Error::extension(err.to_string()))?;
+
+                match state.status.as_str() {
+                    "pending" => {
+                        if !runtime.has_pending() {
+                            sleep(wall_now(), Duration::from_millis(1)).await;
+                        }
+                    }
+                    "resolved" => return Ok(state.value.unwrap_or(Value::Null)),
+                    "rejected" => {
+                        let err = state.error.unwrap_or_else(|| JsTaskError {
+                            code: None,
+                            message: "Unknown JS task error".to_string(),
+                            stack: None,
+                        });
+                        let mut message = err.message;
+                        if let Some(code) = err.code {
+                            message = format!("{code}: {message}");
+                        }
+                        if let Some(stack) = err.stack {
+                            if !stack.is_empty() {
+                                message.push('\n');
+                                message.push_str(&stack);
+                            }
+                        }
+                        return Err(Error::extension(message));
+                    }
+                    other => {
+                        return Err(Error::extension(format!(
+                            "Unexpected JS task status: {other}"
+                        )));
+                    }
+                }
             }
         }
-
-        sleep(wall_now(), Duration::from_millis(0)).await;
     }
 }
 
@@ -20063,7 +22249,7 @@ struct CachedEventContext {
 #[derive(Default)]
 struct ExtensionManagerInner {
     extensions: Vec<RegisterPayload>,
-    js_runtime: Option<JsExtensionRuntimeHandle>,
+    runtime: Option<ExtensionRuntimeHandle>,
     #[cfg(feature = "wasm-host")]
     wasm_extensions: Vec<WasmExtensionHandle>,
     ui_sender: Option<mpsc::Sender<ExtensionUiRequest>>,
@@ -22793,20 +24979,20 @@ impl ExtensionManager {
 
     /// Shut down the extension runtime with a cleanup budget.
     ///
-    /// Sends a graceful shutdown to the JS runtime thread and waits up to
+    /// Sends a graceful shutdown to the configured extension runtime thread and waits up to
     /// `budget` for it to exit.  Returns `true` if the runtime exited
     /// cleanly within the budget.
     pub async fn shutdown(&self, budget: Duration) -> bool {
-        let js_runtime = {
+        let runtime = {
             let guard = self.inner.lock().unwrap();
-            guard.js_runtime.clone()
+            guard.runtime.clone()
         };
 
-        if let Some(runtime) = js_runtime {
+        if let Some(runtime) = runtime {
             let ok = runtime.shutdown(budget).await;
             // Clear the runtime handle so subsequent calls are no-ops.
             let mut guard = self.inner.lock().unwrap();
-            guard.js_runtime = None;
+            guard.runtime = None;
             ok
         } else {
             true
@@ -22825,10 +25011,18 @@ impl ExtensionManager {
         self.refresh_snapshot_with_guard_release(guard);
     }
 
-    pub fn set_js_runtime(&self, runtime: JsExtensionRuntimeHandle) {
+    pub fn set_runtime(&self, runtime: ExtensionRuntimeHandle) {
         let mut guard = self.inner.lock().unwrap();
-        guard.js_runtime = Some(runtime);
+        guard.runtime = Some(runtime);
         drop(guard);
+    }
+
+    pub fn set_js_runtime(&self, runtime: JsExtensionRuntimeHandle) {
+        self.set_runtime(ExtensionRuntimeHandle::Js(runtime));
+    }
+
+    pub fn set_native_runtime(&self, runtime: NativeRustExtensionRuntimeHandle) {
+        self.set_runtime(ExtensionRuntimeHandle::NativeRust(runtime));
     }
 
     pub fn set_cwd(&self, cwd: String) {
@@ -22855,9 +25049,23 @@ impl ExtensionManager {
         guard.host_actions = Some(actions);
     }
 
-    pub fn js_runtime(&self) -> Option<JsExtensionRuntimeHandle> {
+    pub fn runtime(&self) -> Option<ExtensionRuntimeHandle> {
         let guard = self.inner.lock().unwrap();
-        guard.js_runtime.clone()
+        guard.runtime.clone()
+    }
+
+    pub fn js_runtime(&self) -> Option<JsExtensionRuntimeHandle> {
+        match self.runtime() {
+            Some(ExtensionRuntimeHandle::Js(runtime)) => Some(runtime),
+            _ => None,
+        }
+    }
+
+    pub fn native_runtime(&self) -> Option<NativeRustExtensionRuntimeHandle> {
+        match self.runtime() {
+            Some(ExtensionRuntimeHandle::NativeRust(runtime)) => Some(runtime),
+            _ => None,
+        }
     }
 
     fn host_actions(&self) -> Option<Arc<dyn ExtensionHostActions>> {
@@ -22973,8 +25181,8 @@ impl ExtensionManager {
     #[allow(clippy::significant_drop_tightening)]
     pub async fn load_js_extensions(&self, specs: Vec<JsExtensionLoadSpec>) -> Result<()> {
         let runtime = self
-            .js_runtime()
-            .ok_or_else(|| Error::extension("JS extension runtime not configured"))?;
+            .runtime()
+            .ok_or_else(|| Error::extension("Extension runtime not configured"))?;
 
         let compat_hints_by_extension = if compat_static_registration_enabled() {
             Some(build_compat_registration_hints(&specs))
@@ -22982,7 +25190,7 @@ impl ExtensionManager {
             None
         };
 
-        let snapshots = runtime.load_extensions_snapshots(specs).await?;
+        let snapshots = runtime.load_js_extensions_snapshots(specs).await?;
 
         let mut payloads = Vec::new();
         let mut active_tools: Option<Vec<String>> = None;
@@ -23055,6 +25263,98 @@ impl ExtensionManager {
             guard.flags = all_flags;
             // Rebuild hook_bitmap from the freshly-loaded extensions so that
             // dispatch_tool_result / dispatch_event can find registered hooks.
+            guard.hook_bitmap.clear();
+            let hooks: Vec<String> = guard
+                .extensions
+                .iter()
+                .flat_map(|ext| ext.event_hooks.iter().cloned())
+                .collect();
+            for hook in hooks {
+                guard.hook_bitmap.insert(hook);
+            }
+            let active_extension_ids = guard
+                .extensions
+                .iter()
+                .map(|ext| ext.name.clone())
+                .collect::<std::collections::HashSet<_>>();
+            guard
+                .runtime_risk_states
+                .retain(|ext_id, _| active_extension_ids.contains(ext_id));
+            self.refresh_snapshot_with_guard_release(guard);
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::significant_drop_tightening)]
+    pub async fn load_native_extensions(
+        &self,
+        specs: Vec<NativeRustExtensionLoadSpec>,
+    ) -> Result<()> {
+        let runtime = self
+            .runtime()
+            .ok_or_else(|| Error::extension("Extension runtime not configured"))?;
+
+        let snapshots = runtime.load_native_extensions_snapshots(specs).await?;
+        let mut payloads = Vec::new();
+        let mut active_tools: Option<Vec<String>> = None;
+        let mut all_providers = Vec::new();
+        let mut all_flags = Vec::new();
+
+        for snapshot in snapshots {
+            let JsExtensionSnapshot {
+                id,
+                name,
+                version,
+                api_version,
+                tools,
+                slash_commands,
+                providers,
+                shortcuts,
+                flags,
+                event_hooks,
+                active_tools: ext_active_tools,
+            } = snapshot;
+            all_providers.extend(providers);
+            let extension_name = if name.is_empty() {
+                id.clone()
+            } else {
+                name.clone()
+            };
+            all_flags.extend(flags.iter().cloned().map(|mut flag| {
+                if let Some(obj) = flag.as_object_mut() {
+                    obj.entry("extension_id".to_string())
+                        .or_insert_with(|| Value::String(extension_name.clone()));
+                }
+                flag
+            }));
+            if let Some(list) = ext_active_tools {
+                active_tools = Some(list);
+            }
+
+            payloads.push(RegisterPayload {
+                name: extension_name,
+                version,
+                api_version: if api_version.is_empty() {
+                    PROTOCOL_VERSION.to_string()
+                } else {
+                    api_version
+                },
+                capabilities: Vec::new(),
+                capability_manifest: None,
+                tools,
+                slash_commands,
+                shortcuts,
+                flags,
+                event_hooks,
+            });
+        }
+
+        {
+            let mut guard = self.inner.lock().unwrap();
+            guard.extensions = payloads;
+            guard.active_tools = active_tools;
+            guard.providers = all_providers;
+            guard.flags = all_flags;
             guard.hook_bitmap.clear();
             let hooks: Vec<String> = guard
                 .extensions
@@ -23248,13 +25548,13 @@ impl ExtensionManager {
     ) -> Result<Value> {
         let timeout_ms = self.effective_timeout(timeout_ms);
         let runtime = self
-            .js_runtime()
-            .ok_or_else(|| Error::extension("JS extension runtime not configured"))?;
+            .runtime()
+            .ok_or_else(|| Error::extension("Extension runtime not configured"))?;
         runtime
             .execute_command(
                 command_name.to_string(),
                 args.to_string(),
-                json!({}),
+                Arc::new(json!({})),
                 timeout_ms,
             )
             .await
@@ -23483,10 +25783,10 @@ impl ExtensionManager {
     ) -> Result<Value> {
         let timeout_ms = self.effective_timeout(timeout_ms);
         let runtime = self
-            .js_runtime()
-            .ok_or_else(|| Error::extension("JS extension runtime not configured"))?;
+            .runtime()
+            .ok_or_else(|| Error::extension("Extension runtime not configured"))?;
         runtime
-            .execute_shortcut(key_id.to_string(), ctx_payload, timeout_ms)
+            .execute_shortcut(key_id.to_string(), Arc::new(ctx_payload), timeout_ms)
             .await
     }
 
@@ -23498,8 +25798,8 @@ impl ExtensionManager {
         value: Value,
     ) -> Result<()> {
         let runtime = self
-            .js_runtime()
-            .ok_or_else(|| Error::extension("JS extension runtime not configured"))?;
+            .runtime()
+            .ok_or_else(|| Error::extension("Extension runtime not configured"))?;
         runtime
             .set_flag_value(extension_id.to_string(), flag_name.to_string(), value)
             .await
@@ -23682,7 +25982,7 @@ impl ExtensionManager {
         drop(snap);
         let runtime = if has_hook {
             let guard = self.inner.lock().unwrap();
-            guard.js_runtime.clone()
+            guard.runtime.clone()
         } else {
             None
         };
@@ -23738,7 +26038,7 @@ impl ExtensionManager {
                     .dispatch_event(
                         event_name.clone(),
                         event_payload.clone(),
-                        (*ctx_payload).clone(),
+                        Arc::clone(&ctx_payload),
                         timeout_ms,
                     )
                     .await?;
@@ -23880,7 +26180,7 @@ impl ExtensionManager {
             None
         } else {
             let guard = self.inner.lock().unwrap();
-            guard.js_runtime.clone()
+            guard.runtime.clone()
         };
 
         if filtered_events.is_empty() {
@@ -23891,7 +26191,7 @@ impl ExtensionManager {
 
         if let Some(runtime) = runtime {
             let results = runtime
-                .dispatch_event_batch(filtered_events, (*ctx_payload).clone(), timeout_ms)
+                .dispatch_event_batch(filtered_events, ctx_payload, timeout_ms)
                 .await;
             if let Err(err) = &results {
                 tracing::warn!(
@@ -23914,21 +26214,12 @@ impl ExtensionManager {
         timeout_ms: u64,
     ) -> Result<Option<ToolCallEventResult>> {
         let timeout_ms = self.effective_timeout(timeout_ms);
-        let event_name = "tool_call".to_string();
-        let (runtime, has_ui, session, cwd_override, model_registry_values, has_hook_js) = {
+        let event_name = "tool_call";
+        // O(1) hook bitmap check.
+        let (runtime, has_hook_js) = {
             let guard = self.inner.lock().unwrap();
-            let has_hook = guard
-                .extensions
-                .iter()
-                .any(|ext| ext.event_hooks.iter().any(|hook| hook == &event_name));
-            (
-                guard.js_runtime.clone(),
-                guard.ui_sender.is_some(),
-                guard.session.clone(),
-                guard.cwd.clone(),
-                guard.model_registry_values.clone(),
-                has_hook,
-            )
+            let has_hook = guard.hook_bitmap.contains(event_name);
+            (guard.runtime.clone(), has_hook)
         };
 
         #[cfg(feature = "wasm-host")]
@@ -23937,7 +26228,7 @@ impl ExtensionManager {
             let has_hook_wasm = guard
                 .wasm_extensions
                 .iter()
-                .any(|ext| ext.event_hooks().iter().any(|hook| hook == &event_name));
+                .any(|ext| ext.event_hooks().iter().any(|hook| hook == event_name));
             (guard.wasm_extensions.clone(), has_hook_wasm)
         };
 
@@ -23956,36 +26247,9 @@ impl ExtensionManager {
             return Ok(None);
         }
 
-        let mut ctx = serde_json::Map::new();
-        ctx.insert("hasUI".to_string(), Value::Bool(has_ui));
-        if let Some(cwd) = cwd_override.or_else(|| {
-            std::env::current_dir()
-                .ok()
-                .map(|p| p.display().to_string())
-        }) {
-            ctx.insert("cwd".to_string(), Value::String(cwd));
-        }
-
-        if !model_registry_values.is_empty() {
-            let mut map = serde_json::Map::new();
-            for (key, value) in model_registry_values {
-                map.insert(key, Value::String(value));
-            }
-            ctx.insert("modelRegistry".to_string(), Value::Object(map));
-        }
-
-        if let Some(session) = session {
-            let state = session.get_state().await;
-            let entries = session.get_entries().await;
-            let branch = session.get_branch().await;
-            let leaf_entry = entries.last().cloned().unwrap_or(Value::Null);
-            ctx.insert("sessionState".to_string(), state);
-            ctx.insert("sessionEntries".to_string(), Value::Array(entries));
-            ctx.insert("sessionBranch".to_string(), Value::Array(branch));
-            ctx.insert("sessionLeafEntry".to_string(), leaf_entry);
-        }
-
-        let ctx_payload = Value::Object(ctx);
+        // Reuse cached event context payload instead of rebuilding session state
+        // on every tool_call dispatch.
+        let ctx_payload = self.get_or_build_ctx_payload().await;
         let event_payload = json!({
             "type": "tool_call",
             "toolName": tool_call.name.clone(),
@@ -23999,9 +26263,9 @@ impl ExtensionManager {
             if has_hook_js {
                 let js_response = runtime
                     .dispatch_event(
-                        event_name.clone(),
+                        event_name.to_string(),
                         event_payload.clone(),
-                        ctx_payload.clone(),
+                        Arc::clone(&ctx_payload),
                         timeout_ms,
                     )
                     .await?;
@@ -24020,11 +26284,11 @@ impl ExtensionManager {
         if has_hook_wasm {
             let mut wasm_payload = event_payload;
             if let Value::Object(map) = &mut wasm_payload {
-                map.insert("ctx".to_string(), ctx_payload);
+                map.insert("ctx".to_string(), (*ctx_payload).clone());
             }
             if let Some(value) = Self::dispatch_wasm_event_value(
                 &wasm_extensions,
-                &event_name,
+                event_name,
                 &wasm_payload,
                 timeout_ms,
             )
@@ -24054,13 +26318,13 @@ impl ExtensionManager {
         timeout_ms: u64,
     ) -> Result<Option<ToolResultEventResult>> {
         let timeout_ms = self.effective_timeout(timeout_ms);
-        let event_name = "tool_result".to_string();
+        let event_name = "tool_result";
 
         // O(1) hook bitmap check.
         let (runtime, has_hook_js) = {
             let guard = self.inner.lock().unwrap();
-            let has_hook = guard.hook_bitmap.contains(&event_name);
-            (guard.js_runtime.clone(), has_hook)
+            let has_hook = guard.hook_bitmap.contains(event_name);
+            (guard.runtime.clone(), has_hook)
         };
 
         #[cfg(feature = "wasm-host")]
@@ -24069,7 +26333,7 @@ impl ExtensionManager {
             let has_hook_wasm = guard
                 .wasm_extensions
                 .iter()
-                .any(|ext| ext.event_hooks().iter().any(|hook| hook == &event_name));
+                .any(|ext| ext.event_hooks().iter().any(|hook| hook == event_name));
             (guard.wasm_extensions.clone(), has_hook_wasm)
         };
 
@@ -24107,9 +26371,9 @@ impl ExtensionManager {
             if has_hook_js {
                 let js_response = runtime
                     .dispatch_event(
-                        event_name.clone(),
+                        event_name.to_string(),
                         event_payload.clone(),
-                        (*ctx_payload).clone(),
+                        Arc::clone(&ctx_payload),
                         timeout_ms,
                     )
                     .await?;
@@ -24130,7 +26394,7 @@ impl ExtensionManager {
             }
             if let Some(value) = Self::dispatch_wasm_event_value(
                 &wasm_extensions,
-                &event_name,
+                event_name,
                 &wasm_payload,
                 timeout_ms,
             )
@@ -25370,8 +27634,8 @@ mod tests {
             name: "ext".to_string(),
             version: "0.1.0".to_string(),
             api_version: PROTOCOL_VERSION.to_string(),
-            runtime: ExtensionRuntime::Js,
-            entrypoint: "index.js".to_string(),
+            runtime: ExtensionRuntime::NativeRust,
+            entrypoint: "index.native.json".to_string(),
             capabilities: vec!["read".to_string()],
             capability_manifest: Some(CapabilityManifest {
                 schema: CAPABILITY_MANIFEST_SCHEMA_V1.to_string(),
@@ -25407,8 +27671,8 @@ mod tests {
             name: "ext".to_string(),
             version: "0.1.0".to_string(),
             api_version: PROTOCOL_VERSION.to_string(),
-            runtime: ExtensionRuntime::Js,
-            entrypoint: "index.js".to_string(),
+            runtime: ExtensionRuntime::NativeRust,
+            entrypoint: "index.native.json".to_string(),
             capabilities: Vec::new(),
             capability_manifest: Some(CapabilityManifest {
                 schema: CAPABILITY_MANIFEST_SCHEMA_V2.to_string(),
@@ -29952,7 +32216,7 @@ mod tests {
                     tx.send(&cx, "hello".to_string()).expect("send");
                 })
                 .expect("create send task");
-            runtime.scheduler.lock().unwrap().schedule(send_task, 0);
+            runtime.scheduler.lock().schedule(send_task, 0);
 
             // Receiver task: receive with infinite budget.
             let (recv_task, _) = runtime
@@ -29964,7 +32228,7 @@ mod tests {
                     }
                 })
                 .expect("create recv task");
-            runtime.scheduler.lock().unwrap().schedule(recv_task, 0);
+            runtime.scheduler.lock().schedule(recv_task, 0);
 
             runtime.run_until_quiescent();
 
@@ -29991,7 +32255,7 @@ mod tests {
                     drop(tx);
                 })
                 .expect("create drop task");
-            runtime.scheduler.lock().unwrap().schedule(drop_task, 0);
+            runtime.scheduler.lock().schedule(drop_task, 0);
 
             // Task 2: try to recv (should fail because sender was dropped).
             let (recv_task, _) = runtime
@@ -30003,7 +32267,7 @@ mod tests {
                     }
                 })
                 .expect("create recv task");
-            runtime.scheduler.lock().unwrap().schedule(recv_task, 0);
+            runtime.scheduler.lock().schedule(recv_task, 0);
 
             runtime.run_until_quiescent();
 
@@ -30036,7 +32300,7 @@ mod tests {
                             log.lock().unwrap().push(format!("task-{val}"));
                         })
                         .expect("create task");
-                    runtime.scheduler.lock().unwrap().schedule(task_id, 0);
+                    runtime.scheduler.lock().schedule(task_id, 0);
                 }
 
                 runtime.run_until_quiescent();
@@ -30069,7 +32333,7 @@ mod tests {
                             log.lock().unwrap().push(format!("w-{i}"));
                         })
                         .expect("create task");
-                    runtime.scheduler.lock().unwrap().schedule(task_id, 0);
+                    runtime.scheduler.lock().schedule(task_id, 0);
                 }
 
                 runtime.run_until_quiescent();
@@ -44364,5 +46628,49 @@ mod tests {
         // Clear it.
         manager.clear_ui_sender();
         assert!(!manager.read_snapshot().has_ui);
+    }
+
+    #[test]
+    fn extension_runtime_engine_selection_parses_native_values() {
+        assert_eq!(
+            ExtensionRuntimeEngineSelection::from_env_value("native-rust"),
+            ExtensionRuntimeEngineSelection::NativeRust
+        );
+        assert_eq!(
+            ExtensionRuntimeEngineSelection::from_env_value(" NATIVE_RUST "),
+            ExtensionRuntimeEngineSelection::NativeRust
+        );
+        assert_eq!(
+            ExtensionRuntimeEngineSelection::from_env_value("native"),
+            ExtensionRuntimeEngineSelection::NativeRust
+        );
+        assert_eq!(
+            ExtensionRuntimeEngineSelection::from_env_value("quickjs"),
+            ExtensionRuntimeEngineSelection::QuickJs
+        );
+        assert_eq!(
+            ExtensionRuntimeEngineSelection::from_env_value(""),
+            ExtensionRuntimeEngineSelection::NativeRust
+        );
+        assert_eq!(
+            ExtensionRuntimeEngineSelection::from_env_value("unknown-value"),
+            ExtensionRuntimeEngineSelection::NativeRust
+        );
+    }
+
+    #[test]
+    fn resolve_extension_load_spec_detects_native_json_entrypoint() {
+        let dir = tempdir().expect("tempdir");
+        let entry = dir.path().join("sample.native.json");
+        std::fs::write(&entry, "{}").expect("write native entry");
+
+        let spec = resolve_extension_load_spec(&entry).expect("resolve load spec");
+        match spec {
+            ExtensionLoadSpec::NativeRust(native) => {
+                assert_eq!(native.extension_id, "sample");
+                assert_eq!(native.entry_path, safe_canonicalize(&entry));
+            }
+            other => panic!("expected native-rust spec, got {other:?}"),
+        }
     }
 }

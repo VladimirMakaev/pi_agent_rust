@@ -6,9 +6,10 @@
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::Arc;
 
 use crate::error::{Error, Result};
-use crate::extensions::{EXTENSION_EVENT_TIMEOUT_MS, JsExtensionRuntimeHandle};
+use crate::extensions::{EXTENSION_EVENT_TIMEOUT_MS, ExtensionRuntimeHandle};
 use crate::model::{AssistantMessage, ContentBlock, ImageContent, Message, ToolResultMessage};
 
 /// Events that can be dispatched to extension handlers.
@@ -266,13 +267,18 @@ fn json_from_value<T: DeserializeOwned>(value: Value) -> Result<T> {
 /// Dispatches events to extension handlers.
 #[derive(Clone)]
 pub struct EventDispatcher {
-    runtime: JsExtensionRuntimeHandle,
+    runtime: ExtensionRuntimeHandle,
 }
 
 impl EventDispatcher {
     #[must_use]
-    pub const fn new(runtime: JsExtensionRuntimeHandle) -> Self {
-        Self { runtime }
+    pub fn new<R>(runtime: R) -> Self
+    where
+        R: Into<ExtensionRuntimeHandle>,
+    {
+        Self {
+            runtime: runtime.into(),
+        }
     }
 
     /// Dispatch an event with an explicit context payload and timeout.
@@ -286,7 +292,7 @@ impl EventDispatcher {
         let event_payload = json_to_value(&event)?;
         let response = self
             .runtime
-            .dispatch_event(event_name, event_payload, ctx_payload, timeout_ms)
+            .dispatch_event(event_name, event_payload, Arc::new(ctx_payload), timeout_ms)
             .await?;
 
         if response.is_null() {

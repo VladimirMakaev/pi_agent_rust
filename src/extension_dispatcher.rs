@@ -44,8 +44,8 @@ use crate::tools::ToolRegistry;
 
 /// Coordinates hostcall dispatch between the JS extension runtime and Rust handlers.
 pub struct ExtensionDispatcher<C: SchedulerClock = WallClock> {
-    /// The JavaScript runtime that generates hostcall requests.
-    runtime: Rc<PiJsRuntime<C>>,
+    /// Runtime bridge used by the dispatcher.
+    runtime: Rc<dyn ExtensionDispatcherRuntime<C>>,
     /// Registry of available tools (built-in + extension-registered).
     tool_registry: Arc<ToolRegistry>,
     /// HTTP connector for pi.http() calls.
@@ -74,6 +74,18 @@ pub struct ExtensionDispatcher<C: SchedulerClock = WallClock> {
     regime_detector: RefCell<RegimeShiftDetector>,
     /// AMAC batch executor for interleaved hostcall dispatch.
     amac_executor: RefCell<AmacBatchExecutor>,
+}
+
+/// Runtime bridge trait so dispatcher logic is not hardwired to a concrete runtime type.
+pub trait ExtensionDispatcherRuntime<C: SchedulerClock>: 'static {
+    fn as_js_runtime(&self) -> &PiJsRuntime<C>;
+}
+
+impl<C: SchedulerClock + 'static> ExtensionDispatcherRuntime<C> for PiJsRuntime<C> {
+    #[allow(clippy::use_self)]
+    fn as_js_runtime(&self) -> &PiJsRuntime<C> {
+        self
+    }
 }
 
 fn protocol_hostcall_op(params: &Value) -> Option<&str> {
@@ -1446,15 +1458,22 @@ fn hostcall_opcode_entropy(kind: &HostcallKind, payload: &Value) -> f64 {
 }
 
 impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
+    fn js_runtime(&self) -> &PiJsRuntime<C> {
+        self.runtime.as_js_runtime()
+    }
+
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        runtime: Rc<PiJsRuntime<C>>,
+    pub fn new<R>(
+        runtime: Rc<R>,
         tool_registry: Arc<ToolRegistry>,
         http_connector: Arc<HttpConnector>,
         session: Arc<dyn ExtensionSession + Send + Sync>,
         ui_handler: Arc<dyn ExtensionUiHandler + Send + Sync>,
         cwd: PathBuf,
-    ) -> Self {
+    ) -> Self
+    where
+        R: ExtensionDispatcherRuntime<C>,
+    {
         Self::new_with_policy(
             runtime,
             tool_registry,
@@ -1467,15 +1486,18 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn new_with_policy(
-        runtime: Rc<PiJsRuntime<C>>,
+    pub fn new_with_policy<R>(
+        runtime: Rc<R>,
         tool_registry: Arc<ToolRegistry>,
         http_connector: Arc<HttpConnector>,
         session: Arc<dyn ExtensionSession + Send + Sync>,
         ui_handler: Arc<dyn ExtensionUiHandler + Send + Sync>,
         cwd: PathBuf,
         policy: ExtensionPolicy,
-    ) -> Self {
+    ) -> Self
+    where
+        R: ExtensionDispatcherRuntime<C>,
+    {
         Self::new_with_policy_and_oracle_config(
             runtime,
             tool_registry,
@@ -1489,8 +1511,8 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn new_with_policy_and_oracle_config(
-        runtime: Rc<PiJsRuntime<C>>,
+    fn new_with_policy_and_oracle_config<R>(
+        runtime: Rc<R>,
         tool_registry: Arc<ToolRegistry>,
         http_connector: Arc<HttpConnector>,
         session: Arc<dyn ExtensionSession + Send + Sync>,
@@ -1498,7 +1520,11 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
         cwd: PathBuf,
         policy: ExtensionPolicy,
         dual_exec_config: DualExecOracleConfig,
-    ) -> Self {
+    ) -> Self
+    where
+        R: ExtensionDispatcherRuntime<C>,
+    {
+        let runtime: Rc<dyn ExtensionDispatcherRuntime<C>> = runtime;
         let snapshot_version = policy_snapshot_version(&policy);
         let snapshot = PolicySnapshot::compile(&policy);
         let io_uring_lane_config = io_uring_lane_policy_from_env();
@@ -1681,7 +1707,7 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
     /// Drain pending hostcall requests from the JS runtime.
     #[must_use]
     pub fn drain_hostcall_requests(&self) -> VecDeque<HostcallRequest> {
-        self.runtime.drain_hostcall_requests()
+        self.js_runtime().drain_hostcall_requests()
     }
 
     #[allow(clippy::future_not_send)]
@@ -1731,7 +1757,7 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
 
     #[allow(clippy::future_not_send)]
     async fn dispatch_hostcall_io_uring(&self, request: &HostcallRequest) -> IoUringBridgeDispatch {
-        if !self.runtime.is_hostcall_pending(&request.call_id) {
+        if !self.js_runtime().is_hostcall_pending(&request.call_id) {
             return IoUringBridgeDispatch {
                 outcome: HostcallOutcome::Error {
                     code: "cancelled".to_string(),
@@ -1746,7 +1772,7 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
         // Keep bridge semantics explicit while delegating execution to the
         // existing fast hostcall path until the ring executor lands.
         let delegated_outcome = self.dispatch_hostcall_fast(request).await;
-        if !self.runtime.is_hostcall_pending(&request.call_id) {
+        if !self.js_runtime().is_hostcall_pending(&request.call_id) {
             return IoUringBridgeDispatch {
                 outcome: HostcallOutcome::Error {
                     code: "cancelled".to_string(),
@@ -1880,11 +1906,12 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
                     code: "denied".to_string(),
                     message: format!("Capability '{}' denied by policy ({})", cap, check.reason),
                 };
-                self.runtime.complete_hostcall(request.call_id, outcome);
+                self.js_runtime()
+                    .complete_hostcall(request.call_id, outcome);
                 return;
             }
 
-            let queue_snapshot = self.runtime.hostcall_queue_telemetry();
+            let queue_snapshot = self.js_runtime().hostcall_queue_telemetry();
             let queue_depth = queue_snapshot.total_depth;
             let overflow_depth = queue_snapshot.overflow_depth;
             let overflow_rejected_total = queue_snapshot.overflow_rejected_total;
@@ -1952,7 +1979,8 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
                 service_time_us,
             );
 
-            self.runtime.complete_hostcall(request.call_id, outcome);
+            self.js_runtime()
+                .complete_hostcall(request.call_id, outcome);
         })
     }
 
@@ -2587,7 +2615,7 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
 
             let mut sequence = 0_u64;
             loop {
-                if !self.runtime.is_hostcall_pending(call_id) {
+                if !self.js_runtime().is_hostcall_pending(call_id) {
                     cancel.store(true, AtomicOrdering::SeqCst);
                     return HostcallOutcome::Error {
                         code: "cancelled".to_string(),
@@ -2597,7 +2625,7 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
 
                 match rx.try_recv() {
                     Ok(ExecStreamFrame::Stdout(chunk)) => {
-                        self.runtime.complete_hostcall(
+                        self.js_runtime().complete_hostcall(
                             call_id.to_string(),
                             HostcallOutcome::StreamChunk {
                                 sequence,
@@ -2608,7 +2636,7 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
                         sequence = sequence.saturating_add(1);
                     }
                     Ok(ExecStreamFrame::Stderr(chunk)) => {
-                        self.runtime.complete_hostcall(
+                        self.js_runtime().complete_hostcall(
                             call_id.to_string(),
                             HostcallOutcome::StreamChunk {
                                 sequence,
@@ -3121,7 +3149,7 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
         }
 
         let json = self
-            .runtime
+            .js_runtime()
             .with_ctx(|ctx| {
                 let global = ctx.globals();
                 let snapshot_fn: rquickjs::Function<'_> = global.get("__pi_snapshot_extensions")?;
@@ -3168,7 +3196,7 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
         let literal = serde_json::to_string(event_name)
             .map_err(|err| crate::error::Error::extension(err.to_string()))?;
 
-        self.runtime
+        self.js_runtime()
             .with_ctx(|ctx| {
                 let code = format!(
                     "(function() {{ const handlers = (__pi_hook_index.get({literal}) || []); return handlers.length; }})()"
@@ -3224,7 +3252,7 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
 
         let task_id = format!("task-events-{call_id}", call_id = uuid::Uuid::new_v4());
 
-        self.runtime
+        self.js_runtime()
             .with_ctx(|ctx| {
                 let global = ctx.globals();
                 let dispatch_fn: rquickjs::Function<'_> =
@@ -3251,14 +3279,14 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
                 )));
             }
 
-            let pending = self.runtime.drain_hostcall_requests();
+            let pending = self.js_runtime().drain_hostcall_requests();
             self.dispatch_batch_amac(pending).await;
 
-            let _ = self.runtime.tick().await?;
-            let _ = self.runtime.drain_microtasks().await?;
+            let _ = self.js_runtime().tick().await?;
+            let _ = self.js_runtime().drain_microtasks().await?;
 
             let state_json = self
-                .runtime
+                .js_runtime()
                 .with_ctx(|ctx| {
                     let global = ctx.globals();
                     let take_fn: rquickjs::Function<'_> = global.get("__pi_task_take")?;
@@ -3278,7 +3306,7 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
 
             match state.status.as_str() {
                 "pending" => {
-                    if !self.runtime.has_pending() {
+                    if !self.js_runtime().has_pending() {
                         sleep(wall_now(), Duration::from_millis(1)).await;
                     }
                 }
@@ -3695,7 +3723,10 @@ mod tests {
                     .expect("runtime"),
             );
             let dispatcher = build_dispatcher(Rc::clone(&runtime));
-            assert!(Rc::ptr_eq(&dispatcher.runtime, &runtime));
+            assert!(std::ptr::eq(
+                dispatcher.runtime.as_js_runtime(),
+                runtime.as_ref()
+            ));
             assert_eq!(dispatcher.cwd, PathBuf::from("."));
         });
     }

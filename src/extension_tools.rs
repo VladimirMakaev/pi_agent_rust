@@ -6,13 +6,16 @@
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashSet;
+use std::sync::Arc;
 #[cfg(feature = "wasm-host")]
 use std::time::Duration;
 
 use crate::error::{Error, Result};
+#[cfg(test)]
+use crate::extensions::JsExtensionRuntimeHandle;
 #[cfg(feature = "wasm-host")]
 use crate::extensions::WasmExtensionHandle;
-use crate::extensions::{ExtensionManager, JsExtensionRuntimeHandle};
+use crate::extensions::{ExtensionManager, ExtensionRuntimeHandle};
 use crate::extensions_js::ExtensionToolDef;
 use crate::tools::{Tool, ToolOutput, ToolUpdate};
 #[cfg(feature = "wasm-host")]
@@ -22,28 +25,38 @@ const DEFAULT_EXTENSION_TOOL_TIMEOUT_MS: u64 = 60_000;
 
 /// Wraps a JS extension-registered tool so it can be used as a Rust [`Tool`].
 ///
-/// Note: This wrapper uses [`JsExtensionRuntimeHandle`] rather than [`crate::extensions_js::PiJsRuntime`]
-/// so it remains `Send + Sync` and can be stored in the shared tool registry.
+/// Note: This wrapper uses [`ExtensionRuntimeHandle`] rather than
+/// [`crate::extensions_js::PiJsRuntime`] so it remains `Send + Sync` and can be
+/// stored in the shared tool registry.
 pub struct ExtensionToolWrapper {
     def: ExtensionToolDef,
-    runtime: JsExtensionRuntimeHandle,
-    ctx_payload: Value,
+    runtime: ExtensionRuntimeHandle,
+    ctx_payload: Arc<Value>,
     timeout_ms: u64,
 }
 
 impl ExtensionToolWrapper {
     #[must_use]
-    pub fn new(def: ExtensionToolDef, runtime: JsExtensionRuntimeHandle) -> Self {
+    pub fn new<R>(def: ExtensionToolDef, runtime: R) -> Self
+    where
+        R: Into<ExtensionRuntimeHandle>,
+    {
         Self {
             def,
-            runtime,
-            ctx_payload: Value::Object(serde_json::Map::new()),
+            runtime: runtime.into(),
+            ctx_payload: Arc::new(Value::Object(serde_json::Map::new())),
             timeout_ms: DEFAULT_EXTENSION_TOOL_TIMEOUT_MS,
         }
     }
 
     #[must_use]
     pub fn with_ctx_payload(mut self, ctx_payload: Value) -> Self {
+        self.ctx_payload = Arc::new(ctx_payload);
+        self
+    }
+
+    #[must_use]
+    pub fn with_ctx_payload_shared(mut self, ctx_payload: Arc<Value>) -> Self {
         self.ctx_payload = ctx_payload;
         self
     }
@@ -88,6 +101,7 @@ pub async fn collect_extension_tool_wrappers(
     manager: &ExtensionManager,
     ctx_payload: Value,
 ) -> Result<Vec<Box<dyn Tool>>> {
+    let shared_ctx_payload = Arc::new(ctx_payload);
     let active = manager
         .active_tools()
         .map(|tools| tools.into_iter().collect::<HashSet<_>>());
@@ -95,7 +109,7 @@ pub async fn collect_extension_tool_wrappers(
     let mut wrappers: Vec<Box<dyn Tool>> = Vec::new();
     let mut seen = HashSet::new();
 
-    if let Some(runtime) = manager.js_runtime() {
+    if let Some(runtime) = manager.runtime() {
         let mut defs = runtime.get_registered_tools().await?;
         if let Some(active) = active.as_ref() {
             defs.retain(|def| active.contains(&def.name));
@@ -110,7 +124,7 @@ pub async fn collect_extension_tool_wrappers(
 
             wrappers.push(Box::new(
                 ExtensionToolWrapper::new(def, runtime.clone())
-                    .with_ctx_payload(ctx_payload.clone()),
+                    .with_ctx_payload_shared(Arc::clone(&shared_ctx_payload)),
             ));
         }
     }
@@ -173,7 +187,7 @@ impl Tool for ExtensionToolWrapper {
                 self.def.name.clone(),
                 tool_call_id.to_string(),
                 input,
-                self.ctx_payload.clone(),
+                Arc::clone(&self.ctx_payload),
                 self.timeout_ms,
             )
             .await
@@ -740,7 +754,7 @@ mod tests {
             "#;
             let (_temp_dir, _manager, js_runtime, def) = setup_js_tool(source, "t").await;
             let wrapper = ExtensionToolWrapper::new(def, js_runtime);
-            assert_eq!(wrapper.ctx_payload, json!({}));
+            assert_eq!(wrapper.ctx_payload.as_ref(), &json!({}));
         });
     }
 
@@ -765,7 +779,7 @@ mod tests {
             let custom_ctx = json!({"cwd": "/tmp", "user": "test"});
             let wrapper =
                 ExtensionToolWrapper::new(def, js_runtime).with_ctx_payload(custom_ctx.clone());
-            assert_eq!(wrapper.ctx_payload, custom_ctx);
+            assert_eq!(wrapper.ctx_payload.as_ref(), &custom_ctx);
         });
     }
 

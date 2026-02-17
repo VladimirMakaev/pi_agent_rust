@@ -4,7 +4,7 @@
 //! for various LLM APIs.
 
 use crate::error::{Error, Result};
-use crate::extensions::{ExtensionManager, JsExtensionRuntimeHandle};
+use crate::extensions::{ExtensionManager, ExtensionRuntimeHandle};
 use crate::http::client::Client;
 use crate::model::{
     AssistantMessage, AssistantMessageEvent, ContentBlock, StopReason, TextContent, Usage,
@@ -48,11 +48,11 @@ fn vcr_client_if_enabled() -> Result<Option<Client>> {
 
 struct ExtensionStreamSimpleProvider {
     model: crate::provider::Model,
-    runtime: JsExtensionRuntimeHandle,
+    runtime: ExtensionRuntimeHandle,
 }
 
 struct ExtensionStreamSimpleState {
-    runtime: JsExtensionRuntimeHandle,
+    runtime: ExtensionRuntimeHandle,
     stream_id: Option<String>,
     model_id: String,
     provider: String,
@@ -381,7 +381,7 @@ where
 impl ExtensionStreamSimpleProvider {
     const NEXT_TIMEOUT_MS: u64 = 600_000;
 
-    const fn new(model: crate::provider::Model, runtime: JsExtensionRuntimeHandle) -> Self {
+    const fn new(model: crate::provider::Model, runtime: ExtensionRuntimeHandle) -> Self {
         Self { model, runtime }
     }
 
@@ -781,10 +781,10 @@ pub fn create_provider(
 ) -> Result<Arc<dyn Provider>> {
     if let Some(manager) = extensions {
         if manager.provider_has_stream_simple(&entry.model.provider) {
-            let runtime = manager.js_runtime().ok_or_else(|| {
+            let runtime = manager.runtime().ok_or_else(|| {
                 Error::provider(
                     &entry.model.provider,
-                    "Extension JS runtime not configured for streamSimple provider",
+                    "Extension runtime not configured for streamSimple provider",
                 )
             })?;
             return Ok(Arc::new(ExtensionStreamSimpleProvider::new(

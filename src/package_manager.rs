@@ -2419,13 +2419,24 @@ fn resolve_extension_entries(dir: &Path) -> Option<Vec<PathBuf>> {
         }
     }
 
+    let index_native = dir.join("index.native.json");
+    if index_native.exists() {
+        return Some(vec![index_native]);
+    }
+
     let index_ts = dir.join("index.ts");
     if index_ts.exists() {
-        return Some(vec![index_ts]);
+        warn!(
+            path = %index_ts.display(),
+            "Ignoring legacy JS/TS extension entrypoint; use index.native.json"
+        );
     }
     let index_js = dir.join("index.js");
     if index_js.exists() {
-        return Some(vec![index_js]);
+        warn!(
+            path = %index_js.display(),
+            "Ignoring legacy JS/TS extension entrypoint; use index.native.json"
+        );
     }
     None
 }
@@ -2457,12 +2468,11 @@ fn collect_auto_extension_entries(dir: &Path) -> Vec<PathBuf> {
             continue;
         };
         if stats.is_file() {
-            #[allow(clippy::case_sensitive_file_extension_comparisons)]
-            // .ts/.js are conventionally lowercase
-            let is_ext_file = path
-                .extension()
-                .is_some_and(|ext| ext == "ts" || ext == "js");
-            if is_ext_file {
+            let is_native_descriptor = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(".native.json"));
+            if is_native_descriptor {
                 out.push(path);
             }
             continue;
@@ -3697,18 +3707,14 @@ mod tests {
                 "name": "Test Extension",
                 "version": "0.1.0",
                 "api_version": "1.0",
-                "runtime": "js",
-                "entrypoint": "index.js",
+                "runtime": "native-rust",
+                "entrypoint": "index.native.json",
                 "capabilities": []
             }))
             .expect("serialize extension manifest"),
         )
         .expect("write extension manifest");
-        fs::write(
-            extension_dir.join("index.js"),
-            "export default function() {}",
-        )
-        .expect("write extension entry");
+        fs::write(extension_dir.join("index.native.json"), "{}").expect("write extension entry");
 
         let entries = resolve_extension_entries(&extension_dir).expect("entries");
         assert_eq!(entries, vec![extension_dir]);
@@ -4705,48 +4711,61 @@ mod tests {
     // ======================================================================
 
     #[test]
-    fn collect_auto_extension_entries_finds_js_ts_files() {
+    fn collect_auto_extension_entries_finds_native_descriptors() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ext_dir = dir.path().join("extensions");
         fs::create_dir_all(&ext_dir).expect("create dir");
-        fs::write(ext_dir.join("a.js"), "a").expect("write");
-        fs::write(ext_dir.join("b.ts"), "b").expect("write");
+        fs::write(ext_dir.join("a.native.json"), "{}").expect("write");
+        fs::write(ext_dir.join("b.native.json"), "{}").expect("write");
         fs::write(ext_dir.join("c.md"), "c").expect("write");
 
         let entries = collect_auto_extension_entries(&ext_dir);
         assert!(entries.len() >= 2);
-        let has_js = entries.iter().any(|p| p.file_name().unwrap() == "a.js");
-        let has_ts = entries.iter().any(|p| p.file_name().unwrap() == "b.ts");
+        let has_a = entries
+            .iter()
+            .any(|p| p.file_name().unwrap() == "a.native.json");
+        let has_b = entries
+            .iter()
+            .any(|p| p.file_name().unwrap() == "b.native.json");
         let has_md = entries.iter().any(|p| p.file_name().unwrap() == "c.md");
-        assert!(has_js, "should find .js files");
-        assert!(has_ts, "should find .ts files");
+        assert!(has_a, "should find native descriptor files");
+        assert!(has_b, "should find native descriptor files");
         assert!(!has_md, "should not find .md files");
     }
 
     // ======================================================================
-    // resolve_extension_entries with index.ts / index.js
+    // resolve_extension_entries with index.native.json / legacy JS fallback
     // ======================================================================
 
     #[test]
-    fn resolve_extension_entries_finds_index_ts() {
+    fn resolve_extension_entries_finds_index_native_json() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ext_dir = dir.path().join("ext");
+        fs::create_dir_all(&ext_dir).expect("create dir");
+        fs::write(ext_dir.join("index.native.json"), "{}").expect("write");
+
+        let entries = resolve_extension_entries(&ext_dir).expect("entries");
+        assert_eq!(entries, vec![ext_dir.join("index.native.json")]);
+    }
+
+    #[test]
+    fn resolve_extension_entries_ignores_index_ts() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ext_dir = dir.path().join("ext");
         fs::create_dir_all(&ext_dir).expect("create dir");
         fs::write(ext_dir.join("index.ts"), "export default {}").expect("write");
 
-        let entries = resolve_extension_entries(&ext_dir).expect("entries");
-        assert_eq!(entries, vec![ext_dir.join("index.ts")]);
+        assert!(resolve_extension_entries(&ext_dir).is_none());
     }
 
     #[test]
-    fn resolve_extension_entries_finds_index_js() {
+    fn resolve_extension_entries_ignores_index_js() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ext_dir = dir.path().join("ext");
         fs::create_dir_all(&ext_dir).expect("create dir");
         fs::write(ext_dir.join("index.js"), "export default {}").expect("write");
 
-        let entries = resolve_extension_entries(&ext_dir).expect("entries");
-        assert_eq!(entries, vec![ext_dir.join("index.js")]);
+        assert!(resolve_extension_entries(&ext_dir).is_none());
     }
 
     #[test]
@@ -4762,14 +4781,14 @@ mod tests {
                 "name": "Test",
                 "version": "0.1.0",
                 "api_version": "1.0",
-                "runtime": "js",
-                "entrypoint": "main.js",
+                "runtime": "native-rust",
+                "entrypoint": "main.native.json",
                 "capabilities": []
             }))
             .unwrap(),
         )
         .expect("write manifest");
-        fs::write(ext_dir.join("main.js"), "main").expect("write main");
+        fs::write(ext_dir.join("main.native.json"), "{}").expect("write main");
         fs::write(ext_dir.join("index.ts"), "index").expect("write index");
 
         let entries = resolve_extension_entries(&ext_dir).expect("entries");

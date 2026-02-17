@@ -518,7 +518,7 @@ impl PiApp {
             return None;
         };
 
-        let Some(runtime) = manager.js_runtime() else {
+        let Some(runtime) = manager.runtime() else {
             self.status_message = Some(format!(
                 "Extension command '/{command}' is not available (runtime not enabled)"
             ));
@@ -545,7 +545,7 @@ impl PiApp {
                 .execute_command(
                     command_name,
                     args_str,
-                    ctx_payload,
+                    std::sync::Arc::new(ctx_payload),
                     crate::extensions::EXTENSION_EVENT_TIMEOUT_MS,
                 )
                 .await;
@@ -584,7 +584,7 @@ impl PiApp {
             return None;
         };
 
-        let Some(runtime) = manager.js_runtime() else {
+        let Some(runtime) = manager.runtime() else {
             self.status_message =
                 Some("Extension shortcut not available (runtime not enabled)".to_string());
             return None;
@@ -608,7 +608,7 @@ impl PiApp {
             let result = runtime
                 .execute_shortcut(
                     key_id_owned,
-                    ctx_payload,
+                    std::sync::Arc::new(ctx_payload),
                     crate::extensions::EXTENSION_EVENT_TIMEOUT_MS,
                 )
                 .await;
