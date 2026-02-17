@@ -410,6 +410,34 @@ rch exec -- cargo test --test ci_full_suite_gate -- full_suite_gate --nocapture 
 3. Close or re-scope remaining technical PERF-3X issues; only docs/report residuals are allowed.
 4. Re-run full-suite gate and attach refreshed checkpoint artifact + certification events before closure.
 
+### FrankenNode claim signature: `claim_tier_order_drift`
+
+**Signature:** claim-contract validation reports tier-order drift (or missing canonical
+sequence) for:
+- `TIER-1-EXTENSION-HOST-PARITY`
+- `TIER-2-TARGETED-RUNTIME-PARITY`
+- `TIER-3-FULL-NODE-BUN-REPLACEMENT`
+
+**Artifacts:**
+- `docs/franken-node-claim-gating-contract.json`
+- `tests/full_suite_gate/franken_node_claim_verdict.json`
+- `tests/full_suite_gate/practical_finish_checkpoint.json`
+
+**Replay:**
+```bash
+rch exec -- cargo test --test franken_node_claim_contract -- \
+  franken_node_claim_contract_declares_expected_tier_order -- --nocapture
+rch exec -- cargo test --test release_evidence_gate -- \
+  franken_node_claim_contract_is_present_and_valid --nocapture --exact
+```
+
+**Remediation:**
+1. Restore canonical tier order in `claim_tiers` to Tier-1 -> Tier-2 -> Tier-3.
+2. Ensure every tier still carries non-empty `required_evidence`,
+   `allowed_claim_language`, and `forbidden_claim_language`.
+3. Keep strict replacement gating fail-closed (`overall_verdict = CERTIFIED` required)
+   and regenerate `franken_node_claim_verdict.json` before incident closure.
+
 ---
 
 ## Evidence Artifact Interpretation

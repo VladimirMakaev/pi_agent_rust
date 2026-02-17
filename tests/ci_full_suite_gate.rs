@@ -486,9 +486,7 @@ fn is_post_perf3x_phase7_issue_id(id: &str) -> bool {
 fn is_practical_finish_in_scope_issue_id(id: &str) -> bool {
     // Exclude the top-level PERF-3X epic (rollup parent spanning Phase 6+)
     // and all Post-PERF-3X Phase 7 nodes from practical-finish scope.
-    id.starts_with("bd-3ar8v")
-        && id != "bd-3ar8v"
-        && !is_post_perf3x_phase7_issue_id(id)
+    id.starts_with("bd-3ar8v") && id != "bd-3ar8v" && !is_post_perf3x_phase7_issue_id(id)
 }
 
 #[allow(dead_code)]

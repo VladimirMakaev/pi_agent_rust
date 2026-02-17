@@ -27,6 +27,7 @@ const CI_WORKFLOW_PATH: &str = ".github/workflows/ci.yml";
 const CI_OPERATOR_RUNBOOK_PATH: &str = "docs/ci-operator-runbook.md";
 const SCENARIO_MATRIX_PATH: &str = "docs/e2e_scenario_matrix.json";
 const FULL_SUITE_GATE_PATH: &str = "tests/ci_full_suite_gate.rs";
+const RELEASE_EVIDENCE_GATE_PATH: &str = "tests/release_evidence_gate.rs";
 const PRACTICAL_FINISH_GATE_ID: &str = "practical_finish_checkpoint";
 const EXT_REMEDIATION_GATE_ID: &str = "extension_remediation_backlog";
 const PARAMETER_SWEEPS_GATE_ID: &str = "parameter_sweeps_integrity";
@@ -309,6 +310,28 @@ fn ci_operator_runbook_retains_practical_finish_signature_playbook_tokens() {
     }
 }
 
+#[test]
+fn ci_operator_runbook_retains_franken_node_claim_tier_order_signature_tokens() {
+    let runbook = load_text(CI_OPERATOR_RUNBOOK_PATH);
+    for token in [
+        "### FrankenNode claim signature: `claim_tier_order_drift`",
+        "docs/franken-node-claim-gating-contract.json",
+        "tests/full_suite_gate/franken_node_claim_verdict.json",
+        "TIER-1-EXTENSION-HOST-PARITY",
+        "TIER-2-TARGETED-RUNTIME-PARITY",
+        "TIER-3-FULL-NODE-BUN-REPLACEMENT",
+        "rch exec -- cargo test --test franken_node_claim_contract --",
+        "franken_node_claim_contract_declares_expected_tier_order -- --nocapture",
+        "rch exec -- cargo test --test release_evidence_gate --",
+        "franken_node_claim_contract_is_present_and_valid --nocapture --exact",
+    ] {
+        assert!(
+            runbook.contains(token),
+            "CI operator runbook must retain franken-node claim-tier-order token: {token}"
+        );
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Section 5: Full suite gate has blocking gates
 // ═══════════════════════════════════════════════════════════════════════════
@@ -431,6 +454,37 @@ fn full_suite_gate_keeps_phase1_matrix_claim_integrity_tokens() {
             "full suite gate must retain phase1 matrix claim-integrity token: {token}"
         );
     }
+}
+
+#[test]
+fn release_evidence_gate_retains_canonical_franken_node_tier_order_tokens() {
+    let gate = load_text(RELEASE_EVIDENCE_GATE_PATH);
+    for token in [
+        "FRANKEN_NODE_REQUIRED_TIER_IDS",
+        "\"TIER-1-EXTENSION-HOST-PARITY\"",
+        "\"TIER-2-TARGETED-RUNTIME-PARITY\"",
+        "\"TIER-3-FULL-NODE-BUN-REPLACEMENT\"",
+        "missing required claim tier",
+    ] {
+        assert!(
+            gate.contains(token),
+            "release_evidence_gate must retain franken-node tier-order token: {token}"
+        );
+    }
+
+    let tier1 = gate
+        .find("\"TIER-1-EXTENSION-HOST-PARITY\"")
+        .expect("tier-1 token must exist");
+    let tier2 = gate
+        .find("\"TIER-2-TARGETED-RUNTIME-PARITY\"")
+        .expect("tier-2 token must exist");
+    let tier3 = gate
+        .find("\"TIER-3-FULL-NODE-BUN-REPLACEMENT\"")
+        .expect("tier-3 token must exist");
+    assert!(
+        tier1 < tier2 && tier2 < tier3,
+        "release_evidence_gate must preserve canonical tier token ordering"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
