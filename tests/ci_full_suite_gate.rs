@@ -478,8 +478,17 @@ fn is_open_issue_status(status: &str) -> bool {
 }
 
 #[allow(dead_code)]
+fn is_post_perf3x_phase7_issue_id(id: &str) -> bool {
+    id == "bd-3ar8v.7" || id.starts_with("bd-3ar8v.7.")
+}
+
+#[allow(dead_code)]
 fn is_practical_finish_in_scope_issue_id(id: &str) -> bool {
-    id.starts_with("bd-3ar8v") && !id.starts_with("bd-3ar8v.7")
+    // Exclude the top-level PERF-3X epic (rollup parent spanning Phase 6+)
+    // and all Post-PERF-3X Phase 7 nodes from practical-finish scope.
+    id.starts_with("bd-3ar8v")
+        && id != "bd-3ar8v"
+        && !is_post_perf3x_phase7_issue_id(id)
 }
 
 #[allow(dead_code)]
@@ -1976,8 +1985,7 @@ fn check_conformance_stress_lineage_coherence(root: &Path) -> (String, Option<St
         }
         None => {
             issues.push(format!(
-                "conformance_summary.json not found or invalid at {}",
-                CONFORMANCE_SUMMARY_ARTIFACT_REL
+                "conformance_summary.json not found or invalid at {CONFORMANCE_SUMMARY_ARTIFACT_REL}"
             ));
         }
     }
@@ -2004,8 +2012,7 @@ fn check_conformance_stress_lineage_coherence(root: &Path) -> (String, Option<St
         }
         None => {
             issues.push(format!(
-                "stress_triage.json not found or invalid at {}",
-                STRESS_TRIAGE_ARTIFACT_REL
+                "stress_triage.json not found or invalid at {STRESS_TRIAGE_ARTIFACT_REL}"
             ));
         }
     }
@@ -4360,6 +4367,101 @@ fn practical_finish_report_falls_back_to_snapshot_when_beads_sources_missing() {
 }
 
 #[test]
+fn practical_finish_source_selection_prefers_freshest_candidate() {
+    let selected = select_practical_finish_issue_source(vec![
+        (
+            1_000,
+            0,
+            ".beads/issues.jsonl",
+            PathBuf::from(".beads/issues.jsonl"),
+            "{\"id\":\"bd-3ar8v.6.2\"}".to_string(),
+        ),
+        (
+            2_000,
+            2,
+            PRACTICAL_FINISH_SNAPSHOT_PATH,
+            PathBuf::from(PRACTICAL_FINISH_SNAPSHOT_PATH),
+            "{\"id\":\"bd-3ar8v.6.5\"}".to_string(),
+        ),
+    ])
+    .expect("newest source candidate should be selected");
+
+    assert_eq!(
+        selected.0, PRACTICAL_FINISH_SNAPSHOT_PATH,
+        "freshness should dominate source selection"
+    );
+}
+
+#[test]
+fn practical_finish_source_selection_uses_source_order_for_ties() {
+    let selected = select_practical_finish_issue_source(vec![
+        (
+            5_000,
+            1,
+            ".beads/beads.base.jsonl",
+            PathBuf::from(".beads/beads.base.jsonl"),
+            "{\"id\":\"bd-3ar8v.6.2\"}".to_string(),
+        ),
+        (
+            5_000,
+            0,
+            ".beads/issues.jsonl",
+            PathBuf::from(".beads/issues.jsonl"),
+            "{\"id\":\"bd-3ar8v.6.5\"}".to_string(),
+        ),
+    ])
+    .expect("tie should resolve deterministically by source order");
+
+    assert_eq!(
+        selected.0, ".beads/issues.jsonl",
+        "when freshness ties, source order should prefer live issues first"
+    );
+}
+
+#[test]
+fn practical_finish_report_prefers_fresh_snapshot_over_stale_live_issues() {
+    let temp = tempfile::tempdir().expect("create tempdir");
+    write_practical_finish_issue_fixture(
+        temp.path(),
+        &[serde_json::json!({
+            "id": "bd-3ar8v.6.2",
+            "status": "open",
+            "issue_type": "task",
+            "title": "Stale technical blocker from remote cache",
+            "labels": ["perf-3x", "tuning"]
+        })],
+    );
+
+    // Some filesystems have coarse mtime granularity; ensure snapshot is newer.
+    std::thread::sleep(std::time::Duration::from_millis(1_100));
+    write_practical_finish_issue_fixture_to(
+        temp.path(),
+        PRACTICAL_FINISH_SNAPSHOT_PATH,
+        &[serde_json::json!({
+            "id": "bd-3ar8v.6.5",
+            "status": "open",
+            "issue_type": "task",
+            "title": "Final report and go/no-go summary",
+            "labels": ["report"]
+        })],
+    );
+
+    let report = build_practical_finish_checkpoint_report(temp.path());
+    assert_eq!(
+        report.status, "pass",
+        "fresh snapshot should supersede stale live issue cache"
+    );
+    assert!(
+        report.technical_completion_reached,
+        "fresh docs-only snapshot should mark technical completion reached"
+    );
+    assert_eq!(report.residual_open_scope, "docs_or_report_only");
+    assert_eq!(report.open_perf3x_count, 1);
+    assert_eq!(report.technical_open_count, 0);
+    assert_eq!(report.docs_or_report_open_count, 1);
+}
+
+#[test]
 fn practical_finish_report_passes_with_no_open_perf3x_issues() {
     let temp = tempfile::tempdir().expect("create tempdir");
     write_practical_finish_issue_fixture(temp.path(), &[]);
@@ -4425,6 +4527,30 @@ fn practical_finish_report_ignores_rollup_parent_nodes() {
 }
 
 #[test]
+fn practical_finish_scope_only_excludes_phase7_branch_tokens() {
+    assert!(
+        !is_practical_finish_in_scope_issue_id("bd-3ar8v"),
+        "top-level PERF-3X epic must stay out of practical-finish scope (spans Phase 6+)"
+    );
+    assert!(
+        !is_practical_finish_in_scope_issue_id("bd-3ar8v.7"),
+        "phase-7 root must stay out of practical-finish blocker scope"
+    );
+    assert!(
+        !is_practical_finish_in_scope_issue_id("bd-3ar8v.7.2"),
+        "phase-7 descendants must stay out of practical-finish blocker scope"
+    );
+    assert!(
+        is_practical_finish_in_scope_issue_id("bd-3ar8v.70"),
+        "non-phase7 ids sharing numeric prefix must remain in scope"
+    );
+    assert!(
+        is_practical_finish_in_scope_issue_id("bd-3ar8v.70.4"),
+        "descendants of non-phase7 numeric prefixes must remain in scope"
+    );
+}
+
+#[test]
 fn practical_finish_report_excludes_post_perf3x_phase7_nodes() {
     let temp = tempfile::tempdir().expect("create tempdir");
     write_practical_finish_issue_fixture(
@@ -4459,6 +4585,48 @@ fn practical_finish_report_excludes_post_perf3x_phase7_nodes() {
     assert_eq!(report.open_perf3x_count, 1);
     assert_eq!(report.technical_open_count, 0);
     assert_eq!(report.docs_or_report_open_count, 1);
+}
+
+#[test]
+fn practical_finish_report_keeps_non_phase7_numeric_prefix_ids_in_scope() {
+    let temp = tempfile::tempdir().expect("create tempdir");
+    write_practical_finish_issue_fixture(
+        temp.path(),
+        &[
+            serde_json::json!({
+                "id": "bd-3ar8v.7.2",
+                "status": "open",
+                "issue_type": "task",
+                "title": "Post-PERF-3X follow-on runtime hardening",
+                "labels": ["perf-3x"]
+            }),
+            serde_json::json!({
+                "id": "bd-3ar8v.70",
+                "status": "open",
+                "issue_type": "task",
+                "title": "In-scope technical blocker with similar numeric prefix",
+                "labels": ["perf-3x"]
+            }),
+        ],
+    );
+
+    let report = build_practical_finish_checkpoint_report(temp.path());
+    assert_eq!(
+        report.status, "fail",
+        "non-phase7 numeric-prefix ids must remain practical-finish blockers"
+    );
+    assert_eq!(report.open_perf3x_count, 1);
+    assert_eq!(report.technical_open_count, 1);
+    assert_eq!(report.docs_or_report_open_count, 0);
+    let detail = report.detail.unwrap_or_default();
+    assert!(
+        detail.contains("bd-3ar8v.70"),
+        "in-scope blocker id must appear in failure detail: {detail}"
+    );
+    assert!(
+        !detail.contains("bd-3ar8v.7.2"),
+        "phase-7 descendant should remain excluded from blocker detail: {detail}"
+    );
 }
 
 #[test]

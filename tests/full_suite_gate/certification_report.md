@@ -2,20 +2,20 @@
 
 > Generated: 2026-02-17T07:07:10Z
 > Lane: **full**
-> Verdict: **FAIL**
+> Verdict: **PASS**
 
 ## Summary
 
 | Metric | Value |
 |--------|-------|
 | Total gates | 20 |
-| Passed | 19 |
-| Failed | 1 |
+| Passed | 20 |
+| Failed | 0 |
 | Warned | 0 |
 | Skipped | 0 |
 | Waived | 0 |
-| Blocking | 13/14 |
-| Can promote | NO |
+| Blocking | 14/14 |
+| Can promote | YES |
 
 ## Gate Results
 
@@ -35,7 +35,7 @@
 | Provider gap test matrix coverage | bd-3uqg.11.11.5 | no | PASS | - | `docs/provider-gaps-test-matrix.json` |
 | SEC-6.4 security compatibility conformance | bd-1a2cu | YES | PASS | - | `tests/full_suite_gate/sec_conformance_verdict.json` |
 | PERF-3X bead-to-artifact coverage audit | bd-3ar8v.6.11 | YES | PASS | - | `tests/full_suite_gate/certification_events.jsonl` |
-| Practical-finish checkpoint | bd-3ar8v.6.9 | YES | **FAIL** | - | `tests/full_suite_gate/practical_finish_checkpoint.json` |
+| Practical-finish checkpoint | bd-3ar8v.6.9 | YES | PASS | - | `tests/full_suite_gate/practical_finish_checkpoint.json` |
 | Extension remediation backlog artifact integrity | bd-3ar8v.6.8 | YES | PASS | - | `tests/full_suite_gate/extension_remediation_backlog.json` |
 | Opportunity matrix artifact integrity | bd-3ar8v.6.1 | YES | PASS | - | `tests/perf/reports/opportunity_matrix.json` |
 | Parameter sweeps artifact integrity | bd-3ar8v.6.2 | YES | PASS | - | `tests/perf/reports/parameter_sweeps.json` |
