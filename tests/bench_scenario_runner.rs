@@ -689,6 +689,7 @@ fn write_jsonl(records: &[Value], path: &Path) {
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn run_scenario_suite_and_emit_jsonl() {
     let records = run_all_scenarios().expect("scenario suite should complete");
 
