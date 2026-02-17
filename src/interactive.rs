@@ -60,8 +60,6 @@ use crate::tools::{process_file_arguments, resolve_read_path};
 
 #[cfg(all(feature = "clipboard", feature = "image-resize"))]
 use arboard::Clipboard as ArboardClipboard;
-#[cfg(feature = "clipboard")]
-use clipboard::{ClipboardContext, ClipboardProvider};
 
 mod agent;
 mod commands;

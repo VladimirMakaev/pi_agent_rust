@@ -7,7 +7,7 @@ use url::Url;
 use super::{AgentState, Cmd, PiApp, PiMsg};
 
 #[cfg(feature = "clipboard")]
-use clipboard::{ClipboardContext, ClipboardProvider};
+use arboard::Clipboard as ArboardClipboard;
 
 pub(super) fn run_command_output(
     program: &str,
@@ -404,8 +404,9 @@ impl PiApp {
             // Copy viewer URL to clipboard (best-effort).
             #[cfg(feature = "clipboard")]
             {
-                let _ = ClipboardProvider::new()
-                    .and_then(|mut ctx: ClipboardContext| ctx.set_contents(share_url.clone()));
+                if let Ok(mut clipboard) = ArboardClipboard::new() {
+                    let _ = clipboard.set_text(share_url.clone());
+                }
             }
 
             let privacy = if is_public { "public" } else { "private" };

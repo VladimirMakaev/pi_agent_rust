@@ -2,6 +2,9 @@ use super::*;
 
 use crate::models::ModelEntry;
 
+#[cfg(feature = "clipboard")]
+use arboard::Clipboard as ArboardClipboard;
+
 /// Available slash commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlashCommand {
@@ -521,6 +524,7 @@ fn build_reload_diagnostics(
 }
 
 impl PiApp {
+    #[allow(clippy::too_many_lines)]
     pub(super) fn submit_oauth_code(
         &mut self,
         code_input: &str,
@@ -540,6 +544,7 @@ impl PiApp {
             kind,
             verifier,
             oauth_config,
+            device_code,
         } = pending;
         let code_input = code_input.to_string();
 
@@ -565,6 +570,34 @@ impl PiApp {
                             &verifier,
                         ))
                         .await
+                    } else if provider == "github-copilot" || provider == "copilot" {
+                        let client_id =
+                            std::env::var("GITHUB_COPILOT_CLIENT_ID").unwrap_or_default();
+                        let copilot_config = crate::auth::CopilotOAuthConfig {
+                            client_id,
+                            ..crate::auth::CopilotOAuthConfig::default()
+                        };
+                        Box::pin(crate::auth::complete_copilot_browser_oauth(
+                            &copilot_config,
+                            &code_input,
+                            &verifier,
+                        ))
+                        .await
+                    } else if provider == "gitlab" || provider == "gitlab-duo" {
+                        let client_id = std::env::var("GITLAB_CLIENT_ID").unwrap_or_default();
+                        let base_url = std::env::var("GITLAB_BASE_URL")
+                            .unwrap_or_else(|_| "https://gitlab.com".to_string());
+                        let gitlab_config = crate::auth::GitLabOAuthConfig {
+                            client_id,
+                            base_url,
+                            ..crate::auth::GitLabOAuthConfig::default()
+                        };
+                        Box::pin(crate::auth::complete_gitlab_oauth(
+                            &gitlab_config,
+                            &code_input,
+                            &verifier,
+                        ))
+                        .await
                     } else if let Some(config) = &oauth_config {
                         Box::pin(crate::auth::complete_extension_oauth(
                             config,
@@ -578,6 +611,37 @@ impl PiApp {
                         )))
                     }
                 }
+                PendingLoginKind::DeviceFlow => match device_code {
+                    Some(dc) => {
+                        let client_id =
+                            std::env::var("GITHUB_COPILOT_CLIENT_ID").unwrap_or_default();
+                        let copilot_config = crate::auth::CopilotOAuthConfig {
+                            client_id,
+                            ..crate::auth::CopilotOAuthConfig::default()
+                        };
+                        let poll_result =
+                            Box::pin(crate::auth::poll_copilot_device_flow(&copilot_config, &dc))
+                                .await;
+                        match poll_result {
+                            crate::auth::DeviceFlowPollResult::Success(cred) => Ok(cred),
+                            crate::auth::DeviceFlowPollResult::Error(e) => {
+                                Err(crate::error::Error::auth(e))
+                            }
+                            crate::auth::DeviceFlowPollResult::Expired => {
+                                Err(crate::error::Error::auth("Device code expired".to_string()))
+                            }
+                            crate::auth::DeviceFlowPollResult::AccessDenied => {
+                                Err(crate::error::Error::auth("Access denied".to_string()))
+                            }
+                            other => Err(crate::error::Error::auth(format!(
+                                "Unexpected device flow state: {other:?}"
+                            ))),
+                        }
+                    }
+                    None => Err(crate::error::Error::auth(
+                        "Device flow missing device_code".to_string(),
+                    )),
+                },
             };
 
             let credential = match credential {
@@ -598,7 +662,7 @@ impl PiApp {
                 PendingLoginKind::ApiKey => {
                     format!("API key saved for {provider}. Credentials saved to auth.json.")
                 }
-                PendingLoginKind::OAuth => {
+                PendingLoginKind::OAuth | PendingLoginKind::DeviceFlow => {
                     format!(
                         "OAuth login successful for {provider}. Credentials saved to auth.json."
                     )
@@ -1191,8 +1255,8 @@ impl PiApp {
 
                 #[cfg(feature = "clipboard")]
                 {
-                    match ClipboardProvider::new()
-                        .and_then(|mut ctx: ClipboardContext| ctx.set_contents(text.clone()))
+                    match ArboardClipboard::new()
+                        .and_then(|mut clipboard| clipboard.set_text(text.clone()))
                     {
                         Ok(()) => self.status_message = Some("Copied to clipboard".to_string()),
                         Err(err) => match write_fallback(&text) {
@@ -1350,6 +1414,7 @@ impl PiApp {
                 kind: PendingLoginKind::ApiKey,
                 verifier: String::new(),
                 oauth_config: None,
+                device_code: None,
             });
             self.input_mode = InputMode::SingleLine;
             self.set_input_height(3);
@@ -1357,9 +1422,26 @@ impl PiApp {
             return None;
         }
 
-        // Look up OAuth config: built-in (anthropic) or extension-registered.
+        // Look up OAuth config: built-in (anthropic, copilot, gitlab) or extension-registered.
         let oauth_result = if provider == "anthropic" {
             crate::auth::start_anthropic_oauth().map(|info| (info, None))
+        } else if provider == "github-copilot" || provider == "copilot" {
+            let client_id = std::env::var("GITHUB_COPILOT_CLIENT_ID").unwrap_or_default();
+            let copilot_config = crate::auth::CopilotOAuthConfig {
+                client_id,
+                ..crate::auth::CopilotOAuthConfig::default()
+            };
+            crate::auth::start_copilot_browser_oauth(&copilot_config).map(|info| (info, None))
+        } else if provider == "gitlab" || provider == "gitlab-duo" {
+            let client_id = std::env::var("GITLAB_CLIENT_ID").unwrap_or_default();
+            let base_url = std::env::var("GITLAB_BASE_URL")
+                .unwrap_or_else(|_| "https://gitlab.com".to_string());
+            let gitlab_config = crate::auth::GitLabOAuthConfig {
+                client_id,
+                base_url,
+                ..crate::auth::GitLabOAuthConfig::default()
+            };
+            crate::auth::start_gitlab_oauth(&gitlab_config).map(|info| (info, None))
         } else {
             // Check extension providers for OAuth config.
             let ext_oauth = self
@@ -1410,6 +1492,7 @@ impl PiApp {
                     kind: PendingLoginKind::OAuth,
                     verifier: info.verifier,
                     oauth_config: ext_config,
+                    device_code: None,
                 });
                 self.input_mode = InputMode::SingleLine;
                 self.set_input_height(3);

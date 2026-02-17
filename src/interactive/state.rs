@@ -20,6 +20,9 @@ use serde_json::Value;
 pub(super) enum PendingLoginKind {
     OAuth,
     ApiKey,
+    /// GitHub Copilot device flow (RFC 8628) — user enters user_code at verification URL,
+    /// then Pi polls for the access token.
+    DeviceFlow,
 }
 
 #[derive(Debug, Clone)]
@@ -29,6 +32,8 @@ pub(super) struct PendingOAuth {
     pub(super) verifier: String,
     /// OAuth config for extension-registered providers (None for built-in like anthropic).
     pub(super) oauth_config: Option<OAuthConfig>,
+    /// Device code for Copilot device flow — stored here so the polling step can use it.
+    pub(super) device_code: Option<String>,
 }
 
 /// Tool output line count above which blocks auto-collapse.
