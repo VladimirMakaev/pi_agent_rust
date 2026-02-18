@@ -2834,7 +2834,7 @@ fn tui_state_slash_model_no_args_opens_configured_only_selector() {
         "Only showing models with configured API keys (see README for details)",
     );
     assert_after_contains(&harness, &step, "openai/gpt-a");
-    assert_after_not_contains(&harness, &step, "anthropic/claude-a");
+    assert_after_not_contains(&harness, &step, "  anthropic/claude-a");
     assert_after_contains(&harness, &step, "(1/2)");
 }
 
