@@ -120,14 +120,21 @@ impl OpenAIResponsesProvider {
         let instructions = context.system_prompt.as_deref().map(ToString::to_string);
 
         // Codex mode requires additional fields per the TS reference implementation.
+        // tool_choice and parallel_tool_calls are always sent (not conditional on tools).
         let (tool_choice, parallel_tool_calls, text, include, reasoning) = if self.codex_mode {
+            let effort = options
+                .thinking_level
+                .as_ref()
+                .map_or_else(|| "high".to_string(), ToString::to_string);
             (
-                if tools.is_some() { Some("auto") } else { None },
-                if tools.is_some() { Some(true) } else { None },
-                Some(OpenAIResponsesTextConfig { verbosity: "medium" }),
+                Some("auto"),
+                Some(true),
+                Some(OpenAIResponsesTextConfig {
+                    verbosity: "medium",
+                }),
                 Some(vec!["reasoning.encrypted_content"]),
                 Some(OpenAIResponsesReasoning {
-                    effort: "high".to_string(),
+                    effort,
                     summary: Some("auto"),
                 }),
             )
@@ -140,7 +147,11 @@ impl OpenAIResponsesProvider {
             input,
             instructions,
             temperature: options.temperature,
-            max_output_tokens: options.max_tokens.or(Some(DEFAULT_MAX_OUTPUT_TOKENS)),
+            max_output_tokens: if self.codex_mode {
+                None
+            } else {
+                options.max_tokens.or(Some(DEFAULT_MAX_OUTPUT_TOKENS))
+            },
             tools,
             stream: true,
             store: false,
