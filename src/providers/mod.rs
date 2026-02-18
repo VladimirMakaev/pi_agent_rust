@@ -2072,6 +2072,32 @@ export default function init(pi) {
         );
     }
 
+    // ── normalize_anthropic_base ───────────────────────────────────
+
+    #[test]
+    fn normalize_anthropic_base_appends_v1_messages() {
+        assert_eq!(
+            normalize_anthropic_base("https://api.anthropic.com"),
+            "https://api.anthropic.com/v1/messages"
+        );
+    }
+
+    #[test]
+    fn normalize_anthropic_base_keeps_existing_v1_messages() {
+        assert_eq!(
+            normalize_anthropic_base("https://api.anthropic.com/v1/messages"),
+            "https://api.anthropic.com/v1/messages"
+        );
+    }
+
+    #[test]
+    fn normalize_anthropic_base_strips_trailing_slash() {
+        assert_eq!(
+            normalize_anthropic_base("https://api.anthropic.com/"),
+            "https://api.anthropic.com/v1/messages"
+        );
+    }
+
     // ── normalize_openai_base ───────────────────────────────────────
 
     #[test]
@@ -2195,6 +2221,15 @@ export default function init(pi) {
         use proptest::prelude::*;
 
         proptest! {
+            #[test]
+            fn normalize_anthropic_base_is_idempotent_and_targets_v1_messages(
+                base in "[A-Za-z0-9:/._-]{1,96}"
+            ) {
+                let normalized = normalize_anthropic_base(&base);
+                prop_assert!(normalized.ends_with("/v1/messages"));
+                prop_assert_eq!(normalize_anthropic_base(&normalized), normalized);
+            }
+
             #[test]
             fn normalize_openai_base_is_idempotent_and_targets_chat_completions(
                 base in "[A-Za-z0-9:/._-]{1,96}"
