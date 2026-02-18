@@ -1576,7 +1576,7 @@ mod tests {
             .expect("captured request for required headers");
         assert_eq!(
             captured.headers.get("x-api-key").map(String::as_str),
-            Some("test-key")
+            Some("sk-ant-test-key")
         );
         assert_eq!(
             captured
@@ -1770,7 +1770,7 @@ mod tests {
     }
 
     fn run_stream_and_capture_headers(cache_retention: CacheRetention) -> Option<CapturedRequest> {
-        run_stream_and_capture_headers_with_api_key(cache_retention, "test-key")
+        run_stream_and_capture_headers_with_api_key(cache_retention, "sk-ant-test-key")
     }
 
     fn run_stream_and_capture_headers_with_api_key(
@@ -1836,7 +1836,7 @@ mod tests {
             tools: Vec::new().into(),
         };
         let options = StreamOptions {
-            api_key: Some("test-key".to_string()),
+            api_key: Some("sk-ant-test-key".to_string()),
             ..Default::default()
         };
 
@@ -2112,7 +2112,7 @@ mod tests {
             tools: Vec::new().into(),
         };
         let options = StreamOptions {
-            api_key: Some("test-key".to_string()),
+            api_key: Some("sk-ant-test-key".to_string()),
             ..Default::default()
         };
 
@@ -2144,7 +2144,7 @@ mod tests {
         // Standard headers should still be present
         assert_eq!(
             captured.headers.get("x-api-key").map(String::as_str),
-            Some("test-key"),
+            Some("sk-ant-test-key"),
         );
     }
 
@@ -2166,7 +2166,7 @@ mod tests {
             tools: Vec::new().into(),
         };
         let options = StreamOptions {
-            api_key: Some("test-key".to_string()),
+            api_key: Some("sk-ant-test-key".to_string()),
             ..Default::default()
         };
 
@@ -2188,7 +2188,7 @@ mod tests {
         // Standard Anthropic headers present, no custom headers
         assert_eq!(
             captured.headers.get("x-api-key").map(String::as_str),
-            Some("test-key"),
+            Some("sk-ant-test-key"),
         );
         assert!(
             !captured.headers.contains_key("x-custom-tag"),
