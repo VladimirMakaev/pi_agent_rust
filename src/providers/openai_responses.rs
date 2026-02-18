@@ -119,6 +119,22 @@ impl OpenAIResponsesProvider {
 
         let instructions = context.system_prompt.as_deref().map(ToString::to_string);
 
+        // Codex mode requires additional fields per the TS reference implementation.
+        let (tool_choice, parallel_tool_calls, text, include, reasoning) = if self.codex_mode {
+            (
+                if tools.is_some() { Some("auto") } else { None },
+                if tools.is_some() { Some(true) } else { None },
+                Some(OpenAIResponsesTextConfig { verbosity: "medium" }),
+                Some(vec!["reasoning.encrypted_content"]),
+                Some(OpenAIResponsesReasoning {
+                    effort: "high".to_string(),
+                    summary: Some("auto"),
+                }),
+            )
+        } else {
+            (None, None, None, None, None)
+        };
+
         OpenAIResponsesRequest {
             model: self.model.clone(),
             input,
@@ -127,6 +143,12 @@ impl OpenAIResponsesProvider {
             max_output_tokens: options.max_tokens.or(Some(DEFAULT_MAX_OUTPUT_TOKENS)),
             tools,
             stream: true,
+            store: false,
+            tool_choice,
+            parallel_tool_calls,
+            text,
+            include,
+            reasoning,
         }
     }
 }
@@ -752,6 +774,29 @@ pub struct OpenAIResponsesRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<OpenAIResponsesTool>>,
     stream: bool,
+    store: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parallel_tool_calls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<OpenAIResponsesTextConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    include: Option<Vec<&'static str>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<OpenAIResponsesReasoning>,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAIResponsesTextConfig {
+    verbosity: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAIResponsesReasoning {
+    effort: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize)]
