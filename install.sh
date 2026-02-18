@@ -1558,6 +1558,15 @@ download_release_binary() {
     candidates+=("pi-${TARGET}${EXE_EXT}|${base_l}/pi-${TARGET}${EXE_EXT}")
     candidates+=("pi-${OS}-${ARCH}${EXE_EXT}|${base_v}/pi-${OS}-${ARCH}${EXE_EXT}")
     candidates+=("pi-${OS}-${ARCH}${EXE_EXT}|${base_l}/pi-${OS}-${ARCH}${EXE_EXT}")
+    # dsr-style naming: pi_<os>_<arch> with underscores (e.g. pi_darwin_arm64)
+    if [ -n "$ASSET_PLATFORM" ]; then
+      local dsr_name="pi_${ASSET_PLATFORM//-/_}${EXE_EXT}"
+      candidates+=("${dsr_name}|${base_v}/${dsr_name}")
+      candidates+=("${dsr_name}|${base_l}/${dsr_name}")
+    fi
+    # Bare binary name (dsr uploads Linux as just "pi")
+    candidates+=("pi${EXE_EXT}|${base_v}/pi${EXE_EXT}")
+    candidates+=("pi${EXE_EXT}|${base_l}/pi${EXE_EXT}")
   fi
 
   local entry=""
