@@ -193,16 +193,19 @@ fn build_google_cli_request(
     project_id: &str,
     request: GeminiRequest,
     is_antigravity: bool,
-) -> CloudCodeAssistRequest {
+) -> std::result::Result<CloudCodeAssistRequest, &'static str> {
     let safe_project = project_id.trim();
-    let project = if safe_project.is_empty() {
-        "default-project".to_string()
-    } else if safe_project.starts_with("projects/") {
+    if safe_project.is_empty() {
+        return Err(
+            "Missing Google Cloud project ID for Gemini CLI. Set GOOGLE_CLOUD_PROJECT (or configure gcloud) and re-authenticate with /login google-gemini-cli.",
+        );
+    }
+    let project = if safe_project.starts_with("projects/") {
         safe_project.to_string()
     } else {
         format!("projects/{safe_project}/locations/global")
     };
-    CloudCodeAssistRequest {
+    Ok(CloudCodeAssistRequest {
         project,
         model: model_id.to_string(),
         request,
@@ -217,7 +220,7 @@ fn build_google_cli_request(
             if is_antigravity { "agent" } else { "pi" },
             uuid::Uuid::new_v4().simple()
         ),
-    }
+    })
 }
 
 fn decode_project_scoped_access_payload(payload: &str) -> Option<(String, String)> {
@@ -233,8 +236,7 @@ fn decode_project_scoped_access_payload(payload: &str) -> Option<(String, String
         .or_else(|| value.get("project_id"))
         .and_then(serde_json::Value::as_str)
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("default-project")
+        .filter(|value| !value.is_empty())?
         .to_string();
     Some((token, project_id))
 }
@@ -276,7 +278,7 @@ impl Provider for GeminiProvider {
                 .ok_or_else(|| {
                     Error::provider(
                         self.name(),
-                        "Invalid Google Gemini CLI OAuth payload. Run /login again.",
+                        "Invalid Google Gemini CLI OAuth payload (expected JSON {token, projectId}). Run /login google-gemini-cli again.",
                     )
                 })?;
             let is_antigravity = self.provider.eq_ignore_ascii_case("google-antigravity");
@@ -311,12 +313,10 @@ impl Provider for GeminiProvider {
                 request = request.header(key, value);
             }
 
-            let request = request.json(&build_google_cli_request(
-                &self.model,
-                &project_id,
-                request_body,
-                is_antigravity,
-            ))?;
+            let cli_request =
+                build_google_cli_request(&self.model, &project_id, request_body, is_antigravity)
+                    .map_err(|message| Error::provider(self.name(), message.to_string()))?;
+            let request = request.json(&cli_request)?;
             let response = Box::pin(request.send()).await?;
             let status = response.status();
             if !(200..300).contains(&status) {
