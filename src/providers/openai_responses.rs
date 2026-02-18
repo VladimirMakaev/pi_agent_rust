@@ -296,28 +296,21 @@ impl Provider for OpenAIResponsesProvider {
             ));
         }
 
+        // Validate Content-Type when present. If the header is missing entirely
+        // (as with some OpenAI Codex endpoints), proceed optimistically since the
+        // SSE parser will fail gracefully on non-SSE data. If the header IS present
+        // and indicates a non-streaming type, reject early.
         let content_type = response
             .headers()
             .iter()
             .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
             .map(|(_, value)| value.to_ascii_lowercase());
-        if !content_type
-            .as_deref()
-            .is_some_and(|value| value.contains("text/event-stream"))
-        {
-            let message = content_type.map_or_else(
-                || {
-                    format!(
-                        "OpenAI API protocol error (HTTP {status}): missing Content-Type (expected text/event-stream)"
-                    )
-                },
-                |value| {
-                    format!(
-                        "OpenAI API protocol error (HTTP {status}): unexpected Content-Type {value} (expected text/event-stream)"
-                    )
-                },
-            );
-            return Err(Error::api(message));
+        if let Some(ref ct) = content_type {
+            if !ct.contains("text/event-stream") && !ct.contains("application/x-ndjson") {
+                return Err(Error::api(format!(
+                    "OpenAI API protocol error (HTTP {status}): unexpected Content-Type {ct} (expected text/event-stream)"
+                )));
+            }
         }
 
         let event_source = SseStream::new(response.bytes_stream());
