@@ -17,6 +17,7 @@ use futures::StreamExt;
 use futures::TryStreamExt;
 use futures::stream::{self, BoxStream};
 use std::pin::Pin;
+use std::sync::OnceLock;
 use std::task::{Context, Poll};
 
 const DEFAULT_USER_AGENT: &str = concat!("pi_agent_rust/", env!("CARGO_PKG_VERSION"));
@@ -25,7 +26,22 @@ const MAX_HEADER_BYTES: usize = 64 * 1024;
 const READ_CHUNK_BYTES: usize = 16 * 1024;
 const MAX_BUFFERED_BYTES: usize = 256 * 1024;
 const MAX_TEXT_BODY_BYTES: usize = 50 * 1024 * 1024;
-const DEFAULT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 60;
+
+fn default_request_timeout_from_env() -> Option<std::time::Duration> {
+    static REQUEST_TIMEOUT: OnceLock<Option<std::time::Duration>> = OnceLock::new();
+    *REQUEST_TIMEOUT.get_or_init(|| {
+        let timeout_secs = std::env::var("PI_HTTP_REQUEST_TIMEOUT_SECS")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u64>().ok())
+            .unwrap_or(DEFAULT_REQUEST_TIMEOUT_SECS);
+        if timeout_secs == 0 {
+            None
+        } else {
+            Some(std::time::Duration::from_secs(timeout_secs))
+        }
+    })
+}
 
 #[derive(Debug, Clone)]
 pub struct Client {
@@ -111,7 +127,7 @@ impl<'a> RequestBuilder<'a> {
             url: url.to_string(),
             headers: Vec::new(),
             body: Vec::new(),
-            timeout: Some(DEFAULT_REQUEST_TIMEOUT),
+            timeout: default_request_timeout_from_env(),
         }
     }
 
@@ -1230,7 +1246,10 @@ mod tests {
     fn request_builder_default_timeout() {
         let client = Client::new();
         let builder = client.get("https://api.example.com");
-        assert_eq!(builder.timeout, Some(DEFAULT_REQUEST_TIMEOUT));
+        assert_eq!(
+            builder.timeout,
+            Some(std::time::Duration::from_secs(DEFAULT_REQUEST_TIMEOUT_SECS))
+        );
     }
 
     #[test]
