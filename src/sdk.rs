@@ -1801,7 +1801,7 @@ mod tests {
         }));
 
         let event = AgentEvent::AgentStart {
-            session_id: "test-123".to_string(),
+            session_id: "test-123".into(),
         };
         listeners.notify(&event);
 
@@ -1812,7 +1812,7 @@ mod tests {
         drop(events);
         assert!(listeners.unsubscribe(id));
         listeners.notify(&AgentEvent::AgentStart {
-            session_id: "test-456".to_string(),
+            session_id: "test-456".into(),
         });
         assert_eq!(received.lock().expect("lock").len(), 1);
     }
@@ -1840,7 +1840,7 @@ mod tests {
         }));
 
         listeners.notify(&AgentEvent::AgentStart {
-            session_id: "s".to_string(),
+            session_id: "s".into(),
         });
 
         assert_eq!(*count_a.lock().expect("lock"), 1);

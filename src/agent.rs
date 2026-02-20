@@ -1059,9 +1059,7 @@ impl Agent {
                     sent_start = true;
                     on_event(AgentEvent::MessageUpdate {
                         message: Message::Assistant(Arc::clone(&shared)),
-                        assistant_message_event: AssistantMessageEvent::Start {
-                            partial: shared,
-                        },
+                        assistant_message_event: AssistantMessageEvent::Start { partial: shared },
                     });
                 }
                 StreamEvent::TextStart { content_index, .. } => {
@@ -1166,11 +1164,10 @@ impl Agent {
                         }
                         on_event(AgentEvent::MessageUpdate {
                             message: Message::Assistant(Arc::clone(&shared)),
-                            assistant_message_event:
-                                AssistantMessageEvent::ThinkingStart {
-                                    content_index,
-                                    partial: shared,
-                                },
+                            assistant_message_event: AssistantMessageEvent::ThinkingStart {
+                                content_index,
+                                partial: shared,
+                            },
                         });
                     }
                 }
@@ -1197,12 +1194,11 @@ impl Agent {
                         }
                         on_event(AgentEvent::MessageUpdate {
                             message: Message::Assistant(Arc::clone(&shared)),
-                            assistant_message_event:
-                                AssistantMessageEvent::ThinkingDelta {
-                                    content_index,
-                                    delta,
-                                    partial: shared,
-                                },
+                            assistant_message_event: AssistantMessageEvent::ThinkingDelta {
+                                content_index,
+                                delta,
+                                partial: shared,
+                            },
                         });
                     }
                 }
@@ -1257,11 +1253,10 @@ impl Agent {
                         }
                         on_event(AgentEvent::MessageUpdate {
                             message: Message::Assistant(Arc::clone(&shared)),
-                            assistant_message_event:
-                                AssistantMessageEvent::ToolCallStart {
-                                    content_index,
-                                    partial: shared,
-                                },
+                            assistant_message_event: AssistantMessageEvent::ToolCallStart {
+                                content_index,
+                                partial: shared,
+                            },
                         });
                     }
                 }
@@ -1282,12 +1277,11 @@ impl Agent {
                         }
                         on_event(AgentEvent::MessageUpdate {
                             message: Message::Assistant(Arc::clone(&shared)),
-                            assistant_message_event:
-                                AssistantMessageEvent::ToolCallDelta {
-                                    content_index,
-                                    delta,
-                                    partial: shared,
-                                },
+                            assistant_message_event: AssistantMessageEvent::ToolCallDelta {
+                                content_index,
+                                delta,
+                                partial: shared,
+                            },
                         });
                     }
                 }

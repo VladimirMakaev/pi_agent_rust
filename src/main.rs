@@ -10,11 +10,12 @@
 #![allow(dead_code, clippy::unused_async)]
 
 use std::fmt::Write as _;
+use std::fs;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::{Result, bail};
 use asupersync::runtime::reactor::create_reactor;
@@ -51,8 +52,9 @@ use pi::session::Session;
 use pi::session_index::SessionIndex;
 use pi::tools::ToolRegistry;
 use pi::tui::PiConsole;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tracing_subscriber::EnvFilter;
 
 const EXIT_CODE_FAILURE: i32 = 1;
@@ -194,13 +196,50 @@ fn main_impl() -> Result<()> {
 
             if !compat_scan_enabled && !has_cli_extensions {
                 // Note: we intentionally skip OAuth refresh here to keep this path fast and offline.
-                let auth = AuthStorage::load(Config::auth_path())?;
                 let models_path = default_models_path(&Config::global_dir());
-                let registry = ModelRegistry::load(&auth, Some(models_path));
-                if let Some(error) = registry.error() {
+                if let Some(payload) = load_list_models_cache(&models_path) {
+                    if let Some(error) = &payload.error {
+                        eprintln!("Warning: models.json error: {error}");
+                    }
+                    list_models_from_cached_rows(&payload.rows, pattern.as_deref());
+                    return Ok(());
+                }
+
+                let auth = AuthStorage::load(Config::auth_path())?;
+                let registry = ModelRegistry::load_for_listing(&auth, Some(models_path.clone()));
+                let error = registry.error().map(std::string::ToString::to_string);
+                if let Some(error) = &error {
                     eprintln!("Warning: models.json error: {error}");
                 }
-                list_models(&registry, pattern.as_deref());
+
+                let mut models = registry.available_models();
+                models.sort_by(|a, b| {
+                    let provider_cmp = a.model.provider.cmp(&b.model.provider);
+                    if provider_cmp == std::cmp::Ordering::Equal {
+                        a.model.id.cmp(&b.model.id)
+                    } else {
+                        provider_cmp
+                    }
+                });
+                let rows = build_model_rows(&models);
+                let payload = ListModelsCachePayload {
+                    error,
+                    rows: rows
+                        .into_iter()
+                        .map(|(provider, model, context, max_out, thinking, images)| {
+                            CachedModelRow {
+                                provider,
+                                model,
+                                context,
+                                max_out,
+                                thinking,
+                                images,
+                            }
+                        })
+                        .collect(),
+                };
+                save_list_models_cache(&models_path, &payload);
+                list_models_from_cached_rows(&payload.rows, pattern.as_deref());
                 return Ok(());
             }
         }
@@ -2807,6 +2846,142 @@ fn list_models(registry: &ModelRegistry, pattern: Option<&str>) {
 
     let rows = build_model_rows(&models);
     print_model_table(&rows);
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedModelRow {
+    provider: String,
+    model: String,
+    context: String,
+    max_out: String,
+    thinking: String,
+    images: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ListModelsCachePayload {
+    error: Option<String>,
+    rows: Vec<CachedModelRow>,
+}
+
+fn list_models_from_cached_rows(rows: &[CachedModelRow], pattern: Option<&str>) {
+    if rows.is_empty() {
+        println!("No models available. Set API keys in environment variables.");
+        return;
+    }
+
+    let filtered: Vec<&CachedModelRow> = if let Some(pattern) = pattern {
+        let filtered = rows
+            .iter()
+            .filter(|row| fuzzy_match_model_id(pattern, &row.provider, &row.model))
+            .collect::<Vec<_>>();
+        if filtered.is_empty() {
+            println!("No models matching \"{pattern}\"");
+            return;
+        }
+        filtered
+    } else {
+        rows.iter().collect()
+    };
+
+    let table_rows = filtered
+        .iter()
+        .map(|row| {
+            (
+                row.provider.clone(),
+                row.model.clone(),
+                row.context.clone(),
+                row.max_out.clone(),
+                row.thinking.clone(),
+                row.images.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    print_model_table(&table_rows);
+}
+
+fn should_fingerprint_model_env_var(key: &str) -> bool {
+    if key.ends_with("_API_KEY") || key.ends_with("_TOKEN") || key.ends_with("_KEY") {
+        return true;
+    }
+    PROVIDER_METADATA
+        .iter()
+        .any(|meta| meta.auth_env_keys.contains(&key))
+}
+
+fn append_file_fingerprint(hasher: &mut Sha256, path: &Path) {
+    hasher.update(path.to_string_lossy().as_bytes());
+    match fs::metadata(path) {
+        Ok(meta) => {
+            hasher.update([1]);
+            hasher.update(meta.len().to_le_bytes());
+            if let Ok(modified) = meta.modified() {
+                if let Ok(duration) = modified.duration_since(UNIX_EPOCH) {
+                    hasher.update(duration.as_secs().to_le_bytes());
+                    hasher.update(duration.subsec_nanos().to_le_bytes());
+                }
+            }
+        }
+        Err(_) => hasher.update([0]),
+    }
+}
+
+fn list_models_cache_path(models_path: &Path) -> Option<PathBuf> {
+    let mut hasher = Sha256::new();
+    hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
+    hasher.update(pi::models::model_catalog_cache_fingerprint().to_le_bytes());
+    append_file_fingerprint(&mut hasher, &Config::auth_path());
+    append_file_fingerprint(&mut hasher, models_path);
+
+    let mut env_vars = std::env::vars()
+        .filter(|(key, _)| should_fingerprint_model_env_var(key))
+        .collect::<Vec<_>>();
+    env_vars.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    for (key, value) in env_vars {
+        hasher.update(key.as_bytes());
+        hasher.update([0xff]);
+        hasher.update(value.as_bytes());
+        hasher.update([0x00]);
+    }
+
+    let key = format!("{:x}", hasher.finalize());
+    dirs::cache_dir().map(|dir| {
+        dir.join("pi")
+            .join("list-models-cache")
+            .join(format!("{key}.json"))
+    })
+}
+
+fn load_list_models_cache(models_path: &Path) -> Option<ListModelsCachePayload> {
+    let cache_path = list_models_cache_path(models_path)?;
+    let body = fs::read_to_string(cache_path).ok()?;
+    serde_json::from_str::<ListModelsCachePayload>(&body).ok()
+}
+
+fn save_list_models_cache(models_path: &Path, payload: &ListModelsCachePayload) {
+    let Some(cache_path) = list_models_cache_path(models_path) else {
+        return;
+    };
+    let Some(parent) = cache_path.parent() else {
+        return;
+    };
+    if fs::create_dir_all(parent).is_err() {
+        return;
+    }
+
+    let temp_path = cache_path.with_extension(format!("tmp-{}", std::process::id()));
+    let Ok(file) = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&temp_path)
+    else {
+        return;
+    };
+    let mut writer = io::BufWriter::new(file);
+    if serde_json::to_writer(&mut writer, payload).is_ok() && writer.flush().is_ok() {
+        let _ = fs::rename(temp_path, cache_path);
+    }
 }
 
 fn list_providers() {

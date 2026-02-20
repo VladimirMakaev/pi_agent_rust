@@ -177,7 +177,7 @@ const GOOGLE_ANTIGRAVITY_API_URL: &str = "https://daily-cloudcode-pa.sandbox.goo
 static LEGACY_GENERATED_MODELS_CACHE: OnceLock<Vec<LegacyGeneratedModel>> = OnceLock::new();
 static UPSTREAM_PROVIDER_MODEL_IDS_CACHE: OnceLock<HashMap<String, Vec<String>>> = OnceLock::new();
 static MODEL_AUTOCOMPLETE_CACHE: OnceLock<Vec<ModelAutocompleteCandidate>> = OnceLock::new();
-static LEGACY_PROVIDER_IDS_CACHE: OnceLock<HashSet<String>> = OnceLock::new();
+static MODEL_CATALOG_CACHE_FINGERPRINT: OnceLock<u64> = OnceLock::new();
 static SATISFIES_RE: OnceLock<Regex> = OnceLock::new();
 const INPUT_TEXT_ONLY: [InputType; 1] = [InputType::Text];
 const INPUT_TEXT_AND_IMAGE: [InputType; 2] = [InputType::Text, InputType::Image];
@@ -417,6 +417,14 @@ pub fn model_autocomplete_candidates() -> &'static [ModelAutocompleteCandidate] 
         .as_slice()
 }
 
+pub fn model_catalog_cache_fingerprint() -> u64 {
+    *MODEL_CATALOG_CACHE_FINGERPRINT.get_or_init(|| {
+        let legacy = u64::from(crc32c::crc32c(LEGACY_MODELS_GENERATED_TS.as_bytes()));
+        let upstream = u64::from(crc32c::crc32c(UPSTREAM_PROVIDER_MODEL_IDS_JSON.as_bytes()));
+        (legacy << 32) | upstream
+    })
+}
+
 fn model_requires_configured_credential(entry: &ModelEntry) -> bool {
     let provider = entry.model.provider.as_str();
     entry.auth_header
@@ -433,9 +441,27 @@ fn model_entry_is_ready(entry: &ModelEntry) -> bool {
             .is_some_and(|value| !value.trim().is_empty())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ModelRegistryLoadMode {
+    Full,
+    ListingLite,
+}
+
 impl ModelRegistry {
     pub fn load(auth: &AuthStorage, models_path: Option<PathBuf>) -> Self {
-        let mut models = built_in_models(auth);
+        Self::load_with_mode(auth, models_path, ModelRegistryLoadMode::Full)
+    }
+
+    pub fn load_for_listing(auth: &AuthStorage, models_path: Option<PathBuf>) -> Self {
+        Self::load_with_mode(auth, models_path, ModelRegistryLoadMode::ListingLite)
+    }
+
+    fn load_with_mode(
+        auth: &AuthStorage,
+        models_path: Option<PathBuf>,
+        mode: ModelRegistryLoadMode,
+    ) -> Self {
+        let mut models = built_in_models(auth, mode);
         let mut error = None;
 
         if let Some(path) = models_path {
@@ -553,18 +579,16 @@ fn native_adapter_seed_defaults(provider: &str) -> Option<AdHocProviderDefaults>
     }
 }
 
-fn legacy_provider_ids() -> &'static HashSet<String> {
-    LEGACY_PROVIDER_IDS_CACHE.get_or_init(|| {
-        legacy_generated_models()
-            .iter()
-            .map(|model| {
-                let provider = model.provider.trim();
-                canonical_provider_id(provider)
-                    .unwrap_or(provider)
-                    .to_ascii_lowercase()
-            })
-            .collect()
-    })
+fn legacy_provider_ids() -> HashSet<String> {
+    legacy_generated_models()
+        .iter()
+        .map(|model| {
+            let provider = model.provider.trim();
+            canonical_provider_id(provider)
+                .unwrap_or(provider)
+                .to_ascii_lowercase()
+        })
+        .collect()
 }
 
 fn resolve_provider_api_key_cached(
@@ -604,8 +628,7 @@ fn append_upstream_nonlegacy_models(
             continue;
         }
         let canonical_provider = canonical_provider_id(provider).unwrap_or(provider);
-        let canonical_provider_lower = canonical_provider.to_ascii_lowercase();
-        if legacy_providers.contains(&canonical_provider_lower) {
+        if legacy_providers.contains(&canonical_provider.to_ascii_lowercase()) {
             continue;
         }
 
@@ -631,7 +654,7 @@ fn append_upstream_nonlegacy_models(
             }
             let dedupe_key = format!(
                 "{}::{}",
-                canonical_provider_lower,
+                canonical_provider.to_ascii_lowercase(),
                 normalized_model_id.to_ascii_lowercase()
             );
             if !seen.insert(dedupe_key) {
@@ -668,12 +691,11 @@ fn append_upstream_nonlegacy_models(
 }
 
 #[allow(clippy::too_many_lines)]
-fn built_in_models(auth: &AuthStorage) -> Vec<ModelEntry> {
+fn built_in_models(auth: &AuthStorage, mode: ModelRegistryLoadMode) -> Vec<ModelEntry> {
     let mut models = Vec::with_capacity(legacy_generated_models().len() + 8);
     let mut seen = HashSet::new();
     let mut canonical_api_key_cache: HashMap<String, Option<String>> = HashMap::new();
     let mut provider_api_key_cache: HashMap<String, Option<String>> = HashMap::new();
-    let mut parsed_api_cache: HashMap<String, String> = HashMap::new();
 
     for legacy in legacy_generated_models() {
         let provider = legacy.provider.trim();
@@ -696,24 +718,27 @@ fn built_in_models(auth: &AuthStorage) -> Vec<ModelEntry> {
         }
 
         let routing_defaults = provider_routing_defaults(provider);
-        let api_string = parsed_api_cache
-            .entry(legacy.api.clone())
-            .or_insert_with(|| {
-                legacy
-                    .api
-                    .parse::<Api>()
-                    .unwrap_or_else(|_| Api::Custom(legacy.api.clone()))
-                    .to_string()
-            })
-            .clone();
+        let api_string = if mode == ModelRegistryLoadMode::Full {
+            legacy
+                .api
+                .parse::<Api>()
+                .unwrap_or_else(|_| Api::Custom(legacy.api.clone()))
+                .to_string()
+        } else {
+            legacy.api.clone()
+        };
 
-        let base_url = if !legacy.base_url.trim().is_empty() {
-            legacy.base_url.trim().to_string()
-        } else if let Some(default_base) = routing_defaults
-            .map(|defaults| defaults.base_url)
-            .or_else(|| api_fallback_base_url(api_string.as_str()))
-        {
-            default_base.to_string()
+        let base_url = if mode == ModelRegistryLoadMode::Full {
+            if !legacy.base_url.trim().is_empty() {
+                legacy.base_url.trim().to_string()
+            } else if let Some(default_base) = routing_defaults
+                .map(|defaults| defaults.base_url)
+                .or_else(|| api_fallback_base_url(api_string.as_str()))
+            {
+                default_base.to_string()
+            } else {
+                String::new()
+            }
         } else {
             String::new()
         };
@@ -742,37 +767,58 @@ fn built_in_models(auth: &AuthStorage) -> Vec<ModelEntry> {
             &mut provider_api_key_cache,
         );
 
+        let default_cost = ModelCost {
+            input: 0.0,
+            output: 0.0,
+            cache_read: 0.0,
+            cache_write: 0.0,
+        };
+        let model_name = if mode == ModelRegistryLoadMode::Full && !legacy.name.trim().is_empty() {
+            legacy.name.clone()
+        } else {
+            normalized_model_id.clone()
+        };
+        let model_headers = if mode == ModelRegistryLoadMode::Full {
+            legacy.headers.clone()
+        } else {
+            HashMap::new()
+        };
+        let entry_headers = if mode == ModelRegistryLoadMode::Full {
+            legacy.headers.clone()
+        } else {
+            HashMap::new()
+        };
+
         models.push(ModelEntry {
             model: Model {
                 id: normalized_model_id.clone(),
-                name: if legacy.name.trim().is_empty() {
-                    normalized_model_id
-                } else {
-                    legacy.name.clone()
-                },
+                name: model_name,
                 api: api_string,
                 provider: provider.to_string(),
                 base_url,
                 reasoning: legacy.reasoning,
                 input,
-                cost: legacy.cost.clone().unwrap_or(ModelCost {
-                    input: 0.0,
-                    output: 0.0,
-                    cache_read: 0.0,
-                    cache_write: 0.0,
-                }),
+                cost: if mode == ModelRegistryLoadMode::Full {
+                    legacy.cost.clone().unwrap_or_else(|| default_cost.clone())
+                } else {
+                    default_cost
+                },
                 context_window: legacy.context_window.unwrap_or_else(|| {
                     routing_defaults.map_or(128_000, |defaults| defaults.context_window)
                 }),
                 max_tokens: legacy.max_tokens.unwrap_or_else(|| {
                     routing_defaults.map_or(16_384, |defaults| defaults.max_tokens)
                 }),
-                headers: legacy.headers.clone(),
+                headers: model_headers,
             },
             api_key,
-            headers: legacy.headers.clone(),
+            headers: entry_headers,
             auth_header,
-            compat: legacy.compat.clone(),
+            compat: if mode == ModelRegistryLoadMode::Full {
+                legacy.compat.clone()
+            } else {
+                None
+            },
             oauth_config: None,
         });
     }
@@ -795,9 +841,17 @@ fn built_in_models(auth: &AuthStorage) -> Vec<ModelEntry> {
             model: Model {
                 id: "claude-sonnet-4-6".to_string(),
                 name: "Claude Sonnet 4.6".to_string(),
-                api: Api::AnthropicMessages.to_string(),
+                api: if mode == ModelRegistryLoadMode::Full {
+                    Api::AnthropicMessages.to_string()
+                } else {
+                    "anthropic-messages".to_string()
+                },
                 provider: "anthropic".to_string(),
-                base_url: "https://api.anthropic.com/v1/messages".to_string(),
+                base_url: if mode == ModelRegistryLoadMode::Full {
+                    "https://api.anthropic.com/v1/messages".to_string()
+                } else {
+                    String::new()
+                },
                 reasoning: true,
                 input: vec![InputType::Text, InputType::Image],
                 cost: ModelCost {
@@ -836,9 +890,17 @@ fn built_in_models(auth: &AuthStorage) -> Vec<ModelEntry> {
             model: Model {
                 id: "gpt-5.3-codex".to_string(),
                 name: "GPT-5.3 Codex".to_string(),
-                api: Api::OpenAICodexResponses.to_string(),
+                api: if mode == ModelRegistryLoadMode::Full {
+                    Api::OpenAICodexResponses.to_string()
+                } else {
+                    "openai-codex-responses".to_string()
+                },
                 provider: "openai-codex".to_string(),
-                base_url: "https://chatgpt.com/backend-api".to_string(),
+                base_url: if mode == ModelRegistryLoadMode::Full {
+                    "https://chatgpt.com/backend-api".to_string()
+                } else {
+                    String::new()
+                },
                 reasoning: true,
                 input: vec![InputType::Text, InputType::Image],
                 cost: ModelCost {
@@ -873,9 +935,17 @@ fn built_in_models(auth: &AuthStorage) -> Vec<ModelEntry> {
             model: Model {
                 id: "gpt-5.3-codex-spark".to_string(),
                 name: "GPT-5.3 Codex Spark".to_string(),
-                api: Api::OpenAICodexResponses.to_string(),
+                api: if mode == ModelRegistryLoadMode::Full {
+                    Api::OpenAICodexResponses.to_string()
+                } else {
+                    "openai-codex-responses".to_string()
+                },
                 provider: "openai-codex".to_string(),
-                base_url: "https://chatgpt.com/backend-api".to_string(),
+                base_url: if mode == ModelRegistryLoadMode::Full {
+                    "https://chatgpt.com/backend-api".to_string()
+                } else {
+                    String::new()
+                },
                 reasoning: true,
                 input: vec![InputType::Text, InputType::Image],
                 cost: ModelCost {
@@ -1428,7 +1498,7 @@ mod tests {
     #[test]
     fn built_in_models_include_all_legacy_provider_model_pairs() {
         let (_dir, auth) = test_auth_storage();
-        let built = built_in_models(&auth);
+        let built = built_in_models(&auth, ModelRegistryLoadMode::Full);
 
         let built_keys: HashSet<(String, String)> = built
             .iter()
@@ -1465,7 +1535,7 @@ mod tests {
     #[test]
     fn built_in_models_preserve_legacy_model_display_names() {
         let (_dir, auth) = test_auth_storage();
-        let built = built_in_models(&auth);
+        let built = built_in_models(&auth, ModelRegistryLoadMode::Full);
 
         let name_by_key: HashMap<(String, String), String> = built
             .iter()
@@ -1511,7 +1581,7 @@ mod tests {
     #[test]
     fn built_in_models_include_core_provider_entries() {
         let (_dir, auth) = test_auth_storage();
-        let models = built_in_models(&auth);
+        let models = built_in_models(&auth, ModelRegistryLoadMode::Full);
 
         assert!(
             models.iter().any(
@@ -1559,7 +1629,7 @@ mod tests {
     #[test]
     fn built_in_models_include_legacy_oauth_provider_entries() {
         let (_dir, auth) = test_auth_storage();
-        let models = built_in_models(&auth);
+        let models = built_in_models(&auth, ModelRegistryLoadMode::Full);
 
         assert!(models.iter().any(|m| {
             m.model.provider == "openai-codex"
@@ -1581,7 +1651,7 @@ mod tests {
     #[test]
     fn built_in_models_include_non_legacy_provider_model_strings_from_snapshot() {
         let (_dir, auth) = test_auth_storage();
-        let models = built_in_models(&auth);
+        let models = built_in_models(&auth, ModelRegistryLoadMode::Full);
 
         assert!(
             models
@@ -1645,7 +1715,7 @@ mod tests {
     #[test]
     fn apply_custom_models_overrides_provider_fields() {
         let (_dir, auth) = test_auth_storage();
-        let mut models = built_in_models(&auth);
+        let mut models = built_in_models(&auth, ModelRegistryLoadMode::Full);
         let (env_key, env_val) = expected_env_pair();
         let mut provider_headers = HashMap::new();
         provider_headers.insert("x-provider".to_string(), "provider-header".to_string());
@@ -2845,7 +2915,7 @@ mod tests {
     #[test]
     fn apply_custom_models_replaces_built_in_when_models_specified() {
         let (_dir, auth) = test_auth_storage();
-        let mut models = built_in_models(&auth);
+        let mut models = built_in_models(&auth, ModelRegistryLoadMode::Full);
         let anthropic_before = models
             .iter()
             .filter(|m| m.model.provider == "anthropic")
@@ -2882,7 +2952,7 @@ mod tests {
     #[test]
     fn apply_custom_models_alias_replaces_canonical_built_ins_when_models_specified() {
         let (_dir, auth) = test_auth_storage();
-        let mut models = built_in_models(&auth);
+        let mut models = built_in_models(&auth, ModelRegistryLoadMode::Full);
         let google_before = models
             .iter()
             .filter(|m| m.model.provider == "google")
@@ -2920,7 +2990,7 @@ mod tests {
     #[test]
     fn apply_custom_models_alias_override_without_models_updates_canonical_provider_models() {
         let (_dir, auth) = test_auth_storage();
-        let mut models = built_in_models(&auth);
+        let mut models = built_in_models(&auth, ModelRegistryLoadMode::Full);
         let google_before = models
             .iter()
             .filter(|m| m.model.provider == "google")
@@ -3013,7 +3083,7 @@ mod tests {
     #[test]
     fn built_in_anthropic_models_use_correct_api() {
         let (_dir, auth) = test_auth_storage();
-        let models = built_in_models(&auth);
+        let models = built_in_models(&auth, ModelRegistryLoadMode::Full);
         for m in models.iter().filter(|m| m.model.provider == "anthropic") {
             assert_eq!(m.model.api, "anthropic-messages");
             assert!(!m.auth_header, "anthropic uses x-api-key, not auth header");
@@ -3028,7 +3098,7 @@ mod tests {
     #[test]
     fn built_in_openai_models_use_auth_header() {
         let (_dir, auth) = test_auth_storage();
-        let models = built_in_models(&auth);
+        let models = built_in_models(&auth, ModelRegistryLoadMode::Full);
         for m in models.iter().filter(|m| m.model.provider == "openai") {
             assert!(m.auth_header, "openai uses Authorization header");
             assert_eq!(m.model.api, "openai-responses");
@@ -3038,7 +3108,7 @@ mod tests {
     #[test]
     fn built_in_google_models_no_auth_header() {
         let (_dir, auth) = test_auth_storage();
-        let models = built_in_models(&auth);
+        let models = built_in_models(&auth, ModelRegistryLoadMode::Full);
         for m in models.iter().filter(|m| m.model.provider == "google") {
             assert!(!m.auth_header, "google uses api key in URL, not header");
             assert_eq!(m.model.api, "google-generative-ai");
@@ -3048,7 +3118,7 @@ mod tests {
     #[test]
     fn built_in_reasoning_models_marked_correctly() {
         let (_dir, auth) = test_auth_storage();
-        let models = built_in_models(&auth);
+        let models = built_in_models(&auth, ModelRegistryLoadMode::Full);
         // Legacy Haiku 3.5 should remain non-reasoning.
         for m in models
             .iter()

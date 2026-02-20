@@ -211,80 +211,35 @@ impl ResourceLoader {
         ))
         .await?;
 
-        let resolved_skill_paths = resolved
-            .skills
-            .into_iter()
-            .filter(|r| r.enabled)
-            .map(|r| r.path)
-            .collect::<Vec<_>>();
-        let resolved_prompt_paths = resolved
-            .prompts
-            .into_iter()
-            .filter(|r| r.enabled)
-            .map(|r| r.path)
-            .collect::<Vec<_>>();
-        let resolved_theme_paths = resolved
-            .themes
-            .into_iter()
-            .filter(|r| r.enabled)
-            .map(|r| r.path)
-            .collect::<Vec<_>>();
-        let resolved_extension_paths = resolved
-            .extensions
-            .into_iter()
-            .filter(|r| r.enabled)
-            .map(|r| r.path)
-            .collect::<Vec<_>>();
-
-        let cli_skill_paths = cli_extensions
-            .skills
-            .into_iter()
-            .filter(|r| r.enabled)
-            .map(|r| r.path)
-            .collect::<Vec<_>>();
-        let cli_prompt_paths = cli_extensions
-            .prompts
-            .into_iter()
-            .filter(|r| r.enabled)
-            .map(|r| r.path)
-            .collect::<Vec<_>>();
-        let cli_theme_paths = cli_extensions
-            .themes
-            .into_iter()
-            .filter(|r| r.enabled)
-            .map(|r| r.path)
-            .collect::<Vec<_>>();
-        let cli_extension_paths = cli_extensions
-            .extensions
-            .into_iter()
-            .filter(|r| r.enabled)
-            .map(|r| r.path)
-            .collect::<Vec<_>>();
+        // Helper: extract enabled paths from a resolved resource set.
+        let enabled_paths = |v: Vec<crate::package_manager::ResolvedResource>| {
+            v.into_iter().filter(|r| r.enabled).map(|r| r.path)
+        };
 
         // Merge paths with pi-mono semantics:
         // - `--no-skills` disables configured + auto skills, but still loads CLI `-e` and explicit `--skill`
         // - `--no-prompt-templates` disables configured + auto prompts, but still loads CLI `-e` and explicit `--prompt-template`
         let mut skill_paths = Vec::new();
         if !cli.no_skills {
-            skill_paths.extend(resolved_skill_paths);
+            skill_paths.extend(enabled_paths(resolved.skills));
         }
-        skill_paths.extend(cli_skill_paths);
+        skill_paths.extend(enabled_paths(cli_extensions.skills));
         skill_paths.extend(cli.skill_paths.iter().map(|p| resolve_path(p, cwd)));
         let skill_paths = dedupe_paths(skill_paths);
 
         let mut prompt_paths = Vec::new();
         if !cli.no_prompt_templates {
-            prompt_paths.extend(resolved_prompt_paths);
+            prompt_paths.extend(enabled_paths(resolved.prompts));
         }
-        prompt_paths.extend(cli_prompt_paths);
+        prompt_paths.extend(enabled_paths(cli_extensions.prompts));
         prompt_paths.extend(cli.prompt_paths.iter().map(|p| resolve_path(p, cwd)));
         let prompt_paths = dedupe_paths(prompt_paths);
 
         let mut theme_paths = Vec::new();
         if !cli.no_themes {
-            theme_paths.extend(resolved_theme_paths);
+            theme_paths.extend(enabled_paths(resolved.themes));
         }
-        theme_paths.extend(cli_theme_paths);
+        theme_paths.extend(enabled_paths(cli_extensions.themes));
         theme_paths.extend(cli.theme_paths.iter().map(|p| resolve_path(p, cwd)));
         let theme_paths = dedupe_paths(theme_paths);
 
@@ -292,9 +247,9 @@ impl ResourceLoader {
         // - `--no-extensions` disables configured + auto discovery but still allows CLI `-e` sources.
         let mut extension_entries = Vec::new();
         if !cli.no_extensions {
-            extension_entries.extend(resolved_extension_paths);
+            extension_entries.extend(enabled_paths(resolved.extensions));
         }
-        extension_entries.extend(cli_extension_paths);
+        extension_entries.extend(enabled_paths(cli_extensions.extensions));
         let extension_entries = dedupe_paths(extension_entries);
 
         // Load skills, prompt templates, and themes in parallel — they are independent
