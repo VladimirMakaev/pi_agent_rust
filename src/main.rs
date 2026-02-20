@@ -2782,7 +2782,7 @@ fn print_version() {
 }
 
 fn list_models(registry: &ModelRegistry, pattern: Option<&str>) {
-    let mut models = registry.get_available();
+    let mut models = registry.available_models();
     if models.is_empty() {
         println!("No models available. Set API keys in environment variables.");
         return;
@@ -3285,20 +3285,15 @@ Code expires in {} seconds.\n",
     Ok(true)
 }
 
-fn filter_models_by_pattern(models: Vec<ModelEntry>, pattern: &str) -> Vec<ModelEntry> {
+fn filter_models_by_pattern<'a>(models: Vec<&'a ModelEntry>, pattern: &str) -> Vec<&'a ModelEntry> {
     models
         .into_iter()
-        .filter(|entry| {
-            fuzzy_match(
-                pattern,
-                &format!("{} {}", entry.model.provider, entry.model.id),
-            )
-        })
+        .filter(|entry| fuzzy_match_model_id(pattern, &entry.model.provider, &entry.model.id))
         .collect()
 }
 
 fn build_model_rows(
-    models: &[ModelEntry],
+    models: &[&ModelEntry],
 ) -> Vec<(String, String, String, String, String, String)> {
     models
         .iter()
@@ -3361,13 +3356,19 @@ fn print_model_table(rows: &[(String, String, String, String, String, String)]) 
         .unwrap_or(0)
         .max(headers.5.len());
 
+    // Buffer all output to reduce write syscalls from O(rows) to O(1).
+    let stdout = io::stdout();
+    let mut out = io::BufWriter::new(stdout.lock());
+
     let (provider, model, context, max_out, thinking, images) = headers;
-    println!(
+    let _ = writeln!(
+        out,
         "{provider:<provider_w$}  {model:<model_w$}  {context:<context_w$}  {max_out:<max_out_w$}  {thinking:<thinking_w$}  {images:<images_w$}"
     );
 
     for (provider, model, context, max_out, thinking, images) in rows {
-        println!(
+        let _ = writeln!(
+            out,
             "{provider:<provider_w$}  {model:<model_w$}  {context:<context_w$}  {max_out:<max_out_w$}  {thinking:<thinking_w$}  {images:<images_w$}"
         );
     }
@@ -3909,15 +3910,37 @@ fn format_token_count(count: u32) -> String {
 }
 
 fn fuzzy_match(pattern: &str, value: &str) -> bool {
-    let needle_str = pattern.to_lowercase();
-    let haystack_str = value.to_lowercase();
-    let mut needle = needle_str.chars().filter(|c| !c.is_whitespace());
-    let mut haystack = haystack_str.chars();
+    let mut needle = pattern
+        .chars()
+        .flat_map(char::to_lowercase)
+        .filter(|c| !c.is_whitespace());
+    let mut haystack = value.chars().flat_map(char::to_lowercase);
     for ch in needle.by_ref() {
         if !haystack.by_ref().any(|h| h == ch) {
             return false;
         }
     }
+    true
+}
+
+fn fuzzy_match_model_id(pattern: &str, provider: &str, model_id: &str) -> bool {
+    let mut needle = pattern
+        .chars()
+        .flat_map(char::to_lowercase)
+        .filter(|c| !c.is_whitespace());
+    let mut provider_chars = provider.chars().flat_map(char::to_lowercase);
+    let mut model_chars = model_id.chars().flat_map(char::to_lowercase);
+
+    for ch in needle.by_ref() {
+        if provider_chars.by_ref().any(|h| h == ch) {
+            continue;
+        }
+        if model_chars.by_ref().any(|h| h == ch) {
+            continue;
+        }
+        return false;
+    }
+
     true
 }
 
@@ -3984,6 +4007,27 @@ mod tests {
             "pkg".to_string(),
         ]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn fuzzy_match_model_id_matches_combined_haystack_behavior() {
+        let cases = [
+            ("g53", "openai-codex", "gpt-5.3-codex"),
+            ("oc53", "openai-codex", "gpt-5.3-codex"),
+            ("son46", "anthropic", "claude-sonnet-4-6"),
+            ("opn router", "openrouter", "anthropic/claude-3.7-sonnet"),
+            ("zzzz", "openai", "gpt-4o"),
+            ("a4z", "anthropic", "claude-4"),
+        ];
+
+        for (pattern, provider, model_id) in cases {
+            let combined = format!("{provider} {model_id}");
+            assert_eq!(
+                fuzzy_match_model_id(pattern, provider, model_id),
+                fuzzy_match(pattern, &combined),
+                "pattern={pattern} provider={provider} model_id={model_id}"
+            );
+        }
     }
 
     #[test]

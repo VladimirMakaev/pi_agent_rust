@@ -3624,7 +3624,7 @@ fn open_jsonl_blocking(path_buf: PathBuf) -> Result<(Session, SessionOpenDiagnos
         if line_batch.len() >= PARALLEL_THRESHOLD && num_threads > 1 {
             let chunk_size = (line_batch.len() / num_threads).max(64);
 
-            let chunk_results: Vec<(Vec<SessionEntry>, Vec<SessionOpenSkippedEntry>)> =
+            let chunk_results: Result<Vec<(Vec<SessionEntry>, Vec<SessionOpenSkippedEntry>)>> =
                 std::thread::scope(|s| {
                     line_batch
                         .chunks(chunk_size)
@@ -3648,9 +3648,26 @@ fn open_jsonl_blocking(path_buf: PathBuf) -> Result<(Session, SessionOpenDiagnos
                         })
                         .collect::<Vec<_>>()
                         .into_iter()
-                        .map(|h| h.join().unwrap())
+                        .map(|h| {
+                            h.join().map_err(|panic_payload| {
+                                let panic_message =
+                                    panic_payload.downcast_ref::<String>().map_or_else(
+                                        || {
+                                            panic_payload.downcast_ref::<&str>().map_or_else(
+                                                || "unknown panic payload".to_string(),
+                                                |message| (*message).to_string(),
+                                            )
+                                        },
+                                        std::clone::Clone::clone,
+                                    );
+                                Error::session(format!(
+                                    "parallel session parse worker panicked: {panic_message}"
+                                ))
+                            })
+                        })
                         .collect()
                 });
+            let chunk_results = chunk_results?;
 
             for (chunk_entries, chunk_skipped) in chunk_results {
                 entries.extend(chunk_entries);

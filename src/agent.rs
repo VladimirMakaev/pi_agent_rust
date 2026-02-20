@@ -508,25 +508,6 @@ impl Agent {
         &mut self.config.stream_options
     }
 
-    /// Build tool definitions for the API, caching results across turns.
-    fn build_tool_defs(&mut self) -> Vec<ToolDef> {
-        if let Some(cached) = &self.cached_tool_defs {
-            return cached.clone();
-        }
-        let defs: Vec<ToolDef> = self
-            .tools
-            .tools()
-            .iter()
-            .map(|t| ToolDef {
-                name: t.name().to_string(),
-                description: t.description().to_string(),
-                parameters: t.parameters(),
-            })
-            .collect();
-        self.cached_tool_defs = Some(defs.clone());
-        defs
-    }
-
     /// Build context for a completion request.
     fn build_context(&mut self) -> Context<'_> {
         let messages: Cow<'_, [Message]> = if self.config.block_images {

@@ -414,12 +414,15 @@ impl ModelRegistry {
         self.error.as_deref()
     }
 
-    pub fn get_available(&self) -> Vec<ModelEntry> {
+    pub fn available_models(&self) -> Vec<&ModelEntry> {
         self.models
             .iter()
-            .filter(|&m| model_entry_is_ready(m))
-            .cloned()
+            .filter(|m| model_entry_is_ready(m))
             .collect()
+    }
+
+    pub fn get_available(&self) -> Vec<ModelEntry> {
+        self.available_models().into_iter().cloned().collect()
     }
 
     pub fn find(&self, provider: &str, id: &str) -> Option<ModelEntry> {
@@ -511,10 +514,35 @@ fn legacy_provider_ids() -> HashSet<String> {
         .collect()
 }
 
+fn resolve_provider_api_key_cached(
+    auth: &AuthStorage,
+    canonical_provider: &str,
+    provider: &str,
+    canonical_cache: &mut HashMap<String, Option<String>>,
+    provider_cache: &mut HashMap<String, Option<String>>,
+) -> Option<String> {
+    let canonical_key = canonical_provider.to_ascii_lowercase();
+    let canonical_result = canonical_cache
+        .entry(canonical_key)
+        .or_insert_with(|| auth.resolve_api_key(canonical_provider, None))
+        .clone();
+
+    if canonical_result.is_some() || canonical_provider.eq_ignore_ascii_case(provider) {
+        return canonical_result;
+    }
+
+    provider_cache
+        .entry(provider.to_ascii_lowercase())
+        .or_insert_with(|| auth.resolve_api_key(provider, None))
+        .clone()
+}
+
 fn append_upstream_nonlegacy_models(
     auth: &AuthStorage,
     models: &mut Vec<ModelEntry>,
     seen: &mut HashSet<String>,
+    canonical_api_key_cache: &mut HashMap<String, Option<String>>,
+    provider_api_key_cache: &mut HashMap<String, Option<String>>,
 ) {
     let legacy_providers = legacy_provider_ids();
     for (provider, ids) in upstream_provider_model_ids() {
@@ -533,13 +561,13 @@ fn append_upstream_nonlegacy_models(
             continue;
         };
 
-        let api_key = auth.resolve_api_key(canonical_provider, None).or_else(|| {
-            if canonical_provider.eq_ignore_ascii_case(provider) {
-                None
-            } else {
-                auth.resolve_api_key(provider, None)
-            }
-        });
+        let api_key = resolve_provider_api_key_cached(
+            auth,
+            canonical_provider,
+            provider,
+            canonical_api_key_cache,
+            provider_api_key_cache,
+        );
 
         for model_id in ids {
             let normalized_model_id =
@@ -587,8 +615,10 @@ fn append_upstream_nonlegacy_models(
 
 #[allow(clippy::too_many_lines)]
 fn built_in_models(auth: &AuthStorage) -> Vec<ModelEntry> {
-    let mut models = Vec::new();
+    let mut models = Vec::with_capacity(legacy_generated_models().len() + 8);
     let mut seen = HashSet::new();
+    let mut canonical_api_key_cache: HashMap<String, Option<String>> = HashMap::new();
+    let mut provider_api_key_cache: HashMap<String, Option<String>> = HashMap::new();
 
     for legacy in legacy_generated_models() {
         let provider = legacy.provider.trim();
@@ -644,13 +674,13 @@ fn built_in_models(auth: &AuthStorage) -> Vec<ModelEntry> {
         };
 
         let canonical_provider = canonical_provider_id(provider).unwrap_or(provider);
-        let api_key = auth.resolve_api_key(canonical_provider, None).or_else(|| {
-            if canonical_provider.eq_ignore_ascii_case(provider) {
-                None
-            } else {
-                auth.resolve_api_key(provider, None)
-            }
-        });
+        let api_key = resolve_provider_api_key_cached(
+            auth,
+            canonical_provider,
+            provider,
+            &mut canonical_api_key_cache,
+            &mut provider_api_key_cache,
+        );
 
         models.push(ModelEntry {
             model: Model {
@@ -687,7 +717,13 @@ fn built_in_models(auth: &AuthStorage) -> Vec<ModelEntry> {
         });
     }
 
-    append_upstream_nonlegacy_models(auth, &mut models, &mut seen);
+    append_upstream_nonlegacy_models(
+        auth,
+        &mut models,
+        &mut seen,
+        &mut canonical_api_key_cache,
+        &mut provider_api_key_cache,
+    );
 
     // Ensure the latest Sonnet alias is present in built-ins.
     if !models.iter().any(|entry| {
@@ -714,7 +750,13 @@ fn built_in_models(auth: &AuthStorage) -> Vec<ModelEntry> {
                 max_tokens: 128_000,
                 headers: HashMap::new(),
             },
-            api_key: auth.resolve_api_key("anthropic", None),
+            api_key: resolve_provider_api_key_cached(
+                auth,
+                "anthropic",
+                "anthropic",
+                &mut canonical_api_key_cache,
+                &mut provider_api_key_cache,
+            ),
             headers: HashMap::new(),
             auth_header: false,
             compat: None,
@@ -749,7 +791,13 @@ fn built_in_models(auth: &AuthStorage) -> Vec<ModelEntry> {
                 max_tokens: 128_000,
                 headers: HashMap::new(),
             },
-            api_key: auth.resolve_api_key("openai-codex", None),
+            api_key: resolve_provider_api_key_cached(
+                auth,
+                "openai-codex",
+                "openai-codex",
+                &mut canonical_api_key_cache,
+                &mut provider_api_key_cache,
+            ),
             headers: HashMap::new(),
             auth_header: true,
             compat: None,
@@ -780,7 +828,13 @@ fn built_in_models(auth: &AuthStorage) -> Vec<ModelEntry> {
                 max_tokens: 128_000,
                 headers: HashMap::new(),
             },
-            api_key: auth.resolve_api_key("openai-codex", None),
+            api_key: resolve_provider_api_key_cached(
+                auth,
+                "openai-codex",
+                "openai-codex",
+                &mut canonical_api_key_cache,
+                &mut provider_api_key_cache,
+            ),
             headers: HashMap::new(),
             auth_header: true,
             compat: None,

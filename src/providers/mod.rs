@@ -679,12 +679,25 @@ impl Provider for ExtensionStreamSimpleProvider {
                     if let Some(chunk) = value.as_str() {
                         let chunk = chunk.to_string();
                         state.accumulated_text.push_str(&chunk);
-                        state.last_message = Some(Self::make_partial(
-                            &state.model_id,
-                            &state.provider,
-                            &state.api,
-                            &state.accumulated_text,
-                        ));
+                        // Update last_message in-place: mutate existing text
+                        // content instead of rebuilding the entire
+                        // AssistantMessage (avoids 3 String + Vec allocs per
+                        // chunk).
+                        match &mut state.last_message {
+                            Some(msg) => {
+                                if let Some(ContentBlock::Text(t)) = msg.content.first_mut() {
+                                    t.text.clone_from(&state.accumulated_text);
+                                }
+                            }
+                            None => {
+                                state.last_message = Some(Self::make_partial(
+                                    &state.model_id,
+                                    &state.provider,
+                                    &state.api,
+                                    &state.accumulated_text,
+                                ));
+                            }
+                        }
 
                         // Emit Start + TextStart before first string-chunk TextDelta.
                         if !state.string_chunk_started {

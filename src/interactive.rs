@@ -1763,7 +1763,7 @@ impl PiApp {
         self.memory_monitor.maybe_sample();
         self.run_memory_pressure_actions();
 
-        // Handle our custom Pi messages
+        // Handle our custom Pi messages.
         if let Some(pi_msg) = msg.downcast_ref::<PiMsg>() {
             return self.handle_pi_message(pi_msg.clone());
         }
