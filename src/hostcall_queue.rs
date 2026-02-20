@@ -6,7 +6,7 @@
 
 pub use crate::hostcall_s3_fifo::S3FifoFallbackReason;
 use crossbeam_queue::ArrayQueue;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -374,8 +374,9 @@ struct S3FifoState {
     config: S3FifoConfig,
     mode: S3FifoMode,
     fallback_reason: Option<S3FifoFallbackReason>,
-    ghost: VecDeque<String>,
-    ghost_set: BTreeSet<String>,
+    ghost_order: BTreeMap<u64, String>,
+    ghost_lookup: BTreeMap<String, u64>,
+    ghost_gen: u64,
     tenant_backlog: BTreeMap<String, usize>,
     ghost_hits_total: u64,
     fairness_rejected_total: u64,
@@ -392,8 +393,9 @@ impl S3FifoState {
             config,
             mode: S3FifoMode::Active,
             fallback_reason: None,
-            ghost: VecDeque::new(),
-            ghost_set: BTreeSet::new(),
+            ghost_order: BTreeMap::new(),
+            ghost_lookup: BTreeMap::new(),
+            ghost_gen: 0,
             tenant_backlog: BTreeMap::new(),
             ghost_hits_total: 0,
             fairness_rejected_total: 0,
@@ -495,40 +497,53 @@ impl S3FifoState {
         self.mode = S3FifoMode::ConservativeFifo;
         self.fallback_reason = Some(reason);
         self.fallback_transitions = self.fallback_transitions.saturating_add(1);
-        self.ghost.clear();
-        self.ghost_set.clear();
+        self.ghost_order.clear();
+        self.ghost_lookup.clear();
+        self.ghost_gen = 0;
         self.tenant_backlog.clear();
     }
 
     fn consume_ghost_hit(&mut self, tenant_key: &str) -> bool {
-        if !self.ghost_set.remove(tenant_key) {
-            return false;
+        if let Some(generation) = self.ghost_lookup.remove(tenant_key) {
+            self.ghost_order.remove(&generation);
+            self.ghost_hits_total = self.ghost_hits_total.saturating_add(1);
+            true
+        } else {
+            false
         }
-        let position = self.ghost.iter().position(|entry| entry == tenant_key);
-        let Some(position) = position else {
-            // Should be unreachable if set and deque are consistent.
-            return false;
-        };
-        self.ghost.remove(position);
-        self.ghost_hits_total = self.ghost_hits_total.saturating_add(1);
-        true
     }
 
     fn record_ghost(&mut self, tenant_key: &str) {
         if tenant_key.is_empty() {
             return;
         }
-        if self.ghost_set.contains(tenant_key) {
-            if let Some(position) = self.ghost.iter().position(|entry| entry == tenant_key) {
-                self.ghost.remove(position);
+
+        // Prevent generation overflow from corrupting the ghost order map.
+        if self.ghost_gen == u64::MAX {
+            self.ghost_gen = 0;
+            self.ghost_order.clear();
+            self.ghost_lookup.clear();
+        }
+
+        self.ghost_gen = self.ghost_gen.saturating_add(1);
+
+        if let Some(gen_mut) = self.ghost_lookup.get_mut(tenant_key) {
+            let old_gen = *gen_mut;
+            *gen_mut = self.ghost_gen;
+            if let Some(k_reused) = self.ghost_order.remove(&old_gen) {
+                self.ghost_order.insert(self.ghost_gen, k_reused);
             }
         } else {
-            self.ghost_set.insert(tenant_key.to_string());
+            let key_owned = tenant_key.to_string();
+            self.ghost_lookup.insert(key_owned.clone(), self.ghost_gen);
+            self.ghost_order.insert(self.ghost_gen, key_owned);
         }
-        self.ghost.push_back(tenant_key.to_string());
-        while self.ghost.len() > self.config.ghost_capacity {
-            if let Some(popped) = self.ghost.pop_front() {
-                self.ghost_set.remove(&popped);
+
+        while self.ghost_lookup.len() > self.config.ghost_capacity {
+            if let Some((_, popped_key)) = self.ghost_order.pop_first() {
+                self.ghost_lookup.remove(&popped_key);
+            } else {
+                break;
             }
         }
     }
@@ -538,7 +553,7 @@ impl S3FifoState {
         S3FifoTelemetry {
             mode: self.mode,
             fallback_reason: self.fallback_reason,
-            ghost_depth: self.ghost.len(),
+            ghost_depth: self.ghost_lookup.len(),
             ghost_hits_total: self.ghost_hits_total,
             fairness_rejected_total: self.fairness_rejected_total,
             signal_samples: self.signal_samples,
@@ -565,7 +580,7 @@ impl HostcallQueueMode {
             .ok()
             .as_deref()
             .and_then(Self::parse)
-            .unwrap_or(Self::Ebr)
+            .unwrap_or(Self::SafeFallback)
     }
 
     fn parse(value: &str) -> Option<Self> {
@@ -753,8 +768,7 @@ impl<T: Clone + QueueTenant> HostcallRequestQueue<T> {
     }
 
     pub fn push_back(&mut self, request: T) -> HostcallQueueEnqueueResult {
-        let tenant_key = request.tenant_key().map(std::borrow::ToOwned::to_owned);
-        self.s3fifo.observe_signal(tenant_key.as_deref());
+        self.s3fifo.observe_signal(request.tenant_key());
         let mut request = request;
 
         // Preserve FIFO across lanes by pinning to overflow once spill begins.
@@ -778,6 +792,8 @@ impl<T: Clone + QueueTenant> HostcallRequestQueue<T> {
                 Err(returned) => request = returned,
             }
         }
+
+        let tenant_key = request.tenant_key().map(std::borrow::ToOwned::to_owned);
 
         if !self.s3fifo.allow_main_admission(tenant_key.as_deref()) {
             self.overflow_rejected_total = self.overflow_rejected_total.saturating_add(1);

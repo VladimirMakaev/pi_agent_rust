@@ -15,7 +15,6 @@ use crate::extensions_js::HostcallKind;
 use crate::extensions_js::HostcallRequest;
 use crate::scheduler::HostcallOutcome;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 // ── Configuration constants ──────────────────────────────────────────────
 
@@ -505,6 +504,7 @@ impl AmacBatchExecutor {
     /// The plan preserves original request ordering within each group and
     /// chooses interleave vs. sequential per group based on telemetry.
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn plan_batch(&mut self, requests: Vec<HostcallRequest>) -> AmacBatchPlan {
         let total_requests = requests.len();
 
@@ -518,28 +518,97 @@ impl AmacBatchExecutor {
             };
         }
 
-        // Group by batch key, preserving intra-group order.
-        let mut group_map: BTreeMap<AmacGroupKey, Vec<HostcallRequest>> = BTreeMap::new();
-        for request in requests {
-            let key = AmacGroupKey::from_request(&request);
-            group_map.entry(key).or_default().push(request);
-        }
-
-        let mut groups = Vec::with_capacity(group_map.len());
-        let mut decisions = Vec::with_capacity(group_map.len());
+        let mut groups = Vec::new();
+        let mut decisions = Vec::new();
         let mut interleaved_groups = 0_usize;
         let mut sequential_groups = 0_usize;
 
-        for (key, group_requests) in group_map {
-            let decision = self.decide_toggle(&key, group_requests.len());
+        // Group by contiguous runs of the same key to preserve global ordering,
+        // with "Log Sinking" optimization.
+        let request_iter = requests.into_iter();
+        let mut buffered_logs = Vec::new();
+
+        let mut current_key_opt: Option<AmacGroupKey> = None;
+        let mut current_requests = Vec::new();
+
+        for request in request_iter {
+            let key = AmacGroupKey::from_request(&request);
+
+            if key == AmacGroupKey::Log {
+                buffered_logs.push(request);
+                continue;
+            }
+
+            let key_changed = current_key_opt
+                .as_ref()
+                .is_none_or(|current| *current != key);
+
+            if key_changed {
+                // Flush previous batch if it existed
+                if let Some(prev_key) = current_key_opt.take() {
+                    let decision = self.decide_toggle(&prev_key, current_requests.len());
+                    if decision.is_interleave() {
+                        interleaved_groups += 1;
+                    } else {
+                        sequential_groups += 1;
+                    }
+                    groups.push(AmacBatchGroup {
+                        key: prev_key,
+                        requests: std::mem::take(&mut current_requests),
+                    });
+                    decisions.push(decision);
+
+                    // Flush logs sunk during the previous batch
+                    if !buffered_logs.is_empty() {
+                        let log_reqs = std::mem::take(&mut buffered_logs);
+                        let decision = self.decide_toggle(&AmacGroupKey::Log, log_reqs.len());
+                        if decision.is_interleave() {
+                            interleaved_groups += 1;
+                        } else {
+                            sequential_groups += 1;
+                        }
+                        groups.push(AmacBatchGroup {
+                            key: AmacGroupKey::Log,
+                            requests: log_reqs,
+                        });
+                        decisions.push(decision);
+                    }
+                }
+            }
+
+            // First non-log request, or first request after a flushed run.
+            current_key_opt = Some(key);
+            current_requests.push(request);
+        }
+
+        // Flush final run
+        if let Some(current_key) = current_key_opt {
+            if !current_requests.is_empty() {
+                let decision = self.decide_toggle(&current_key, current_requests.len());
+                if decision.is_interleave() {
+                    interleaved_groups += 1;
+                } else {
+                    sequential_groups += 1;
+                }
+                groups.push(AmacBatchGroup {
+                    key: current_key,
+                    requests: current_requests,
+                });
+                decisions.push(decision);
+            }
+        }
+
+        // Flush trailing logs (or if input was only logs).
+        if !buffered_logs.is_empty() {
+            let decision = self.decide_toggle(&AmacGroupKey::Log, buffered_logs.len());
             if decision.is_interleave() {
                 interleaved_groups += 1;
             } else {
                 sequential_groups += 1;
             }
             groups.push(AmacBatchGroup {
-                key,
-                requests: group_requests,
+                key: AmacGroupKey::Log,
+                requests: buffered_logs,
             });
             decisions.push(decision);
         }

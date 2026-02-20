@@ -15,7 +15,6 @@
 //! - **I5 (total order):** all observable scheduling is ordered by seq
 
 use std::cmp::Ordering;
-use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::collections::BinaryHeap;
 use std::collections::VecDeque;
@@ -239,14 +238,16 @@ impl Clock for DeterministicClock {
 pub struct Scheduler<C: Clock = WallClock> {
     /// Monotone sequence counter.
     seq: Seq,
-    /// Macrotask queue (Min-Heap via Reverse, ordered by seq).
-    macrotask_queue: BinaryHeap<Reverse<Macrotask>>,
+    /// Macrotask queue (FIFO, ordered by seq).
+    macrotask_queue: VecDeque<Macrotask>,
     /// Timer heap (min-heap by deadline_ms, seq).
     timer_heap: BinaryHeap<TimerEntry>,
     /// Next timer ID.
     next_timer_id: u64,
     /// Cancelled timer IDs.
     cancelled_timers: std::collections::HashSet<u64>,
+    /// All timer IDs currently in the heap (active or cancelled).
+    heap_timer_ids: std::collections::HashSet<u64>,
     /// Clock source.
     clock: C,
 }
@@ -271,10 +272,11 @@ impl<C: Clock> Scheduler<C> {
     pub fn with_clock(clock: C) -> Self {
         Self {
             seq: Seq::zero(),
-            macrotask_queue: BinaryHeap::new(),
+            macrotask_queue: VecDeque::new(),
             timer_heap: BinaryHeap::new(),
             next_timer_id: 1,
             cancelled_timers: std::collections::HashSet::new(),
+            heap_timer_ids: std::collections::HashSet::new(),
             clock,
         }
     }
@@ -326,6 +328,7 @@ impl<C: Clock> Scheduler<C> {
 
         self.timer_heap
             .push(TimerEntry::new(timer_id, deadline_ms, seq));
+        self.heap_timer_ids.insert(timer_id);
 
         tracing::trace!(
             event = "scheduler.timer.set",
@@ -340,11 +343,7 @@ impl<C: Clock> Scheduler<C> {
     }
 
     fn timer_id_in_use(&self, timer_id: u64) -> bool {
-        self.cancelled_timers.contains(&timer_id)
-            || self
-                .timer_heap
-                .iter()
-                .any(|entry| entry.timer_id == timer_id)
+        self.heap_timer_ids.contains(&timer_id)
     }
 
     fn allocate_timer_id(&mut self) -> u64 {
@@ -377,11 +376,8 @@ impl<C: Clock> Scheduler<C> {
     ///
     /// Returns true if the timer was found and cancelled.
     pub fn clear_timeout(&mut self, timer_id: u64) -> bool {
-        let pending = self
-            .timer_heap
-            .iter()
-            .any(|entry| entry.timer_id == timer_id)
-            && !self.cancelled_timers.contains(&timer_id);
+        let pending =
+            self.heap_timer_ids.contains(&timer_id) && !self.cancelled_timers.contains(&timer_id);
 
         let cancelled = if pending {
             self.cancelled_timers.insert(timer_id)
@@ -409,7 +405,7 @@ impl<C: Clock> Scheduler<C> {
             "Hostcall completion enqueued"
         );
         let task = Macrotask::new(seq, MacrotaskKind::HostcallComplete { call_id, outcome });
-        self.macrotask_queue.push(Reverse(task));
+        self.macrotask_queue.push_back(task);
     }
 
     /// Enqueue multiple hostcall completions in one scheduler mutation pass.
@@ -450,7 +446,7 @@ impl<C: Clock> Scheduler<C> {
             "Inbound event enqueued"
         );
         let task = Macrotask::new(seq, MacrotaskKind::InboundEvent { event_id, payload });
-        self.macrotask_queue.push(Reverse(task));
+        self.macrotask_queue.push_back(task);
     }
 
     /// Move due timers from the timer heap to the macrotask queue.
@@ -465,6 +461,7 @@ impl<C: Clock> Scheduler<C> {
             }
 
             let entry = self.timer_heap.pop().expect("peeked");
+            self.heap_timer_ids.remove(&entry.timer_id);
 
             // Skip cancelled timers
             if self.cancelled_timers.remove(&entry.timer_id) {
@@ -485,7 +482,7 @@ impl<C: Clock> Scheduler<C> {
                     timer_id: entry.timer_id,
                 },
             );
-            self.macrotask_queue.push(Reverse(task));
+            self.macrotask_queue.push_back(task);
 
             tracing::trace!(
                 event = "scheduler.timer.fire",
@@ -513,7 +510,7 @@ impl<C: Clock> Scheduler<C> {
         self.move_due_timers();
 
         // Step 3: Run one macrotask
-        let task = self.macrotask_queue.pop().map(|Reverse(t)| t);
+        let task = self.macrotask_queue.pop_front();
 
         if let Some(ref task) = task {
             tracing::debug!(
@@ -995,7 +992,7 @@ impl ReactorMesh {
             return 0;
         }
         let idx = self.rr_cursor % self.lanes.len();
-        self.rr_cursor = self.rr_cursor.saturating_add(1);
+        self.rr_cursor = self.rr_cursor.wrapping_add(1);
         idx
     }
 

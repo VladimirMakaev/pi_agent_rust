@@ -10,7 +10,9 @@
 //! mutations, so integration code can compose it with existing queue and
 //! telemetry paths.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+#[cfg(test)]
+use std::collections::BTreeSet;
+use std::collections::{BTreeMap, VecDeque};
 
 /// Fallback trigger reason when S3-FIFO policy is disabled at runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,8 +113,9 @@ pub struct S3FifoPolicy<K: Ord + Clone> {
     cfg: S3FifoConfig,
     small: VecDeque<K>,
     main: VecDeque<K>,
-    ghost: VecDeque<K>,
-    ghost_set: BTreeSet<K>,
+    ghost_order: BTreeMap<u64, K>,
+    ghost_lookup: BTreeMap<K, u64>,
+    ghost_gen: u64,
     live_tiers: BTreeMap<K, LiveTier>,
     live_owners: BTreeMap<K, String>,
     owner_live_counts: BTreeMap<String, usize>,
@@ -148,8 +151,9 @@ impl<K: Ord + Clone> S3FifoPolicy<K> {
             },
             small: VecDeque::new(),
             main: VecDeque::new(),
-            ghost: VecDeque::new(),
-            ghost_set: BTreeSet::new(),
+            ghost_order: BTreeMap::new(),
+            ghost_lookup: BTreeMap::new(),
+            ghost_gen: 0,
             live_tiers: BTreeMap::new(),
             live_owners: BTreeMap::new(),
             owner_live_counts: BTreeMap::new(),
@@ -173,7 +177,7 @@ impl<K: Ord + Clone> S3FifoPolicy<K> {
             fallback_reason: self.fallback_reason,
             small_depth: self.small.len(),
             main_depth: self.main.len(),
-            ghost_depth: self.ghost.len(),
+            ghost_depth: self.ghost_lookup.len(),
             live_depth: self.live_depth(),
             ghost_hits_total: self.ghost_hits_total,
             admissions_total: self.admissions_total,
@@ -211,7 +215,7 @@ impl<K: Ord + Clone> S3FifoPolicy<K> {
             self.promote_small_to_main(&key);
             self.promotions_total = self.promotions_total.saturating_add(1);
             S3FifoDecisionKind::PromoteSmallToMain
-        } else if self.ghost_set.contains(&key) {
+        } else if self.ghost_lookup.contains_key(&key) {
             ghost_hit = true;
             self.ghost_hits_total = self.ghost_hits_total.saturating_add(1);
             if self.owner_at_budget(owner) {
@@ -274,7 +278,7 @@ impl<K: Ord + Clone> S3FifoPolicy<K> {
             live_depth: self.live_depth(),
             small_depth: self.small.len(),
             main_depth: self.main.len(),
-            ghost_depth: self.ghost.len(),
+            ghost_depth: self.ghost_lookup.len(),
         }
     }
 
@@ -381,22 +385,38 @@ impl<K: Ord + Clone> S3FifoPolicy<K> {
     }
 
     fn push_ghost(&mut self, key: K) {
-        if self.ghost_set.remove(&key) {
-            remove_from_queue(&mut self.ghost, &key);
+        // Prevent generation overflow.
+        if self.ghost_gen == u64::MAX {
+            self.ghost_gen = 0;
+            self.ghost_order.clear();
+            self.ghost_lookup.clear();
         }
-        self.ghost.push_back(key.clone());
-        self.ghost_set.insert(key);
 
-        while self.ghost.len() > self.cfg.ghost_capacity {
-            if let Some(evicted) = self.ghost.pop_front() {
-                self.ghost_set.remove(&evicted);
+        self.ghost_gen = self.ghost_gen.saturating_add(1);
+
+        if let Some(gen_mut) = self.ghost_lookup.get_mut(&key) {
+            let old_gen = *gen_mut;
+            *gen_mut = self.ghost_gen;
+            if let Some(k_reused) = self.ghost_order.remove(&old_gen) {
+                self.ghost_order.insert(self.ghost_gen, k_reused);
+            }
+        } else {
+            self.ghost_lookup.insert(key.clone(), self.ghost_gen);
+            self.ghost_order.insert(self.ghost_gen, key);
+        }
+
+        while self.ghost_lookup.len() > self.cfg.ghost_capacity {
+            if let Some((_, popped_key)) = self.ghost_order.pop_first() {
+                self.ghost_lookup.remove(&popped_key);
+            } else {
+                break;
             }
         }
     }
 
     fn remove_ghost(&mut self, key: &K) {
-        if self.ghost_set.remove(key) {
-            remove_from_queue(&mut self.ghost, key);
+        if let Some(generation) = self.ghost_lookup.remove(key) {
+            self.ghost_order.remove(&generation);
         }
     }
 
@@ -472,7 +492,7 @@ mod tests {
     fn assert_no_duplicates(policy: &S3FifoPolicy<String>) {
         let small: BTreeSet<_> = policy.small.iter().cloned().collect();
         let main: BTreeSet<_> = policy.main.iter().cloned().collect();
-        let ghost: BTreeSet<_> = policy.ghost.iter().cloned().collect();
+        let ghost: BTreeSet<_> = policy.ghost_lookup.keys().cloned().collect();
 
         assert!(small.is_disjoint(&main));
         assert!(small.is_disjoint(&ghost));
@@ -917,27 +937,27 @@ mod tests {
         policy.push_ghost("k1".to_string());
         policy.push_ghost("k2".to_string());
         assert_eq!(
-            policy.ghost.iter().cloned().collect::<Vec<_>>(),
+            policy.ghost_order.values().cloned().collect::<Vec<_>>(),
             vec!["k1".to_string(), "k2".to_string()]
         );
-        assert_eq!(policy.ghost.len(), policy.ghost_set.len());
+        assert_eq!(policy.ghost_lookup.len(), 2);
 
         // Re-inserting an existing ghost key should move it to the newest slot,
         // not duplicate it.
         policy.push_ghost("k1".to_string());
         assert_eq!(
-            policy.ghost.iter().cloned().collect::<Vec<_>>(),
+            policy.ghost_order.values().cloned().collect::<Vec<_>>(),
             vec!["k2".to_string(), "k1".to_string()]
         );
-        assert_eq!(policy.ghost.len(), policy.ghost_set.len());
+        assert_eq!(policy.ghost_lookup.len(), 2);
 
         // Capacity enforcement still applies after recency updates.
         policy.push_ghost("k3".to_string());
         assert_eq!(
-            policy.ghost.iter().cloned().collect::<Vec<_>>(),
+            policy.ghost_order.values().cloned().collect::<Vec<_>>(),
             vec!["k1".to_string(), "k3".to_string()]
         );
-        assert_eq!(policy.ghost.len(), policy.ghost_set.len());
+        assert_eq!(policy.ghost_lookup.len(), 2);
     }
 
     #[test]
@@ -1119,7 +1139,7 @@ mod tests {
 
                 let small: BTreeSet<_> = policy.small.iter().cloned().collect();
                 let main: BTreeSet<_> = policy.main.iter().cloned().collect();
-                let ghost: BTreeSet<_> = policy.ghost.iter().cloned().collect();
+                let ghost: BTreeSet<_> = policy.ghost_lookup.keys().cloned().collect();
 
                 assert!(small.is_disjoint(&main), "small and main must be disjoint");
                 assert!(small.is_disjoint(&ghost), "small and ghost must be disjoint");

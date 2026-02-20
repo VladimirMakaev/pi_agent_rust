@@ -1,7 +1,7 @@
 //! Superinstruction compiler for hot typed-hostcall opcode traces.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// Versioned schema for serialized superinstruction plans.
 pub const HOSTCALL_SUPERINSTRUCTION_SCHEMA_VERSION: &str = "pi.ext.hostcall_superinstruction.v1";
@@ -111,13 +111,19 @@ impl HostcallSuperinstructionCompiler {
             }
             let max_width = self.max_window.min(trace_len);
             for width in 2..=max_width {
+                let mut next_valid: HashMap<&[String], usize> = HashMap::new();
                 for start in 0..=trace_len - width {
-                    let window = trace[start..start + width].to_vec();
-                    if window.iter().any(|opcode| opcode.trim().is_empty()) {
+                    let window_slice = &trace[start..start + width];
+                    if window_slice.iter().any(|opcode| opcode.trim().is_empty()) {
                         continue;
                     }
-                    let entry = windows.entry(window).or_insert(0);
-                    *entry = entry.saturating_add(1);
+
+                    let min_start = *next_valid.get(window_slice).unwrap_or(&0);
+                    if start >= min_start {
+                        let entry = windows.entry(window_slice.to_vec()).or_insert(0);
+                        *entry = entry.saturating_add(1);
+                        next_valid.insert(window_slice, start + width);
+                    }
                 }
             }
         }
@@ -316,10 +322,11 @@ fn opcode_window_signature(window: &[String]) -> String {
 
 fn bool_from_env(var: &str, default: bool) -> bool {
     std::env::var(var).ok().as_deref().map_or(default, |value| {
-        !matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "0" | "false" | "off" | "disabled"
-        )
+        match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "on" | "enabled" | "yes" => true,
+            "0" | "false" | "off" | "disabled" | "no" => false,
+            _ => default,
+        }
     })
 }
 
