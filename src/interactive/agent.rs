@@ -252,6 +252,7 @@ async fn flush_ui_stream_batcher_with_backpressure(batcher: &StdMutex<UiStreamDe
         let sender = guard.sender.clone();
         let pending = guard.pending.drain(..).collect::<Vec<_>>();
         guard.pending_bytes = 0;
+        drop(guard);
         (sender, pending)
     };
 
