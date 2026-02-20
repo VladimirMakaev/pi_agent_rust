@@ -10,9 +10,9 @@ use crate::error::{Error, Result};
 use crate::session::SessionEntry;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use serde_json::value::RawValue;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
-use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -22,6 +22,9 @@ pub const OFFSET_INDEX_SCHEMA: &str = "pi.session_store_v2.offset_index.v1";
 pub const CHECKPOINT_SCHEMA: &str = "pi.session_store_v2.checkpoint.v1";
 pub const MANIFEST_SCHEMA: &str = "pi.session_store_v2.manifest.v1";
 pub const MIGRATION_EVENT_SCHEMA: &str = "pi.session_store_v2.migration_event.v1";
+
+/// Maximum size for a single frame line (100MB) to prevent OOM on corrupted files.
+const MAX_FRAME_READ_BYTES: u64 = 100 * 1024 * 1024;
 
 /// Initial chain hash before any frames are appended.
 const GENESIS_CHAIN_HASH: &str = "0000000000000000000000000000000000000000000000000000000000000000";
@@ -40,7 +43,7 @@ pub struct SegmentFrame {
     pub timestamp: String,
     pub payload_sha256: String,
     pub payload_bytes: u64,
-    pub payload: Value,
+    pub payload: Box<RawValue>,
 }
 
 impl SegmentFrame {
@@ -51,7 +54,7 @@ impl SegmentFrame {
         entry_id: String,
         parent_entry_id: Option<String>,
         entry_type: String,
-        payload: Value,
+        payload: Box<RawValue>,
     ) -> Result<Self> {
         let (payload_sha256, payload_bytes) = payload_hash_and_size(&payload)?;
         Ok(Self {
@@ -337,6 +340,7 @@ impl SessionStoreV2 {
         Ok(false)
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     pub fn append_entry(
         &mut self,
         entry_id: impl Into<String>,
@@ -347,6 +351,14 @@ impl SessionStoreV2 {
         let entry_id = entry_id.into();
         let entry_type = entry_type.into();
 
+        // Convert the generic Value into a RawValue (string slice) to avoid
+        // re-serializing the payload when writing the full frame.
+        // We do this by first serializing the Value to a string, then
+        // creating a Box<RawValue> from it.
+        let raw_string = serde_json::to_string(&payload)?;
+        let raw_payload = RawValue::from_string(raw_string)
+            .map_err(|e| Error::session(format!("failed to convert payload to RawValue: {e}")))?;
+
         let mut frame = SegmentFrame::new(
             self.next_segment_seq,
             self.next_frame_seq,
@@ -354,7 +366,7 @@ impl SessionStoreV2 {
             entry_id,
             parent_entry_id,
             entry_type,
-            payload,
+            raw_payload,
         )?;
         let mut encoded = serde_json::to_vec(&frame)?;
         let mut line_len = line_length_u64(&encoded)?;
@@ -385,17 +397,28 @@ impl SessionStoreV2 {
         let segment_path = self.segment_file_path(self.next_segment_seq);
         let byte_offset = fs::metadata(&segment_path).map_or(0, |meta| meta.len());
 
+        // Prepare the write buffer by appending the newline to the encoded JSON
+        let mut write_buf = encoded;
+        write_buf.push(b'\n');
+
         let mut segment = OpenOptions::new()
             .create(true)
-            .append(true)
+            .write(true)
+            .truncate(false)
             .open(&segment_path)?;
-        segment.write_all(&encoded)?;
-        segment.write_all(b"\n")?;
-        segment.flush()?;
 
-        let mut persisted = encoded;
-        persisted.push(b'\n');
-        let crc = crc32c_upper(&persisted);
+        let pre_write_len = segment.seek(SeekFrom::End(0))?;
+        if let Err(e) = (|| -> std::io::Result<()> {
+            segment.write_all(&write_buf)?;
+            segment.flush()?;
+            Ok(())
+        })() {
+            let _ = segment.set_len(pre_write_len);
+            return Err(Error::from(e));
+        }
+
+        // Use write_buf (which includes the newline) for CRC calculation
+        let crc = crc32c_upper(&write_buf);
         let index_entry = OffsetIndexEntry {
             schema: OFFSET_INDEX_SCHEMA.to_string(),
             entry_seq: frame.entry_seq,
@@ -407,7 +430,12 @@ impl SessionStoreV2 {
             crc32c: crc.clone(),
             state: "active".to_string(),
         };
-        append_jsonl_line(&self.index_file_path(), &index_entry)?;
+
+        if let Err(e) = append_jsonl_line(&self.index_file_path(), &index_entry) {
+            // Rollback: truncate segment to remove the unindexed frame.
+            let _ = segment.set_len(pre_write_len);
+            return Err(e);
+        }
 
         self.chain_hash = chain_hash_step(&self.chain_hash, &frame.payload_sha256);
         self.total_bytes = self.total_bytes.saturating_add(line_len);
@@ -761,33 +789,43 @@ impl SessionStoreV2 {
         let session_id = session_id.into();
         let source_format = source_format.into();
         let index_rows = self.read_index()?;
-        let frames = self.read_all_entries()?;
 
-        let mut parent_counts: std::collections::HashMap<&str, u64> =
+        let mut parent_counts: std::collections::HashMap<String, u64> =
             std::collections::HashMap::new();
         let mut message_count = 0u64;
         let mut compaction_count = 0u64;
-        let mut entry_ids = std::collections::HashSet::with_capacity(frames.len());
-        for frame in &frames {
-            entry_ids.insert(frame.entry_id.as_str());
-            if frame.entry_type == "message" {
-                message_count = message_count.saturating_add(1);
-            }
-            if frame.entry_type == "compaction" {
-                compaction_count = compaction_count.saturating_add(1);
-            }
-            if let Some(parent_id) = frame.parent_entry_id.as_deref() {
-                *parent_counts.entry(parent_id).or_insert(0) += 1;
+        let mut entry_ids = std::collections::HashSet::with_capacity(index_rows.len());
+
+        let mut recomputed_chain = GENESIS_CHAIN_HASH.to_string();
+        let mut parent_links_closed = true;
+
+        for row in &index_rows {
+            if let Some(frame) = seek_read_frame(self, row)? {
+                entry_ids.insert(frame.entry_id.clone());
+
+                if frame.entry_type == "message" {
+                    message_count = message_count.saturating_add(1);
+                }
+                if frame.entry_type == "compaction" {
+                    compaction_count = compaction_count.saturating_add(1);
+                }
+
+                if let Some(parent_id) = frame.parent_entry_id.as_deref() {
+                    *parent_counts.entry(parent_id.to_string()).or_insert(0) += 1;
+
+                    // In a valid append-only log, the parent must have appeared
+                    // (and thus been added to entry_ids) before the child.
+                    if !entry_ids.contains(parent_id) {
+                        parent_links_closed = false;
+                    }
+                }
+
+                recomputed_chain = chain_hash_step(&recomputed_chain, &frame.payload_sha256);
             }
         }
+
         let branches_total = u64::try_from(parent_counts.values().filter(|&&n| n > 1).count())
             .map_err(|_| Error::session("branch count exceeds u64"))?;
-        let parent_links_closed = frames.iter().all(|frame| {
-            frame
-                .parent_entry_id
-                .as_deref()
-                .is_none_or(|parent| entry_ids.contains(parent))
-        });
 
         let mut monotonic_entry_seq = true;
         let mut monotonic_segment_seq = true;
@@ -804,10 +842,6 @@ impl SessionStoreV2 {
             last_segment_seq = row.segment_seq;
         }
 
-        let mut recomputed_chain = GENESIS_CHAIN_HASH.to_string();
-        for frame in &frames {
-            recomputed_chain = chain_hash_step(&recomputed_chain, &frame.payload_sha256);
-        }
         let hash_chain_valid = recomputed_chain == self.chain_hash;
 
         let head = self.head().unwrap_or(StoreHead {
@@ -904,12 +938,29 @@ impl SessionStoreV2 {
 
     /// Rebuild the offset index by scanning all segment files.
     /// This is the recovery path when the index is missing or corrupted.
+    #[allow(clippy::too_many_lines)]
     pub fn rebuild_index(&mut self) -> Result<u64> {
         let mut rebuilt_count = 0u64;
         let index_path = self.index_file_path();
-        if index_path.exists() {
-            fs::remove_file(&index_path)?;
+        let index_tmp_path = self.root.join("tmp").join("offsets.rebuild.tmp");
+
+        // Ensure tmp dir exists
+        if let Some(parent) = index_tmp_path.parent() {
+            fs::create_dir_all(parent)?;
         }
+
+        // Start fresh with the temp file
+        if index_tmp_path.exists() {
+            fs::remove_file(&index_tmp_path)?;
+        }
+
+        let mut index_writer = std::io::BufWriter::new(
+            OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&index_tmp_path)?,
+        );
 
         self.chain_hash = GENESIS_CHAIN_HASH.to_string();
         self.total_bytes = 0;
@@ -917,8 +968,10 @@ impl SessionStoreV2 {
         self.last_crc32c = "00000000".to_string();
 
         let segment_files = self.list_segment_files()?;
-        for (_seg_seq, seg_path) in segment_files {
-            let file = File::open(&seg_path)?;
+        let mut last_observed_seq = 0u64;
+
+        'segments: for (i, (_seg_seq, seg_path)) in segment_files.iter().enumerate() {
+            let file = File::open(seg_path)?;
             let mut reader = BufReader::new(file);
             let mut byte_offset = 0u64;
             let mut line_number = 0u64;
@@ -926,7 +979,30 @@ impl SessionStoreV2 {
 
             loop {
                 line.clear();
-                let bytes_read = reader.read_line(&mut line)?;
+                // Use bounded read to prevent OOM on corrupted files (e.g. missing newlines)
+                let bytes_read = match read_line_with_limit(
+                    &mut reader,
+                    &mut line,
+                    MAX_FRAME_READ_BYTES,
+                ) {
+                    Ok(n) => n,
+                    Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                        // If line exceeds limit, we treat it as corruption and truncate.
+                        // However, we can't easily recover the offset without reading past the bad data.
+                        // For safety, we truncate at the start of this bad frame.
+                        tracing::warn!(
+                            segment = %seg_path.display(),
+                            line_number,
+                            error = %e,
+                            "SessionStoreV2 encountered oversized line during index rebuild; truncating segment"
+                        );
+                        truncate_file_to(seg_path, byte_offset)?;
+                        remove_orphaned_segments(&segment_files[i + 1..])?;
+                        break 'segments;
+                    }
+                    Err(e) => return Err(Error::Io(Box::new(e))),
+                };
+
                 if bytes_read == 0 {
                     break;
                 }
@@ -939,12 +1015,27 @@ impl SessionStoreV2 {
                     continue;
                 }
 
+                let missing_newline = !line.ends_with('\n');
                 let json_line = line.trim_end_matches('\n').trim_end_matches('\r');
                 let frame: SegmentFrame = match serde_json::from_str(json_line) {
-                    Ok(frame) => frame,
+                    Ok(frame) => {
+                        if missing_newline {
+                            // If we successfully parsed the JSON but the line is missing a newline,
+                            // the atomic write (which includes the newline) did not complete.
+                            // We must discard this frame to ensure the file ends cleanly for future appends.
+                            tracing::warn!(
+                                segment = %seg_path.display(),
+                                line_number,
+                                "SessionStoreV2 dropping valid but newline-missing trailing segment frame during index rebuild"
+                            );
+                            truncate_file_to(seg_path, byte_offset)?;
+                            remove_orphaned_segments(&segment_files[i + 1..])?;
+                            break 'segments;
+                        }
+                        frame
+                    }
                     Err(err) => {
                         let at_eof = reader.fill_buf()?.is_empty();
-                        let missing_newline = !line.ends_with('\n');
                         if at_eof && missing_newline {
                             tracing::warn!(
                                 segment = %seg_path.display(),
@@ -953,20 +1044,32 @@ impl SessionStoreV2 {
                                 "SessionStoreV2 dropping truncated trailing segment frame during index rebuild"
                             );
                             // Trim the incomplete tail so subsequent reads and appends remain valid.
-                            OpenOptions::new()
-                                .write(true)
-                                .open(&seg_path)?
-                                .set_len(byte_offset)?;
-                            break;
+                            truncate_file_to(seg_path, byte_offset)?;
+                            remove_orphaned_segments(&segment_files[i + 1..])?;
+                            break 'segments;
                         }
                         // Non-EOF corruption: fail closed to prevent silent data loss.
                         return Err(Error::session(format!(
                             "failed to parse segment frame while rebuilding index: \
-                             segment={} line={line_number}: {err}",
+                                                             segment={} line={line_number}: {err}",
                             seg_path.display()
                         )));
                     }
                 };
+
+                if frame.entry_seq <= last_observed_seq {
+                    tracing::warn!(
+                        segment = %seg_path.display(),
+                        line_number,
+                        entry_seq = frame.entry_seq,
+                        last_seq = last_observed_seq,
+                        "SessionStoreV2 detected non-monotonic entry sequence during rebuild; truncating segment"
+                    );
+                    truncate_file_to(seg_path, byte_offset)?;
+                    remove_orphaned_segments(&segment_files[i + 1..])?;
+                    break 'segments;
+                }
+                last_observed_seq = frame.entry_seq;
 
                 let record_bytes = line.as_bytes().to_vec();
                 let crc = crc32c_upper(&record_bytes);
@@ -982,7 +1085,8 @@ impl SessionStoreV2 {
                     crc32c: crc.clone(),
                     state: "active".to_string(),
                 };
-                append_jsonl_line(&index_path, &index_entry)?;
+                serde_json::to_writer(&mut index_writer, &index_entry)?;
+                index_writer.write_all(b"\n")?;
 
                 self.chain_hash = chain_hash_step(&self.chain_hash, &frame.payload_sha256);
                 self.total_bytes = self.total_bytes.saturating_add(line_len);
@@ -993,6 +1097,11 @@ impl SessionStoreV2 {
                 rebuilt_count = rebuilt_count.saturating_add(1);
             }
         }
+
+        index_writer.flush()?;
+
+        // Atomically replace the old index with the rebuilt one
+        fs::rename(&index_tmp_path, &index_path)?;
 
         self.next_segment_seq = 1;
         self.next_frame_seq = 1;
@@ -1007,7 +1116,10 @@ impl SessionStoreV2 {
         let index_rows = self.read_index()?;
         let mut last_entry_seq = 0;
 
-        for row in index_rows {
+        // Group rows by segment to minimize file opens
+        let mut rows_by_segment: std::collections::BTreeMap<u64, Vec<&OffsetIndexEntry>> =
+            std::collections::BTreeMap::new();
+        for row in &index_rows {
             if row.entry_seq <= last_entry_seq {
                 return Err(Error::session(format!(
                     "entry sequence is not strictly increasing at entry_seq={}",
@@ -1015,69 +1127,75 @@ impl SessionStoreV2 {
                 )));
             }
             last_entry_seq = row.entry_seq;
+            rows_by_segment
+                .entry(row.segment_seq)
+                .or_default()
+                .push(row);
+        }
 
-            let segment_path = self.segment_file_path(row.segment_seq);
-            let segment_len =
-                fs::metadata(&segment_path)
-                    .map(|meta| meta.len())
-                    .map_err(|err| {
-                        Error::session(format!(
-                            "failed to stat segment {}: {err}",
-                            segment_path.display()
-                        ))
-                    })?;
-            let end = row
-                .byte_offset
-                .checked_add(row.byte_length)
-                .ok_or_else(|| Error::session("index byte range overflow"))?;
-            if end > segment_len {
-                return Err(Error::session(format!(
-                    "index out of bounds for segment {}: end={} len={segment_len}",
-                    segment_path.display(),
-                    end
-                )));
-            }
+        for (segment_seq, rows) in rows_by_segment {
+            let segment_path = self.segment_file_path(segment_seq);
+            let mut file = File::open(&segment_path).map_err(|err| {
+                Error::session(format!(
+                    "failed to open segment {}: {err}",
+                    segment_path.display()
+                ))
+            })?;
+            let segment_len = file.metadata()?.len();
 
-            let mut file = File::open(&segment_path)?;
-            file.seek(SeekFrom::Start(row.byte_offset))?;
-            let mut record_bytes = vec![
-                0u8;
-                usize::try_from(row.byte_length).map_err(|_| {
-                    Error::session(format!("byte length too large: {}", row.byte_length))
-                })?
-            ];
-            file.read_exact(&mut record_bytes)?;
+            for row in rows {
+                let end = row
+                    .byte_offset
+                    .checked_add(row.byte_length)
+                    .ok_or_else(|| Error::session("index byte range overflow"))?;
+                if end > segment_len {
+                    return Err(Error::session(format!(
+                        "index out of bounds for segment {}: end={} len={segment_len}",
+                        segment_path.display(),
+                        end
+                    )));
+                }
 
-            let checksum = crc32c_upper(&record_bytes);
-            if checksum != row.crc32c {
-                return Err(Error::session(format!(
-                    "checksum mismatch for entry_seq={} expected={} actual={checksum}",
-                    row.entry_seq, row.crc32c
-                )));
-            }
+                file.seek(SeekFrom::Start(row.byte_offset))?;
+                let mut record_bytes = vec![
+                    0u8;
+                    usize::try_from(row.byte_length).map_err(|_| {
+                        Error::session(format!("byte length too large: {}", row.byte_length))
+                    })?
+                ];
+                file.read_exact(&mut record_bytes)?;
 
-            if record_bytes.last() == Some(&b'\n') {
-                record_bytes.pop();
-            }
-            let frame: SegmentFrame = serde_json::from_slice(&record_bytes)?;
+                let checksum = crc32c_upper(&record_bytes);
+                if checksum != row.crc32c {
+                    return Err(Error::session(format!(
+                        "checksum mismatch for entry_seq={} expected={} actual={checksum}",
+                        row.entry_seq, row.crc32c
+                    )));
+                }
 
-            if frame.entry_seq != row.entry_seq
-                || frame.entry_id != row.entry_id
-                || frame.segment_seq != row.segment_seq
-                || frame.frame_seq != row.frame_seq
-            {
-                return Err(Error::session(format!(
-                    "index/frame mismatch at entry_seq={}",
-                    row.entry_seq
-                )));
-            }
+                if record_bytes.last() == Some(&b'\n') {
+                    record_bytes.pop();
+                }
+                let frame: SegmentFrame = serde_json::from_slice(&record_bytes)?;
 
-            let (payload_hash, payload_bytes) = payload_hash_and_size(&frame.payload)?;
-            if frame.payload_sha256 != payload_hash || frame.payload_bytes != payload_bytes {
-                return Err(Error::session(format!(
-                    "payload integrity mismatch at entry_seq={}",
-                    row.entry_seq
-                )));
+                if frame.entry_seq != row.entry_seq
+                    || frame.entry_id != row.entry_id
+                    || frame.segment_seq != row.segment_seq
+                    || frame.frame_seq != row.frame_seq
+                {
+                    return Err(Error::session(format!(
+                        "index/frame mismatch at entry_seq={}",
+                        row.entry_seq
+                    )));
+                }
+
+                let (payload_hash, payload_bytes) = payload_hash_and_size(&frame.payload)?;
+                if frame.payload_sha256 != payload_hash || frame.payload_bytes != payload_bytes {
+                    return Err(Error::session(format!(
+                        "payload integrity mismatch at entry_seq={}",
+                        row.entry_seq
+                    )));
+                }
             }
         }
 
@@ -1111,9 +1229,13 @@ impl SessionStoreV2 {
             let mut chain = GENESIS_CHAIN_HASH.to_string();
             let mut total = 0u64;
             for row in &index_rows {
-                if let Some(frame) = seek_read_frame(self, row)? {
-                    chain = chain_hash_step(&chain, &frame.payload_sha256);
-                }
+                let frame = seek_read_frame(self, row)?.ok_or_else(|| {
+                    Error::session(format!(
+                        "index references missing frame during bootstrap: entry_seq={}, segment={}",
+                        row.entry_seq, row.segment_seq
+                    ))
+                })?;
+                chain = chain_hash_step(&chain, &frame.payload_sha256);
                 total = total.saturating_add(row.byte_length);
             }
             self.chain_hash = chain;
@@ -1171,7 +1293,9 @@ fn is_recoverable_index_error(error: &Error) -> bool {
 
 /// Convert a V2 `SegmentFrame` payload back into a `SessionEntry`.
 pub fn frame_to_session_entry(frame: &SegmentFrame) -> Result<SessionEntry> {
-    let entry: SessionEntry = serde_json::from_value(frame.payload.clone()).map_err(|e| {
+    // Deserialize directly from the RawValue to avoid extra allocation/copying.
+    // serde_json::from_str works on RawValue.get() which is &str.
+    let entry: SessionEntry = serde_json::from_str(frame.payload.get()).map_err(|e| {
         Error::session(format!(
             "failed to deserialize SessionEntry from frame entry_id={}: {e}",
             frame.entry_id
@@ -1228,9 +1352,31 @@ fn seek_read_frame(store: &SessionStoreV2, row: &OffsetIndexEntry) -> Result<Opt
         return Ok(None);
     }
     let mut file = File::open(&segment_path)?;
+    let file_len = file.metadata()?.len();
+    let end_offset = row
+        .byte_offset
+        .checked_add(row.byte_length)
+        .ok_or_else(|| Error::session("index byte range overflow"))?;
+
+    if end_offset > file_len {
+        return Err(Error::session(format!(
+            "index out of bounds for segment {}: end={} len={}",
+            segment_path.display(),
+            end_offset,
+            file_len
+        )));
+    }
+
     file.seek(SeekFrom::Start(row.byte_offset))?;
     let byte_len = usize::try_from(row.byte_length)
         .map_err(|_| Error::session(format!("byte length too large: {}", row.byte_length)))?;
+
+    if row.byte_length > store.max_segment_bytes.max(100 * 1024 * 1024) {
+        return Err(Error::session(format!(
+            "frame byte length {byte_len} exceeds limit"
+        )));
+    }
+
     let mut buf = vec![0u8; byte_len];
     file.read_exact(&mut buf)?;
     if buf.last() == Some(&b'\n') {
@@ -1271,23 +1417,32 @@ pub fn has_v2_sidecar(jsonl_path: &Path) -> bool {
 
 fn append_jsonl_line<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    serde_json::to_writer(&mut file, value)?;
-    file.write_all(b"\n")?;
+    let mut buf = serde_json::to_vec(value)?;
+    buf.push(b'\n');
+    file.write_all(&buf)?;
+    file.flush()?;
+    Ok(())
+}
+
+fn truncate_file_to(path: &Path, len: u64) -> Result<()> {
+    let mut file = OpenOptions::new().write(true).truncate(false).open(path)?;
+    file.set_len(len)?;
     file.flush()?;
     Ok(())
 }
 
 fn write_jsonl_lines<T: Serialize>(path: &Path, rows: &[T]) -> Result<()> {
-    let mut file = OpenOptions::new()
+    let file = OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(true)
         .open(path)?;
+    let mut writer = std::io::BufWriter::new(file);
     for row in rows {
-        serde_json::to_writer(&mut file, row)?;
-        file.write_all(b"\n")?;
+        serde_json::to_writer(&mut writer, row)?;
+        writer.write_all(b"\n")?;
     }
-    file.flush()?;
+    writer.flush()?;
     Ok(())
 }
 
@@ -1305,11 +1460,12 @@ fn read_jsonl<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Vec<T>> {
     Ok(out)
 }
 
-fn payload_hash_and_size(payload: &Value) -> Result<(String, u64)> {
-    let bytes = serde_json::to_vec(payload)?;
+fn payload_hash_and_size(payload: &RawValue) -> Result<(String, u64)> {
+    // For RawValue, we can just get the string content directly.
+    let bytes = payload.get().as_bytes();
     let payload_bytes = u64::try_from(bytes.len())
         .map_err(|_| Error::session(format!("payload is too large: {} bytes", bytes.len())))?;
-    let hash = format!("{:x}", Sha256::digest(&bytes));
+    let hash = format!("{:x}", Sha256::digest(bytes));
     Ok((hash, payload_bytes))
 }
 
@@ -1322,23 +1478,41 @@ fn line_length_u64(encoded: &[u8]) -> Result<u64> {
 }
 
 fn crc32c_upper(data: &[u8]) -> String {
-    const POLY: u32 = 0x82f6_3b78;
-    let mut crc = !0u32;
-    for &byte in data {
-        crc ^= u32::from(byte);
-        for _ in 0..8 {
-            let lsb_set = crc & 1;
-            crc >>= 1;
-            if lsb_set != 0 {
-                crc ^= POLY;
+    let crc = crc32c::crc32c(data);
+    format!("{crc:08X}")
+}
+
+fn remove_orphaned_segments(segments: &[(u64, PathBuf)]) -> Result<()> {
+    for (_, orphan_path) in segments {
+        if orphan_path.exists() {
+            tracing::warn!(
+                path = %orphan_path.display(),
+                "removing orphaned segment file after index rebuild truncation"
+            );
+            if let Err(e) = fs::remove_file(orphan_path) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    return Err(Error::Io(Box::new(e)));
+                }
             }
         }
     }
-    crc = !crc;
+    Ok(())
+}
 
-    let mut out = String::with_capacity(8);
-    let _ = write!(&mut out, "{crc:08X}");
-    out
+fn read_line_with_limit<R: BufRead>(
+    reader: &mut R,
+    buf: &mut String,
+    limit: u64,
+) -> std::io::Result<usize> {
+    let mut take = reader.take(limit);
+    let n = take.read_line(buf)?;
+    if n > 0 && take.limit() == 0 && !buf.ends_with('\n') {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Line length exceeds limit of {limit} bytes"),
+        ));
+    }
+    Ok(n)
 }
 
 #[cfg(test)]
@@ -1422,7 +1596,9 @@ mod proptests {
         #[test]
         fn payload_hash_is_64_hex(s in "[a-z]{0,50}") {
             let val = json!(s);
-            let (hash, _size) = payload_hash_and_size(&val).unwrap();
+            let raw_string = serde_json::to_string(&val).unwrap();
+            let raw = RawValue::from_string(raw_string).unwrap();
+            let (hash, _size) = payload_hash_and_size(&raw).unwrap();
             assert_eq!(hash.len(), 64);
             assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
         }
@@ -1430,7 +1606,9 @@ mod proptests {
         #[test]
         fn payload_size_matches_serialization(s in "[a-z]{0,50}") {
             let val = json!(s);
-            let (_, size) = payload_hash_and_size(&val).unwrap();
+            let raw_string = serde_json::to_string(&val).unwrap();
+            let raw = RawValue::from_string(raw_string).unwrap();
+            let (_, size) = payload_hash_and_size(&raw).unwrap();
             let expected = serde_json::to_vec(&val).unwrap().len() as u64;
             assert_eq!(size, expected);
         }
@@ -1438,8 +1616,10 @@ mod proptests {
         #[test]
         fn payload_hash_deterministic(n in 0i64..10000) {
             let val = json!(n);
-            let (h1, s1) = payload_hash_and_size(&val).unwrap();
-            let (h2, s2) = payload_hash_and_size(&val).unwrap();
+            let raw_string = serde_json::to_string(&val).unwrap();
+            let raw = RawValue::from_string(raw_string).unwrap();
+            let (h1, s1) = payload_hash_and_size(&raw).unwrap();
+            let (h2, s2) = payload_hash_and_size(&raw).unwrap();
             assert_eq!(h1, h2);
             assert_eq!(s1, s2);
         }

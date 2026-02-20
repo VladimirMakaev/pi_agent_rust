@@ -38,6 +38,8 @@ const INDEX_UPDATE_FLUSH_INTERVAL: Duration = Duration::from_millis(25);
 const INDEX_UPDATE_BASE_RETRY_DELAY_MS: u64 = 50;
 const INDEX_UPDATE_MAX_RETRIES: u8 = 3;
 const INDEX_UPDATE_FLUSH_TIMEOUT: Duration = Duration::from_millis(250);
+type PendingIndexKey = (PathBuf, PathBuf);
+type PendingIndexBatch = Vec<(PendingIndexKey, PendingIndexUpdate)>;
 
 #[derive(Debug, Clone)]
 struct PendingIndexUpdate {
@@ -72,7 +74,7 @@ impl PendingIndexUpdate {
         }
     }
 
-    fn key(&self) -> (PathBuf, PathBuf) {
+    fn key(&self) -> PendingIndexKey {
         (self.sessions_root.clone(), self.path.clone())
     }
 }
@@ -112,7 +114,7 @@ fn retry_delay(attempt: u8) -> Duration {
 }
 
 fn process_pending_index_updates(
-    pending: &mut HashMap<(PathBuf, PathBuf), PendingIndexUpdate>,
+    pending: &mut HashMap<PendingIndexKey, PendingIndexUpdate>,
     only_root: Option<&Path>,
     force: bool,
 ) {
@@ -130,50 +132,97 @@ fn process_pending_index_updates(
     }
     *pending = deferred_updates;
 
-    for (key, mut update) in ready_updates {
-        let result = SessionIndex::for_sessions_root(&update.sessions_root).index_session_snapshot(
-            &update.path,
-            &update.header,
-            update.message_count,
-            update.name.clone(),
-        );
+    // Group by sessions_root for batched DB access
+    #[allow(clippy::type_complexity)]
+    let mut batch_by_root: HashMap<PathBuf, PendingIndexBatch> = HashMap::new();
+    for (key, update) in ready_updates {
+        batch_by_root
+            .entry(update.sessions_root.clone())
+            .or_default()
+            .push((key, update));
+    }
 
-        match result {
-            Ok(()) => {
-                if update.attempts > 0 {
-                    tracing::info!(
-                        sessions_root = %update.sessions_root.display(),
-                        path = %update.path.display(),
-                        attempts = update.attempts,
-                        queued_for_ms = update.enqueued_at.elapsed().as_millis(),
-                        "Session index update retry succeeded"
-                    );
+    for (root, updates) in batch_by_root {
+        let index = SessionIndex::for_sessions_root(&root);
+        let mut metas = Vec::new();
+        let mut meta_indices = Vec::new(); // indices into `updates` that generated a meta
+        let mut retry_queue = Vec::new(); // (index_in_updates, error)
+
+        // 1. Prepare metas (IO bound, no lock)
+        for (i, (_, update)) in updates.iter().enumerate() {
+            match file_stats(&update.path) {
+                Ok((last_modified_ms, size_bytes)) => {
+                    let meta = SessionMeta {
+                        path: update.path.display().to_string(),
+                        id: update.header.id.clone(),
+                        cwd: update.header.cwd.clone(),
+                        timestamp: update.header.timestamp.clone(),
+                        message_count: update.message_count,
+                        last_modified_ms,
+                        size_bytes,
+                        name: update.name.clone(),
+                    };
+                    metas.push(meta);
+                    meta_indices.push(i);
+                }
+                Err(e) => {
+                    retry_queue.push((i, Error::session(format!("File stats failed: {e}"))));
                 }
             }
-            Err(err) => {
-                if update.attempts < INDEX_UPDATE_MAX_RETRIES {
-                    update.attempts = update.attempts.saturating_add(1);
-                    let delay = retry_delay(update.attempts);
-                    update.next_attempt_at = Instant::now() + delay;
-                    tracing::warn!(
-                        sessions_root = %update.sessions_root.display(),
-                        path = %update.path.display(),
-                        attempt = update.attempts,
-                        retry_delay_ms = delay.as_millis(),
-                        error = %err,
-                        "Session index update delayed; scheduling retry"
-                    );
-                    pending.insert(key, update);
-                } else {
-                    tracing::error!(
-                        sessions_root = %update.sessions_root.display(),
-                        path = %update.path.display(),
-                        attempts = update.attempts,
-                        queued_for_ms = update.enqueued_at.elapsed().as_millis(),
-                        error = %err,
-                        "Session index update dropped after retries"
-                    );
+        }
+
+        // 2. Upsert batch (DB bound, holds lock)
+        if !metas.is_empty() {
+            if let Err(e) = index.upsert_metas(metas) {
+                // Batch failed - retry all items that were in the batch
+                let batch_error = Error::session(format!("Batch upsert failed: {e}"));
+                for idx in meta_indices {
+                    // Clone the error to avoid ownership issues (Error is not Clone, so we format it)
+                    // Actually we can just share the string message.
+                    retry_queue.push((idx, Error::session(batch_error.to_string())));
                 }
+            } else {
+                // Success - log successful retries
+                for idx in meta_indices {
+                    let update = &updates[idx].1;
+                    if update.attempts > 0 {
+                        tracing::info!(
+                            sessions_root = %update.sessions_root.display(),
+                            path = %update.path.display(),
+                            attempts = update.attempts,
+                            queued_for_ms = update.enqueued_at.elapsed().as_millis(),
+                            "Session index update retry succeeded"
+                        );
+                    }
+                }
+            }
+        }
+
+        // 3. Handle retries
+        for (idx, err) in retry_queue {
+            let (key, mut update) = updates[idx].clone();
+            if update.attempts < INDEX_UPDATE_MAX_RETRIES {
+                update.attempts = update.attempts.saturating_add(1);
+                let delay = retry_delay(update.attempts);
+                update.next_attempt_at = Instant::now() + delay;
+                tracing::warn!(
+                    sessions_root = %update.sessions_root.display(),
+                    path = %update.path.display(),
+                    attempt = update.attempts,
+                    retry_delay_ms = delay.as_millis(),
+                    error = %err,
+                    "Session index update delayed; scheduling retry"
+                );
+                pending.insert(key, update);
+            } else {
+                tracing::error!(
+                    sessions_root = %update.sessions_root.display(),
+                    path = %update.path.display(),
+                    attempts = update.attempts,
+                    queued_for_ms = update.enqueued_at.elapsed().as_millis(),
+                    error = %err,
+                    "Session index update dropped after retries"
+                );
             }
         }
     }
@@ -181,7 +230,7 @@ fn process_pending_index_updates(
 
 #[allow(clippy::needless_pass_by_value)] // rx must be moved into this thread-spawned function
 fn run_index_update_dispatcher(rx: mpsc::Receiver<IndexUpdateCommand>) {
-    let mut pending: HashMap<(PathBuf, PathBuf), PendingIndexUpdate> = HashMap::new();
+    let mut pending: HashMap<PendingIndexKey, PendingIndexUpdate> = HashMap::new();
 
     loop {
         match rx.recv_timeout(INDEX_UPDATE_FLUSH_INTERVAL) {
@@ -291,41 +340,69 @@ impl SessionIndex {
     }
 
     fn upsert_meta(&self, meta: SessionMeta) -> Result<()> {
+        self.upsert_metas(vec![meta])
+    }
+
+    fn upsert_metas(&self, metas: Vec<SessionMeta>) -> Result<()> {
+        if metas.is_empty() {
+            return Ok(());
+        }
         let metrics = session_metrics::global();
         let _timer = metrics.start_timer(&metrics.index_upsert);
         self.with_lock(|conn| {
             init_schema(conn)?;
-            let message_count = sqlite_i64_from_u64("message_count", meta.message_count)?;
-            let size_bytes = sqlite_i64_from_u64("size_bytes", meta.size_bytes)?;
-            conn.execute_sync(
-                "INSERT INTO sessions (path,id,cwd,timestamp,message_count,last_modified_ms,size_bytes,name)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
-                 ON CONFLICT(path) DO UPDATE SET
-                   id=excluded.id,
-                   cwd=excluded.cwd,
-                   timestamp=excluded.timestamp,
-                   message_count=excluded.message_count,
-                   last_modified_ms=excluded.last_modified_ms,
-                   size_bytes=excluded.size_bytes,
-                   name=excluded.name",
-                &[
-                    Value::Text(meta.path),
-                    Value::Text(meta.id),
-                    Value::Text(meta.cwd),
-                    Value::Text(meta.timestamp),
-                    Value::BigInt(message_count),
-                    Value::BigInt(meta.last_modified_ms),
-                    Value::BigInt(size_bytes),
-                    meta.name.map_or(Value::Null, Value::Text),
-                ],
-            ).map_err(|e| Error::session(format!("Insert failed: {e}")))?;
+            conn.execute_raw("BEGIN IMMEDIATE")
+                .map_err(|e| Error::session(format!("BEGIN transaction: {e}")))?;
 
-            conn.execute_sync(
-                "INSERT INTO meta (key,value) VALUES ('last_sync_epoch_ms', ?1)
-                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                &[Value::Text(current_epoch_ms())],
-            ).map_err(|e| Error::session(format!("Meta update failed: {e}")))?;
-            Ok(())
+            let result: Result<()> = (|| {
+                for meta in metas {
+                    let message_count = sqlite_i64_from_u64("message_count", meta.message_count)?;
+                    let size_bytes = sqlite_i64_from_u64("size_bytes", meta.size_bytes)?;
+                    conn.execute_sync(
+                        "INSERT INTO sessions (path,id,cwd,timestamp,message_count,last_modified_ms,size_bytes,name)
+                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
+                         ON CONFLICT(path) DO UPDATE SET
+                           id=excluded.id,
+                           cwd=excluded.cwd,
+                           timestamp=excluded.timestamp,
+                           message_count=excluded.message_count,
+                           last_modified_ms=excluded.last_modified_ms,
+                           size_bytes=excluded.size_bytes,
+                           name=COALESCE(excluded.name, sessions.name)",
+                        &[
+                            Value::Text(meta.path),
+                            Value::Text(meta.id),
+                            Value::Text(meta.cwd),
+                            Value::Text(meta.timestamp),
+                            Value::BigInt(message_count),
+                            Value::BigInt(meta.last_modified_ms),
+                            Value::BigInt(size_bytes),
+                            meta.name.map_or(Value::Null, Value::Text),
+                        ],
+                    )
+                    .map_err(|e| Error::session(format!("Insert failed: {e}")))?;
+                }
+
+                conn.execute_sync(
+                    "INSERT INTO meta (key,value) VALUES ('last_sync_epoch_ms', ?1)
+                     ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    &[Value::Text(current_epoch_ms())],
+                )
+                .map_err(|e| Error::session(format!("Meta update failed: {e}")))?;
+                Ok(())
+            })();
+
+            match result {
+                Ok(()) => {
+                    conn.execute_raw("COMMIT")
+                        .map_err(|e| Error::session(format!("COMMIT transaction: {e}")))?;
+                    Ok(())
+                }
+                Err(e) => {
+                    let _ = conn.execute_raw("ROLLBACK");
+                    Err(e)
+                }
+            }
         })
     }
 
@@ -375,6 +452,8 @@ impl SessionIndex {
         })
     }
 
+    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)]
     pub fn reindex_all(&self) -> Result<()> {
         let metrics = session_metrics::global();
         let _timer = metrics.start_timer(&metrics.index_reindex);
@@ -394,34 +473,118 @@ impl SessionIndex {
 
         self.with_lock(|conn| {
             init_schema(conn)?;
-            conn.execute_sync("DELETE FROM sessions", &[])
-                .map_err(|e| Error::session(format!("Delete failed: {e}")))?;
 
-            for meta in metas {
-                let message_count = sqlite_i64_from_u64("message_count", meta.message_count)?;
-                let size_bytes = sqlite_i64_from_u64("size_bytes", meta.size_bytes)?;
+            // Execute in a transaction to ensure atomicity of the reindex
+            conn.execute_raw("BEGIN IMMEDIATE")
+                .map_err(|e| Error::session(format!("BEGIN transaction: {e}")))?;
+
+            let result: Result<()> = (|| {
+                // 1. Fetch existing paths and mtimes
+                let existing_rows = conn
+                    .query_sync("SELECT path, last_modified_ms FROM sessions", &[])
+                    .map_err(|e| Error::session(format!("Query existing: {e}")))?;
+
+                let mut existing_map: HashMap<String, i64> = HashMap::new();
+                for row in existing_rows {
+                    let path = row
+                        .get_named::<String>("path")
+                        .map_err(|e| Error::session(format!("get path: {e}")))?;
+                    let mtime = row
+                        .get_named::<i64>("last_modified_ms")
+                        .map_err(|e| Error::session(format!("get last_modified_ms: {e}")))?;
+                    existing_map.insert(path, mtime);
+                }
+
+                // 2. Identify stale paths to delete (in DB but not in scan)
+                let scanned_paths: std::collections::HashSet<&String> =
+                    metas.iter().map(|m| &m.path).collect();
+                for path in existing_map.keys() {
+                    if !scanned_paths.contains(path) {
+                        // Safety check: if the file actually exists on disk (e.g. created/restored
+                        // after our scan but before we acquired lock), do NOT delete the DB row.
+                        // We trust the existing DB row (from concurrent agent) over our "missing" scan.
+                        if std::path::Path::new(path).exists() {
+                            continue;
+                        }
+
+                        conn.execute_sync(
+                            "DELETE FROM sessions WHERE path=?1",
+                            &[Value::Text(path.clone())],
+                        )
+                        .map_err(|e| {
+                            Error::session(format!("Delete stale {path}: {e}"))
+                        })?;
+                    }
+                }
+
+                // 3. Upsert if new or newer
+                for meta in metas {
+                    let should_update = match existing_map.get(&meta.path) {
+                        None => true, // New file
+                        Some(&db_mtime) => meta.last_modified_ms >= db_mtime, // Update if scanned is newer/equal
+                    };
+
+                    if should_update {
+                        let message_count = match sqlite_i64_from_u64("message_count", meta.message_count) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                tracing::warn!("Skipping reindex of {} due to error: {}", meta.path, e);
+                                continue;
+                            }
+                        };
+                        let size_bytes = match sqlite_i64_from_u64("size_bytes", meta.size_bytes) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                tracing::warn!("Skipping reindex of {} due to error: {}", meta.path, e);
+                                continue;
+                            }
+                        };
+                        conn.execute_sync(
+                            "INSERT INTO sessions (path,id,cwd,timestamp,message_count,last_modified_ms,size_bytes,name)
+                             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
+                             ON CONFLICT(path) DO UPDATE SET
+                               id=excluded.id,
+                               cwd=excluded.cwd,
+                               timestamp=excluded.timestamp,
+                               message_count=excluded.message_count,
+                               last_modified_ms=excluded.last_modified_ms,
+                               size_bytes=excluded.size_bytes,
+                               name=COALESCE(excluded.name, sessions.name)",
+                            &[
+                                Value::Text(meta.path),
+                                Value::Text(meta.id),
+                                Value::Text(meta.cwd),
+                                Value::Text(meta.timestamp),
+                                Value::BigInt(message_count),
+                                Value::BigInt(meta.last_modified_ms),
+                                Value::BigInt(size_bytes),
+                                meta.name.map_or(Value::Null, Value::Text),
+                            ],
+                        )
+                        .map_err(|e| Error::session(format!("Upsert failed: {e}")))?;
+                    }
+                }
+
                 conn.execute_sync(
-                    "INSERT INTO sessions (path,id,cwd,timestamp,message_count,last_modified_ms,size_bytes,name)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-                    &[
-                        Value::Text(meta.path),
-                        Value::Text(meta.id),
-                        Value::Text(meta.cwd),
-                        Value::Text(meta.timestamp),
-                        Value::BigInt(message_count),
-                        Value::BigInt(meta.last_modified_ms),
-                        Value::BigInt(size_bytes),
-                        meta.name.map_or(Value::Null, Value::Text),
-                    ],
-                ).map_err(|e| Error::session(format!("Insert failed: {e}")))?;
-            }
+                    "INSERT INTO meta (key,value) VALUES ('last_sync_epoch_ms', ?1)
+                     ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    &[Value::Text(current_epoch_ms())],
+                )
+                .map_err(|e| Error::session(format!("Meta update failed: {e}")))?;
+                Ok(())
+            })();
 
-            conn.execute_sync(
-                "INSERT INTO meta (key,value) VALUES ('last_sync_epoch_ms', ?1)
-                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                &[Value::Text(current_epoch_ms())],
-            ).map_err(|e| Error::session(format!("Meta update failed: {e}")))?;
-            Ok(())
+            match result {
+                Ok(()) => {
+                    conn.execute_raw("COMMIT")
+                        .map_err(|e| Error::session(format!("COMMIT transaction: {e}")))?;
+                    Ok(())
+                }
+                Err(e) => {
+                    let _ = conn.execute_raw("ROLLBACK");
+                    Err(e)
+                }
+            }
         })
     }
 
@@ -611,6 +774,20 @@ struct PartialEntry {
 fn build_meta_from_jsonl(path: &Path) -> Result<SessionMeta> {
     let file = File::open(path)
         .map_err(|err| Error::session(format!("Read session file {}: {err}", path.display())))?;
+
+    // Optimize: Get metadata from open file handle to avoid redundant syscalls
+    // and ensure we compare the exact file version we are reading.
+    let meta = file
+        .metadata()
+        .map_err(|err| Error::session(format!("Stat session file {}: {err}", path.display())))?;
+    let size_bytes = meta.len();
+    let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+    let millis = modified
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let last_modified_ms = i64::try_from(millis).unwrap_or(i64::MAX);
+
     let reader = BufReader::new(file);
     let mut lines = reader.lines();
 
@@ -621,6 +798,39 @@ fn build_meta_from_jsonl(path: &Path) -> Result<SessionMeta> {
 
     let header: SessionHeader = serde_json::from_str(&header_line)
         .map_err(|err| Error::session(format!("Parse session header {}: {err}", path.display())))?;
+
+    if crate::session_store_v2::has_v2_sidecar(path) {
+        let v2_root = crate::session_store_v2::v2_sidecar_path(path);
+        let manifest_path = v2_root.join("manifest.json");
+
+        // Safety check: ensure V2 manifest is not stale relative to the source JSONL.
+        // If JSONL was modified after the manifest, the counters may be wrong.
+        let use_v2 = if let Ok(manifest_meta) = fs::metadata(&manifest_path) {
+            let manifest_mod = manifest_meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            manifest_mod >= modified
+        } else {
+            false
+        };
+
+        if use_v2 {
+            if let Ok(content) = fs::read_to_string(&manifest_path) {
+                if let Ok(manifest) =
+                    serde_json::from_str::<crate::session_store_v2::Manifest>(&content)
+                {
+                    return Ok(SessionMeta {
+                        path: path.display().to_string(),
+                        id: header.id,
+                        cwd: header.cwd,
+                        timestamp: header.timestamp,
+                        message_count: manifest.counters.messages_total,
+                        last_modified_ms,
+                        size_bytes,
+                        name: None, // Compromise: name might be missing in fast path.
+                    });
+                }
+            }
+        }
+    }
 
     let mut message_count = 0u64;
     let mut name = None;
@@ -641,15 +851,6 @@ fn build_meta_from_jsonl(path: &Path) -> Result<SessionMeta> {
             }
         }
     }
-
-    let meta = fs::metadata(path)?;
-    let size_bytes = meta.len();
-    let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-    let millis = modified
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let last_modified_ms = i64::try_from(millis).unwrap_or(i64::MAX);
 
     Ok(SessionMeta {
         path: path.display().to_string(),
@@ -761,8 +962,15 @@ fn current_epoch_ms() -> String {
 fn lock_file_guard(file: &File, timeout: Duration) -> Result<LockGuard<'_>> {
     let start = Instant::now();
     loop {
-        if matches!(FileExt::try_lock_exclusive(file), Ok(true)) {
-            return Ok(LockGuard { file });
+        match FileExt::try_lock_exclusive(file) {
+            Ok(true) => return Ok(LockGuard { file }),
+            Ok(false) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(err) => {
+                return Err(Error::session(format!(
+                    "Failed to acquire session index lock: {err}"
+                )));
+            }
         }
 
         if start.elapsed() >= timeout {
@@ -1254,6 +1462,23 @@ mod tests {
 
         let _guard2 =
             lock_file_guard(&file2, Duration::from_millis(50)).expect("lock after release");
+    }
+
+    #[test]
+    fn lock_file_guard_reports_non_contention_errors() {
+        let harness = TestHarness::new("lock_file_guard_reports_non_contention_errors");
+        let path = harness.temp_path("lockfile.lock");
+        fs::write(&path, "").expect("create lock file");
+
+        // Opening read-only can trigger a non-contention lock failure for exclusive locks.
+        let read_only_file = File::open(&path).expect("open file read-only");
+        let err = lock_file_guard(&read_only_file, Duration::from_millis(50))
+            .expect_err("expected non-contention lock failure");
+
+        assert!(
+            matches!(err, Error::Session(ref msg) if msg.contains("Failed to acquire session index lock")),
+            "Expected Error::Session containing lock acquisition failure, got {err:?}",
+        );
     }
 
     #[test]

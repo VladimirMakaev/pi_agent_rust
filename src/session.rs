@@ -18,6 +18,7 @@ use crate::tui::PiConsole;
 use asupersync::channel::oneshot;
 use asupersync::sync::Mutex;
 use async_trait::async_trait;
+use fs4::fs_std::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -589,6 +590,9 @@ pub struct Session {
     v2_partial_hydration: bool,
     /// Resume mode used when loading from V2 sidecar.
     v2_resume_mode: Option<V2OpenMode>,
+    /// Offset to add to `cached_message_count` to account for messages not loaded in memory
+    /// (e.g. when using V2 tail hydration).
+    v2_message_count_offset: u64,
 }
 
 impl Clone for Session {
@@ -618,6 +622,7 @@ impl Clone for Session {
             v2_sidecar_root: self.v2_sidecar_root.clone(),
             v2_partial_hydration: self.v2_partial_hydration,
             v2_resume_mode: self.v2_resume_mode,
+            v2_message_count_offset: self.v2_message_count_offset,
         }
     }
 }
@@ -848,14 +853,25 @@ impl Session {
             return Ok(Self::create_with_dir_and_store(Some(base_dir), store_kind));
         }
 
-        let entries: Vec<SessionPickEntry> = SessionIndex::for_sessions_root(&base_dir)
-            .list_sessions(Some(&cwd.display().to_string()))
-            .map(|list| {
-                list.into_iter()
-                    .filter_map(SessionPickEntry::from_meta)
-                    .collect()
-            })
-            .unwrap_or_default();
+        let base_dir_clone = base_dir.clone();
+        let cwd_display = cwd.display().to_string();
+        let (tx, rx) = oneshot::channel();
+
+        thread::spawn(move || {
+            let entries: Vec<SessionPickEntry> = SessionIndex::for_sessions_root(&base_dir_clone)
+                .list_sessions(Some(&cwd_display))
+                .map(|list| {
+                    list.into_iter()
+                        .filter_map(SessionPickEntry::from_meta)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let cx = AgentCx::for_request();
+            let _ = tx.send(cx.cx(), entries);
+        });
+
+        let cx = AgentCx::for_request();
+        let entries = rx.recv(cx.cx()).await.unwrap_or_default();
 
         let scanned = scan_sessions_on_disk(&project_session_dir, entries.clone()).await?;
         let mut by_path: HashMap<PathBuf, SessionPickEntry> = HashMap::new();
@@ -994,6 +1010,7 @@ impl Session {
             v2_sidecar_root: None,
             v2_partial_hydration: false,
             v2_resume_mode: None,
+            v2_message_count_offset: 0,
         }
     }
 
@@ -1032,6 +1049,7 @@ impl Session {
             v2_sidecar_root: None,
             v2_partial_hydration: false,
             v2_resume_mode: None,
+            v2_message_count_offset: 0,
         }
     }
 
@@ -1143,6 +1161,15 @@ impl Session {
                 });
         }
 
+        let mut v2_message_count_offset = 0;
+        if matches!(mode, V2OpenMode::Tail(_)) {
+            if let Ok(Some(manifest)) = store.read_manifest() {
+                let total = manifest.counters.messages_total;
+                let loaded = finalized.message_count;
+                v2_message_count_offset = total.saturating_sub(loaded);
+            }
+        }
+
         let entry_count = entries.len();
         Ok((
             Self {
@@ -1155,7 +1182,9 @@ impl Session {
                 entry_ids: finalized.entry_ids,
                 is_linear: finalized.is_linear,
                 entry_index: finalized.entry_index,
-                cached_message_count: finalized.message_count,
+                cached_message_count: finalized
+                    .message_count
+                    .saturating_add(v2_message_count_offset),
                 cached_name: finalized.name,
                 autosave_queue: AutosaveQueue::new(),
                 autosave_durability: AutosaveDurabilityMode::from_env(),
@@ -1163,8 +1192,9 @@ impl Session {
                 header_dirty: false,
                 appends_since_checkpoint: 0,
                 v2_sidecar_root: None,
-                v2_partial_hydration: false,
-                v2_resume_mode: None,
+                v2_partial_hydration: !matches!(mode, V2OpenMode::Full),
+                v2_resume_mode: Some(mode),
+                v2_message_count_offset,
             },
             diagnostics,
         ))
@@ -1229,6 +1259,7 @@ impl Session {
             v2_sidecar_root: None,
             v2_partial_hydration: false,
             v2_resume_mode: None,
+            v2_message_count_offset: 0,
         })
     }
 
@@ -1249,26 +1280,37 @@ impl Session {
         }
 
         // Prefer the session index for fast lookup.
-        let index = SessionIndex::for_sessions_root(&base_dir);
-        let mut indexed_sessions: Vec<SessionPickEntry> = index
-            .list_sessions(Some(&cwd_display))
-            .map(|list| {
-                list.into_iter()
-                    .filter_map(SessionPickEntry::from_meta)
-                    .collect()
-            })
-            .unwrap_or_default();
+        let base_dir_clone = base_dir.clone();
+        let cwd_display_clone = cwd_display.clone();
+        let (tx, rx) = oneshot::channel();
 
-        if indexed_sessions.is_empty() && index.reindex_all().is_ok() {
-            indexed_sessions = index
-                .list_sessions(Some(&cwd_display))
+        thread::spawn(move || {
+            let index = SessionIndex::for_sessions_root(&base_dir_clone);
+            let mut indexed_sessions: Vec<SessionPickEntry> = index
+                .list_sessions(Some(&cwd_display_clone))
                 .map(|list| {
                     list.into_iter()
                         .filter_map(SessionPickEntry::from_meta)
                         .collect()
                 })
                 .unwrap_or_default();
-        }
+
+            if indexed_sessions.is_empty() && index.reindex_all().is_ok() {
+                indexed_sessions = index
+                    .list_sessions(Some(&cwd_display_clone))
+                    .map(|list| {
+                        list.into_iter()
+                            .filter_map(SessionPickEntry::from_meta)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+            }
+            let cx = AgentCx::for_request();
+            let _ = tx.send(cx.cx(), indexed_sessions);
+        });
+
+        let cx = AgentCx::for_request();
+        let indexed_sessions = rx.recv(cx.cx()).await.unwrap_or_default();
 
         let scanned = scan_sessions_on_disk(&project_session_dir, indexed_sessions.clone()).await?;
 
@@ -1399,11 +1441,16 @@ impl Session {
             Self::open_from_v2(&store, self.header.clone(), V2OpenMode::Full)?;
         if !diagnostics.skipped_entries.is_empty() || !diagnostics.orphaned_parent_links.is_empty()
         {
-            tracing::warn!(
+            tracing::error!(
                 skipped_entries = diagnostics.skipped_entries.len(),
                 orphaned_parent_links = diagnostics.orphaned_parent_links.len(),
-                "full V2 rehydration before save emitted diagnostics"
+                "full V2 rehydration before save failed integrity check; aborting save to prevent data loss"
             );
+            return Err(Error::session(format!(
+                "V2 rehydration failed with {} skipped entries and {} orphaned links",
+                diagnostics.skipped_entries.len(),
+                diagnostics.orphaned_parent_links.len()
+            )));
         }
 
         // Extract pending in-memory entries by moving them out of `self.entries`
@@ -1431,6 +1478,7 @@ impl Session {
             .store(persisted_entry_count, Ordering::SeqCst);
         self.v2_partial_hydration = false;
         self.v2_resume_mode = Some(V2OpenMode::Full);
+        self.v2_message_count_offset = 0;
 
         tracing::debug!(
             previous_mode = ?previous_mode,
@@ -1468,7 +1516,6 @@ impl Session {
     /// Save the session to disk.
     #[allow(clippy::too_many_lines)]
     async fn save_inner(&mut self) -> Result<()> {
-        self.ensure_full_v2_hydration_before_save()?;
         self.ensure_entry_ids();
 
         let store_kind = match self
@@ -1538,10 +1585,14 @@ impl Session {
         match store_kind {
             SessionStoreKind::Jsonl => {
                 let sessions_root = session_dir_clone.unwrap_or_else(Config::sessions_dir);
-                // Gap C: use incrementally maintained stats instead of O(n) scan.
-                let message_count = self.cached_message_count;
 
                 if self.should_full_rewrite() {
+                    if self.v2_partial_hydration {
+                        self.ensure_full_v2_hydration_before_save()?;
+                    }
+                    // Gap C: use incrementally maintained stats instead of O(n) scan.
+                    let message_count = self.cached_message_count;
+
                     let session_name = self.cached_name.clone();
                     // === Full rewrite path (first save, header change, checkpoint) ===
                     let (tx, rx) = oneshot::channel::<JsonlSaveResult>();
@@ -1580,13 +1631,20 @@ impl Session {
                             Ok(())
                         })();
                         let cx = AgentCx::for_request();
-                        let _ = tx.send(
-                            cx.cx(),
-                            match res {
-                                Ok(()) => Ok(entries),
-                                Err(err) => Err((err, entries)),
-                            },
-                        );
+                        if tx
+                            .send(
+                                cx.cx(),
+                                match res {
+                                    Ok(()) => Ok(entries),
+                                    Err(err) => Err((err, entries)),
+                                },
+                            )
+                            .is_err()
+                        {
+                            tracing::debug!(
+                                "Session save task completed but receiver dropped (cancelled)"
+                            );
+                        }
                     });
 
                     let cx = AgentCx::for_request();
@@ -1616,6 +1674,7 @@ impl Session {
                         }
                     }?;
                 } else {
+                    let message_count = self.cached_message_count;
                     // === Incremental append path ===
                     let new_start = self.persisted_entry_count.load(Ordering::SeqCst);
                     if new_start < self.entries.len() {
@@ -1639,7 +1698,10 @@ impl Session {
                                     .append(true)
                                     .open(&path_for_thread)
                                     .map_err(|e| crate::Error::Io(Box::new(e)))?;
+
+                                file.lock_exclusive()?;
                                 file.write_all(&serialized_buf)?;
+                                FileExt::unlock(&file)?;
 
                                 enqueue_session_index_snapshot_update(
                                     sessions_root,
@@ -1651,7 +1713,11 @@ impl Session {
                                 Ok(())
                             })();
                             let cx = AgentCx::for_request();
-                            let _ = tx.send(cx.cx(), res);
+                            if tx.send(cx.cx(), res).is_err() {
+                                tracing::debug!(
+                                    "Session append task completed but receiver dropped (cancelled)"
+                                );
+                            }
                         });
 
                         let cx = AgentCx::for_request();
@@ -1916,7 +1982,9 @@ impl Session {
         let finalized = finalize_loaded_entries(&mut self.entries);
         self.entry_ids = finalized.entry_ids;
         self.entry_index = finalized.entry_index;
-        self.cached_message_count = finalized.message_count;
+        self.cached_message_count = finalized
+            .message_count
+            .saturating_add(self.v2_message_count_offset);
         self.cached_name = finalized.name;
         // is_linear requires BOTH: no branching in the entry tree AND the
         // current leaf_id pointing at the last entry.  If the user navigated
@@ -2043,24 +2111,14 @@ impl Session {
 
     fn next_entry_id(&self) -> String {
         let use_entry_id_cache = session_entry_id_cache_enabled();
-        for _ in 0..100 {
-            let candidate = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
-            let exists = if use_entry_id_cache {
-                self.entry_ids.contains(&candidate)
-            } else {
-                self.entries
-                    .iter()
-                    .any(|entry| entry.base_id().is_some_and(|id| id == candidate.as_str()))
-            };
-            if !exists {
-                return candidate;
-            }
-        }
 
-        // Extremely unlikely fallback: recover by rebuilding the set and retrying.
         if use_entry_id_cache {
+            // Use the cached set for O(1) collision checks.
+            // generate_entry_id handles generation + collision retry logic.
             generate_entry_id(&self.entry_ids)
         } else {
+            // Fallback: scan entries to build the exclusion set on demand.
+            // This is slower (O(N)) but only used if the cache feature flag is disabled.
             let existing = entry_id_set(&self.entries);
             generate_entry_id(&existing)
         }
@@ -2107,7 +2165,10 @@ impl Session {
 
         while let Some(id) = current {
             if !visited.insert(id.clone()) {
-                break; // cycle detected
+                tracing::warn!(
+                    "Cycle detected in session tree while building ancestor path at entry: {id}"
+                );
+                break;
             }
             path.push(id.clone());
             current = self
@@ -2231,7 +2292,10 @@ impl Session {
 
         while let Some(id) = current.as_ref() {
             if !visited.insert(id.clone()) {
-                break; // cycle detected
+                tracing::warn!(
+                    "Cycle detected in session tree while collecting current path entries at: {id}"
+                );
+                break;
             }
             let Some(&idx) = self.entry_index.get(id.as_str()) else {
                 break;
@@ -3494,49 +3558,85 @@ const PARALLEL_THRESHOLD: usize = 512;
 /// finalization) for the fastest possible open path.
 #[allow(clippy::too_many_lines)]
 fn open_jsonl_blocking(path_buf: PathBuf) -> Result<(Session, SessionOpenDiagnostics)> {
-    type ChunkResult = (Vec<SessionEntry>, Vec<SessionOpenSkippedEntry>);
+    use std::io::BufRead;
 
-    // Read the entire file into memory for parallel parsing (Gap E).
-    let contents = std::fs::read_to_string(&path_buf).map_err(|e| crate::Error::Io(Box::new(e)))?;
-    let all_lines: Vec<&str> = contents.lines().collect();
+    let file = std::fs::File::open(&path_buf).map_err(|e| crate::Error::Io(Box::new(e)))?;
+    let mut reader = std::io::BufReader::new(file);
 
-    if all_lines.is_empty() {
+    let mut header_line = String::new();
+    reader
+        .read_line(&mut header_line)
+        .map_err(|e| crate::Error::Io(Box::new(e)))?;
+
+    if header_line.trim().is_empty() {
         return Err(crate::Error::session("Empty session file"));
     }
 
     // Parse header (first line)
-    let header: SessionHeader = serde_json::from_str(all_lines[0])
+    let header: SessionHeader = serde_json::from_str(&header_line)
         .map_err(|e| crate::Error::session(format!("Invalid header: {e}")))?;
 
-    let entry_lines = &all_lines[1..];
+    let mut entries = Vec::new();
     let mut diagnostics = SessionOpenDiagnostics::default();
 
     // Gap E: parallel deserialization for large sessions.
-    // Below the threshold, sequential is faster (no thread overhead).
+    // Batch processing to bound memory usage while allowing parallelism.
     let num_threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
+    const BATCH_SIZE: usize = 2048;
 
-    let mut entries: Vec<SessionEntry> =
-        if entry_lines.len() >= PARALLEL_THRESHOLD && num_threads > 1 {
-            let chunk_size = (entry_lines.len() / num_threads).max(64);
+    let mut line_batch: Vec<(usize, String)> = Vec::with_capacity(BATCH_SIZE);
+    let mut current_line_num = 2; // Header is line 1
+
+    loop {
+        line_batch.clear();
+        let mut batch_eof = false;
+
+        for _ in 0..BATCH_SIZE {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => {
+                    batch_eof = true;
+                    break;
+                }
+                Ok(_) => {
+                    if !line.trim().is_empty() {
+                        line_batch.push((current_line_num, line));
+                    }
+                }
+                Err(e) => {
+                    diagnostics.skipped_entries.push(SessionOpenSkippedEntry {
+                        line_number: current_line_num,
+                        error: format!("IO error reading line: {e}"),
+                    });
+                }
+            }
+            current_line_num += 1;
+        }
+
+        if line_batch.is_empty() {
+            if batch_eof {
+                break;
+            }
+            continue;
+        }
+
+        if line_batch.len() >= PARALLEL_THRESHOLD && num_threads > 1 {
+            let chunk_size = (line_batch.len() / num_threads).max(64);
+            type ChunkResult = (Vec<SessionEntry>, Vec<SessionOpenSkippedEntry>);
 
             let chunk_results: Vec<ChunkResult> = std::thread::scope(|s| {
-                entry_lines
+                line_batch
                     .chunks(chunk_size)
-                    .enumerate()
-                    .map(|(chunk_idx, chunk)| {
-                        let base_offset = chunk_idx * chunk_size;
+                    .map(|chunk| {
                         s.spawn(move || {
                             let mut ok = Vec::with_capacity(chunk.len());
                             let mut skip = Vec::new();
-                            for (j, line) in chunk.iter().enumerate() {
-                                if line.trim().is_empty() {
-                                    continue;
-                                }
+                            for (line_num, line) in chunk {
                                 match serde_json::from_str::<SessionEntry>(line) {
                                     Ok(entry) => ok.push(entry),
                                     Err(e) => {
                                         skip.push(SessionOpenSkippedEntry {
-                                            line_number: base_offset + j + 2,
+                                            line_number: *line_num,
                                             error: e.to_string(),
                                         });
                                     }
@@ -3551,32 +3651,29 @@ fn open_jsonl_blocking(path_buf: PathBuf) -> Result<(Session, SessionOpenDiagnos
                     .collect()
             });
 
-            let total: usize = chunk_results.iter().map(|(v, _)| v.len()).sum();
-            let mut merged = Vec::with_capacity(total);
             for (chunk_entries, chunk_skipped) in chunk_results {
-                merged.extend(chunk_entries);
+                entries.extend(chunk_entries);
                 diagnostics.skipped_entries.extend(chunk_skipped);
             }
-            merged
         } else {
-            // Sequential path for small files.
-            let mut entries = Vec::with_capacity(entry_lines.len());
-            for (i, line) in entry_lines.iter().enumerate() {
-                if line.trim().is_empty() {
-                    continue;
-                }
-                match serde_json::from_str::<SessionEntry>(line) {
+            // Sequential path
+            for (line_num, line) in line_batch.drain(..) {
+                match serde_json::from_str::<SessionEntry>(&line) {
                     Ok(entry) => entries.push(entry),
                     Err(e) => {
                         diagnostics.skipped_entries.push(SessionOpenSkippedEntry {
-                            line_number: i + 2,
+                            line_number: line_num,
                             error: e.to_string(),
                         });
                     }
                 }
             }
-            entries
-        };
+        }
+
+        if batch_eof {
+            break;
+        }
+    }
 
     // --- Single-pass load finalization (Gap F) ---
     let finalized = finalize_loaded_entries(&mut entries);
@@ -3612,6 +3709,7 @@ fn open_jsonl_blocking(path_buf: PathBuf) -> Result<(Session, SessionOpenDiagnos
             v2_sidecar_root: None,
             v2_partial_hydration: false,
             v2_resume_mode: None,
+            v2_message_count_offset: 0,
         },
         diagnostics,
     ))
@@ -3701,14 +3799,19 @@ fn open_from_v2_store_blocking(jsonl_path: PathBuf) -> Result<(Session, SessionO
 /// into the V2 segmented store with offset index. Subsequent opens can then
 /// use `open_from_v2_store_blocking` for O(index+tail) resume.
 pub fn create_v2_sidecar_from_jsonl(jsonl_path: &Path) -> Result<SessionStoreV2> {
-    let contents =
-        std::fs::read_to_string(jsonl_path).map_err(|e| crate::Error::Io(Box::new(e)))?;
-    let mut lines = contents.lines();
+    use std::io::BufRead;
 
-    // Skip header line.
-    let _header_line = lines
-        .next()
-        .ok_or_else(|| crate::Error::session("Empty JSONL session file"))?;
+    let file = std::fs::File::open(jsonl_path).map_err(|e| crate::Error::Io(Box::new(e)))?;
+    let mut reader = std::io::BufReader::new(file);
+
+    let mut header_line = String::new();
+    reader
+        .read_line(&mut header_line)
+        .map_err(|e| crate::Error::Io(Box::new(e)))?;
+
+    if header_line.trim().is_empty() {
+        return Err(crate::Error::session("Empty JSONL session file"));
+    }
 
     let v2_root = session_store_v2::v2_sidecar_path(jsonl_path);
     if v2_root.exists() {
@@ -3716,11 +3819,12 @@ pub fn create_v2_sidecar_from_jsonl(jsonl_path: &Path) -> Result<SessionStoreV2>
     }
     let mut store = SessionStoreV2::create(&v2_root, 64 * 1024 * 1024)?;
 
-    for line in lines {
+    for line_res in reader.lines() {
+        let line = line_res.map_err(|e| crate::Error::Io(Box::new(e)))?;
         if line.trim().is_empty() {
             continue;
         }
-        let entry: SessionEntry = serde_json::from_str(line)
+        let entry: SessionEntry = serde_json::from_str(&line)
             .map_err(|e| crate::Error::session(format!("Bad JSONL entry: {e}")))?;
         let (entry_id, parent_entry_id, entry_type, payload) =
             session_store_v2::session_entry_to_frame_args(&entry)?;
@@ -3790,20 +3894,28 @@ pub fn verify_v2_against_jsonl(
     jsonl_path: &Path,
     store: &SessionStoreV2,
 ) -> Result<session_store_v2::MigrationVerification> {
+    use std::io::BufRead;
+
     // Parse all JSONL entries (skip header).
-    let contents =
-        std::fs::read_to_string(jsonl_path).map_err(|e| crate::Error::Io(Box::new(e)))?;
-    let mut lines = contents.lines();
-    let _header = lines
-        .next()
-        .ok_or_else(|| crate::Error::session("Empty JSONL session file"))?;
+    let file = std::fs::File::open(jsonl_path).map_err(|e| crate::Error::Io(Box::new(e)))?;
+    let mut reader = std::io::BufReader::new(file);
+
+    let mut header_line = String::new();
+    reader
+        .read_line(&mut header_line)
+        .map_err(|e| crate::Error::Io(Box::new(e)))?;
+
+    if header_line.trim().is_empty() {
+        return Err(crate::Error::session("Empty JSONL session file"));
+    }
 
     let mut jsonl_ids: Vec<String> = Vec::new();
-    for line in lines {
+    for line_res in reader.lines() {
+        let line = line_res.map_err(|e| crate::Error::Io(Box::new(e)))?;
         if line.trim().is_empty() {
             continue;
         }
-        let entry: SessionEntry = serde_json::from_str(line)
+        let entry: SessionEntry = serde_json::from_str(&line)
             .map_err(|e| crate::Error::session(format!("Bad JSONL entry: {e}")))?;
         let id = entry
             .base_id()
@@ -4076,8 +4188,9 @@ fn finalize_loaded_entries(entries: &mut [SessionEntry]) -> LoadFinalization {
         }
     }
 
-    // is_linear: no branching AND the leaf is the last entry's ID
-    // (i.e., we're at the tip of a single chain).
+    // is_linear: no branching detected in the entry set.
+    // Note: callers (e.g. rebuild_all_caches) add the additional check that
+    // self.leaf_id == finalized.leaf_id to confirm we're at the tip.
     let is_linear = !has_branching;
 
     LoadFinalization {
