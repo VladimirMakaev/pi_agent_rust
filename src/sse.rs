@@ -71,6 +71,11 @@ impl SseParser {
 
     /// Process a single line of SSE data.
     fn process_line(line: &str, current: &mut SseEvent, has_data: &mut bool) {
+        // limit event data to 100MB to prevent OOM from malicious/broken streams
+        if current.data.len() > 100 * 1024 * 1024 {
+            return;
+        }
+
         if let Some(rest) = line.strip_prefix(':') {
             // Comment line - ignore (but could be used for keep-alive)
             let _ = rest;
@@ -196,6 +201,21 @@ impl SseParser {
     where
         F: FnMut(SseEvent),
     {
+        const MAX_BUFFER_SIZE: usize = 10 * 1024 * 1024;
+        if self.buffer.len() + data.len() > MAX_BUFFER_SIZE {
+            self.buffer.clear();
+            self.current = SseEvent::default();
+            self.has_data = false;
+            self.bom_checked = false;
+            self.scanned_len = 0;
+            emit(SseEvent {
+                event: Cow::Borrowed("error"),
+                data: "SSE buffer limit exceeded".to_string(),
+                ..Default::default()
+            });
+            return;
+        }
+
         if self.buffer.is_empty() {
             // Fast path: process data directly without copying to buffer.
             let consumed = Self::process_source(
@@ -390,6 +410,12 @@ where
 
     fn poll_stream_end(&mut self) -> Poll<Option<Result<SseEvent, std::io::Error>>> {
         if !self.utf8_buffer.is_empty() {
+            // EOF with an incomplete UTF-8 tail is a terminal stream error.
+            // Clear parser state so repeated polls don't emit the same error forever.
+            self.utf8_buffer.clear();
+            self.pending_events.clear();
+            self.pending_error = None;
+            self.parser = SseParser::new();
             return Poll::Ready(Some(Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "Stream ended with incomplete UTF-8 sequence",
@@ -925,6 +951,25 @@ mod tests {
     }
 
     #[test]
+    fn test_buffer_limit_overflow_resets_parser_state() {
+        let mut parser = SseParser::new();
+        assert!(parser.feed("data: stale\n").is_empty());
+
+        let oversized = "x".repeat(10 * 1024 * 1024 + 1);
+        let overflow_events = parser.feed(&oversized);
+        assert_eq!(overflow_events.len(), 1);
+        assert_eq!(overflow_events[0].event, "error");
+        assert_eq!(overflow_events[0].data, "SSE buffer limit exceeded");
+
+        assert!(!parser.has_pending());
+        assert!(parser.flush().is_none());
+
+        let fresh = parser.feed("data: fresh\n\n");
+        assert_eq!(fresh.len(), 1);
+        assert_eq!(fresh[0].data, "fresh");
+    }
+
+    #[test]
     fn test_rapid_sequential_events() {
         let mut parser = SseParser::new();
         let mut input = String::new();
@@ -1079,6 +1124,10 @@ data: {"type":"message_stop"}
                 .expect("expected a result")
                 .expect_err("expected utf8 error");
             assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+            assert!(
+                stream.next().await.is_none(),
+                "incomplete UTF-8 at EOF should produce a terminal error"
+            );
         });
     }
 

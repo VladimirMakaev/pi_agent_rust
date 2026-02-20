@@ -562,68 +562,74 @@ fn render_markdown_with_syntax(markdown: &str, width: usize) -> Vec<Segment<'sta
 /// Strip rich markup tags from text.
 fn strip_markup(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
-    let mut chars = text.chars();
+    let mut buffer = String::new();
+    let mut in_tag = false;
 
-    while let Some(c) = chars.next() {
-        if c == '[' {
-            // Potential tag
-            let mut buffer = String::new();
-            let mut is_tag = true;
-            let mut closed = false;
+    for c in text.chars() {
+        if in_tag {
+            if c == ']' {
+                // End of potential tag
+                // Check heuristics:
+                // 1. Not pure digits (e.g. [0])
+                // 2. Contains only allowed characters
+                let is_pure_digits =
+                    !buffer.is_empty() && buffer.chars().all(|ch| ch.is_ascii_digit());
+                let contains_invalid_chars = buffer.chars().any(|ch| {
+                    !ch.is_ascii_alphanumeric()
+                        && !matches!(
+                            ch,
+                            ' ' | '/'
+                                | ','
+                                | '#'
+                                | '='
+                                | '.'
+                                | ':'
+                                | '-'
+                                | '_'
+                                | '?'
+                                | '&'
+                                | '%'
+                                | '+'
+                                | '~'
+                                | ';'
+                                | '*'
+                                | '\''
+                                | '('
+                                | ')'
+                        )
+                });
 
-            for next_c in chars.by_ref() {
-                if next_c == ']' {
-                    closed = true;
-                    break;
+                if is_pure_digits || contains_invalid_chars || buffer.is_empty() {
+                    // Not a tag, restore literal
+                    result.push('[');
+                    result.push_str(&buffer);
+                    result.push(']');
+                } else {
+                    // Valid tag, discard (strip it)
                 }
-                buffer.push(next_c);
-                // Heuristic: rich_rust tags usually contain alpha, space, slash, comma.
-                // If we see digits or other symbols, assume it's not a tag (e.g. array[0]).
-                if !next_c.is_ascii_alphanumeric()
-                    && !matches!(
-                        next_c,
-                        ' ' | '/'
-                            | ','
-                            | '#'
-                            | '='
-                            | '.'
-                            | ':'
-                            | '-'
-                            | '_'
-                            | '?'
-                            | '&'
-                            | '%'
-                            | '+'
-                            | '~'
-                            | ';'
-                            | '*'
-                            | '\''
-                            | '('
-                            | ')'
-                    )
-                {
-                    is_tag = false;
-                }
-            }
-
-            // Pure-digit content like [0] is never a markup tag.
-            if buffer.chars().all(|ch| ch.is_ascii_digit()) {
-                is_tag = false;
-            }
-
-            if closed && is_tag && !buffer.is_empty() {
-                // It was a tag, discard buffer (already consumed)
-            } else {
-                // Not a tag, or unclosed tag: restore literal
+                buffer.clear();
+                in_tag = false;
+            } else if c == '[' {
+                // Nested '[' means the previous '[' was literal.
+                // Flush previous '[' and buffer, start new tag candidate.
                 result.push('[');
                 result.push_str(&buffer);
-                if closed {
-                    result.push(']');
-                }
+                buffer.clear();
+                // Stay in_tag for this new '['
+            } else {
+                buffer.push(c);
             }
+        } else if c == '[' {
+            in_tag = true;
         } else {
             result.push(c);
         }
+    }
+
+    // Flush any open tag at end of string
+    if in_tag {
+        result.push('[');
+        result.push_str(&buffer);
     }
 
     result

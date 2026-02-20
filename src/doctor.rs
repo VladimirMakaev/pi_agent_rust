@@ -540,6 +540,12 @@ fn is_known_config_key(key: &str) -> bool {
             | "repair_policy"
             | "extensionRisk"
             | "extension_risk"
+            | "checkForUpdates"
+            | "check_for_updates"
+            | "sessionDurability"
+            | "session_durability"
+            | "markdown"
+            | "queueMode"
     )
 }
 
@@ -789,6 +795,28 @@ fn check_shell(findings: &mut Vec<Finding>) {
     check_tool(
         cat,
         "git",
+        &["--version"],
+        Severity::Warn,
+        ToolCheckMode::PresenceOnly,
+        findings,
+    );
+    check_tool(
+        cat,
+        "rg",
+        &["--version"],
+        Severity::Warn,
+        ToolCheckMode::PresenceOnly,
+        findings,
+    );
+
+    let fd_bin = if which_tool("fd").is_some() {
+        "fd"
+    } else {
+        "fdfind"
+    };
+    check_tool(
+        cat,
+        fd_bin,
         &["--version"],
         Severity::Warn,
         ToolCheckMode::PresenceOnly,

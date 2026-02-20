@@ -20,15 +20,18 @@ use crate::model::{AssistantMessage, ContentBlock, ImageContent, Message, ToolRe
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ExtensionEvent {
     /// Agent startup (once per session).
+    #[serde(rename_all = "camelCase")]
     Startup {
         version: String,
         session_file: Option<String>,
     },
 
     /// Before first API call in a run.
+    #[serde(rename_all = "camelCase")]
     AgentStart { session_id: String },
 
     /// After agent loop ends.
+    #[serde(rename_all = "camelCase")]
     AgentEnd {
         session_id: String,
         messages: Vec<Message>,
@@ -36,12 +39,14 @@ pub enum ExtensionEvent {
     },
 
     /// Before provider.stream() call.
+    #[serde(rename_all = "camelCase")]
     TurnStart {
         session_id: String,
         turn_index: usize,
     },
 
     /// After response processed.
+    #[serde(rename_all = "camelCase")]
     TurnEnd {
         session_id: String,
         turn_index: usize,
@@ -50,6 +55,7 @@ pub enum ExtensionEvent {
     },
 
     /// Before tool execution (can block).
+    #[serde(rename_all = "camelCase")]
     ToolCall {
         tool_name: String,
         tool_call_id: String,
@@ -57,6 +63,7 @@ pub enum ExtensionEvent {
     },
 
     /// After tool execution (can modify result).
+    #[serde(rename_all = "camelCase")]
     ToolResult {
         tool_name: String,
         tool_call_id: String,
@@ -67,20 +74,25 @@ pub enum ExtensionEvent {
     },
 
     /// Before session switch (can cancel).
+    #[serde(rename_all = "camelCase")]
     SessionBeforeSwitch {
         current_session: Option<String>,
         target_session: String,
     },
 
     /// Before session fork (can cancel).
+    #[serde(rename_all = "camelCase")]
     SessionBeforeFork {
         current_session: Option<String>,
         fork_entry_id: String,
     },
 
     /// Before processing user input (can transform).
+    #[serde(rename_all = "camelCase")]
     Input {
+        #[serde(rename = "text")]
         content: String,
+        #[serde(rename = "images")]
         attachments: Vec<ImageContent>,
     },
 }
@@ -474,6 +486,37 @@ mod tests {
             assert_eq!(event.event_name(), expected);
             let value = serde_json::to_value(&event).expect("serialize");
             assert_eq!(value.get("type").and_then(Value::as_str), Some(expected));
+
+            // Verify camelCase fields match the actual protocol used by the agent
+            if expected == "input" {
+                assert!(
+                    value.get("text").is_some(),
+                    "Input event should have 'text' field"
+                );
+                assert!(
+                    value.get("images").is_some(),
+                    "Input event should have 'images' field"
+                );
+            } else if expected == "tool_call" {
+                assert!(
+                    value.get("toolName").is_some(),
+                    "ToolCall event should have 'toolName' field"
+                );
+                assert!(
+                    value.get("toolCallId").is_some(),
+                    "ToolCall event should have 'toolCallId' field"
+                );
+            } else if expected == "agent_start" {
+                assert!(
+                    value.get("sessionId").is_some(),
+                    "AgentStart event should have 'sessionId' field"
+                );
+            } else if expected == "turn_end" {
+                assert!(
+                    value.get("toolResults").is_some(),
+                    "TurnEnd event should have 'toolResults' field"
+                );
+            }
         }
     }
 

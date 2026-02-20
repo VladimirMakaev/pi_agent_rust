@@ -65,9 +65,21 @@ pub(super) fn parse_gist_url_and_id(output: &str) -> Option<(String, String)> {
         if host != "gist.github.com" {
             continue;
         }
-        let Some(gist_id) = url.path_segments().and_then(|mut seg| seg.next_back()) else {
+        let Some(segments) = url.path_segments().map(|segments| {
+            segments
+                .filter(|segment| !segment.is_empty())
+                .collect::<Vec<_>>()
+        }) else {
             continue;
         };
+
+        // Canonical gist links are exactly `/owner/<gist-id>`.
+        // Avoid false positives like profile URLs (`/owner`).
+        if segments.len() != 2 {
+            continue;
+        }
+
+        let gist_id = segments[1];
         if gist_id.is_empty() {
             continue;
         }
@@ -151,6 +163,17 @@ mod tests {
         let (_, id) =
             parse_gist_url_and_id("Created: https://gist.github.com/user/aaa111,").unwrap();
         assert_eq!(id, "aaa111");
+    }
+
+    #[test]
+    fn parse_gist_url_ignores_profile_links() {
+        assert!(parse_gist_url_and_id("https://gist.github.com/octocat").is_none());
+        assert!(parse_gist_url_and_id("https://gist.github.com/octocat/").is_none());
+    }
+
+    #[test]
+    fn parse_gist_url_ignores_non_canonical_paths() {
+        assert!(parse_gist_url_and_id("https://gist.github.com/octocat/aaa111/raw").is_none());
     }
 
     // ── format_command_output ───────────────────────────────────────────

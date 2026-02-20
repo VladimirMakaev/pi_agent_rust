@@ -669,6 +669,11 @@ impl Config {
             PolicyProfile::Standard
         } else {
             // Unknown values fail closed to the safe profile.
+            tracing::warn!(
+                requested = %normalized_profile,
+                fallback = "safe",
+                "Unknown extension policy profile; falling back to safe"
+            );
             PolicyProfile::Safe
         };
 

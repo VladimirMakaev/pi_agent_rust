@@ -101,15 +101,15 @@ fn main_impl() -> Result<()> {
         return Ok(());
     };
 
-    // Validate theme file paths before --version so invalid paths always error.
-    // Named themes (without .json, /, ~) are validated later after resource loading.
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    validate_theme_path_spec(cli.theme.as_deref(), &cwd)?;
-
     if cli.version {
         print_version();
         return Ok(());
     }
+
+    // Validate theme file paths.
+    // Named themes (without .json, /, ~) are validated later after resource loading.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    validate_theme_path_spec(cli.theme.as_deref(), &cwd)?;
 
     // Ultra-fast paths that don't need tracing or the async runtime.
     if let Some(command) = &cli.command {
@@ -1323,12 +1323,17 @@ async fn handle_subcommand(command: cli::Commands, cwd: &Path) -> Result<()> {
 fn spawn_session_index_maintenance() {
     const MAX_INDEX_AGE: Duration = Duration::from_secs(60 * 30);
     let index = SessionIndex::new();
-    if !index.should_reindex(MAX_INDEX_AGE) {
-        return;
-    }
+
+    // Always spawn the background thread to handle cleanup, regardless of reindexing needs.
+    // Cleanup can be slow if there are many temp files, so we don't want to block main.
     std::thread::spawn(move || {
-        if let Err(err) = index.reindex_all() {
-            eprintln!("Warning: failed to reindex session index: {err}");
+        // Clean up old bash tool logs in background
+        pi::tools::cleanup_temp_files();
+
+        if index.should_reindex(MAX_INDEX_AGE) {
+            if let Err(err) = index.reindex_all() {
+                eprintln!("Warning: failed to reindex session index: {err}");
+            }
         }
     });
 }
