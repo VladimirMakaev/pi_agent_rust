@@ -758,14 +758,13 @@ where
                             serde_json::Value::Null
                         }
                     };
-                tc.arguments = arguments.clone();
-
                 let tool_call = ToolCall {
                     id: self.current_tool_id.take().unwrap_or_default(),
                     name: self.current_tool_name.take().unwrap_or_default(),
-                    arguments,
+                    arguments: arguments.clone(),
                     thought_signature: None,
                 };
+                tc.arguments = arguments;
                 self.current_tool_json.clear();
 
                 Some(StreamEvent::ToolCallEnd {

@@ -660,23 +660,23 @@ where
             serde_json::Value::Null
         });
 
-        if let Some(ContentBlock::ToolCall(block)) = self.partial.content.get_mut(tc.content_index)
-        {
-            block.id.clone_from(&tc.call_id);
-            block.name.clone_from(&tc.name);
-            block.arguments = parsed_args.clone();
-        }
-
         self.partial.stop_reason = StopReason::ToolUse;
         self.pending_events.push_back(StreamEvent::ToolCallEnd {
             content_index: tc.content_index,
             tool_call: ToolCall {
-                id: tc.call_id,
-                name: tc.name,
-                arguments: parsed_args,
+                id: tc.call_id.clone(),
+                name: tc.name.clone(),
+                arguments: parsed_args.clone(),
                 thought_signature: None,
             },
         });
+
+        if let Some(ContentBlock::ToolCall(block)) = self.partial.content.get_mut(tc.content_index)
+        {
+            block.id = tc.call_id;
+            block.name = tc.name;
+            block.arguments = parsed_args;
+        }
     }
 
     fn finish(&mut self, incomplete_reason: Option<String>) {

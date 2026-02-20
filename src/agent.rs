@@ -645,8 +645,8 @@ impl Agent {
         self.run_loop(Vec::new(), Arc::new(on_event), abort).await
     }
 
-    fn build_abort_message(&self, partial: Option<AssistantMessage>) -> AssistantMessage {
-        let mut message = partial.unwrap_or_else(|| AssistantMessage {
+    fn build_abort_message(&self, partial: Option<&AssistantMessage>) -> AssistantMessage {
+        let mut message = partial.cloned().unwrap_or_else(|| AssistantMessage {
             content: Vec::new(),
             api: self.provider.api().to_string(),
             provider: self.provider.name().to_string(),
@@ -680,7 +680,7 @@ impl Agent {
         let mut iterations = 0usize;
         let mut turn_index: usize = 0;
         let mut new_messages: Vec<Message> = Vec::with_capacity(prompts.len() + 8);
-        let mut last_assistant: Option<AssistantMessage> = None;
+        let mut last_assistant: Option<Arc<AssistantMessage>> = None;
 
         let agent_start_event = AgentEvent::AgentStart {
             session_id: session_id.clone(),
@@ -728,7 +728,7 @@ impl Agent {
                 }
 
                 if abort.as_ref().is_some_and(AbortSignal::is_aborted) {
-                    let abort_message = self.build_abort_message(last_assistant.clone());
+                    let abort_message = self.build_abort_message(last_assistant.as_deref());
                     let message = Message::assistant(abort_message.clone());
                     if !matches!(self.messages.last(), Some(Message::Assistant(_))) {
                         self.messages.push(message.clone());
@@ -785,7 +785,7 @@ impl Agent {
                 // Wrap in Arc once; share via Arc::clone (O(1)) instead of deep
                 // cloning the full AssistantMessage for every consumer.
                 let assistant_arc = Arc::new(assistant_message);
-                last_assistant = Some((*assistant_arc).clone());
+                last_assistant = Some(Arc::clone(&assistant_arc));
 
                 let assistant_event_message = Message::Assistant(Arc::clone(&assistant_arc));
                 new_messages.push(assistant_event_message.clone());
@@ -921,7 +921,7 @@ impl Agent {
             pending_messages = follow_up;
         }
 
-        let Some(final_message) = last_assistant else {
+        let Some(final_arc) = last_assistant else {
             return Err(Error::api("Agent completed without assistant message"));
         };
 
@@ -933,7 +933,7 @@ impl Agent {
         self.dispatch_extension_lifecycle_event(&agent_end_event)
             .await;
         on_event(agent_end_event);
-        Ok(final_message)
+        Ok(Arc::unwrap_or_clone(final_arc))
     }
 
     async fn fetch_messages(&self, fetcher: Option<&MessageFetcher>) -> Vec<Message> {
@@ -1018,7 +1018,7 @@ impl Agent {
                     futures::future::Either::Left(((), _event_fut)) => {
                         let last_partial = if added_partial {
                             match self.messages.last() {
-                                Some(Message::Assistant(a)) => Some((**a).clone()),
+                                Some(Message::Assistant(a)) => Some(a.as_ref()),
                                 _ => None,
                             }
                         } else {

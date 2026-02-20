@@ -476,22 +476,22 @@ where
                             serde_json::Value::Null
                         });
 
-                    if let Some(ContentBlock::ToolCall(block)) =
-                        self.partial.content.get_mut(active.content_index)
-                    {
-                        block.arguments = parsed_args.clone();
-                    }
-
                     self.partial.stop_reason = StopReason::ToolUse;
                     self.pending_events.push_back(StreamEvent::ToolCallEnd {
                         content_index: active.content_index,
                         tool_call: ToolCall {
                             id: active.id,
                             name: active.name,
-                            arguments: parsed_args,
+                            arguments: parsed_args.clone(),
                             thought_signature: None,
                         },
                     });
+
+                    if let Some(ContentBlock::ToolCall(block)) =
+                        self.partial.content.get_mut(active.content_index)
+                    {
+                        block.arguments = parsed_args;
+                    }
                 }
             }
             CohereStreamChunk::MessageEnd { delta } => {

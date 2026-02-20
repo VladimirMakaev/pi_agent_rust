@@ -152,6 +152,12 @@ fn main_impl() -> Result<()> {
                 )?;
                 return Ok(());
             }
+            cli::Commands::Config { show, paths, json } => {
+                if *paths && !*show && !*json {
+                    handle_config_paths_fast(&cwd);
+                    return Ok(());
+                }
+            }
             _ => {}
         }
     }
@@ -2280,6 +2286,9 @@ async fn collect_config_packages(manager: &PackageManager) -> Vec<ConfigPackageS
     let mut lookup = std::collections::HashMap::<String, usize>::new();
 
     let entries = manager.list_packages().await.unwrap_or_default();
+    if entries.is_empty() {
+        return packages;
+    }
     for entry in entries {
         let Some(scope) = settings_scope_from_package_scope(entry.scope) else {
             continue;
@@ -2432,6 +2441,11 @@ fn print_config_report(report: &ConfigReport, include_packages: bool) {
             println!("    [{}] {:<10} {}", marker, resource.kind, resource.path);
         }
     }
+}
+
+fn handle_config_paths_fast(cwd: &Path) {
+    let report = build_config_report(cwd, &[]);
+    print_config_report(&report, false);
 }
 
 fn format_settings_summary(config: &Config) -> String {
@@ -2628,7 +2642,13 @@ async fn handle_config(
         bail!("`pi config --json` cannot be combined with --show/--paths");
     }
 
-    let packages = collect_config_packages(manager).await;
+    let interactive_requested = !show && !paths;
+    let need_packages = show || json_output || interactive_requested;
+    let packages = if need_packages {
+        collect_config_packages(manager).await
+    } else {
+        Vec::new()
+    };
     let report = build_config_report(cwd, &packages);
 
     if json_output {
@@ -2636,7 +2656,6 @@ async fn handle_config(
         return Ok(());
     }
 
-    let interactive_requested = !show && !paths;
     let has_tty = io::stdin().is_terminal() && io::stdout().is_terminal();
 
     if interactive_requested && has_tty {
