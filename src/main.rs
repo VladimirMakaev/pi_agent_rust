@@ -157,6 +157,30 @@ fn main_impl() -> Result<()> {
                     handle_config_paths_fast(&cwd);
                     return Ok(());
                 }
+                if !*paths && (*show || *json) {
+                    let manager = PackageManager::new(cwd.clone());
+                    let entries = manager.list_packages_blocking().unwrap_or_default();
+                    if entries.is_empty() {
+                        if *show {
+                            handle_config_show_fast(&cwd);
+                            return Ok(());
+                        }
+                        if *json {
+                            handle_config_json_fast(&cwd)?;
+                            return Ok(());
+                        }
+                    } else if let Ok(Some(packages)) =
+                        collect_config_packages_blocking(&manager, entries)
+                    {
+                        let report = build_config_report(&cwd, &packages);
+                        if *json {
+                            println!("{}", serde_json::to_string_pretty(&report)?);
+                        } else {
+                            print_config_report(&report, true);
+                        }
+                        return Ok(());
+                    }
+                }
             }
             _ => {}
         }
@@ -2281,14 +2305,13 @@ fn sort_and_dedupe_package_resources(packages: &mut [ConfigPackageState]) {
     }
 }
 
-async fn collect_config_packages(manager: &PackageManager) -> Vec<ConfigPackageState> {
+fn collect_config_packages_from_entries(
+    entries: Vec<PackageEntry>,
+    resolved_paths: Option<ResolvedPaths>,
+) -> Vec<ConfigPackageState> {
     let mut packages = Vec::new();
     let mut lookup = std::collections::HashMap::<String, usize>::new();
 
-    let entries = manager.list_packages().await.unwrap_or_default();
-    if entries.is_empty() {
-        return packages;
-    }
     for entry in entries {
         let Some(scope) = settings_scope_from_package_scope(entry.scope) else {
             continue;
@@ -2305,45 +2328,71 @@ async fn collect_config_packages(manager: &PackageManager) -> Vec<ConfigPackageS
         });
     }
 
-    match manager.resolve().await {
-        Ok(ResolvedPaths {
-            extensions,
-            skills,
-            prompts,
-            themes,
-        }) => {
-            merge_resolved_resources(
-                ConfigResourceKind::Extensions,
-                &extensions,
-                &mut packages,
-                &mut lookup,
-            );
-            merge_resolved_resources(
-                ConfigResourceKind::Skills,
-                &skills,
-                &mut packages,
-                &mut lookup,
-            );
-            merge_resolved_resources(
-                ConfigResourceKind::Prompts,
-                &prompts,
-                &mut packages,
-                &mut lookup,
-            );
-            merge_resolved_resources(
-                ConfigResourceKind::Themes,
-                &themes,
-                &mut packages,
-                &mut lookup,
-            );
-        }
-        Err(err) => {
-            eprintln!("Warning: failed to resolve package resources for config UI: {err}");
-        }
+    if let Some(ResolvedPaths {
+        extensions,
+        skills,
+        prompts,
+        themes,
+    }) = resolved_paths
+    {
+        merge_resolved_resources(
+            ConfigResourceKind::Extensions,
+            &extensions,
+            &mut packages,
+            &mut lookup,
+        );
+        merge_resolved_resources(
+            ConfigResourceKind::Skills,
+            &skills,
+            &mut packages,
+            &mut lookup,
+        );
+        merge_resolved_resources(
+            ConfigResourceKind::Prompts,
+            &prompts,
+            &mut packages,
+            &mut lookup,
+        );
+        merge_resolved_resources(
+            ConfigResourceKind::Themes,
+            &themes,
+            &mut packages,
+            &mut lookup,
+        );
     }
 
     sort_and_dedupe_package_resources(&mut packages);
     packages
+}
+
+async fn collect_config_packages(manager: &PackageManager) -> Vec<ConfigPackageState> {
+    let entries = manager.list_packages().await.unwrap_or_default();
+    if entries.is_empty() {
+        return Vec::new();
+    }
+
+    let resolved_paths = match manager.resolve().await {
+        Ok(paths) => Some(paths),
+        Err(err) => {
+            eprintln!("Warning: failed to resolve package resources for config UI: {err}");
+            None
+        }
+    };
+
+    collect_config_packages_from_entries(entries, resolved_paths)
+}
+
+fn collect_config_packages_blocking(
+    manager: &PackageManager,
+    entries: Vec<PackageEntry>,
+) -> Result<Option<Vec<ConfigPackageState>>> {
+    let Some(resolved_paths) = manager.resolve_package_resources_blocking()? else {
+        return Ok(None);
+    };
+    Ok(Some(collect_config_packages_from_entries(
+        entries,
+        Some(resolved_paths),
+    )))
 }
 
 fn build_config_report(cwd: &Path, packages: &[ConfigPackageState]) -> ConfigReport {
@@ -2446,6 +2495,17 @@ fn print_config_report(report: &ConfigReport, include_packages: bool) {
 fn handle_config_paths_fast(cwd: &Path) {
     let report = build_config_report(cwd, &[]);
     print_config_report(&report, false);
+}
+
+fn handle_config_show_fast(cwd: &Path) {
+    let report = build_config_report(cwd, &[]);
+    print_config_report(&report, true);
+}
+
+fn handle_config_json_fast(cwd: &Path) -> Result<()> {
+    let report = build_config_report(cwd, &[]);
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
 }
 
 fn format_settings_summary(config: &Config) -> String {
