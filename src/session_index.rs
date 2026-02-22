@@ -279,15 +279,15 @@ impl Default for SessionIndex {
 /// Callers use this helper from save paths where index freshness is
 /// best-effort and must not fail the underlying session write.
 pub(crate) fn enqueue_session_index_snapshot_update(
-    sessions_root: PathBuf,
-    path: PathBuf,
-    header: SessionHeader,
+    sessions_root: &Path,
+    path: &Path,
+    header: &SessionHeader,
     message_count: u64,
     name: Option<String>,
 ) {
-    if let Err(err) = SessionIndex::for_sessions_root(&sessions_root).index_session_snapshot(
-        &path,
-        &header,
+    if let Err(err) = SessionIndex::for_sessions_root(sessions_root).index_session_snapshot(
+        path,
+        header,
         message_count,
         name,
     ) {

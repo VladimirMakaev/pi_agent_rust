@@ -1628,9 +1628,9 @@ impl Session {
                                 .map_err(|e| crate::Error::Io(Box::new(e.error)))?;
 
                             enqueue_session_index_snapshot_update(
-                                sessions_root,
-                                path_for_thread,
-                                header_snapshot,
+                                &sessions_root,
+                                &path_for_thread,
+                                &header_snapshot,
                                 message_count,
                                 session_name,
                             );
@@ -1710,9 +1710,9 @@ impl Session {
                                 FileExt::unlock(&file)?;
 
                                 enqueue_session_index_snapshot_update(
-                                    sessions_root,
-                                    path_for_thread,
-                                    header_snapshot,
+                                    &sessions_root,
+                                    &path_for_thread,
+                                    &header_snapshot,
                                     message_count,
                                     session_name,
                                 );
@@ -1781,9 +1781,9 @@ impl Session {
 
                 let sessions_root = session_dir_clone.unwrap_or_else(Config::sessions_dir);
                 enqueue_session_index_snapshot_update(
-                    sessions_root,
-                    path_clone.clone(),
-                    self.header.clone(),
+                    &sessions_root,
+                    &path_clone,
+                    &self.header,
                     message_count,
                     session_name,
                 );
