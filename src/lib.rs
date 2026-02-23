@@ -80,6 +80,7 @@ pub mod hostcall_superinstructions;
 pub mod hostcall_trace_jit;
 pub mod http;
 pub mod http_shim;
+pub mod index;
 pub mod interactive;
 pub mod keybindings;
 pub mod migrations;
