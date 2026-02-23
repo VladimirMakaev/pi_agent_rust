@@ -1630,25 +1630,11 @@ pub async fn create_agent_session(options: SessionOptions) -> Result<AgentSessio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use asupersync::runtime::RuntimeBuilder;
-    use asupersync::runtime::reactor::create_reactor;
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
 
-    fn run_async<F>(future: F) -> F::Output
-    where
-        F: std::future::Future,
-    {
-        let reactor = create_reactor().expect("create reactor");
-        let runtime = RuntimeBuilder::current_thread()
-            .with_reactor(reactor)
-            .build()
-            .expect("build runtime");
-        runtime.block_on(future)
-    }
-
-    #[test]
-    fn create_agent_session_default_succeeds() {
+    #[tokio::test]
+    async fn create_agent_session_default_succeeds() {
         let tmp = tempdir().expect("tempdir");
         let options = SessionOptions {
             working_directory: Some(tmp.path().to_path_buf()),
@@ -1656,14 +1642,14 @@ mod tests {
             ..SessionOptions::default()
         };
 
-        let handle = run_async(create_agent_session(options)).expect("create session");
+        let handle = create_agent_session(options).await.expect("create session");
         let provider = handle.session().agent.provider();
         assert_eq!(provider.name(), "openai-codex");
         assert_eq!(provider.model_id(), "gpt-5.3-codex");
     }
 
-    #[test]
-    fn create_agent_session_respects_provider_model_and_clamps_thinking() {
+    #[tokio::test]
+    async fn create_agent_session_respects_provider_model_and_clamps_thinking() {
         let tmp = tempdir().expect("tempdir");
         let options = SessionOptions {
             provider: Some("openai".to_string()),
@@ -1674,7 +1660,7 @@ mod tests {
             ..SessionOptions::default()
         };
 
-        let handle = run_async(create_agent_session(options)).expect("create session");
+        let handle = create_agent_session(options).await.expect("create session");
         let provider = handle.session().agent.provider();
         assert_eq!(provider.name(), "openai");
         assert_eq!(provider.model_id(), "gpt-4o");
@@ -1684,8 +1670,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn create_agent_session_no_session_keeps_ephemeral_state() {
+    #[tokio::test]
+    async fn create_agent_session_no_session_keeps_ephemeral_state() {
         let tmp = tempdir().expect("tempdir");
         let options = SessionOptions {
             working_directory: Some(tmp.path().to_path_buf()),
@@ -1693,24 +1679,22 @@ mod tests {
             ..SessionOptions::default()
         };
 
-        let handle = run_async(create_agent_session(options)).expect("create session");
+        let handle = create_agent_session(options).await.expect("create session");
         assert!(!handle.session().save_enabled());
 
-        let path_is_none = run_async(async {
-            let cx = crate::agent_cx::AgentCx::for_request();
-            let guard = handle
-                .session()
-                .session
-                .lock(cx.cx())
-                .await
-                .expect("lock session");
-            guard.path.is_none()
-        });
+        let cx = crate::agent_cx::AgentCx::for_request();
+        let guard = handle
+            .session()
+            .session
+            .lock(cx.cx())
+            .await
+            .expect("lock session");
+        let path_is_none = guard.path.is_none();
         assert!(path_is_none);
     }
 
-    #[test]
-    fn create_agent_session_set_model_switches_provider_model() {
+    #[tokio::test]
+    async fn create_agent_session_set_model_switches_provider_model() {
         let tmp = tempdir().expect("tempdir");
         let options = SessionOptions {
             working_directory: Some(tmp.path().to_path_buf()),
@@ -1718,8 +1702,8 @@ mod tests {
             ..SessionOptions::default()
         };
 
-        let mut handle = run_async(create_agent_session(options)).expect("create session");
-        run_async(handle.set_model("openai", "gpt-4o")).expect("set model");
+        let mut handle = create_agent_session(options).await.expect("create session");
+        handle.set_model("openai", "gpt-4o").await.expect("set model");
         let provider = handle.session().agent.provider();
         assert_eq!(provider.name(), "openai");
         assert_eq!(provider.model_id(), "gpt-4o");

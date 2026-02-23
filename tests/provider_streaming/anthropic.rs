@@ -300,8 +300,7 @@ async fn run_scenario(scenario: Scenario) {
             ctx.push(("max_tokens".into(), scenario.options.max_tokens.to_string()));
             if let Some(level) = scenario.options.thinking_level {
                 ctx.push(("thinking_level".into(), format!("{level:?}")));
-            }
-        });
+            });
 
     match scenario.expectation.clone() {
         ScenarioExpectation::Stream(expectations) => {
@@ -784,7 +783,7 @@ macro_rules! anthropic_test {
     ($test_name:ident, $scenario_fn:ident) => {
         #[test]
         fn $test_name() {
-            asupersync::test_utils::run_test(|| async {
+            run_async( async {
                 run_scenario($scenario_fn(&anthropic_model())).await;
             });
         }

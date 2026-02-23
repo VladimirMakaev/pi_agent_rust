@@ -16,7 +16,7 @@
 //! - Cross-durability-mode fault behavior
 //! - Trace log correlation for debugging persistence failures
 
-use asupersync::runtime::RuntimeBuilder;
+use tokio::runtime::Builder as RuntimeBuilder;
 use pi::model::UserContent;
 use pi::session::{AutosaveDurabilityMode, AutosaveFlushTrigger, Session, SessionMessage};
 use pi::session_store_v2::SessionStoreV2;

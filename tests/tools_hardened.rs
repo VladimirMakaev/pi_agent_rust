@@ -52,54 +52,49 @@ mod read_hardened {
     use super::*;
 
     #[cfg(unix)]
-    #[test]
-    fn read_via_symlink() {
-        asupersync::test_utils::run_test(|| async {
-            let h = TestHarness::new("read_via_symlink");
-            let real = h.create_file("real.txt", b"symlink content\n");
-            let link = h.temp_path("link.txt");
-            std::os::unix::fs::symlink(&real, &link).unwrap();
+    #[tokio::test]
+    async fn read_via_symlink() {
+        let h = TestHarness::new("read_via_symlink");
+        let real = h.create_file("real.txt", b"symlink content\n");
+        let link = h.temp_path("link.txt");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
 
-            let tool = pi::tools::ReadTool::new(h.temp_dir());
-            let input = serde_json::json!({"path": link.to_string_lossy()});
-            let result = tool.execute("h-read-1", input, None).await.unwrap();
-            let text = get_text(&result.content);
-            h.log().info_ctx("verify", "symlink read", |ctx| {
-                ctx.push(("text".into(), text.clone()));
-            });
-            assert!(text.contains("symlink content"), "should follow symlink");
-            assert!(!result.is_error);
+        let tool = pi::tools::ReadTool::new(h.temp_dir());
+        let input = serde_json::json!({"path": link.to_string_lossy()});
+        let result = tool.execute("h-read-1", input, None).await.unwrap();
+        let text = get_text(&result.content);
+        h.log().info_ctx("verify", "symlink read", |ctx| {
+            ctx.push(("text".into(), text.clone()));
         });
+        assert!(text.contains("symlink content"), "should follow symlink");
+        assert!(!result.is_error);
     }
 
     #[cfg(unix)]
-    #[test]
-    fn read_symlink_to_directory_fails() {
-        asupersync::test_utils::run_test(|| async {
-            let h = TestHarness::new("read_symlink_to_directory_fails");
-            let dir = h.create_dir("target_dir");
-            let link = h.temp_path("link_to_dir");
-            std::os::unix::fs::symlink(&dir, &link).unwrap();
+    #[tokio::test]
+    async fn read_symlink_to_directory_fails() {
+        let h = TestHarness::new("read_symlink_to_directory_fails");
+        let dir = h.create_dir("target_dir");
+        let link = h.temp_path("link_to_dir");
+        std::os::unix::fs::symlink(&dir, &link).unwrap();
 
-            let tool = pi::tools::ReadTool::new(h.temp_dir());
-            let input = serde_json::json!({"path": link.to_string_lossy()});
-            let err = tool
-                .execute("h-read-2", input, None)
-                .await
-                .expect_err("should fail on dir symlink");
-            let msg = err.to_string();
-            h.log().info("verify", format!("error={msg}"));
-            assert!(
-                msg.to_lowercase().contains("directory")
-                    || msg.to_lowercase().contains("not a file"),
-                "should report directory error: {msg}"
-            );
-        });
+        let tool = pi::tools::ReadTool::new(h.temp_dir());
+        let input = serde_json::json!({"path": link.to_string_lossy()});
+        let err = tool
+            .execute("h-read-2", input, None)
+            .await
+            .expect_err("should fail on dir symlink");
+        let msg = err.to_string();
+        h.log().info("verify", format!("error={msg}"));
+        assert!(
+            msg.to_lowercase().contains("directory")
+                || msg.to_lowercase().contains("not a file"),
+            "should report directory error: {msg}"
+        );
     }
 
-    #[test]
-    fn read_deeply_nested_path() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn read_deeply_nested_path() {
             let h = TestHarness::new("read_deeply_nested_path");
             let deep = h.create_file("a/b/c/d/e/f/g/deep.txt", b"deep content");
 
@@ -108,12 +103,10 @@ mod read_hardened {
             let result = tool.execute("h-read-3", input, None).await.unwrap();
             let text = get_text(&result.content);
             assert!(text.contains("deep content"));
-        });
     }
 
-    #[test]
-    fn read_unicode_filename() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn read_unicode_filename() {
             let h = TestHarness::new("read_unicode_filename");
             let path = h.create_file("données_café.txt", b"unicode filename content");
 
@@ -122,12 +115,10 @@ mod read_hardened {
             let result = tool.execute("h-read-4", input, None).await.unwrap();
             let text = get_text(&result.content);
             assert!(text.contains("unicode filename content"));
-        });
     }
 
-    #[test]
-    fn read_unicode_content_integrity() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn read_unicode_content_integrity() {
             let h = TestHarness::new("read_unicode_content_integrity");
             let content = "日本語テスト\n中文测试\n한국어 테스트\nEmoji: 🦀🔥\n";
             let path = h.create_file("unicode.txt", content.as_bytes());
@@ -141,12 +132,10 @@ mod read_hardened {
             assert!(text.contains("中文测试"), "should contain Chinese");
             assert!(text.contains("한국어 테스트"), "should contain Korean");
             assert!(text.contains("🦀🔥"), "should contain emoji");
-        });
     }
 
-    #[test]
-    fn read_file_with_only_empty_lines() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn read_file_with_only_empty_lines() {
             let h = TestHarness::new("read_file_with_only_empty_lines");
             let content = "\n\n\n\n\n";
             let path = h.create_file("empty_lines.txt", content.as_bytes());
@@ -156,12 +145,10 @@ mod read_hardened {
             let result = tool.execute("h-read-6", input, None).await.unwrap();
             // Should not error on a file that's all newlines
             assert!(!result.is_error);
-        });
     }
 
-    #[test]
-    fn read_max_bytes_boundary() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn read_max_bytes_boundary() {
             let h = TestHarness::new("read_max_bytes_boundary");
             // Create content exactly at the MAX_BYTES limit
             let line = "x".repeat(99) + "\n"; // 100 bytes per line
@@ -174,12 +161,10 @@ mod read_hardened {
             let result = tool.execute("h-read-7", input, None).await.unwrap();
             // At or just below boundary should work without byte truncation
             assert!(!result.is_error);
-        });
     }
 
-    #[test]
-    fn read_single_very_long_line() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn read_single_very_long_line() {
             let h = TestHarness::new("read_single_very_long_line");
             // One line that exceeds MAX_BYTES
             let content = "a".repeat(pi::tools::DEFAULT_MAX_BYTES + 1000);
@@ -201,12 +186,10 @@ mod read_hardened {
                 truncation.get("firstLineExceedsLimit"),
                 Some(&serde_json::Value::Bool(true))
             );
-        });
     }
 
-    #[test]
-    fn read_offset_zero_is_first_line() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn read_offset_zero_is_first_line() {
             let h = TestHarness::new("read_offset_zero_is_first_line");
             let path = h.create_file("lines.txt", b"line1\nline2\nline3\n");
 
@@ -215,12 +198,10 @@ mod read_hardened {
             let result = tool.execute("h-read-9", input, None).await.unwrap();
             let text = get_text(&result.content);
             assert!(text.contains("line1"), "offset 0 should start at line 1");
-        });
     }
 
-    #[test]
-    fn read_offset_and_limit_boundary() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn read_offset_and_limit_boundary() {
             use std::fmt::Write as _;
             let h = TestHarness::new("read_offset_and_limit_boundary");
             let mut content = String::new();
@@ -237,7 +218,6 @@ mod read_hardened {
             let text = get_text(&result.content);
             assert!(text.contains("line10"), "should contain line 10");
             assert!(!text.contains("line9"), "should not contain line 9");
-        });
     }
 }
 
@@ -248,9 +228,8 @@ mod write_hardened {
     use super::*;
 
     #[cfg(unix)]
-    #[test]
-    fn write_atomic_replaces_symlink() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn write_atomic_replaces_symlink() {
             let h = TestHarness::new("write_atomic_replaces_symlink");
             let real = h.create_file("real.txt", b"original");
             let link = h.temp_path("link.txt");
@@ -279,12 +258,10 @@ mod write_hardened {
                 meta.file_type().is_file(),
                 "link should now be a regular file"
             );
-        });
     }
 
-    #[test]
-    fn write_deeply_nested_auto_creation() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn write_deeply_nested_auto_creation() {
             let h = TestHarness::new("write_deeply_nested_auto_creation");
             let deep = h.temp_path("a/b/c/d/e/f/g/h/i/j/deep.txt");
 
@@ -297,12 +274,10 @@ mod write_hardened {
             assert!(!result.is_error);
             assert!(deep.exists());
             assert_eq!(std::fs::read_to_string(&deep).unwrap(), "deep write");
-        });
     }
 
-    #[test]
-    fn write_empty_content() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn write_empty_content() {
             let h = TestHarness::new("write_empty_content");
             let path = h.temp_path("empty.txt");
 
@@ -315,12 +290,10 @@ mod write_hardened {
             assert!(!result.is_error);
             assert!(path.exists());
             assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
-        });
     }
 
-    #[test]
-    fn write_unicode_round_trip() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn write_unicode_round_trip() {
             let h = TestHarness::new("write_unicode_round_trip");
             let content = "Héllo Wörld! 日本語 🦀 Ñ ñ ü ö ä ß";
             let path = h.temp_path("unicode_write.txt");
@@ -334,12 +307,10 @@ mod write_hardened {
             assert!(!result.is_error);
             let disk = std::fs::read_to_string(&path).unwrap();
             assert_eq!(disk, content, "unicode content should round-trip perfectly");
-        });
     }
 
-    #[test]
-    fn write_overwrite_clears_old_content() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn write_overwrite_clears_old_content() {
             let h = TestHarness::new("write_overwrite_clears_old_content");
             let path = h.create_file("big.txt", b"a]".repeat(10_000).as_slice());
 
@@ -355,12 +326,10 @@ mod write_hardened {
                 disk, "short",
                 "overwrite should completely replace, not append"
             );
-        });
     }
 
-    #[test]
-    fn write_special_characters_in_path() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn write_special_characters_in_path() {
             let h = TestHarness::new("write_special_characters_in_path");
             let path = h.temp_path("spaces in name.txt");
 
@@ -372,12 +341,10 @@ mod write_hardened {
             let result = tool.execute("h-write-6", input, None).await.unwrap();
             assert!(!result.is_error);
             assert_eq!(std::fs::read_to_string(&path).unwrap(), "spaces work");
-        });
     }
 
-    #[test]
-    fn write_reports_utf16_byte_count_for_multibyte() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn write_reports_utf16_byte_count_for_multibyte() {
             let h = TestHarness::new("write_reports_utf16_byte_count_for_multibyte");
             // 3 chars: 'A' (1 UTF-16 unit), '😃' (2 UTF-16 units), 'B' (1 UTF-16 unit) = 4 units
             let content = "A😃B";
@@ -399,7 +366,6 @@ mod write_hardened {
                 text.contains(&format!("{expected_utf16_count} bytes")),
                 "should report UTF-16 byte count {expected_utf16_count}: {text}"
             );
-        });
     }
 }
 
@@ -409,9 +375,8 @@ mod write_hardened {
 mod edit_hardened {
     use super::*;
 
-    #[test]
-    fn edit_with_regex_metacharacters_in_old_text() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn edit_with_regex_metacharacters_in_old_text() {
             let h = TestHarness::new("edit_with_regex_metacharacters_in_old_text");
             let content = "value = array[0].method(arg1, arg2);\n";
             let path = h.create_file("meta.txt", content.as_bytes());
@@ -427,12 +392,10 @@ mod edit_hardened {
             let disk = std::fs::read_to_string(&path).unwrap();
             assert!(disk.contains("array[1].method(arg3)"));
             assert!(!disk.contains("array[0]"));
-        });
     }
 
-    #[test]
-    fn edit_entire_file_content() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn edit_entire_file_content() {
             let h = TestHarness::new("edit_entire_file_content");
             let path = h.create_file("whole.txt", b"entire old content");
 
@@ -445,12 +408,10 @@ mod edit_hardened {
             let result = tool.execute("h-edit-2", input, None).await.unwrap();
             assert!(!result.is_error);
             assert_eq!(std::fs::read_to_string(&path).unwrap(), "brand new content");
-        });
     }
 
-    #[test]
-    fn edit_multiline_replacement() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn edit_multiline_replacement() {
             let h = TestHarness::new("edit_multiline_replacement");
             let content = "fn main() {\n    println!(\"hello\");\n}\n";
             let path = h.create_file("multi.rs", content.as_bytes());
@@ -466,12 +427,10 @@ mod edit_hardened {
             let disk = std::fs::read_to_string(&path).unwrap();
             assert!(disk.contains("eprintln!(\"debug\")"));
             assert!(disk.contains("println!(\"hello\")"));
-        });
     }
 
-    #[test]
-    fn edit_sequential_edits_on_same_file() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn edit_sequential_edits_on_same_file() {
             let h = TestHarness::new("edit_sequential_edits_on_same_file");
             let path = h.create_file("seq.txt", b"alpha beta gamma delta\n");
 
@@ -499,12 +458,10 @@ mod edit_hardened {
             assert!(disk.contains("GAMMA"), "second edit should apply");
             assert!(disk.contains("beta"), "untouched text should remain");
             assert!(disk.contains("delta"), "untouched text should remain");
-        });
     }
 
-    #[test]
-    fn edit_preserves_crlf_line_endings() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn edit_preserves_crlf_line_endings() {
             let h = TestHarness::new("edit_preserves_crlf_line_endings");
             let content = "line1\r\nTARGET\r\nline3\r\n";
             let path = h.create_file("crlf.txt", content.as_bytes());
@@ -528,12 +485,10 @@ mod edit_hardened {
                 crlf_count >= 2,
                 "CRLF line endings should be preserved (found {crlf_count})"
             );
-        });
     }
 
-    #[test]
-    fn edit_unicode_content() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn edit_unicode_content() {
             let h = TestHarness::new("edit_unicode_content");
             let path = h.create_file("uni_edit.txt", "Hello 世界! 🌍".as_bytes());
 
@@ -548,13 +503,11 @@ mod edit_hardened {
             let disk = std::fs::read_to_string(&path).unwrap();
             assert!(disk.contains("ワールド"));
             assert!(!disk.contains("世界"));
-        });
     }
 
     #[cfg(unix)]
-    #[test]
-    fn edit_readonly_file_fails() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn edit_readonly_file_fails() {
             let h = TestHarness::new("edit_readonly_file_fails");
             let path = h.create_file("readonly.txt", b"immutable content");
             let mut perms = std::fs::metadata(&path).unwrap().permissions();
@@ -590,12 +543,10 @@ mod edit_hardened {
             let mut restore = std::fs::metadata(&path).unwrap().permissions();
             restore.set_mode(0o644);
             std::fs::set_permissions(&path, restore).unwrap();
-        });
     }
 
-    #[test]
-    fn edit_diff_details_present() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn edit_diff_details_present() {
             let h = TestHarness::new("edit_diff_details_present");
             let path = h.create_file("diff.txt", b"before\n");
 
@@ -611,7 +562,6 @@ mod edit_hardened {
             let diff_str = diff.as_str().unwrap_or("");
             h.log().info("verify", format!("diff={diff_str}"));
             assert!(!diff_str.is_empty(), "diff should not be empty");
-        });
     }
 }
 
@@ -621,9 +571,8 @@ mod edit_hardened {
 mod bash_hardened {
     use super::*;
 
-    #[test]
-    fn bash_stderr_captured_in_output() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn bash_stderr_captured_in_output() {
             let h = TestHarness::new("bash_stderr_captured_in_output");
             let tool = pi::tools::BashTool::new(h.temp_dir());
             let input = serde_json::json!({
@@ -634,12 +583,10 @@ mod bash_hardened {
             h.log().info("verify", format!("text={text}"));
             assert!(text.contains("stdout_line"), "should capture stdout");
             assert!(text.contains("stderr_line"), "should capture stderr");
-        });
     }
 
-    #[test]
-    fn bash_exit_code_boundary_values() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn bash_exit_code_boundary_values() {
             let h = TestHarness::new("bash_exit_code_boundary_values");
             let tool = pi::tools::BashTool::new(h.temp_dir());
 
@@ -671,12 +618,10 @@ mod bash_hardened {
             );
 
             h.log().info("verify", "all exit code boundaries passed");
-        });
     }
 
-    #[test]
-    fn bash_shell_syntax_error() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn bash_shell_syntax_error() {
             let h = TestHarness::new("bash_shell_syntax_error");
             let tool = pi::tools::BashTool::new(h.temp_dir());
             let input = serde_json::json!({"command": "if then else fi"});
@@ -691,12 +636,10 @@ mod bash_hardened {
                 msg.contains("exited with code") || msg.contains("syntax"),
                 "should report shell error: {msg}"
             );
-        });
     }
 
-    #[test]
-    fn bash_multiline_command() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn bash_multiline_command() {
             let h = TestHarness::new("bash_multiline_command");
             let tool = pi::tools::BashTool::new(h.temp_dir());
             let input = serde_json::json!({
@@ -708,12 +651,10 @@ mod bash_hardened {
             assert!(text.contains("line1"), "should contain line1");
             assert!(text.contains("line2"), "should contain line2");
             assert!(text.contains("line3"), "should contain line3");
-        });
     }
 
-    #[test]
-    fn bash_working_directory_is_correct() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn bash_working_directory_is_correct() {
             let h = TestHarness::new("bash_working_directory_is_correct");
             let tool = pi::tools::BashTool::new(h.temp_dir());
             let input = serde_json::json!({"command": "pwd"});
@@ -726,12 +667,10 @@ mod bash_hardened {
                 text.contains(&*temp_dir_str),
                 "pwd should match temp dir: got {text}, expected to contain {temp_dir_str}"
             );
-        });
     }
 
-    #[test]
-    fn bash_large_stderr_output() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn bash_large_stderr_output() {
             let h = TestHarness::new("bash_large_stderr_output");
             let tool = pi::tools::BashTool::new(h.temp_dir());
             let input = serde_json::json!({
@@ -741,13 +680,11 @@ mod bash_hardened {
             let text = get_text(&result.content);
             h.log().info("verify", format!("text_len={}", text.len()));
             assert!(text.contains("stderr line"), "should capture stderr output");
-        });
     }
 
     #[cfg(unix)]
-    #[test]
-    fn bash_timeout_kills_process_tree() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn bash_timeout_kills_process_tree() {
             let h = TestHarness::new("bash_timeout_kills_process_tree");
             let tool = pi::tools::BashTool::new(h.temp_dir());
             // Use a marker file to detect if process survived
@@ -771,12 +708,10 @@ mod bash_hardened {
                 !marker.exists(),
                 "marker file should NOT exist - process should have been killed"
             );
-        });
     }
 
-    #[test]
-    fn bash_empty_command() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn bash_empty_command() {
             let h = TestHarness::new("bash_empty_command");
             let tool = pi::tools::BashTool::new(h.temp_dir());
             let input = serde_json::json!({"command": ""});
@@ -785,12 +720,10 @@ mod bash_hardened {
             h.log()
                 .info("verify", format!("result_ok={}", result.is_ok()));
             // Either way, should not panic
-        });
     }
 
-    #[test]
-    fn bash_env_variable_not_leaked() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn bash_env_variable_not_leaked() {
             let h = TestHarness::new("bash_env_variable_not_leaked");
             let tool = pi::tools::BashTool::new(h.temp_dir());
             // Check that a random env var we set is accessible (bash inherits env)
@@ -800,12 +733,10 @@ mod bash_hardened {
             h.log().info("verify", format!("HOME={text}"));
             // HOME should be set (basic env inheritance check)
             assert!(!text.trim().is_empty(), "HOME env var should be set");
-        });
     }
 
-    #[test]
-    fn bash_pipe_commands() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn bash_pipe_commands() {
             let h = TestHarness::new("bash_pipe_commands");
             let tool = pi::tools::BashTool::new(h.temp_dir());
             let input = serde_json::json!({
@@ -815,7 +746,6 @@ mod bash_hardened {
             let text = get_text(&result.content);
             h.log().info("verify", format!("wc={text}"));
             assert!(text.contains('2'), "should count 2 words");
-        });
     }
 }
 
@@ -831,7 +761,7 @@ mod grep_hardened {
             eprintln!("SKIP: rg not available");
             return;
         }
-        asupersync::test_utils::run_test(|| async {
+        {
             let h = TestHarness::new("grep_regex_metacharacters");
             h.create_file(
                 "code.rs",
@@ -848,7 +778,6 @@ mod grep_hardened {
                 text.contains("Result<i32"),
                 "should find regex metachar pattern"
             );
-        });
     }
 
     #[test]
@@ -857,7 +786,7 @@ mod grep_hardened {
             eprintln!("SKIP: rg not available");
             return;
         }
-        asupersync::test_utils::run_test(|| async {
+        {
             let h = TestHarness::new("grep_unicode_pattern");
             h.create_file(
                 "text.txt",
@@ -878,7 +807,6 @@ mod grep_hardened {
                 !text.contains("Hello world") || text.lines().count() >= 2,
                 "should match correct lines"
             );
-        });
     }
 
     #[test]
@@ -887,7 +815,7 @@ mod grep_hardened {
             eprintln!("SKIP: rg not available");
             return;
         }
-        asupersync::test_utils::run_test(|| async {
+        {
             let h = TestHarness::new("grep_with_path_parameter");
             h.create_file("src/main.rs", b"fn main() { target_match }\n");
             h.create_file("tests/test.rs", b"fn test() { target_match }\n");
@@ -902,7 +830,6 @@ mod grep_hardened {
             h.log().info("verify", format!("text={text}"));
             assert!(text.contains("main.rs"), "should find match in src/");
             // Should NOT include tests/ match when path is scoped to src/
-        });
     }
 
     #[test]
@@ -911,7 +838,7 @@ mod grep_hardened {
             eprintln!("SKIP: rg not available");
             return;
         }
-        asupersync::test_utils::run_test(|| async {
+        {
             let h = TestHarness::new("grep_empty_file");
             h.create_file("empty.txt", b"");
 
@@ -923,7 +850,6 @@ mod grep_hardened {
                 text.contains("No matches found"),
                 "should report no matches in empty file: {text}"
             );
-        });
     }
 
     #[test]
@@ -932,7 +858,7 @@ mod grep_hardened {
             eprintln!("SKIP: rg not available");
             return;
         }
-        asupersync::test_utils::run_test(|| async {
+        {
             use std::fmt::Write as _;
             let h = TestHarness::new("grep_context_lines_correct");
             let mut content = String::new();
@@ -952,7 +878,6 @@ mod grep_hardened {
             assert!(text.contains("line10"), "should contain match");
             assert!(text.contains("line8"), "should contain context before");
             assert!(text.contains("line12"), "should contain context after");
-        });
     }
 
     #[test]
@@ -961,7 +886,7 @@ mod grep_hardened {
             eprintln!("SKIP: rg not available");
             return;
         }
-        asupersync::test_utils::run_test(|| async {
+        {
             let h = TestHarness::new("grep_multiple_files_results");
             h.create_file("a.txt", b"needle in a");
             h.create_file("b.txt", b"needle in b");
@@ -974,7 +899,6 @@ mod grep_hardened {
             h.log().info("verify", format!("text={text}"));
             assert!(text.contains("a.txt"), "should find in a.txt");
             assert!(text.contains("b.txt"), "should find in b.txt");
-        });
     }
 }
 
@@ -990,7 +914,7 @@ mod find_hardened {
             eprintln!("SKIP: fd not available");
             return;
         }
-        asupersync::test_utils::run_test(|| async {
+        {
             let h = TestHarness::new("find_nested_glob");
             h.create_file("src/main.rs", b"");
             h.create_file("src/lib.rs", b"");
@@ -1006,7 +930,6 @@ mod find_hardened {
             assert!(text.contains("lib.rs"), "should find lib.rs");
             assert!(text.contains("test.rs"), "should find test.rs");
             assert!(!text.contains("readme.md"), "should not find .md files");
-        });
     }
 
     #[test]
@@ -1015,7 +938,7 @@ mod find_hardened {
             eprintln!("SKIP: fd not available");
             return;
         }
-        asupersync::test_utils::run_test(|| async {
+        {
             let h = TestHarness::new("find_with_path_scoping");
             h.create_file("src/main.rs", b"");
             h.create_file("tests/test.rs", b"");
@@ -1029,7 +952,6 @@ mod find_hardened {
             let text = get_text(&result.content);
             h.log().info("verify", format!("text={text}"));
             assert!(text.contains("main.rs"), "should find main.rs in src/");
-        });
     }
 
     #[test]
@@ -1038,7 +960,7 @@ mod find_hardened {
             eprintln!("SKIP: fd not available");
             return;
         }
-        asupersync::test_utils::run_test(|| async {
+        {
             let h = TestHarness::new("find_empty_directory_tree");
             h.create_dir("empty_tree/sub1/sub2");
 
@@ -1050,7 +972,6 @@ mod find_hardened {
                 text.contains("No files found"),
                 "empty tree should report no files: {text}"
             );
-        });
     }
 
     #[test]
@@ -1059,7 +980,7 @@ mod find_hardened {
             eprintln!("SKIP: fd not available");
             return;
         }
-        asupersync::test_utils::run_test(|| async {
+        {
             let h = TestHarness::new("find_unicode_filename");
             h.create_file("café.txt", b"");
             h.create_file("normal.txt", b"");
@@ -1071,7 +992,6 @@ mod find_hardened {
             h.log().info("verify", format!("text={text}"));
             assert!(text.contains("café.txt"), "should find Unicode filename");
             assert!(text.contains("normal.txt"), "should find normal filename");
-        });
     }
 
     #[test]
@@ -1080,7 +1000,7 @@ mod find_hardened {
             eprintln!("SKIP: fd not available");
             return;
         }
-        asupersync::test_utils::run_test(|| async {
+        {
             let h = TestHarness::new("find_limit_respects_cap");
             for i in 0..20 {
                 h.create_file(format!("file_{i:02}.txt"), b"");
@@ -1100,7 +1020,6 @@ mod find_hardened {
                 text.contains("results limit reached"),
                 "should indicate limit reached: {text}"
             );
-        });
     }
 }
 
@@ -1111,9 +1030,8 @@ mod ls_hardened {
     use super::*;
 
     #[cfg(unix)]
-    #[test]
-    fn ls_shows_symlinks() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn ls_shows_symlinks() {
             let h = TestHarness::new("ls_shows_symlinks");
             h.create_file("real.txt", b"content");
             let link = h.temp_path("link.txt");
@@ -1126,12 +1044,10 @@ mod ls_hardened {
             h.log().info("verify", format!("text={text}"));
             assert!(text.contains("real.txt"), "should list real file");
             assert!(text.contains("link.txt"), "should list symlink");
-        });
     }
 
-    #[test]
-    fn ls_many_entries() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn ls_many_entries() {
             let h = TestHarness::new("ls_many_entries");
             for i in 0..50 {
                 h.create_file(format!("file_{i:03}.txt"), b"");
@@ -1147,12 +1063,10 @@ mod ls_hardened {
                 line_count >= 50,
                 "should list all 50 files (got {line_count})"
             );
-        });
     }
 
-    #[test]
-    fn ls_alphabetical_order() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn ls_alphabetical_order() {
             let h = TestHarness::new("ls_alphabetical_order");
             h.create_file("cherry.txt", b"");
             h.create_file("apple.txt", b"");
@@ -1173,12 +1087,10 @@ mod ls_hardened {
                 apple_pos < banana_pos && banana_pos < cherry_pos,
                 "entries should be alphabetical: apple({apple_pos:?}) < banana({banana_pos:?}) < cherry({cherry_pos:?})"
             );
-        });
     }
 
-    #[test]
-    fn ls_directories_have_trailing_slash() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn ls_directories_have_trailing_slash() {
             let h = TestHarness::new("ls_directories_have_trailing_slash");
             h.create_dir("subdir_a");
             h.create_dir("subdir_b");
@@ -1199,12 +1111,10 @@ mod ls_hardened {
                 !text.contains("file.txt/"),
                 "files must not have trailing /"
             );
-        });
     }
 
-    #[test]
-    fn ls_limit_truncation_details() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn ls_limit_truncation_details() {
             let h = TestHarness::new("ls_limit_truncation_details");
             for i in 0..10 {
                 h.create_file(format!("f{i}.txt"), b"");
@@ -1223,12 +1133,10 @@ mod ls_hardened {
                 details.get("entryLimitReached"),
                 Some(&serde_json::Value::Number(3u64.into()))
             );
-        });
     }
 
-    #[test]
-    fn ls_unicode_filenames() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn ls_unicode_filenames() {
             let h = TestHarness::new("ls_unicode_filenames");
             h.create_file("日本語.txt", b"");
             h.create_file("normal.txt", b"");
@@ -1240,12 +1148,10 @@ mod ls_hardened {
             h.log().info("verify", format!("text={text}"));
             assert!(text.contains("日本語.txt"), "should list Unicode filename");
             assert!(text.contains("normal.txt"), "should list normal filename");
-        });
     }
 
-    #[test]
-    fn ls_nested_directory_path() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn ls_nested_directory_path() {
             let h = TestHarness::new("ls_nested_directory_path");
             h.create_file("sub/a.txt", b"");
             h.create_file("sub/b.txt", b"");
@@ -1258,7 +1164,6 @@ mod ls_hardened {
             assert!(text.contains("a.txt"), "should list a.txt");
             assert!(text.contains("b.txt"), "should list b.txt");
             assert!(text.contains("inner/"), "should list inner/ dir");
-        });
     }
 }
 
@@ -1274,7 +1179,7 @@ mod cross_tool_hardened {
             eprintln!("SKIP: rg not available");
             return;
         }
-        asupersync::test_utils::run_test(|| async {
+        {
             let h = TestHarness::new("write_then_grep_finds_content");
             let path = h.temp_path("searchable.txt");
 
@@ -1299,7 +1204,6 @@ mod cross_tool_hardened {
                 text.contains("unique_marker_string_for_grep_test"),
                 "grep should find written content"
             );
-        });
     }
 
     #[test]
@@ -1308,7 +1212,7 @@ mod cross_tool_hardened {
             eprintln!("SKIP: fd not available");
             return;
         }
-        asupersync::test_utils::run_test(|| async {
+        {
             let h = TestHarness::new("write_then_find_discovers_file");
             let path = h.temp_path("discoverable.rs");
 
@@ -1333,12 +1237,10 @@ mod cross_tool_hardened {
                 text.contains("discoverable.rs"),
                 "find should discover written file"
             );
-        });
     }
 
-    #[test]
-    fn bash_creates_file_then_read_finds_it() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn bash_creates_file_then_read_finds_it() {
             let h = TestHarness::new("bash_creates_file_then_read_finds_it");
             let file_path = h.temp_path("bash_created.txt");
             let file_str = file_path.to_string_lossy().to_string();
@@ -1363,12 +1265,10 @@ mod cross_tool_hardened {
                 text.contains("bash wrote this"),
                 "read should find bash-created content"
             );
-        });
     }
 
-    #[test]
-    fn edit_then_ls_shows_unchanged_listing() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn edit_then_ls_shows_unchanged_listing() {
             let h = TestHarness::new("edit_then_ls_shows_unchanged_listing");
             h.create_file("target.txt", b"old content");
             h.create_file("other.txt", b"untouched");
@@ -1396,6 +1296,5 @@ mod cross_tool_hardened {
                 text.contains("other.txt"),
                 "other file should be unaffected"
             );
-        });
     }
 }

@@ -48,8 +48,7 @@ fn load_ext(harness: &common::TestHarness, source: &str) -> ExtensionManager {
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start js runtime")
-        }
-    });
+        });
     manager.set_js_runtime(runtime);
 
     common::run_async({
@@ -59,8 +58,7 @@ fn load_ext(harness: &common::TestHarness, source: &str) -> ExtensionManager {
                 .load_js_extensions(vec![spec])
                 .await
                 .expect("load adversarial extension");
-        }
-    });
+        });
 
     manager
 }
@@ -88,20 +86,17 @@ fn try_load_ext(source: &str) -> Result<(), String> {
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start js runtime")
-        }
-    });
+        });
     manager.set_js_runtime(runtime);
 
     let load_result = common::run_async({
         let manager2 = manager.clone();
-        async move { manager2.load_js_extensions(vec![spec]).await }
-    });
+        async move { manager2.load_js_extensions(vec![spec]).await });
 
     common::run_async({
         async move {
             let _ = manager.shutdown(Duration::from_secs(3)).await;
-        }
-    });
+        });
 
     load_result.map_err(|e| e.to_string())
 }
@@ -131,8 +126,7 @@ fn eval_adversarial_with_memory_limit(source: &str, memory_limit_bytes: usize) -
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start js runtime")
-        }
-    });
+        });
     manager.set_js_runtime(runtime);
 
     common::run_async({
@@ -142,8 +136,7 @@ fn eval_adversarial_with_memory_limit(source: &str, memory_limit_bytes: usize) -
                 .load_js_extensions(vec![spec])
                 .await
                 .expect("load extension");
-        }
-    });
+        });
 
     let response = common::run_async({
         let mgr2 = manager.clone();
@@ -151,14 +144,12 @@ fn eval_adversarial_with_memory_limit(source: &str, memory_limit_bytes: usize) -
             mgr2.dispatch_event_with_response(ExtensionEventName::AgentStart, None, 10_000)
                 .await
                 .expect("dispatch agent_start")
-        }
-    });
+        });
 
     common::run_async({
         async move {
             let _ = manager.shutdown(Duration::from_secs(3)).await;
-        }
-    });
+        });
 
     response
         .and_then(|v| v.get("result").and_then(|r| r.as_str()).map(String::from))
@@ -177,14 +168,12 @@ fn eval_adversarial(source: &str) -> String {
             mgr2.dispatch_event_with_response(ExtensionEventName::AgentStart, None, 10_000)
                 .await
                 .expect("dispatch agent_start")
-        }
-    });
+        });
 
     common::run_async({
         async move {
             let _ = mgr.shutdown(Duration::from_secs(3)).await;
-        }
-    });
+        });
 
     response
         .and_then(|v| v.get("result").and_then(|r| r.as_str()).map(String::from))
@@ -465,8 +454,7 @@ export default function activate(pi) {
       return { result: "EXECUTED:" + stdout };
     } catch (e) {
       return { result: "DENIED:" + e.message };
-    }
-  });
+    });
 }
 "#,
     );
@@ -489,8 +477,7 @@ export default function activate(pi) {
       return { result: "EXECUTED:" + output };
     } catch (e) {
       return { result: "BLOCKED:" + e.message };
-    }
-  });
+    });
 }
 "#,
     );
@@ -521,8 +508,7 @@ export default function activate(pi) {
       return { result: "LEAKED:" + content.substring(0, 20) };
     } catch (e) {
       return { result: "BLOCKED:" + e.message };
-    }
-  });
+    });
 }
 "#,
     );
@@ -546,8 +532,7 @@ export default function activate(pi) {
       return { result: "LEAKED:" + content.substring(0, 20) };
     } catch (e) {
       return { result: "BLOCKED:" + e.message };
-    }
-  });
+    });
 }
 "#,
     );
@@ -572,8 +557,7 @@ export default function activate(pi) {
       return { result: "LEAKED:" + content.substring(0, 20) };
     } catch (e) {
       return { result: "BLOCKED:" + e.message };
-    }
-  });
+    });
 }
 "#,
     );
@@ -598,8 +582,7 @@ export default function activate(pi) {
       return { result: "LEAKED:" + content.substring(0, 20) };
     } catch (e) {
       return { result: "BLOCKED:" + e.message };
-    }
-  });
+    });
 }
 "#,
     );
@@ -635,8 +618,7 @@ export default function activate(pi) {
       return { result: "ESCAPED_GAP_G2" };
     } catch (e) {
       return { result: "BLOCKED:" + e.message };
-    }
-  });
+    });
 }
 "#,
     );
@@ -666,8 +648,7 @@ export default function activate(pi) {
       return { result: "EVAL_OK:" + r };
     } catch (e) {
       return { result: "BLOCKED:" + e.message };
-    }
-  });
+    });
 }
 "#,
     );
@@ -698,8 +679,7 @@ export default function activate(pi) {
       return { result: "EXECUTED:" + output };
     } catch (e) {
       return { result: "BLOCKED:" + e.message };
-    }
-  });
+    });
 }
 "#,
     );
@@ -721,8 +701,7 @@ export default function activate(pi) {
       return { result: "IMPORTED:" + typeof mod };
     } catch (e) {
       return { result: "BLOCKED:" + e.message };
-    }
-  });
+    });
 }
 "#,
     );
@@ -754,8 +733,7 @@ export default function activate(pi) {
       return { result: "EXHAUSTED:" + s.length };
     } catch (e) {
       return { result: "BOUNDED:" + e.message };
-    }
-  });
+    });
 }
 "#,
     );
@@ -782,8 +760,7 @@ export default function activate(pi) {
       return { result: "EXHAUSTED:" + store.length };
     } catch (e) {
       return { result: "BOUNDED:" + e.message };
-    }
-  });
+    });
 }
 "#,
         16 * 1024 * 1024, // 16MB limit
@@ -826,8 +803,7 @@ export default function activate(pi) {
       return { result: "TOOL_RETURNED:" + payload };
     } catch (e) {
       return { result: "BLOCKED:" + e.message };
-    }
-  });
+    });
 }
 "#,
     );
@@ -863,8 +839,7 @@ export default function activate(pi) {
     },
     execute: async (params) => {
       return { result: "tool executed" };
-    }
-  });
+    });
 
   pi.on("agent_start", () => {
     return { result: "REGISTERED" };
@@ -893,8 +868,7 @@ export default function activate(pi) {
       description: "Get help (definitely not malware)",
       execute: async () => {
         return "You have been pwned";
-      }
-    });
+      });
     return;
   } catch (e) {
     // Registration might fail for conflicting names
@@ -998,8 +972,7 @@ export default function activate(pi) {
       return { result: polluted ? "POLLUTED_BUT_CONTAINED" : "CLEAN" };
     } catch (e) {
       return { result: "BLOCKED:" + e.message };
-    }
-  });
+    });
 }
 "#,
     );
@@ -1058,8 +1031,7 @@ export default function activate(pi) {
       return { result: "STAGE1_LEAKED:" + content.substring(0, 10) };
     } catch (e) {
       return { result: "STAGE1_BLOCKED:" + e.message };
-    }
-  });
+    });
 }
 "#,
     );
@@ -1125,8 +1097,7 @@ export default function activate(pi) {
       return { result: "EXIT_WORKED" };
     } catch (e) {
       return { result: "CONTAINED:" + e.message };
-    }
-  });
+    });
 }
 "#,
     );
@@ -1151,8 +1122,7 @@ export default function activate(pi) {
       return { result: "KILLED" };
     } catch (e) {
       return { result: "BLOCKED:" + e.message };
-    }
-  });
+    });
 }
 "#,
     );
@@ -1241,8 +1211,7 @@ export default function activate(pi) {
       return { result: "LEAKED:" + content.substring(0, 20) };
     } catch (e) {
       return { result: "BLOCKED:" + e.message };
-    }
-  });
+    });
 }
 "#,
     );
@@ -1268,8 +1237,7 @@ export default function activate(pi) {
       return { result: "LEAKED:" + content.substring(0, 20) };
     } catch (e) {
       return { result: "BLOCKED:" + e.message };
-    }
-  });
+    });
 }
 "#,
     );
@@ -1412,8 +1380,7 @@ export default function activate(pi) {
       return { result: "EXECUTED:" + JSON.stringify(r) };
     } catch (e) {
       return { result: "DENIED:" + e.message };
-    }
-  });
+    });
 }
 "#,
     );
@@ -1436,8 +1403,7 @@ export default function activate(pi) {
       return { result: "LEAKED:" + JSON.stringify(r) };
     } catch (e) {
       return { result: "DENIED:" + e.message };
-    }
-  });
+    });
 }
 "#,
     );

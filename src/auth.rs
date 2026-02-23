@@ -3813,15 +3813,12 @@ mod tests {
         assert!(state.is_none());
     }
 
-    #[test]
-    fn test_complete_anthropic_oauth_rejects_state_mismatch() {
-        let rt = asupersync::runtime::RuntimeBuilder::current_thread().build();
-        rt.expect("runtime").block_on(async {
-            let err = complete_anthropic_oauth("abc#mismatch", "expected")
+    #[tokio::test]
+    async fn test_complete_anthropic_oauth_rejects_state_mismatch() {
+        let err = complete_anthropic_oauth("abc#mismatch", "expected")
                 .await
                 .unwrap_err();
             assert!(err.to_string().contains("State mismatch"));
-        });
     }
 
     fn sample_oauth_config() -> crate::models::OAuthConfig {
@@ -3918,47 +3915,38 @@ mod tests {
         assert_eq!(info.verifier.len(), 43);
     }
 
-    #[test]
-    fn test_complete_extension_oauth_rejects_state_mismatch() {
-        let rt = asupersync::runtime::RuntimeBuilder::current_thread().build();
-        rt.expect("runtime").block_on(async {
-            let config = sample_oauth_config();
+    #[tokio::test]
+    async fn test_complete_extension_oauth_rejects_state_mismatch() {
+        let config = sample_oauth_config();
             let err = complete_extension_oauth(&config, "abc#mismatch", "expected")
                 .await
                 .unwrap_err();
             assert!(err.to_string().contains("State mismatch"));
-        });
     }
 
-    #[test]
-    fn test_complete_copilot_browser_oauth_rejects_state_mismatch() {
-        let rt = asupersync::runtime::RuntimeBuilder::current_thread().build();
-        rt.expect("runtime").block_on(async {
-            let config = CopilotOAuthConfig::default();
+    #[tokio::test]
+    async fn test_complete_copilot_browser_oauth_rejects_state_mismatch() {
+        let config = CopilotOAuthConfig::default();
             let err = complete_copilot_browser_oauth(&config, "abc#mismatch", "expected")
                 .await
                 .unwrap_err();
             assert!(err.to_string().contains("State mismatch"));
-        });
     }
 
-    #[test]
-    fn test_complete_gitlab_oauth_rejects_state_mismatch() {
-        let rt = asupersync::runtime::RuntimeBuilder::current_thread().build();
-        rt.expect("runtime").block_on(async {
-            let config = GitLabOAuthConfig::default();
+    #[tokio::test]
+    async fn test_complete_gitlab_oauth_rejects_state_mismatch() {
+        let config = GitLabOAuthConfig::default();
             let err = complete_gitlab_oauth(&config, "abc#mismatch", "expected")
                 .await
                 .unwrap_err();
             assert!(err.to_string().contains("State mismatch"));
-        });
     }
 
     #[test]
     fn test_refresh_expired_extension_oauth_tokens_skips_anthropic() {
         // Verify that the extension refresh method skips "anthropic" (handled separately).
-        let rt = asupersync::runtime::RuntimeBuilder::current_thread().build();
-        rt.expect("runtime").block_on(async {
+        // Runtime not needed with tokio::test
+        
             let dir = tempfile::tempdir().expect("tmpdir");
             let auth_path = dir.path().join("auth.json");
             let mut auth = AuthStorage {
@@ -3998,14 +3986,11 @@ mod tests {
                 ),
                 "expected OAuth credential"
             );
-        });
     }
 
-    #[test]
-    fn test_refresh_expired_extension_oauth_tokens_skips_unexpired() {
-        let rt = asupersync::runtime::RuntimeBuilder::current_thread().build();
-        rt.expect("runtime").block_on(async {
-            let dir = tempfile::tempdir().expect("tmpdir");
+    #[tokio::test]
+    async fn test_refresh_expired_extension_oauth_tokens_skips_unexpired() {
+        let dir = tempfile::tempdir().expect("tmpdir");
             let auth_path = dir.path().join("auth.json");
             let mut auth = AuthStorage {
                 path: auth_path,
@@ -4044,14 +4029,11 @@ mod tests {
                 ),
                 "expected OAuth credential"
             );
-        });
     }
 
-    #[test]
-    fn test_refresh_expired_extension_oauth_tokens_skips_unknown_provider() {
-        let rt = asupersync::runtime::RuntimeBuilder::current_thread().build();
-        rt.expect("runtime").block_on(async {
-            let dir = tempfile::tempdir().expect("tmpdir");
+    #[tokio::test]
+    async fn test_refresh_expired_extension_oauth_tokens_skips_unknown_provider() {
+        let dir = tempfile::tempdir().expect("tmpdir");
             let auth_path = dir.path().join("auth.json");
             let mut auth = AuthStorage {
                 path: auth_path,
@@ -4088,14 +4070,13 @@ mod tests {
                 ),
                 "expected OAuth credential"
             );
-        });
     }
 
     #[test]
     #[cfg(unix)]
     fn test_refresh_expired_extension_oauth_tokens_updates_and_persists() {
-        let rt = asupersync::runtime::RuntimeBuilder::current_thread().build();
-        rt.expect("runtime").block_on(async {
+        // Runtime not needed with tokio::test
+        
             let dir = tempfile::tempdir().expect("tmpdir");
             let auth_path = dir.path().join("auth.json");
             let mut auth = AuthStorage {
@@ -4159,14 +4140,13 @@ mod tests {
                     unreachable!("expected oauth credential, got: {other:?}");
                 }
             }
-        });
     }
 
     #[test]
     #[cfg(unix)]
     fn test_refresh_extension_oauth_token_redacts_secret_in_error() {
-        let rt = asupersync::runtime::RuntimeBuilder::current_thread().build();
-        rt.expect("runtime").block_on(async {
+        // Runtime not needed with tokio::test
+        
             let refresh_secret = "secret-refresh-token-123";
             let leaked_access = "leaked-access-token-456";
             let token_url = spawn_json_server(
@@ -4197,7 +4177,6 @@ mod tests {
                 !err_text.contains(leaked_access),
                 "access token leaked in error: {err_text}"
             );
-        });
     }
 
     #[test]
@@ -5694,8 +5673,8 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn test_copilot_browser_oauth_complete_success() {
-        let rt = asupersync::runtime::RuntimeBuilder::current_thread().build();
-        rt.expect("runtime").block_on(async {
+        // Runtime not needed with tokio::test
+        
             let token_url = spawn_json_server(
                 200,
                 r#"{"access_token":"ghu_test_access","refresh_token":"ghr_test_refresh","expires_in":28800}"#,
@@ -5730,7 +5709,6 @@ mod tests {
                 }
                 other => panic!("expected OAuth, got: {other:?}"),
             }
-        });
     }
 
     #[test]
@@ -5838,17 +5816,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_copilot_device_flow_requires_client_id() {
-        let rt = asupersync::runtime::RuntimeBuilder::current_thread().build();
-        rt.expect("runtime").block_on(async {
-            let config = CopilotOAuthConfig {
-                client_id: String::new(),
-                ..CopilotOAuthConfig::default()
-            };
+    #[tokio::test]
+    async fn test_copilot_device_flow_requires_client_id() {
+        let config = CopilotOAuthConfig {
+            client_id: String::new(),
+            ..CopilotOAuthConfig::default()
+        };
             let err = start_copilot_device_flow(&config).await.unwrap_err();
             assert!(err.to_string().contains("client_id"));
-        });
     }
 
     #[test]
@@ -5964,8 +5939,8 @@ mod tests {
                 "interval": 5
             }"#,
         );
-        let rt = asupersync::runtime::RuntimeBuilder::current_thread().build();
-        rt.expect("runtime").block_on(async {
+        // Runtime not needed with tokio::test
+        
             let client = crate::http::client::Client::new();
             let response = start_kimi_code_device_flow_with_client(&client, &host)
                 .await
@@ -5978,7 +5953,6 @@ mod tests {
                 response.verification_uri_complete.as_deref(),
                 Some("https://auth.kimi.com/device?user_code=ABCD-1234")
             );
-        });
     }
 
     #[test]
@@ -5987,8 +5961,8 @@ mod tests {
             200,
             r#"{"access_token":"kimi-at","refresh_token":"kimi-rt","expires_in":3600}"#,
         );
-        let rt = asupersync::runtime::RuntimeBuilder::current_thread().build();
-        rt.expect("runtime").block_on(async {
+        // Runtime not needed with tokio::test
+        
             let client = crate::http::client::Client::new();
             let result =
                 poll_kimi_code_device_flow_with_client(&client, &host, "device-code").await;
@@ -6008,7 +5982,6 @@ mod tests {
                 }
                 other => panic!("expected success, got {other:?}"),
             }
-        });
     }
 
     #[test]
@@ -6017,13 +5990,12 @@ mod tests {
             400,
             r#"{"error":"authorization_pending","error_description":"wait"}"#,
         );
-        let rt = asupersync::runtime::RuntimeBuilder::current_thread().build();
-        rt.expect("runtime").block_on(async {
+        // Runtime not needed with tokio::test
+
             let client = crate::http::client::Client::new();
             let result =
                 poll_kimi_code_device_flow_with_client(&client, &host, "device-code").await;
             assert!(matches!(result, DeviceFlowPollResult::Pending));
-        });
     }
 
     // ── GitLab OAuth tests ────────────────────────────────────────
@@ -6160,8 +6132,8 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn test_gitlab_oauth_complete_success() {
-        let rt = asupersync::runtime::RuntimeBuilder::current_thread().build();
-        rt.expect("runtime").block_on(async {
+        // Runtime not needed with tokio::test
+        
             let token_url = spawn_json_server(
                 200,
                 r#"{"access_token":"glpat-test_access","refresh_token":"glrt-test_refresh","expires_in":7200,"token_type":"bearer"}"#,
@@ -6197,7 +6169,6 @@ mod tests {
 
             // Also ensure the test server URL was consumed (not left hanging).
             let _ = token_url;
-        });
     }
 
     #[test]
@@ -6828,11 +6799,9 @@ mod tests {
         assert!(keys.contains(&"AICORE_SERVICE_KEY"));
     }
 
-    #[test]
-    fn test_exchange_sap_access_token_with_client_success() {
-        let rt = asupersync::runtime::RuntimeBuilder::current_thread().build();
-        rt.expect("runtime").block_on(async {
-            let token_response = r#"{"access_token":"sap-access-token"}"#;
+    #[tokio::test]
+    async fn test_exchange_sap_access_token_with_client_success() {
+        let token_response = r#"{"access_token":"sap-access-token"}"#;
             let token_url = spawn_json_server(200, token_response);
             let client = crate::http::client::Client::new();
             let creds = SapResolvedCredentials {
@@ -6846,14 +6815,11 @@ mod tests {
                 .await
                 .expect("token exchange");
             assert_eq!(token, "sap-access-token");
-        });
     }
 
-    #[test]
-    fn test_exchange_sap_access_token_with_client_http_error() {
-        let rt = asupersync::runtime::RuntimeBuilder::current_thread().build();
-        rt.expect("runtime").block_on(async {
-            let token_url = spawn_json_server(401, r#"{"error":"unauthorized"}"#);
+    #[tokio::test]
+    async fn test_exchange_sap_access_token_with_client_http_error() {
+        let token_url = spawn_json_server(401, r#"{"error":"unauthorized"}"#);
             let client = crate::http::client::Client::new();
             let creds = SapResolvedCredentials {
                 client_id: "sap-client".to_string(),
@@ -6869,14 +6835,11 @@ mod tests {
                 err.to_string().contains("HTTP 401"),
                 "unexpected error: {err}"
             );
-        });
     }
 
-    #[test]
-    fn test_exchange_sap_access_token_with_client_invalid_json() {
-        let rt = asupersync::runtime::RuntimeBuilder::current_thread().build();
-        rt.expect("runtime").block_on(async {
-            let token_url = spawn_json_server(200, r#"{"token":"missing-access-token"}"#);
+    #[tokio::test]
+    async fn test_exchange_sap_access_token_with_client_invalid_json() {
+        let token_url = spawn_json_server(200, r#"{"token":"missing-access-token"}"#);
             let client = crate::http::client::Client::new();
             let creds = SapResolvedCredentials {
                 client_id: "sap-client".to_string(),
@@ -6892,16 +6855,13 @@ mod tests {
                 err.to_string().contains("invalid JSON"),
                 "unexpected error: {err}"
             );
-        });
     }
 
     // ── Lifecycle tests (bd-3uqg.7.6) ─────────────────────────────
 
-    #[test]
-    fn test_proactive_refresh_triggers_within_window() {
-        let rt = asupersync::runtime::RuntimeBuilder::current_thread().build();
-        rt.expect("runtime").block_on(async {
-            let dir = tempfile::tempdir().expect("tmpdir");
+    #[tokio::test]
+    async fn test_proactive_refresh_triggers_within_window() {
+        let dir = tempfile::tempdir().expect("tmpdir");
             let auth_path = dir.path().join("auth.json");
 
             // Token expires 5 minutes from now (within the 10-min window).
@@ -6936,14 +6896,11 @@ mod tests {
                 }
                 other => panic!("expected OAuth, got: {other:?}"),
             }
-        });
     }
 
-    #[test]
-    fn test_proactive_refresh_skips_tokens_far_from_expiry() {
-        let rt = asupersync::runtime::RuntimeBuilder::current_thread().build();
-        rt.expect("runtime").block_on(async {
-            let dir = tempfile::tempdir().expect("tmpdir");
+    #[tokio::test]
+    async fn test_proactive_refresh_skips_tokens_far_from_expiry() {
+        let dir = tempfile::tempdir().expect("tmpdir");
             let auth_path = dir.path().join("auth.json");
 
             let one_hour_from_now = chrono::Utc::now().timestamp_millis() + 60 * 60 * 1000;
@@ -6974,14 +6931,11 @@ mod tests {
                 }
                 other => panic!("expected OAuth, got: {other:?}"),
             }
-        });
     }
 
-    #[test]
-    fn test_self_contained_refresh_uses_stored_metadata() {
-        let rt = asupersync::runtime::RuntimeBuilder::current_thread().build();
-        rt.expect("runtime").block_on(async {
-            let dir = tempfile::tempdir().expect("tmpdir");
+    #[tokio::test]
+    async fn test_self_contained_refresh_uses_stored_metadata() {
+        let dir = tempfile::tempdir().expect("tmpdir");
             let auth_path = dir.path().join("auth.json");
 
             let token_response =
@@ -7021,14 +6975,11 @@ mod tests {
                 }
                 other => panic!("expected OAuth, got: {other:?}"),
             }
-        });
     }
 
-    #[test]
-    fn test_self_contained_refresh_skips_when_no_metadata() {
-        let rt = asupersync::runtime::RuntimeBuilder::current_thread().build();
-        rt.expect("runtime").block_on(async {
-            let dir = tempfile::tempdir().expect("tmpdir");
+    #[tokio::test]
+    async fn test_self_contained_refresh_skips_when_no_metadata() {
+        let dir = tempfile::tempdir().expect("tmpdir");
             let auth_path = dir.path().join("auth.json");
 
             let mut auth = AuthStorage {
@@ -7057,14 +7008,11 @@ mod tests {
                 }
                 other => panic!("expected OAuth, got: {other:?}"),
             }
-        });
     }
 
-    #[test]
-    fn test_extension_refresh_skips_self_contained_credentials() {
-        let rt = asupersync::runtime::RuntimeBuilder::current_thread().build();
-        rt.expect("runtime").block_on(async {
-            let dir = tempfile::tempdir().expect("tmpdir");
+    #[tokio::test]
+    async fn test_extension_refresh_skips_self_contained_credentials() {
+        let dir = tempfile::tempdir().expect("tmpdir");
             let auth_path = dir.path().join("auth.json");
 
             let mut auth = AuthStorage {
@@ -7096,7 +7044,6 @@ mod tests {
                 }
                 other => panic!("expected OAuth, got: {other:?}"),
             }
-        });
     }
 
     #[test]

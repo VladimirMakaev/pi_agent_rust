@@ -13,7 +13,7 @@
 
 use std::future::Future;
 
-use asupersync::runtime::RuntimeBuilder;
+use tokio::runtime::Builder as RuntimeBuilder;
 use pi::config::{Config, ExtensionPolicyConfig};
 use pi::connectors::http::HttpConnector;
 use pi::extensions::{
@@ -33,7 +33,7 @@ where
 {
     let runtime = RuntimeBuilder::current_thread()
         .build()
-        .expect("build asupersync runtime");
+        .expect("build tokio runtime");
     runtime.block_on(future)
 }
 
@@ -1306,8 +1306,7 @@ mod scoped_dispatch {
                     HostCallErrorCode::Denied,
                     "read should pass policy"
                 );
-            }
-        });
+            });
     }
 
     #[test]
@@ -1407,8 +1406,7 @@ mod scoped_dispatch {
                         HostCallErrorCode::Denied,
                         "read should pass for {ext_id}"
                     );
-                }
-            });
+                });
         }
     }
 }

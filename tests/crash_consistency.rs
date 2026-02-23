@@ -5,7 +5,7 @@
 //! for file recovery and the autosave queue state machine for flush failure
 //! semantics.
 
-use asupersync::runtime::RuntimeBuilder;
+use tokio::runtime::Builder as RuntimeBuilder;
 use pi::model::UserContent;
 use pi::session::{Session, SessionMessage};
 use serde_json::json;
@@ -42,8 +42,7 @@ fn build_session_file(num_entries: usize) -> String {
             "type": "message",
             "id": format!("entry-{i}"),
             "timestamp": "2024-06-01T00:00:00.000Z",
-            "message": {"role": "user", "content": format!("message {i}")}
-        });
+            "message": {"role": "user", "content": format!("message {i}")});
         lines.push(serde_json::to_string(&entry).unwrap());
     }
     lines.join("\n")

@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 /// Create a fresh in-memory `SessionHandle` (no file persistence).
 fn session_handle() -> SessionHandle {
-    SessionHandle(Arc::new(asupersync::sync::Mutex::new(Session::create())))
+    SessionHandle(Arc::new(tokio::sync::Mutex::new(Session::create())))
 }
 
 /// Create an `ExtensionManager` with a real `SessionHandle` attached.
@@ -29,9 +29,9 @@ fn manager_with_session() -> (ExtensionManager, SessionHandle) {
 
 // ─── get_state conformance ───────────────────────────────────────────────────
 
-#[test]
-fn get_state_returns_required_fields() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn get_state_returns_required_fields() {
+
         let handle = session_handle();
         let state = handle.get_state().await;
 
@@ -59,12 +59,13 @@ fn get_state_returns_required_fields() {
                 "get_state missing required key: {key}"
             );
         }
-    });
+    
+
 }
 
-#[test]
-fn get_state_defaults_for_fresh_session() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn get_state_defaults_for_fresh_session() {
+
         let handle = session_handle();
         let state = handle.get_state().await;
 
@@ -79,14 +80,15 @@ fn get_state_defaults_for_fresh_session() {
         assert_eq!(state["autoCompactionEnabled"], false);
         // sessionFile is null for in-memory sessions.
         assert!(state["sessionFile"].is_null());
-    });
+    
+
 }
 
 // ─── set_name / get_name round-trip ──────────────────────────────────────────
 
-#[test]
-fn set_name_then_get_name_round_trip() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn set_name_then_get_name_round_trip() {
+
         let handle = session_handle();
         handle
             .set_name("My Session".to_string())
@@ -95,12 +97,13 @@ fn set_name_then_get_name_round_trip() {
 
         let state = handle.get_state().await;
         assert_eq!(state["sessionName"], "My Session");
-    });
+    
+
 }
 
-#[test]
-fn set_name_empty_string_clears_name() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn set_name_empty_string_clears_name() {
+
         let handle = session_handle();
         handle
             .set_name("Before".to_string())
@@ -115,14 +118,15 @@ fn set_name_empty_string_clears_name() {
             name.is_null() || name.as_str() == Some(""),
             "expected null or empty string, got {name}"
         );
-    });
+    
+
 }
 
 // ─── set_model / get_model round-trip ────────────────────────────────────────
 
-#[test]
-fn set_model_then_get_model_round_trip() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn set_model_then_get_model_round_trip() {
+
         let handle = session_handle();
         handle
             .set_model("anthropic".to_string(), "claude-sonnet-4-5".to_string())
@@ -132,22 +136,24 @@ fn set_model_then_get_model_round_trip() {
         let (provider, model_id) = handle.get_model().await;
         assert_eq!(provider.as_deref(), Some("anthropic"));
         assert_eq!(model_id.as_deref(), Some("claude-sonnet-4-5"));
-    });
+    
+
 }
 
-#[test]
-fn get_model_defaults_to_none() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn get_model_defaults_to_none() {
+
         let handle = session_handle();
         let (provider, model_id) = handle.get_model().await;
         assert!(provider.is_none());
         assert!(model_id.is_none());
-    });
+    
+
 }
 
-#[test]
-fn set_model_overwrites_previous() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn set_model_overwrites_previous() {
+
         let handle = session_handle();
         handle
             .set_model("openai".to_string(), "gpt-4o".to_string())
@@ -161,14 +167,15 @@ fn set_model_overwrites_previous() {
         let (provider, model_id) = handle.get_model().await;
         assert_eq!(provider.as_deref(), Some("anthropic"));
         assert_eq!(model_id.as_deref(), Some("claude-opus-4"));
-    });
+    
+
 }
 
 // ─── set_thinking_level / get_thinking_level round-trip ──────────────────────
 
-#[test]
-fn set_thinking_level_then_get_round_trip() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn set_thinking_level_then_get_round_trip() {
+
         let handle = session_handle();
         handle
             .set_thinking_level("high".to_string())
@@ -177,35 +184,38 @@ fn set_thinking_level_then_get_round_trip() {
 
         let level = handle.get_thinking_level().await;
         assert_eq!(level.as_deref(), Some("high"));
-    });
+    
+
 }
 
-#[test]
-fn get_thinking_level_defaults_to_none() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn get_thinking_level_defaults_to_none() {
+
         let handle = session_handle();
         let level = handle.get_thinking_level().await;
         assert!(level.is_none());
-    });
+    
+
 }
 
-#[test]
-fn set_thinking_level_overwrites_previous() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn set_thinking_level_overwrites_previous() {
+
         let handle = session_handle();
         handle.set_thinking_level("low".to_string()).await.unwrap();
         handle.set_thinking_level("high".to_string()).await.unwrap();
 
         let level = handle.get_thinking_level().await;
         assert_eq!(level.as_deref(), Some("high"));
-    });
+    
+
 }
 
 // ─── append_message conformance ──────────────────────────────────────────────
 
-#[test]
-fn append_message_increases_message_count() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn append_message_increases_message_count() {
+
         let handle = session_handle();
 
         let state_before = handle.get_state().await;
@@ -221,12 +231,13 @@ fn append_message_increases_message_count() {
 
         let state_after = handle.get_state().await;
         assert_eq!(state_after["messageCount"], 1);
-    });
+    
+
 }
 
-#[test]
-fn append_message_appears_in_get_messages() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn append_message_appears_in_get_messages() {
+
         let handle = session_handle();
         handle
             .append_message(SessionMessage::User {
@@ -245,25 +256,27 @@ fn append_message_appears_in_get_messages() {
             } => assert_eq!(text, "Hi there"),
             other => panic!("expected user text message, got {other:?}"),
         }
-    });
+    
+
 }
 
 // ─── append_custom_entry conformance ─────────────────────────────────────────
 
-#[test]
-fn append_custom_entry_succeeds_with_valid_type() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn append_custom_entry_succeeds_with_valid_type() {
+
         let handle = session_handle();
         handle
             .append_custom_entry("annotation".to_string(), Some(json!({ "note": "test" })))
             .await
             .expect("append_custom_entry should succeed");
-    });
+    
+
 }
 
-#[test]
-fn append_custom_entry_rejects_empty_type() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn append_custom_entry_rejects_empty_type() {
+
         let handle = session_handle();
         let result = handle
             .append_custom_entry(String::new(), Some(json!({})))
@@ -274,23 +287,25 @@ fn append_custom_entry_rejects_empty_type() {
             err.to_string().contains("customType"),
             "error should mention customType: {err}"
         );
-    });
+    
+
 }
 
-#[test]
-fn append_custom_entry_rejects_whitespace_only_type() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn append_custom_entry_rejects_whitespace_only_type() {
+
         let handle = session_handle();
         let result = handle.append_custom_entry("   ".to_string(), None).await;
         assert!(result.is_err(), "whitespace-only customType should fail");
-    });
+    
+
 }
 
 // ─── set_label conformance ───────────────────────────────────────────────────
 
-#[test]
-fn set_label_on_nonexistent_entry_returns_validation_error() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn set_label_on_nonexistent_entry_returns_validation_error() {
+
         let handle = session_handle();
         let result = handle
             .set_label("nonexistent-id".to_string(), Some("important".to_string()))
@@ -302,14 +317,15 @@ fn set_label_on_nonexistent_entry_returns_validation_error() {
             err.to_string().contains("nonexistent-id"),
             "error should mention the target: {err}"
         );
-    });
+    
+
 }
 
 // ─── get_messages / get_entries / get_branch on fresh session ────────────────
 
-#[test]
-fn fresh_session_returns_empty_collections() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn fresh_session_returns_empty_collections() {
+
         let handle = session_handle();
 
         let messages = handle.get_messages().await;
@@ -324,7 +340,8 @@ fn fresh_session_returns_empty_collections() {
             branch.is_empty() || !branch.is_empty(),
             "branch should be a vec"
         );
-    });
+    
+
 }
 
 // ─── Dispatch-layer taxonomy compliance ──────────────────────────────────────
@@ -439,9 +456,9 @@ async fn dispatch_via_manager(mgr: &ExtensionManager, op: &str, payload: Value) 
     }
 }
 
-#[test]
-fn dispatch_taxonomy_no_session_returns_denied() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn dispatch_taxonomy_no_session_returns_denied() {
+
         let mgr = ExtensionManager::new();
         // No session attached - every op should get "denied".
         let ops = [
@@ -459,12 +476,13 @@ fn dispatch_taxonomy_no_session_returns_denied() {
             assert!(!ok, "op={op}: should fail without session");
             assert_eq!(code, "denied", "op={op}: expected 'denied', got '{code}'");
         }
-    });
+    
+
 }
 
-#[test]
-fn dispatch_taxonomy_validation_errors_return_invalid_request() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn dispatch_taxonomy_validation_errors_return_invalid_request() {
+
         let (mgr, _handle) = manager_with_session();
 
         // Missing required fields should return "invalid_request".
@@ -496,12 +514,13 @@ fn dispatch_taxonomy_validation_errors_return_invalid_request() {
                 "{desc}: op={op} expected 'invalid_request', got '{code}'"
             );
         }
-    });
+    
+
 }
 
-#[test]
-fn dispatch_taxonomy_session_errors_return_io_or_validation() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn dispatch_taxonomy_session_errors_return_io_or_validation() {
+
         let (mgr, _handle) = manager_with_session();
 
         // set_label on nonexistent entry - should be validation (invalid_request).
@@ -529,12 +548,13 @@ fn dispatch_taxonomy_session_errors_return_io_or_validation() {
             code, "invalid_request",
             "empty customType should be invalid_request, got '{code}'"
         );
-    });
+    
+
 }
 
-#[test]
-fn dispatch_taxonomy_unknown_op_returns_invalid_request() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn dispatch_taxonomy_unknown_op_returns_invalid_request() {
+
         let (mgr, _handle) = manager_with_session();
 
         let (ok, code) = dispatch_via_manager(&mgr, "totally_bogus_op", json!({})).await;
@@ -543,14 +563,15 @@ fn dispatch_taxonomy_unknown_op_returns_invalid_request() {
             code, "invalid_request",
             "unknown op should be invalid_request, got '{code}'"
         );
-    });
+    
+
 }
 
 // ─── Cross-op parity: snake_case vs camelCase ────────────────────────────────
 
-#[test]
-fn snake_and_camel_case_read_ops_return_same_results() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn snake_and_camel_case_read_ops_return_same_results() {
+
         let (mgr, _handle) = manager_with_session();
 
         let read_pairs = [
@@ -565,14 +586,15 @@ fn snake_and_camel_case_read_ops_return_same_results() {
             let (ok_c, _) = dispatch_via_manager(&mgr, camel, json!({})).await;
             assert_eq!(ok_s, ok_c, "parity: {snake} vs {camel} success mismatch");
         }
-    });
+    
+
 }
 
 // ─── Comprehensive round-trip via dispatch ───────────────────────────────────
 
-#[test]
-fn full_session_lifecycle_via_dispatch() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn full_session_lifecycle_via_dispatch() {
+
         let (mgr, handle) = manager_with_session();
 
         // 1. Set name.
@@ -631,14 +653,15 @@ fn full_session_lifecycle_via_dispatch() {
             state["messageCount"].as_u64().unwrap_or(0) >= 1,
             "should have at least 1 message"
         );
-    });
+    
+
 }
 
 // ─── Schema conformance: get_model response shape ────────────────────────────
 
-#[test]
-fn get_model_response_shape_matches_spec() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn get_model_response_shape_matches_spec() {
+
         let handle = session_handle();
         handle
             .set_model("anthropic".to_string(), "claude-opus-4".to_string())
@@ -649,14 +672,15 @@ fn get_model_response_shape_matches_spec() {
         // Spec: get_model returns (Option<String>, Option<String>).
         assert!(provider.is_some());
         assert!(model_id.is_some());
-    });
+    
+
 }
 
 // ─── Multiple mutations are idempotent / commutative ─────────────────────────
 
-#[test]
-fn multiple_set_name_calls_keep_last_value() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn multiple_set_name_calls_keep_last_value() {
+
         let handle = session_handle();
         for i in 0..5 {
             handle
@@ -666,12 +690,13 @@ fn multiple_set_name_calls_keep_last_value() {
         }
         let state = handle.get_state().await;
         assert_eq!(state["sessionName"], "Session 4");
-    });
+    
+
 }
 
-#[test]
-fn multiple_model_switches_keep_last_value() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn multiple_model_switches_keep_last_value() {
+
         let handle = session_handle();
         let models = [
             ("openai", "gpt-4o"),
@@ -687,7 +712,8 @@ fn multiple_model_switches_keep_last_value() {
         let (provider, model_id) = handle.get_model().await;
         assert_eq!(provider.as_deref(), Some("google"));
         assert_eq!(model_id.as_deref(), Some("gemini-pro"));
-    });
+    
+
 }
 
 // ─── Error taxonomy classification unit tests ────────────────────────────────

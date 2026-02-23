@@ -207,8 +207,8 @@ fn write_fault_episode_artifact(harness: &TestHarness, name: &str, record: &Faul
     harness.record_artifact(format!("{name}.fault_episode.jsonl"), &path);
 }
 
-fn make_session(harness: &TestHarness) -> Arc<asupersync::sync::Mutex<Session>> {
-    Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+fn make_session(harness: &TestHarness) -> Arc<tokio::sync::Mutex<Session>> {
+    Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
         Some(harness.temp_dir().to_path_buf()),
     )))
 }
@@ -687,7 +687,7 @@ impl Tool for FaultyPartialWriteTool {
             ));
         };
 
-        asupersync::fs::create_dir_all(parent).await.map_err(|e| {
+        tokio::fs::create_dir_all(parent).await.map_err(|e| {
             Error::tool(
                 "faulty_write",
                 format!("Failed to create parent directories: {e}"),
@@ -699,7 +699,7 @@ impl Tool for FaultyPartialWriteTool {
 
         let bytes = input.content.as_bytes();
         let cut = bytes.len().saturating_div(2).max(1);
-        asupersync::fs::write(temp_file.path(), &bytes[..cut])
+        tokio::fs::write(temp_file.path(), &bytes[..cut])
             .await
             .map_err(|e| Error::tool("faulty_write", format!("Failed to write temp file: {e}")))?;
 
@@ -916,8 +916,8 @@ fn abort_mid_stream_preserves_partial_content() {
 
         // Verify message history is consistent
         let messages = {
-            let cx = asupersync::Cx::for_testing();
-            let guard = session.lock(&cx).await.expect("lock session");
+            
+            let guard = session.lock().await.expect("lock session");
             guard.to_messages_for_current_path()
         };
 
@@ -1460,8 +1460,8 @@ fn repeated_interruption_cycles_no_corruption() {
 
         // Verify session state is intact after 3 cycles
         let messages = {
-            let cx = asupersync::Cx::for_testing();
-            let guard = session.lock(&cx).await.expect("lock session");
+            
+            let guard = session.lock().await.expect("lock session");
             guard.to_messages_for_current_path()
         };
 
@@ -1802,11 +1802,7 @@ fn transient_timeout_retry_backoff_is_recoverable() {
                         elapsed_ms: started_at.elapsed().as_millis(),
                         detail: format!("sleeping {backoff_ms}ms before retry"),
                     });
-                    asupersync::time::sleep(
-                        asupersync::time::wall_now(),
-                        Duration::from_millis(backoff_ms),
-                    )
-                    .await;
+                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
                 }
             }
         }
@@ -2128,11 +2124,7 @@ fn stream_contract_violation_after_retries_is_fatal() {
                         elapsed_ms: started_at.elapsed().as_millis(),
                         detail: format!("sleeping {backoff_ms}ms before retry"),
                     });
-                    asupersync::time::sleep(
-                        asupersync::time::wall_now(),
-                        Duration::from_millis(backoff_ms),
-                    )
-                    .await;
+                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
                 }
             }
         }

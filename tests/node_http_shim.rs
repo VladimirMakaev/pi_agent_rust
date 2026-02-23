@@ -36,8 +36,7 @@ fn load_ext(harness: &common::TestHarness, source: &str) -> ExtensionManager {
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start js runtime")
-        }
-    });
+        });
     manager.set_js_runtime(runtime);
 
     common::run_async({
@@ -47,8 +46,7 @@ fn load_ext(harness: &common::TestHarness, source: &str) -> ExtensionManager {
                 .load_js_extensions(vec![spec])
                 .await
                 .expect("load extension");
-        }
-    });
+        });
 
     manager
 }
@@ -332,8 +330,7 @@ import https from "node:https";
 export default function activate(pi) {
   pi.on("agent_start", (event, ctx) => {
     try { https.createServer(); return { result: "no-throw" }; }
-    catch(e) { return { result: "threw:" + e.message }; }
-  });
+    catch(e) { return { result: "threw:" + e.message }; });
 }
 "#;
     let mgr = load_ext(&harness, source);

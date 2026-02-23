@@ -306,7 +306,7 @@ macro_rules! openai_responses_test {
     ($test_name:ident, $scenario_fn:ident) => {
         #[test]
         fn $test_name() {
-            asupersync::test_utils::run_test(|| async {
+            run_async( async {
                 run_scenario($scenario_fn(&openai_responses_model())).await;
             });
         }

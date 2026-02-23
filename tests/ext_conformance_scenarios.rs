@@ -1389,8 +1389,7 @@ impl MockSpecInterceptor {
                                 ]
                             }
                         }]
-                    }
-                });
+                    });
                 interceptor.http_default = serde_json::json!({
                     "status": 200,
                     "headers": {"content-type": "text/event-stream"},
@@ -1806,8 +1805,7 @@ fn load_extension_with_mocks(
                     let _ = manager
                         .set_flag_value(&ext_id, &flag_name, flag_value)
                         .await;
-                }
-            });
+                });
         }
     }
 
@@ -1832,8 +1830,7 @@ fn load_extension_with_mocks(
                         let _ = manager
                             .set_flag_value(&ext_id, &flag_name, flag_value)
                             .await;
-                    }
-                });
+                    });
             }
         }
 
@@ -1853,8 +1850,7 @@ fn load_extension_with_mocks(
                         DEFAULT_TIMEOUT_MS,
                     )
                     .await;
-            }
-        });
+            });
     }
 
     Ok(LoadedExtensionWithMocks {
@@ -2226,8 +2222,7 @@ fn execute_multi_step_scenario(
                             )
                             .await
                             .map_err(|e| format!("dispatch_event: {e}"))
-                    }
-                });
+                    });
             }
             "invoke_tool" => {
                 let tool_name = step
@@ -2260,8 +2255,7 @@ fn execute_multi_step_scenario(
                             )
                             .await
                             .map_err(|e| format!("execute_tool: {e}"))
-                    }
-                });
+                    });
             }
             "invoke_command" => {
                 let command_name = step
@@ -2288,8 +2282,7 @@ fn execute_multi_step_scenario(
                             .execute_command(command_name, args, Arc::new(ctx), DEFAULT_TIMEOUT_MS)
                             .await
                             .map_err(|e| format!("execute_command: {e}"))
-                    }
-                });
+                    });
             }
             other => {
                 return Err(format!("unknown step type: {other}"));
@@ -3102,8 +3095,7 @@ fn mock_http_vcr_or_stub_default_emits_sse_data_line() {
     let setup = serde_json::json!({
         "mock_http": {
             "mode": "vcr_or_stub"
-        }
-    });
+        });
     let interceptor = MockSpecInterceptor::from_scenario_setup(&setup, &default_spec);
 
     let content_type = interceptor

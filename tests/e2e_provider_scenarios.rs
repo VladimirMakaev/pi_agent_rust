@@ -283,8 +283,7 @@ fn gemini_tool_sse() -> String {
             "promptTokenCount": 15,
             "candidatesTokenCount": 12,
             "totalTokenCount": 27
-        }
-    });
+        });
     format!("data: {}\n\n", serde_json::to_string(&chunk).unwrap())
 }
 

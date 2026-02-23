@@ -324,8 +324,7 @@ fn create_runtime_and_load(
     let load_result = common::run_async({
         let manager = manager.clone();
         let spec = spec.clone();
-        async move { manager.load_js_extensions(vec![spec]).await }
-    });
+        async move { manager.load_js_extensions(vec![spec]).await });
 
     if load_result.is_err() {
         eprintln!("[bench] Failed to load {ext_name}: {load_result:?}");
@@ -339,8 +338,7 @@ fn create_runtime_and_load(
 fn shutdown_manager(manager: &ExtensionManager) {
     let _ = common::run_async({
         let manager = manager.clone();
-        async move { manager.shutdown(Duration::from_millis(250)).await }
-    });
+        async move { manager.shutdown(Duration::from_millis(250)).await });
 }
 
 // ─── Scenario Runners ────────────────────────────────────────────────────────
@@ -370,8 +368,7 @@ fn run_cold_start(_ext_name: &str, entry_path: &Path, cwd: &Path, iterations: us
                 JsExtensionRuntimeHandle::start(js_config, tools, manager)
                     .await
                     .ok()
-            }
-        });
+            });
 
         let Some(runtime) = runtime_ok else {
             continue;
@@ -380,8 +377,7 @@ fn run_cold_start(_ext_name: &str, entry_path: &Path, cwd: &Path, iterations: us
 
         let load_ok = common::run_async({
             let manager = manager.clone();
-            async move { manager.load_js_extensions(vec![spec]).await.is_ok() }
-        });
+            async move { manager.load_js_extensions(vec![spec]).await.is_ok() });
 
         let elapsed_us = start.elapsed().as_micros() as f64;
         if load_ok {
@@ -419,8 +415,7 @@ fn run_warm_start(
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .ok()
-        }
-    });
+        });
 
     let Some(runtime) = runtime_ok else {
         return Vec::new();
@@ -431,8 +426,7 @@ fn run_warm_start(
     let warmup_ok = common::run_async({
         let manager = manager.clone();
         let spec = spec.clone();
-        async move { manager.load_js_extensions(vec![spec]).await.is_ok() }
-    });
+        async move { manager.load_js_extensions(vec![spec]).await.is_ok() });
     if !warmup_ok {
         shutdown_manager(&manager);
         return Vec::new();
@@ -445,8 +439,7 @@ fn run_warm_start(
         let ok = common::run_async({
             let manager = manager.clone();
             let spec = spec.clone();
-            async move { manager.load_js_extensions(vec![spec]).await.is_ok() }
-        });
+            async move { manager.load_js_extensions(vec![spec]).await.is_ok() });
         if ok {
             samples_us.push(start.elapsed().as_micros() as f64);
         }
@@ -523,8 +516,7 @@ fn run_event_dispatch(
                         5_000,
                     )
                     .await
-            }
-        });
+            });
 
         let elapsed_us = start.elapsed().as_micros() as f64;
         if result.is_ok() {

@@ -660,8 +660,7 @@ fn execute_tool_that_throws() {
                 name: "crasher",
                 description: "Always throws",
                 parameters: { type: "object", properties: {} },
-                execute: async () => { throw new Error("tool execution failed"); }
-            });
+                execute: async () => { throw new Error("tool execution failed"); });
         }"#,
     );
 
@@ -709,8 +708,7 @@ fn execute_command_that_throws() {
         r#"export default function(pi) {
             pi.registerCommand("boom", {
                 description: "Always throws",
-                handler: async () => { throw new Error("command failed"); }
-            });
+                handler: async () => { throw new Error("command failed"); });
         }"#,
     );
 

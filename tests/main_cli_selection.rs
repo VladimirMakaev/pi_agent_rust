@@ -292,8 +292,7 @@ fn select_model_and_thinking_uses_scoped_thinking_level_when_cli_unset() {
                     .thinking_level
                     .map_or_else(|| "(none)".to_string(), |t| t.to_string()),
             ));
-        }
-    });
+        });
 
     let selection = select_model_and_thinking(
         &cli,
@@ -631,7 +630,7 @@ fn validate_rpc_args_rejects_file_args() {
 
 #[test]
 fn session_no_session_flag_creates_in_memory_session() {
-    asupersync::test_utils::run_test(|| async {
+    run_async( async {
         let mut cli = cli::Cli::parse_from(["pi", "-p", "hello"]);
         normalize_cli(&mut cli);
         let session = Box::pin(Session::new(&cli, &Config::default()))

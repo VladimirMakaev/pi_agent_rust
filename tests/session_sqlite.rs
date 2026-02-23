@@ -1,6 +1,6 @@
 #![cfg(feature = "sqlite-sessions")]
 
-use asupersync::runtime::RuntimeBuilder;
+use tokio::runtime::Builder as RuntimeBuilder;
 use pi::model::UserContent;
 use pi::session::{Session, SessionMessage, SessionStoreKind};
 use std::future::Future;

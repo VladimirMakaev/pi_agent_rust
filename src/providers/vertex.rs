@@ -650,7 +650,6 @@ mod tests {
     use super::*;
     use crate::model::{Message, UserContent};
     use crate::provider::ToolDef;
-    use asupersync::runtime::RuntimeBuilder;
     use futures::{StreamExt, stream};
     use serde_json::Value;
 

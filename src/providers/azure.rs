@@ -844,7 +844,6 @@ mod tests {
     use super::*;
     use crate::model::{TextContent, ToolCall, UserMessage};
     use crate::provider::ToolDef;
-    use asupersync::runtime::RuntimeBuilder;
     use futures::{StreamExt, stream};
     use serde::{Deserialize, Serialize};
     use serde_json::{Value, json};

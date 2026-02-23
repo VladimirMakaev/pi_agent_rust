@@ -11,9 +11,7 @@
 
 mod common;
 
-use asupersync::Cx;
-use asupersync::channel::mpsc;
-use asupersync::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
 use bubbletea::{KeyMsg, KeyType, Message, Model as BubbleteaModel};
 use common::TestHarness;
 use futures::stream;
@@ -37,12 +35,12 @@ use std::sync::{Arc, OnceLock};
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-fn test_runtime_handle() -> asupersync::runtime::RuntimeHandle {
-    static RT: OnceLock<asupersync::runtime::Runtime> = OnceLock::new();
+fn test_runtime_handle() -> tokio::runtime::Handle {
+    static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RT.get_or_init(|| {
-        asupersync::runtime::RuntimeBuilder::current_thread()
+        tokio::runtime::Builder::current_thread()
             .build()
-            .expect("build asupersync runtime")
+            .expect("build tokio runtime")
     })
     .handle()
 }
@@ -440,7 +438,7 @@ mod extension_ui_channel {
     #[test]
     fn request_ui_roundtrip() {
         let manager = ExtensionManager::new();
-        let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::current_thread()
             .build()
             .expect("runtime");
         let handle = runtime.handle();
@@ -458,8 +456,7 @@ mod extension_ui_channel {
                         value: Some(json!("user_chose_this")),
                         cancelled: false,
                     });
-                }
-            });
+                });
 
             let request = ExtensionUiRequest::new("test-1", "confirm", json!({"title": "Test"}));
             let response = manager.request_ui(request).await.unwrap();
@@ -472,7 +469,7 @@ mod extension_ui_channel {
     #[test]
     fn request_ui_cancelled_response() {
         let manager = ExtensionManager::new();
-        let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::current_thread()
             .build()
             .expect("runtime");
         let handle = runtime.handle();
@@ -490,8 +487,7 @@ mod extension_ui_channel {
                         value: Some(json!(false)),
                         cancelled: true,
                     });
-                }
-            });
+                });
 
             let request =
                 ExtensionUiRequest::new("test-cancel", "confirm", json!({"title": "Cancel me"}));
@@ -505,7 +501,7 @@ mod extension_ui_channel {
     #[test]
     fn clear_ui_sender_prevents_requests() {
         let manager = ExtensionManager::new();
-        let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::current_thread()
             .build()
             .expect("runtime");
 
@@ -1009,7 +1005,7 @@ mod full_flow {
 
     #[test]
     fn manager_request_response_with_allow() {
-        let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::current_thread()
             .build()
             .expect("runtime");
         let handle = runtime.handle();
@@ -1029,8 +1025,7 @@ mod full_flow {
                         value: Some(json!(true)),
                         cancelled: false,
                     });
-                }
-            });
+                });
 
             // First capability prompt.
             let request = cap_prompt_request("flow-1", "ext-a", "exec", "Run shell");
@@ -1042,7 +1037,7 @@ mod full_flow {
 
     #[test]
     fn manager_request_response_with_deny() {
-        let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::current_thread()
             .build()
             .expect("runtime");
         let handle = runtime.handle();
@@ -1061,8 +1056,7 @@ mod full_flow {
                         value: Some(json!(false)),
                         cancelled: true,
                     });
-                }
-            });
+                });
 
             let request = cap_prompt_request("flow-2", "ext-a", "exec", "Run shell");
             let resp = manager.request_ui(request).await.unwrap().unwrap();
@@ -1073,7 +1067,7 @@ mod full_flow {
 
     #[test]
     fn notify_request_returns_none_response() {
-        let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::current_thread()
             .build()
             .expect("runtime");
 

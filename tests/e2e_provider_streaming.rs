@@ -718,11 +718,11 @@ fn e2e_anthropic_streaming_all_scenarios() {
 
     let scenarios = all_anthropic_scenarios();
 
-    asupersync::test_utils::run_test(|| {
-        let model = model.clone();
-        let harness_ref = &harness;
-        let scenarios_ref = &scenarios;
-        async move {
+    run_async(async move {
+            let model = model.clone();
+            let harness_ref = &harness;
+            let scenarios_ref = &scenarios;
+
             let mut results = Vec::new();
             let mut passed = 0usize;
             let mut skipped = 0usize;
@@ -784,8 +784,7 @@ fn e2e_anthropic_streaming_all_scenarios() {
                 "E2E streaming suite: {failed} scenarios failed out of {}",
                 scenarios_ref.len()
             );
-        }
-    });
+        });
 }
 
 /// Verify that running the same cassette twice produces identical content hashes
@@ -810,11 +809,11 @@ fn e2e_anthropic_streaming_determinism() {
         expect_stop_reasons: vec![StopReason::Stop],
     };
 
-    asupersync::test_utils::run_test(|| {
-        let model = model.clone();
-        let harness_ref = &harness;
-        let scenario_ref = &scenario;
-        async move {
+    run_async(async move {
+            let model = model.clone();
+            let harness_ref = &harness;
+            let scenario_ref = &scenario;
+
             harness_ref.section("Run 1");
             let result1 = run_e2e_scenario(scenario_ref, harness_ref, &model).await;
             let hash1 = result1
@@ -842,8 +841,7 @@ fn e2e_anthropic_streaming_determinism() {
                     "Content hashes differ between runs (non-deterministic)"
                 );
             }
-        }
-    });
+        });
 }
 
 /// Verify that all error scenarios produce errors with appropriate HTTP status codes.
@@ -889,12 +887,12 @@ fn e2e_anthropic_error_scenarios_comprehensive() {
             continue;
         }
 
-        asupersync::test_utils::run_test(|| {
-            let model = model.clone();
-            let cassette_name = *cassette;
-            let expected = *expected_status;
-            let message_text = *msg;
-            async move {
+        run_async(async move {
+                let model = model.clone();
+                let cassette_name = *cassette;
+                let expected = *expected_status;
+                let message_text = *msg;
+
                 let cassette_dir = cassette_root();
                 let recorder =
                     VcrRecorder::new_with(cassette_name, VcrMode::Playback, &cassette_dir);
@@ -925,8 +923,7 @@ fn e2e_anthropic_error_scenarios_comprehensive() {
                     message.contains(&needle),
                     "{cassette_name}: expected '{needle}' in error, got: {message}"
                 );
-            }
-        });
+            });
 
         harness.log().info(
             "e2e",

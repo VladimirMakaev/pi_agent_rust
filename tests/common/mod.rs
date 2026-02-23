@@ -49,7 +49,7 @@ pub use logging::{
     redact_json_value, validate_jsonl, validate_jsonl_line,
 };
 
-/// Runs an async future to completion on an asupersync runtime.
+/// Runs an async future to completion on a tokio runtime.
 ///
 /// Note: We spawn the future onto the runtime so it runs with a proper task context.
 #[allow(dead_code)]
@@ -60,19 +60,14 @@ where
 {
     // Reuse a single runtime across tests. Spinning up a fresh runtime per call is
     // extremely expensive and can distort perf/stress test measurements.
-    static RT: OnceLock<asupersync::runtime::Runtime> = OnceLock::new();
+    static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     let runtime = RT.get_or_init(|| {
-        asupersync::runtime::RuntimeBuilder::new()
-            // Work around an asupersync 0.1.0 scheduler parking bug where due timers can
-            // livelock the idle backoff loop (prevents `sleep()` wakeups).
-            .enable_parking(false)
-            .worker_threads(1)
-            .blocking_threads(1, 8)
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
             .build()
-            .expect("build asupersync runtime")
+            .expect("build tokio runtime")
     });
 
-    let join = runtime.handle().spawn(future);
-    // Await the JoinHandle on a minimal executor; the task itself runs on `runtime`.
-    futures::executor::block_on(join)
+    runtime.block_on(future)
 }

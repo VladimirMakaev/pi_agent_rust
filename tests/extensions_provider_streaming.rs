@@ -73,8 +73,8 @@ fn basic_options() -> StreamOptions {
     }
 }
 
-fn make_runtime() -> asupersync::runtime::Runtime {
-    asupersync::runtime::RuntimeBuilder::current_thread()
+fn make_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::current_thread()
         .build()
         .expect("runtime build")
 }
@@ -138,8 +138,7 @@ export default function init(pi) {
       yield { type: "text_delta", contentIndex: 1, delta: "The answer is 42.", partial };
       yield { type: "text_end", contentIndex: 1, content: "The answer is 42.", partial };
       yield { type: "done", reason: "stop", message: partial };
-    }
-  });
+    });
 }
 "#;
 
@@ -177,8 +176,7 @@ export default function init(pi) {
         partial
       };
       yield { type: "done", reason: "toolUse", message: partial };
-    }
-  });
+    });
 }
 "#;
 
@@ -196,8 +194,7 @@ export default function init(pi) {
       yield ", ";
       yield "world";
       yield "!";
-    }
-  });
+    });
 }
 "#;
 
@@ -212,8 +209,7 @@ export default function init(pi) {
     ],
     streamSimple: async function* (model, context, options) {
       // Yields nothing — immediate end.
-    }
-  });
+    });
 }
 "#;
 
@@ -240,8 +236,7 @@ export default function init(pi) {
 
       yield { type: "start", partial };
       yield { type: "error", reason: "stop", error: partial };
-    }
-  });
+    });
 }
 "#;
 
@@ -281,8 +276,7 @@ export default function init(pi) {
       yield { type: "text_start", contentIndex: 0, partial };
       yield { type: "text_delta", contentIndex: 0, delta: info, partial };
       yield { type: "done", reason: "stop", message: partial };
-    }
-  });
+    });
 }
 "#;
 
@@ -298,8 +292,7 @@ export default function init(pi) {
     streamSimple: async function* (model, context, options) {
       // Yield a non-string, non-valid-event object.
       yield { type: "nonexistent_event_type", foo: "bar" };
-    }
-  });
+    });
 }
 "#;
 
@@ -332,8 +325,7 @@ export default function init(pi) {
       yield { type: "text_delta", contentIndex: 0, delta: "chunk2", partial };
       yield { type: "text_end", contentIndex: 0, content: "chunk1chunk2", partial };
       yield { type: "done", reason: "stop", message: partial };
-    }
-  });
+    });
 }
 "#;
 
@@ -600,8 +592,7 @@ fn stream_simple_empty_stream_emits_done() {
                 assert_eq!(text.text, "");
             }
             other => panic!("expected Done event, got {other:?}"),
-        }
-    });
+        });
 }
 
 // ---------------------------------------------------------------------------

@@ -341,8 +341,7 @@ mod tests {
     use crate::resources::{ResourceCliOptions, ResourceLoader};
     use crate::session::Session;
     use crate::tools::ToolRegistry;
-    use asupersync::channel::mpsc;
-    use asupersync::runtime::RuntimeBuilder;
+    use tokio::sync::mpsc;
     use futures::stream;
     use std::collections::HashMap;
     use std::path::Path;
@@ -377,12 +376,12 @@ mod tests {
         }
     }
 
-    fn runtime_handle() -> asupersync::runtime::RuntimeHandle {
-        static RT: OnceLock<asupersync::runtime::Runtime> = OnceLock::new();
+    fn runtime_handle() -> tokio::runtime::Handle {
+        static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
         RT.get_or_init(|| {
-            RuntimeBuilder::multi_thread()
-                .blocking_threads(1, 8)
-                .build()
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all().build()
                 .expect("build runtime")
         })
         .handle()
@@ -423,7 +422,7 @@ mod tests {
             ToolRegistry::new(&[], Path::new("."), None),
             AgentConfig::default(),
         );
-        let session = Arc::new(asupersync::sync::Mutex::new(Session::in_memory()));
+        let session = Arc::new(tokio::sync::Mutex::new(Session::in_memory()));
         let resources = ResourceLoader::empty(false);
         let resource_cli = ResourceCliOptions {
             no_skills: false,

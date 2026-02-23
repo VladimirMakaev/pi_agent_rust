@@ -170,8 +170,7 @@ fn fs_readdir_with_filetypes() {
                 assert_eq!(entry["isDir"], false);
                 assert_eq!(entry["isFile"], true);
             }
-        }
-    });
+        });
 }
 
 // ---------------------------------------------------------------------------
@@ -202,8 +201,7 @@ fn fs_mkdir_unlink_rmdir() {
                     fs.rmdirSync('/d1/d2');
                     globalThis.afterRmdir = false;
                     try { fs.statSync('/d1/d2'); }
-                    catch (_e) { globalThis.afterRmdir = true; }
-                });
+                    catch (_e) { globalThis.afterRmdir = true; });
                 "#,
             )
             .await
@@ -372,8 +370,7 @@ fn fs_access_sync() {
 
                     globalThis.accessFail = false;
                     try { fs.accessSync('/no_exist.txt'); }
-                    catch (_e) { globalThis.accessFail = true; }
-                });
+                    catch (_e) { globalThis.accessFail = true; });
                 "#,
             )
             .await
@@ -969,8 +966,7 @@ fn fs_enoent_errors() {
                     catch (e) { globalThis.errors.readdir = e.message; }
 
                     try { fs.renameSync('/nope', '/x'); }
-                    catch (e) { globalThis.errors.rename = e.message; }
-                });
+                    catch (e) { globalThis.errors.rename = e.message; });
                 "#,
             )
             .await
@@ -1168,8 +1164,7 @@ fn fs_fd_stubs() {
                         globalThis.exclusiveCreateFailed = false;
                     } catch (e) {
                         globalThis.exclusiveCreateFailed = String(e && e.message || e).includes('EEXIST');
-                    }
-                });
+                    });
                 "#,
             )
             .await
@@ -1237,8 +1232,7 @@ fn fs_stat_host_fallback() {
                         globalThis.outsideStat = 'ok';
                     } catch (e) {
                         globalThis.outsideStat = String(e.message || e);
-                    }
-                });
+                    });
                 "#,
             )
             .await

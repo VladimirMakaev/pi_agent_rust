@@ -486,7 +486,7 @@ fn run_scenario(
             block_images: false,
         };
         let agent = Agent::new(provider, tools, config);
-        let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+        let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
         )));
         let mut agent_session = AgentSession::new(
@@ -537,8 +537,8 @@ fn run_scenario(
             .expect("persist session");
 
         let messages = {
-            let cx = asupersync::Cx::for_testing();
-            let guard = session.lock(&cx).await.expect("lock session");
+            
+            let guard = session.lock().await.expect("lock session");
             guard.to_messages_for_current_path()
         };
         let capture = Arc::try_unwrap(capture)

@@ -163,7 +163,7 @@ fn agent_loop_openai_vcr_basic() {
         };
         let agent = Agent::new(Arc::new(provider), tools, agent_config);
 
-        let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+        let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(harness.temp_dir().to_path_buf()),
         )));
         let mut agent_session = AgentSession::new(
@@ -205,8 +205,8 @@ fn agent_loop_openai_vcr_basic() {
             .expect("persist session");
 
         let session_path = {
-            let cx = asupersync::Cx::for_testing();
-            let guard = agent_session.session.lock(&cx).await.expect("lock session");
+            
+            let guard = agent_session.session.lock().await.expect("lock session");
             guard.path.clone()
         };
         if let Some(path) = session_path {
@@ -344,7 +344,7 @@ fn agent_loop_anthropic_simple_text() {
         };
         let agent = Agent::new(Arc::new(provider), tools, agent_config);
 
-        let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+        let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(harness.temp_dir().to_path_buf()),
         )));
         let mut agent_session = AgentSession::new(
@@ -442,7 +442,7 @@ fn agent_loop_anthropic_error_stream() {
         };
         let agent = Agent::new(Arc::new(provider), tools, agent_config);
 
-        let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+        let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(harness.temp_dir().to_path_buf()),
         )));
         let mut agent_session = AgentSession::new(
@@ -523,7 +523,7 @@ fn agent_loop_anthropic_tool_call_stop() {
         };
         let agent = Agent::new(Arc::new(provider), tools, agent_config);
 
-        let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+        let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(harness.temp_dir().to_path_buf()),
         )));
         let mut agent_session = AgentSession::new(
@@ -571,8 +571,7 @@ fn agent_loop_anthropic_tool_call_stop() {
                 match &result {
                     Ok(msg) => ctx.push(("stop_reason".into(), format!("{:?}", msg.stop_reason))),
                     Err(e) => ctx.push(("error".into(), e.to_string())),
-                }
-            });
+                });
 
         write_jsonl_artifacts(&harness, test_name, &["test-key", "vcr-playback"]);
     });

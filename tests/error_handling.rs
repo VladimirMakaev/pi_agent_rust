@@ -221,8 +221,7 @@ mod provider_http_errors {
     fn anthropic_http_401_reports_auth_error() {
         let body = json!({
             "type": "error",
-            "error": { "type": "authentication_error", "message": "invalid x-api-key" }
-        });
+            "error": { "type": "authentication_error", "message": "invalid x-api-key" });
         let (client, _dir) = vcr_client(
             "anthropic_http_401",
             "https://api.anthropic.com/v1/messages",
@@ -250,8 +249,7 @@ mod provider_http_errors {
     fn anthropic_http_403_reports_forbidden() {
         let body = json!({
             "type": "error",
-            "error": { "type": "forbidden", "message": "access denied to model" }
-        });
+            "error": { "type": "forbidden", "message": "access denied to model" });
         let (client, _dir) = vcr_client(
             "anthropic_http_403",
             "https://api.anthropic.com/v1/messages",
@@ -279,8 +277,7 @@ mod provider_http_errors {
     fn anthropic_http_429_reports_rate_limit() {
         let body = json!({
             "type": "error",
-            "error": { "type": "rate_limit_error", "message": "rate limited" }
-        });
+            "error": { "type": "rate_limit_error", "message": "rate limited" });
         let (client, _dir) = vcr_client(
             "anthropic_http_429",
             "https://api.anthropic.com/v1/messages",
@@ -308,8 +305,7 @@ mod provider_http_errors {
     fn anthropic_http_529_reports_overloaded() {
         let body = json!({
             "type": "error",
-            "error": { "type": "overloaded_error", "message": "overloaded" }
-        });
+            "error": { "type": "overloaded_error", "message": "overloaded" });
         let (client, _dir) = vcr_client(
             "anthropic_http_529",
             "https://api.anthropic.com/v1/messages",
@@ -338,8 +334,7 @@ mod provider_http_errors {
     #[test]
     fn openai_http_401_reports_auth_error() {
         let body = json!({
-            "error": { "message": "Incorrect API key", "type": "invalid_request_error" }
-        });
+            "error": { "message": "Incorrect API key", "type": "invalid_request_error" });
         let (client, _dir) = vcr_client(
             "openai_http_401",
             "https://api.openai.com/v1/chat/completions",
@@ -366,8 +361,7 @@ mod provider_http_errors {
     #[test]
     fn openai_http_429_reports_rate_limit() {
         let body = json!({
-            "error": { "message": "Rate limit exceeded", "type": "rate_limit_error" }
-        });
+            "error": { "message": "Rate limit exceeded", "type": "rate_limit_error" });
         let (client, _dir) = vcr_client(
             "openai_http_429",
             "https://api.openai.com/v1/chat/completions",
@@ -507,8 +501,7 @@ mod provider_http_errors {
     fn anthropic_http_400_reports_bad_request() {
         let body = json!({
             "type": "error",
-            "error": { "type": "invalid_request_error", "message": "messages: required field missing" }
-        });
+            "error": { "type": "invalid_request_error", "message": "messages: required field missing" });
         let (client, _dir) = vcr_client(
             "anthropic_http_400",
             "https://api.anthropic.com/v1/messages",
@@ -535,8 +528,7 @@ mod provider_http_errors {
     #[test]
     fn openai_http_400_reports_bad_request() {
         let body = json!({
-            "error": { "message": "Invalid model specified", "type": "invalid_request_error" }
-        });
+            "error": { "message": "Invalid model specified", "type": "invalid_request_error" });
         let (client, _dir) = vcr_client(
             "openai_http_400",
             "https://api.openai.com/v1/chat/completions",
@@ -564,8 +556,7 @@ mod provider_http_errors {
     fn gemini_http_400_reports_bad_request() {
         let url = gemini_url("gemini-test", "test-key");
         let body = json!({
-            "error": { "code": 400, "message": "Invalid value at 'contents'", "status": "INVALID_ARGUMENT" }
-        });
+            "error": { "code": 400, "message": "Invalid value at 'contents'", "status": "INVALID_ARGUMENT" });
         let (client, _dir) = vcr_client(
             "gemini_http_400",
             &url,
@@ -593,8 +584,7 @@ mod provider_http_errors {
     fn azure_http_400_reports_bad_request() {
         let endpoint = azure_url("gpt-test");
         let body = json!({
-            "error": { "message": "Invalid model deployment", "type": "invalid_request_error" }
-        });
+            "error": { "message": "Invalid model deployment", "type": "invalid_request_error" });
         let (client, _dir) = vcr_client(
             "azure_http_400",
             &endpoint,
@@ -624,8 +614,7 @@ mod provider_http_errors {
     #[test]
     fn openai_http_403_reports_forbidden() {
         let body = json!({
-            "error": { "message": "You do not have access to this model", "type": "forbidden" }
-        });
+            "error": { "message": "You do not have access to this model", "type": "forbidden" });
         let (client, _dir) = vcr_client(
             "openai_http_403",
             "https://api.openai.com/v1/chat/completions",
@@ -653,8 +642,7 @@ mod provider_http_errors {
     fn gemini_http_403_reports_forbidden() {
         let url = gemini_url("gemini-test", "test-key");
         let body = json!({
-            "error": { "code": 403, "message": "Permission denied", "status": "PERMISSION_DENIED" }
-        });
+            "error": { "code": 403, "message": "Permission denied", "status": "PERMISSION_DENIED" });
         let (client, _dir) = vcr_client(
             "gemini_http_403",
             &url,
@@ -709,8 +697,7 @@ mod provider_http_errors {
     fn gemini_http_500_reports_server_error() {
         let url = gemini_url("gemini-test", "test-key");
         let body = json!({
-            "error": { "code": 500, "message": "Internal error", "status": "INTERNAL" }
-        });
+            "error": { "code": 500, "message": "Internal error", "status": "INTERNAL" });
         let (client, _dir) = vcr_client(
             "gemini_http_500",
             &url,
@@ -837,8 +824,7 @@ mod malformed_responses {
                             ctx.push(("event_count".into(), event_count.to_string()));
                         });
                 }
-            }
-        });
+            });
     }
 
     #[test]
@@ -917,8 +903,7 @@ mod malformed_responses {
                         "expected error or empty stream, got {event_count} events"
                     );
                 }
-            }
-        });
+            });
     }
 
     #[test]
@@ -930,8 +915,7 @@ mod malformed_responses {
         // stop_reason = Error and error_message populated.
         let error_event = json!({
             "type": "error",
-            "error": { "type": "overloaded_error", "message": "Overloaded" }
-        });
+            "error": { "type": "overloaded_error", "message": "Overloaded" });
         let chunks = vec![format!(
             "event: error\ndata: {}\n\n",
             serde_json::to_string(&error_event).unwrap()
@@ -1022,8 +1006,7 @@ mod malformed_responses {
                             ctx.push(("event_count".into(), event_count.to_string()));
                         });
                 }
-            }
-        });
+            });
     }
 
     #[test]
@@ -1065,8 +1048,7 @@ mod malformed_responses {
                             ctx.push(("event_count".into(), event_count.to_string()));
                         });
                 }
-            }
-        });
+            });
     }
 }
 
@@ -1080,7 +1062,7 @@ mod tool_errors {
 
     #[test]
     fn bash_command_not_found_reports_exit_code() {
-        asupersync::test_utils::run_test(|| async {
+        run_async( async {
             let harness = TestHarness::new("bash_cmd_not_found");
             let tool = pi::tools::BashTool::new(harness.temp_dir());
             let input = json!({
@@ -1110,13 +1092,12 @@ mod tool_errors {
                         "unexpected error: {msg}"
                     );
                 }
-            }
-        });
+            });
     }
 
     #[test]
     fn bash_empty_command_reports_error() {
-        asupersync::test_utils::run_test(|| async {
+        run_async( async {
             let harness = TestHarness::new("bash_empty_command");
             let tool = pi::tools::BashTool::new(harness.temp_dir());
             let input = json!({ "command": "" });
@@ -1132,7 +1113,7 @@ mod tool_errors {
 
     #[test]
     fn read_nonexistent_file_reports_error() {
-        asupersync::test_utils::run_test(|| async {
+        run_async( async {
             let harness = TestHarness::new("read_nonexistent");
             let tool = pi::tools::ReadTool::new(harness.temp_dir());
             let path = harness.temp_dir().join("does_not_exist.txt");
@@ -1158,7 +1139,7 @@ mod tool_errors {
 
     #[test]
     fn write_to_nonexistent_parent_dir_reports_error() {
-        asupersync::test_utils::run_test(|| async {
+        run_async( async {
             let harness = TestHarness::new("write_no_parent");
             let tool = pi::tools::WriteTool::new(harness.temp_dir());
             let path = harness
@@ -1178,14 +1159,13 @@ mod tool_errors {
                     ctx.push(("is_err".into(), result.is_err().to_string()));
                     if let Err(ref err) = result {
                         ctx.push(("message".into(), err.to_string()));
-                    }
-                });
+                    });
         });
     }
 
     #[test]
     fn grep_invalid_regex_reports_error() {
-        asupersync::test_utils::run_test(|| async {
+        run_async( async {
             let harness = TestHarness::new("grep_bad_regex");
             harness.create_file("sample.txt", b"some content");
             let tool = pi::tools::GrepTool::new(harness.temp_dir());
@@ -1209,13 +1189,12 @@ mod tool_errors {
                             ctx.push(("is_error".into(), output.is_error.to_string()));
                         });
                 }
-            }
-        });
+            });
     }
 
     #[test]
     fn edit_empty_old_text_reports_error() {
-        asupersync::test_utils::run_test(|| async {
+        run_async( async {
             let harness = TestHarness::new("edit_empty_old");
             harness.create_file("test.txt", b"Hello World");
             let tool = pi::tools::EditTool::new(harness.temp_dir());
@@ -1237,7 +1216,7 @@ mod tool_errors {
 
     #[test]
     fn find_in_nonexistent_directory_reports_error() {
-        asupersync::test_utils::run_test(|| async {
+        run_async( async {
             let harness = TestHarness::new("find_bad_path");
             let tool = pi::tools::FindTool::new(harness.temp_dir());
             let bad_path = harness.temp_dir().join("no_such_dir");
@@ -1261,13 +1240,12 @@ mod tool_errors {
                             ctx.push(("is_error".into(), output.is_error.to_string()));
                         });
                 }
-            }
-        });
+            });
     }
 
     #[test]
     fn ls_nonexistent_directory_reports_error() {
-        asupersync::test_utils::run_test(|| async {
+        run_async( async {
             let harness = TestHarness::new("ls_bad_path");
             let tool = pi::tools::LsTool::new(harness.temp_dir());
             let bad_path = harness.temp_dir().join("no_such_dir");
@@ -1296,8 +1274,7 @@ mod tool_errors {
                         });
                     assert!(output.is_error, "expected is_error for nonexistent dir");
                 }
-            }
-        });
+            });
     }
 }
 

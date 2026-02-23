@@ -431,8 +431,7 @@ fn redact_cassette_sensitive_json_body_fields() {
             "access_token": "tok123",
             "password": "pass",
             "max_tokens": 1024
-        }
-    });
+        });
     let mut cassette = make_cassette(vec![make_interaction(
         "POST",
         "https://api.example.com/v1/chat",
@@ -485,8 +484,7 @@ fn redact_cassette_deeply_nested_json() {
                     "secret": "deep-secret"
                 }
             }
-        }
-    });
+        });
     let mut cassette = make_cassette(vec![make_interaction(
         "POST",
         "https://api.example.com",

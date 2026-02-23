@@ -6862,7 +6862,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)] // std::net::TcpListener + asupersync interop fails on Windows
+    #[cfg(unix)] // std::net::TcpListener + tokio interop fails on Windows
     fn dispatcher_http_post_sends_body() {
         futures::executor::block_on(async {
             let addr = spawn_http_server("post-ok");

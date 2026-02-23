@@ -165,8 +165,7 @@ fn seed_composed_filter_fixture(
         }
         for idx in 0..3 {
             let _ = dispatch_host_call_shared(ctx_beta, benign_log_call(100 + idx)).await;
-        }
-    });
+        });
 
     manager.record_exec_mediation(sample_exec_mediation("ext.alpha", 0));
     manager.record_exec_mediation(sample_exec_mediation("ext.beta", 1));
@@ -402,8 +401,7 @@ fn scenario_benign_workflow_no_alerts() {
     futures::executor::block_on(async {
         for idx in 0..10 {
             let _ = dispatch_host_call_shared(&ctx, benign_log_call(idx)).await;
-        }
-    });
+        });
 
     emit_scenario_event(
         &harness,
@@ -491,8 +489,7 @@ fn scenario_adversarial_escalation_triggers_alerts() {
     futures::executor::block_on(async {
         for idx in 0..3 {
             let _ = dispatch_host_call_shared(&ctx, benign_log_call(idx)).await;
-        }
-    });
+        });
 
     emit_scenario_event(
         &harness,
@@ -509,8 +506,7 @@ fn scenario_adversarial_escalation_triggers_alerts() {
     futures::executor::block_on(async {
         for idx in 0..5 {
             let _ = dispatch_host_call_shared(&ctx, adversarial_exec_call(idx)).await;
-        }
-    });
+        });
 
     // Record exec mediations for the adversarial calls.
     for idx in 0..5 {
@@ -740,15 +736,13 @@ fn scenario_multi_extension_isolation() {
     futures::executor::block_on(async {
         for idx in 0..5 {
             let _ = dispatch_host_call_shared(&ctx_safe, benign_log_call(idx)).await;
-        }
-    });
+        });
 
     // Evil extension tries dangerous commands.
     futures::executor::block_on(async {
         for idx in 0..5 {
             let _ = dispatch_host_call_shared(&ctx_evil, adversarial_exec_call(idx)).await;
-        }
-    });
+        });
 
     // Record exec mediation denials for evil extension only.
     for idx in 0..3 {
@@ -861,15 +855,13 @@ fn scenario_incident_evidence_forensic_flow() {
     futures::executor::block_on(async {
         for idx in 0..3 {
             let _ = dispatch_host_call_shared(&ctx, benign_log_call(idx)).await;
-        }
-    });
+        });
 
     // Phase 2: Adversarial activity.
     futures::executor::block_on(async {
         for idx in 0..4 {
             let _ = dispatch_host_call_shared(&ctx, adversarial_exec_call(idx)).await;
-        }
-    });
+        });
 
     // Phase 3: Record mediation/secret events.
     for idx in 0..3 {
@@ -1000,8 +992,7 @@ fn scenario_shadow_vs_enforcement_mode() {
         for idx in 0..3 {
             let _ = dispatch_host_call_shared(&ctx_enforce, adversarial_exec_call(idx)).await;
             let _ = dispatch_host_call_shared(&ctx_shadow, adversarial_exec_call(idx)).await;
-        }
-    });
+        });
 
     // Both should have telemetry entries.
     let telem_enforce = mgr_enforce.runtime_hostcall_telemetry_artifact();
@@ -1089,16 +1080,14 @@ fn scenario_rollback_recovery_after_incident() {
     futures::executor::block_on(async {
         for idx in 0..3 {
             let _ = dispatch_host_call_shared(&ctx, benign_log_call(idx)).await;
-        }
-    });
+        });
     assert!(is_hostcall_allowed_for_trust(tracker.state(), "exec"));
 
     // Phase 2: Adversarial behavior detected → kill-switch.
     futures::executor::block_on(async {
         for idx in 0..3 {
             let _ = dispatch_host_call_shared(&ctx, adversarial_exec_call(idx)).await;
-        }
-    });
+        });
 
     for idx in 0..2 {
         manager.record_exec_mediation(sample_exec_mediation("ext.rollback", idx));
@@ -1444,8 +1433,7 @@ fn scenario_secret_broker_redaction_in_bundle() {
     futures::executor::block_on(async {
         for idx in 0..3 {
             let _ = dispatch_host_call_shared(&ctx, benign_log_call(idx)).await;
-        }
-    });
+        });
 
     // Record secret access events.
     for idx in 0..4 {
@@ -1552,8 +1540,7 @@ fn scenario_jsonl_artifact_contract() {
         }
         for idx in 0..2 {
             let _ = dispatch_host_call_shared(&ctx, adversarial_exec_call(idx)).await;
-        }
-    });
+        });
 
     for idx in 0..2 {
         manager.record_exec_mediation(sample_exec_mediation("ext.contract", idx));
@@ -1847,8 +1834,7 @@ fn scenario_deterministic_artifact_manifests() {
         }
         for idx in 0..3 {
             let _ = dispatch_host_call_shared(&ctx, adversarial_exec_call(idx)).await;
-        }
-    });
+        });
 
     let build_bundle = |mgr: &ExtensionManager| {
         build_incident_evidence_bundle(

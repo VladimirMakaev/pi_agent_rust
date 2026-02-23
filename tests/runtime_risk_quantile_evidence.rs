@@ -427,8 +427,7 @@ fn e2e_quantile_recovery_flow_with_calibration() {
                 context: None,
             };
             let _ = dispatch_host_call_shared(&ctx, call).await;
-        }
-    });
+        });
 
     // Run calibration on the mixed ledger
     let artifact = manager.runtime_risk_ledger_artifact();
@@ -558,8 +557,7 @@ fn e2e_quantile_budget_enforcement_fail_closed() {
                 context: None,
             };
             let _ = dispatch_host_call_shared(&ctx, call).await;
-        }
-    });
+        });
 
     let total_elapsed_ms = budget_start.elapsed().as_millis();
 
@@ -634,8 +632,7 @@ fn e2e_quantile_feature_stability_across_window_fill() {
                 context: None,
             };
             let _ = dispatch_host_call_shared(&ctx, call).await;
-        }
-    });
+        });
 
     // The telemetry should show feature vectors that stabilize after window fills
     let telemetry = manager.runtime_hostcall_telemetry_artifact();
@@ -753,8 +750,7 @@ fn e2e_quantile_conformal_determinism() {
                     context: None,
                 };
                 let _ = dispatch_host_call_shared(&ctx, call).await;
-            }
-        });
+            });
 
         let artifact = manager.runtime_risk_ledger_artifact();
         artifact

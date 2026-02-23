@@ -327,8 +327,7 @@ fn vcr_round_trip_playback_reuses_recorded_stream() {
                 .expect("record send");
             assert_eq!(response.status(), 200);
             response.text().await.expect("record text")
-        }
-    });
+        });
 
     server.join();
     assert_eq!(recorded_body, "hello from vcr");
@@ -349,8 +348,7 @@ fn vcr_round_trip_playback_reuses_recorded_stream() {
                 .expect("playback send");
             assert_eq!(response.status(), 200);
             response.text().await.expect("playback text")
-        }
-    });
+        });
 
     assert_eq!(playback_body, recorded_body);
 

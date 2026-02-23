@@ -46,7 +46,7 @@ fn build_agent_session(session: Session, cassette_dir: &Path) -> AgentSession {
     let tools = ToolRegistry::new(&[], &std::env::current_dir().unwrap(), None);
     let config = AgentConfig::default();
     let agent = Agent::new(provider, tools, config);
-    let session = Arc::new(asupersync::sync::Mutex::new(session));
+    let session = Arc::new(tokio::sync::Mutex::new(session));
     AgentSession::new(
         agent,
         session,
@@ -75,13 +75,13 @@ async fn recv_line(rx: &Arc<Mutex<Receiver<String>>>, label: &str) -> Result<Str
             return Err(format!("{label}: timed out waiting for output"));
         }
 
-        asupersync::time::sleep(asupersync::time::wall_now(), Duration::from_millis(5)).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
 }
 
 fn make_rpc_options(
     harness: &TestHarness,
-    handle: &asupersync::runtime::RuntimeHandle,
+    handle: &tokio::runtime::Handle,
 ) -> RpcOptions {
     let auth = AuthStorage::load(harness.temp_path("auth.json")).expect("load auth storage");
     RpcOptions {
@@ -116,7 +116,8 @@ fn assert_rpc_error(line: &str, command: &str) -> Value {
 fn rpc_get_state_returns_initial_state() {
     let harness = TestHarness::new("rpc_get_state_returns_initial_state");
     let cassette_dir = cassette_root();
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .expect("build test runtime");
     let handle = runtime.handle();
@@ -125,17 +126,15 @@ fn rpc_get_state_returns_initial_state() {
         let agent_session = build_agent_session(Session::in_memory(), &cassette_dir);
         let options = make_rpc_options(&harness, &handle);
 
-        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (in_tx, in_rx) = tokio::sync::mpsc::channel::<String>(16);
         let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
         let out_rx = Arc::new(Mutex::new(out_rx));
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
-        let cx = asupersync::Cx::for_testing();
 
-        in_tx
-            .send(&cx, r#"{"id":"1","type":"get_state"}"#.to_string())
-            .await
-            .expect("send get_state");
+        let _ = in_tx
+            .send(r#"{"id":"1","type":"get_state"}"#.to_string())
+            .await;
         let line = recv_line(&out_rx, "get_state response")
             .await
             .expect("recv get_state");
@@ -156,7 +155,8 @@ fn rpc_get_state_returns_initial_state() {
 fn rpc_get_session_stats_returns_stats() {
     let harness = TestHarness::new("rpc_get_session_stats_returns_stats");
     let cassette_dir = cassette_root();
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .expect("build test runtime");
     let handle = runtime.handle();
@@ -188,15 +188,14 @@ fn rpc_get_session_stats_returns_stats() {
         let agent_session = build_agent_session(session, &cassette_dir);
         let options = make_rpc_options(&harness, &handle);
 
-        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (in_tx, in_rx) = tokio::sync::mpsc::channel::<String>(16);
         let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
         let out_rx = Arc::new(Mutex::new(out_rx));
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
-        let cx = asupersync::Cx::for_testing();
 
-        in_tx
-            .send(&cx, r#"{"id":"1","type":"get_session_stats"}"#.to_string())
+        let _ = in_tx
+            .send(r#"{"id":"1","type":"get_session_stats"}"#.to_string())
             .await
             .expect("send get_session_stats");
         let line = recv_line(&out_rx, "get_session_stats response")
@@ -219,7 +218,8 @@ fn rpc_get_session_stats_returns_stats() {
 fn rpc_get_available_models_returns_list() {
     let harness = TestHarness::new("rpc_get_available_models_returns_list");
     let cassette_dir = cassette_root();
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .expect("build test runtime");
     let handle = runtime.handle();
@@ -228,12 +228,12 @@ fn rpc_get_available_models_returns_list() {
         let agent_session = build_agent_session(Session::in_memory(), &cassette_dir);
         let options = make_rpc_options(&harness, &handle);
 
-        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (in_tx, in_rx) = tokio::sync::mpsc::channel::<String>(16);
         let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
         let out_rx = Arc::new(Mutex::new(out_rx));
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
-        let cx = asupersync::Cx::for_testing();
+        
 
         in_tx
             .send(
@@ -265,7 +265,8 @@ fn rpc_get_available_models_returns_list() {
 fn rpc_set_session_name_success() {
     let harness = TestHarness::new("rpc_set_session_name_success");
     let cassette_dir = cassette_root();
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .expect("build test runtime");
     let handle = runtime.handle();
@@ -274,12 +275,12 @@ fn rpc_set_session_name_success() {
         let agent_session = build_agent_session(Session::in_memory(), &cassette_dir);
         let options = make_rpc_options(&harness, &handle);
 
-        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (in_tx, in_rx) = tokio::sync::mpsc::channel::<String>(16);
         let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
         let out_rx = Arc::new(Mutex::new(out_rx));
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
-        let cx = asupersync::Cx::for_testing();
+        
 
         in_tx
             .send(
@@ -305,7 +306,8 @@ fn rpc_set_session_name_success() {
 fn rpc_get_last_assistant_text_with_messages() {
     let harness = TestHarness::new("rpc_get_last_assistant_text_with_messages");
     let cassette_dir = cassette_root();
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .expect("build test runtime");
     let handle = runtime.handle();
@@ -334,12 +336,12 @@ fn rpc_get_last_assistant_text_with_messages() {
         let agent_session = build_agent_session(session, &cassette_dir);
         let options = make_rpc_options(&harness, &handle);
 
-        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (in_tx, in_rx) = tokio::sync::mpsc::channel::<String>(16);
         let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
         let out_rx = Arc::new(Mutex::new(out_rx));
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
-        let cx = asupersync::Cx::for_testing();
+        
 
         in_tx
             .send(
@@ -368,7 +370,8 @@ fn rpc_get_last_assistant_text_with_messages() {
 fn rpc_get_last_assistant_text_empty_session() {
     let harness = TestHarness::new("rpc_get_last_assistant_text_empty_session");
     let cassette_dir = cassette_root();
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .expect("build test runtime");
     let handle = runtime.handle();
@@ -377,12 +380,12 @@ fn rpc_get_last_assistant_text_empty_session() {
         let agent_session = build_agent_session(Session::in_memory(), &cassette_dir);
         let options = make_rpc_options(&harness, &handle);
 
-        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (in_tx, in_rx) = tokio::sync::mpsc::channel::<String>(16);
         let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
         let out_rx = Arc::new(Mutex::new(out_rx));
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
-        let cx = asupersync::Cx::for_testing();
+        
 
         in_tx
             .send(
@@ -411,7 +414,8 @@ fn rpc_get_last_assistant_text_empty_session() {
 fn rpc_get_commands_returns_command_list() {
     let harness = TestHarness::new("rpc_get_commands_returns_command_list");
     let cassette_dir = cassette_root();
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .expect("build test runtime");
     let handle = runtime.handle();
@@ -420,15 +424,14 @@ fn rpc_get_commands_returns_command_list() {
         let agent_session = build_agent_session(Session::in_memory(), &cassette_dir);
         let options = make_rpc_options(&harness, &handle);
 
-        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (in_tx, in_rx) = tokio::sync::mpsc::channel::<String>(16);
         let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
         let out_rx = Arc::new(Mutex::new(out_rx));
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
-        let cx = asupersync::Cx::for_testing();
 
-        in_tx
-            .send(&cx, r#"{"id":"1","type":"get_commands"}"#.to_string())
+        let _ = in_tx
+            .send(r#"{"id":"1","type":"get_commands"}"#.to_string())
             .await
             .expect("send get_commands");
         let line = recv_line(&out_rx, "get_commands response")
@@ -451,7 +454,8 @@ fn rpc_get_commands_returns_command_list() {
 fn rpc_export_html_with_messages() {
     let harness = TestHarness::new("rpc_export_html_with_messages");
     let cassette_dir = cassette_root();
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .expect("build test runtime");
     let handle = runtime.handle();
@@ -466,15 +470,14 @@ fn rpc_export_html_with_messages() {
         let agent_session = build_agent_session(session, &cassette_dir);
         let options = make_rpc_options(&harness, &handle);
 
-        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (in_tx, in_rx) = tokio::sync::mpsc::channel::<String>(16);
         let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
         let out_rx = Arc::new(Mutex::new(out_rx));
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
-        let cx = asupersync::Cx::for_testing();
 
-        in_tx
-            .send(&cx, r#"{"id":"1","type":"export_html"}"#.to_string())
+        let _ = in_tx
+            .send(r#"{"id":"1","type":"export_html"}"#.to_string())
             .await
             .expect("send export_html");
         let line = recv_line(&out_rx, "export_html response")
@@ -496,7 +499,8 @@ fn rpc_export_html_with_messages() {
 fn rpc_set_steering_mode_accepts_valid_mode() {
     let harness = TestHarness::new("rpc_set_steering_mode_accepts_valid_mode");
     let cassette_dir = cassette_root();
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .expect("build test runtime");
     let handle = runtime.handle();
@@ -505,12 +509,12 @@ fn rpc_set_steering_mode_accepts_valid_mode() {
         let agent_session = build_agent_session(Session::in_memory(), &cassette_dir);
         let options = make_rpc_options(&harness, &handle);
 
-        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (in_tx, in_rx) = tokio::sync::mpsc::channel::<String>(16);
         let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
         let out_rx = Arc::new(Mutex::new(out_rx));
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
-        let cx = asupersync::Cx::for_testing();
+        
 
         in_tx
             .send(
@@ -536,7 +540,8 @@ fn rpc_set_steering_mode_accepts_valid_mode() {
 fn rpc_set_auto_compaction_toggle() {
     let harness = TestHarness::new("rpc_set_auto_compaction_toggle");
     let cassette_dir = cassette_root();
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .expect("build test runtime");
     let handle = runtime.handle();
@@ -545,12 +550,12 @@ fn rpc_set_auto_compaction_toggle() {
         let agent_session = build_agent_session(Session::in_memory(), &cassette_dir);
         let options = make_rpc_options(&harness, &handle);
 
-        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (in_tx, in_rx) = tokio::sync::mpsc::channel::<String>(16);
         let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
         let out_rx = Arc::new(Mutex::new(out_rx));
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
-        let cx = asupersync::Cx::for_testing();
+        
 
         in_tx
             .send(
@@ -576,7 +581,8 @@ fn rpc_set_auto_compaction_toggle() {
 fn rpc_set_auto_retry_toggle() {
     let harness = TestHarness::new("rpc_set_auto_retry_toggle");
     let cassette_dir = cassette_root();
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .expect("build test runtime");
     let handle = runtime.handle();
@@ -585,12 +591,12 @@ fn rpc_set_auto_retry_toggle() {
         let agent_session = build_agent_session(Session::in_memory(), &cassette_dir);
         let options = make_rpc_options(&harness, &handle);
 
-        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (in_tx, in_rx) = tokio::sync::mpsc::channel::<String>(16);
         let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
         let out_rx = Arc::new(Mutex::new(out_rx));
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
-        let cx = asupersync::Cx::for_testing();
+        
 
         in_tx
             .send(
@@ -616,7 +622,8 @@ fn rpc_set_auto_retry_toggle() {
 fn rpc_multiple_commands_preserve_id_ordering() {
     let harness = TestHarness::new("rpc_multiple_commands_preserve_id_ordering");
     let cassette_dir = cassette_root();
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .expect("build test runtime");
     let handle = runtime.handle();
@@ -625,16 +632,16 @@ fn rpc_multiple_commands_preserve_id_ordering() {
         let agent_session = build_agent_session(Session::in_memory(), &cassette_dir);
         let options = make_rpc_options(&harness, &handle);
 
-        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (in_tx, in_rx) = tokio::sync::mpsc::channel::<String>(16);
         let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
         let out_rx = Arc::new(Mutex::new(out_rx));
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
-        let cx = asupersync::Cx::for_testing();
+        
 
         // Send 3 quick commands
         in_tx
-            .send(&cx, r#"{"id":"a","type":"get_state"}"#.to_string())
+            .send(r#"{"id":"a","type":"get_state"}"#.to_string())
             .await
             .expect("send a");
         in_tx
@@ -645,7 +652,7 @@ fn rpc_multiple_commands_preserve_id_ordering() {
             .await
             .expect("send b");
         in_tx
-            .send(&cx, r#"{"id":"c","type":"get_commands"}"#.to_string())
+            .send(r#"{"id":"c","type":"get_commands"}"#.to_string())
             .await
             .expect("send c");
 
@@ -676,7 +683,8 @@ fn rpc_multiple_commands_preserve_id_ordering() {
 fn rpc_steer_missing_message_returns_error() {
     let harness = TestHarness::new("rpc_steer_missing_message_returns_error");
     let cassette_dir = cassette_root();
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .expect("build test runtime");
     let handle = runtime.handle();
@@ -685,15 +693,14 @@ fn rpc_steer_missing_message_returns_error() {
         let agent_session = build_agent_session(Session::in_memory(), &cassette_dir);
         let options = make_rpc_options(&harness, &handle);
 
-        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (in_tx, in_rx) = tokio::sync::mpsc::channel::<String>(16);
         let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
         let out_rx = Arc::new(Mutex::new(out_rx));
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
-        let cx = asupersync::Cx::for_testing();
 
-        in_tx
-            .send(&cx, r#"{"id":"1","type":"steer"}"#.to_string())
+        let _ = in_tx
+            .send(r#"{"id":"1","type":"steer"}"#.to_string())
             .await
             .expect("send steer without message");
         let line = recv_line(&out_rx, "steer response")
@@ -717,7 +724,8 @@ fn rpc_steer_missing_message_returns_error() {
 fn rpc_follow_up_missing_message_returns_error() {
     let harness = TestHarness::new("rpc_follow_up_missing_message_returns_error");
     let cassette_dir = cassette_root();
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .expect("build test runtime");
     let handle = runtime.handle();
@@ -726,15 +734,14 @@ fn rpc_follow_up_missing_message_returns_error() {
         let agent_session = build_agent_session(Session::in_memory(), &cassette_dir);
         let options = make_rpc_options(&harness, &handle);
 
-        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (in_tx, in_rx) = tokio::sync::mpsc::channel::<String>(16);
         let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
         let out_rx = Arc::new(Mutex::new(out_rx));
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
-        let cx = asupersync::Cx::for_testing();
 
-        in_tx
-            .send(&cx, r#"{"id":"1","type":"follow_up"}"#.to_string())
+        let _ = in_tx
+            .send(r#"{"id":"1","type":"follow_up"}"#.to_string())
             .await
             .expect("send follow_up without message");
         let line = recv_line(&out_rx, "follow_up response")
@@ -756,7 +763,8 @@ fn rpc_follow_up_missing_message_returns_error() {
 fn rpc_follow_up_aliases_missing_message_return_error() {
     let harness = TestHarness::new("rpc_follow_up_aliases_missing_message_return_error");
     let cassette_dir = cassette_root();
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .expect("build test runtime");
     let handle = runtime.handle();
@@ -765,12 +773,12 @@ fn rpc_follow_up_aliases_missing_message_return_error() {
         let agent_session = build_agent_session(Session::in_memory(), &cassette_dir);
         let options = make_rpc_options(&harness, &handle);
 
-        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (in_tx, in_rx) = tokio::sync::mpsc::channel::<String>(16);
         let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
         let out_rx = Arc::new(Mutex::new(out_rx));
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
-        let cx = asupersync::Cx::for_testing();
+        
 
         let aliases = [
             ("a", r#"{"id":"a","type":"follow-up"}"#),
@@ -778,7 +786,7 @@ fn rpc_follow_up_aliases_missing_message_return_error() {
             ("c", r#"{"id":"c","type":"followUp"}"#),
         ];
         for (id, cmd) in aliases {
-            in_tx.send(&cx, cmd.to_string()).await.expect("send alias");
+            let _ = in_tx.send(cmd.to_string()).await;
             let line = recv_line(&out_rx, "follow_up alias response")
                 .await
                 .expect("recv alias response");
@@ -802,7 +810,8 @@ fn rpc_follow_up_aliases_missing_message_return_error() {
 fn rpc_kebab_and_camel_aliases_dispatch_to_canonical_commands() {
     let harness = TestHarness::new("rpc_kebab_and_camel_aliases_dispatch_to_canonical_commands");
     let cassette_dir = cassette_root();
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .expect("build test runtime");
     let handle = runtime.handle();
@@ -811,15 +820,14 @@ fn rpc_kebab_and_camel_aliases_dispatch_to_canonical_commands() {
         let agent_session = build_agent_session(Session::in_memory(), &cassette_dir);
         let options = make_rpc_options(&harness, &handle);
 
-        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (in_tx, in_rx) = tokio::sync::mpsc::channel::<String>(16);
         let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
         let out_rx = Arc::new(Mutex::new(out_rx));
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
-        let cx = asupersync::Cx::for_testing();
 
-        in_tx
-            .send(&cx, r#"{"id":"1","type":"get-state"}"#.to_string())
+        let _ = in_tx
+            .send(r#"{"id":"1","type":"get-state"}"#.to_string())
             .await
             .expect("send get-state");
         let line = recv_line(&out_rx, "get-state response")
@@ -876,7 +884,7 @@ fn rpc_kebab_and_camel_aliases_dispatch_to_canonical_commands() {
         assert_rpc_success(&line, "set_auto_retry");
 
         in_tx
-            .send(&cx, r#"{"id":"6","type":"set-model"}"#.to_string())
+            .send(r#"{"id":"6","type":"set-model"}"#.to_string())
             .await
             .expect("send set-model");
         let line = recv_line(&out_rx, "set-model response")
@@ -902,7 +910,8 @@ fn rpc_kebab_and_camel_aliases_dispatch_to_canonical_commands() {
 fn rpc_empty_line_is_skipped_gracefully() {
     let harness = TestHarness::new("rpc_empty_line_is_skipped_gracefully");
     let cassette_dir = cassette_root();
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .expect("build test runtime");
     let handle = runtime.handle();
@@ -911,22 +920,22 @@ fn rpc_empty_line_is_skipped_gracefully() {
         let agent_session = build_agent_session(Session::in_memory(), &cassette_dir);
         let options = make_rpc_options(&harness, &handle);
 
-        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (in_tx, in_rx) = tokio::sync::mpsc::channel::<String>(16);
         let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
         let out_rx = Arc::new(Mutex::new(out_rx));
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
-        let cx = asupersync::Cx::for_testing();
+        
 
         // Send empty string, then a valid command
-        in_tx.send(&cx, String::new()).await.expect("send empty");
+        let _ = in_tx.send(String::new()).await;
         in_tx
-            .send(&cx, r#"{"id":"1","type":"get_state"}"#.to_string())
+            .send(r#"{"id":"1","type":"get_state"}"#.to_string())
             .await
             .expect("send get_state");
 
         // Wait a bit for processing
-        asupersync::time::sleep(asupersync::time::wall_now(), Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
         // We should get a response for get_state (empty string may or may not produce output)
         let mut found_get_state = false;
@@ -947,7 +956,7 @@ fn rpc_empty_line_is_skipped_gracefully() {
                 Err(TryRecvError::Disconnected) => break,
                 Err(TryRecvError::Empty) => {}
             }
-            asupersync::time::sleep(asupersync::time::wall_now(), Duration::from_millis(10)).await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
         drop(in_tx);
@@ -966,7 +975,8 @@ fn rpc_empty_line_is_skipped_gracefully() {
 fn rpc_server_exits_cleanly_when_input_channel_closes() {
     let harness = TestHarness::new("rpc_server_exits_cleanly_when_input_channel_closes");
     let cassette_dir = cassette_root();
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .expect("build test runtime");
     let handle = runtime.handle();
@@ -975,7 +985,7 @@ fn rpc_server_exits_cleanly_when_input_channel_closes() {
         let agent_session = build_agent_session(Session::in_memory(), &cassette_dir);
         let options = make_rpc_options(&harness, &handle);
 
-        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (in_tx, in_rx) = tokio::sync::mpsc::channel::<String>(16);
         let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
         let _out_rx = Arc::new(Mutex::new(out_rx));
 

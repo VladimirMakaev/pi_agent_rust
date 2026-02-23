@@ -350,11 +350,7 @@ async fn collect_stream_events(
     context: Context<'static>,
     options: StreamOptions,
 ) -> Result<Vec<StreamEvent>, String> {
-    let now = asupersync::Cx::current()
-        .and_then(|cx| cx.timer_driver())
-        .map_or_else(asupersync::time::wall_now, |timer| timer.now());
-
-    let timeout_fut = asupersync::time::sleep(now, LIVE_E2E_TIMEOUT).fuse();
+    let timeout_fut = tokio::time::sleep(LIVE_E2E_TIMEOUT).fuse();
     let run_fut = async move {
         let stream = provider
             .stream(&context, &options)
@@ -579,10 +575,10 @@ fn e2e_cross_provider_parity() {
     let registry = LiveE2eRegistry::load(harness.log())
         .unwrap_or_else(|err| panic!("failed to load live E2E registry: {err}"));
 
-    asupersync::test_utils::run_test(|| {
+    run_async(async move {
         let harness_ref = &harness;
         let registry = registry.clone();
-        async move {
+
             let mut records = Vec::new();
 
             for target in PARITY_TARGETS {
@@ -750,6 +746,5 @@ fn e2e_cross_provider_parity() {
             write_markdown_report(&markdown_path, &records)
                 .unwrap_or_else(|err| panic!("write parity markdown artifact: {err}"));
             harness_ref.record_artifact("e2e_cross_provider_parity.md", &markdown_path);
-        }
     });
 }

@@ -2076,8 +2076,7 @@ fn parse_must_pass_gate_verdict_reads_current_schema() {
         "observed": {
             "must_pass_total": 208,
             "must_pass_passed": 208
-        }
-    });
+        });
 
     let (status, passed, total) = parse_must_pass_gate_verdict(&gate);
     assert_eq!(status, "pass");
@@ -2109,8 +2108,7 @@ fn validate_must_pass_gate_metadata_accepts_current_schema() {
         "observed": {
             "must_pass_total": 208,
             "must_pass_passed": 208
-        }
-    });
+        });
 
     let errors = validate_must_pass_gate_metadata(&gate);
     assert!(
@@ -2235,8 +2233,7 @@ fn parameter_sweeps_contract_accepts_consistent_shape() {
                     "candidate_values": [4, 8, 12]
                 }
             ]
-        }
-    });
+        });
 
     let (signal, detail) = validate_parameter_sweeps_artifact(&artifact);
     assert_eq!(signal, Signal::Pass, "{detail}");
@@ -2275,8 +2272,7 @@ fn parameter_sweeps_contract_rejects_readiness_incoherence() {
                     "candidate_values": [4, 8, 12]
                 }
             ]
-        }
-    });
+        });
 
     let (signal, detail) = validate_parameter_sweeps_artifact(&artifact);
     assert_eq!(signal, Signal::Fail);

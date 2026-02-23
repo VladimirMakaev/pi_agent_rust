@@ -379,7 +379,7 @@ macro_rules! gemini_test {
     ($test_name:ident, $scenario_fn:ident) => {
         #[test]
         fn $test_name() {
-            asupersync::test_utils::run_test(|| async {
+            run_async( async {
                 run_scenario($scenario_fn(&gemini_model())).await;
             });
         }

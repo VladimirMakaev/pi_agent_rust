@@ -54,7 +54,7 @@ mod tests {
 
     #[test]
     fn test_hidden_custom_messages_filtered_from_context() {
-        asupersync::test_utils::run_test(|| async {
+        run_async( async {
             let captured_messages = Arc::new(Mutex::new(None));
             let provider = Arc::new(CapturingProvider {
                 context: captured_messages.clone(),
@@ -120,7 +120,6 @@ mod tests {
                     assert!(c.display);
                 }
                 _ => panic!("Expected visible custom message"),
-            }
-        });
+            });
     }
 }

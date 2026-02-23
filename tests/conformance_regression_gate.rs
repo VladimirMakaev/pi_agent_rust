@@ -384,8 +384,7 @@ fn regression_verdict_is_generated() {
                 "threshold": max_fail,
                 "ok": fail_count_ok
             }
-        }
-    });
+        });
 
     // Verify the structure is valid JSON.
     assert!(verdict_json["schema"].is_string());

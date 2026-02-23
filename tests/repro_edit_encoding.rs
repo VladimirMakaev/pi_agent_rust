@@ -6,7 +6,7 @@ use tempfile::tempdir;
 
 #[test]
 fn test_edit_tool_fails_on_invalid_utf8() {
-    asupersync::test_utils::run_test(|| async {
+    run_async( async {
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("test.bin");
 

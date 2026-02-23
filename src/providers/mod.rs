@@ -1065,8 +1065,6 @@ mod tests {
     use crate::extensions_js::PiJsRuntimeConfig;
     use crate::model::{ContentBlock, Message, UserContent, UserMessage};
     use crate::tools::ToolRegistry;
-    use asupersync::runtime::RuntimeBuilder;
-    use asupersync::time::{sleep, wall_now};
     use futures::StreamExt;
     use std::sync::Arc;
     use std::time::Duration;

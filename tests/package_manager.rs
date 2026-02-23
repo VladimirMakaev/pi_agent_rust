@@ -2,7 +2,7 @@
 
 mod common;
 
-use asupersync::runtime::RuntimeBuilder;
+use tokio::runtime::Builder as RuntimeBuilder;
 use common::TestHarness;
 use pi::package_manager::{
     PackageManager, PackageScope, ResolveExtensionSourcesOptions, ResolveRoots, ResolvedResource,
@@ -24,7 +24,7 @@ fn write_json(path: &Path, value: &serde_json::Value) {
 fn run_async<T>(future: impl std::future::Future<Output = T>) -> T {
     let runtime = RuntimeBuilder::current_thread()
         .build()
-        .expect("build asupersync runtime");
+        .expect("build tokio runtime");
     runtime.block_on(future)
 }
 
@@ -45,8 +45,7 @@ fn log_resolved(harness: &TestHarness, label: &str, items: &[ResolvedResource]) 
                         item.metadata.source
                     ),
                 ));
-            }
-        });
+            });
 }
 
 #[test]

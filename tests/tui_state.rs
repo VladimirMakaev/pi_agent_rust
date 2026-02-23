@@ -4,8 +4,8 @@ mod common;
 
 use std::fmt::Write;
 
-use asupersync::channel::mpsc;
-use asupersync::sync::Mutex;
+use tokio::sync::mpsc;
+use tokio::sync::Mutex;
 use bubbletea::{Cmd, KeyMsg, KeyType, Message, Model as BubbleteaModel, QuitMsg};
 use common::TestHarness;
 use futures::stream;
@@ -44,12 +44,12 @@ fn make_executable(path: &std::path::Path) {
     fs::set_permissions(path, perms).expect("set permissions");
 }
 
-fn test_runtime_handle() -> asupersync::runtime::RuntimeHandle {
-    static RT: OnceLock<asupersync::runtime::Runtime> = OnceLock::new();
+fn test_runtime_handle() -> tokio::runtime::Handle {
+    static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RT.get_or_init(|| {
-        asupersync::runtime::RuntimeBuilder::current_thread()
+        tokio::runtime::Builder::current_thread()
             .build()
-            .expect("build asupersync runtime")
+            .expect("build tokio runtime")
     })
     .handle()
 }
@@ -235,8 +235,7 @@ fn build_app_with_session_and_events_and_extension(
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start js runtime")
-        }
-    });
+        });
     manager.set_js_runtime(runtime);
     let spec = JsExtensionLoadSpec::from_entry_path(&ext_entry_path).expect("load spec");
     common::run_async({
@@ -246,8 +245,7 @@ fn build_app_with_session_and_events_and_extension(
                 .load_js_extensions(vec![spec])
                 .await
                 .expect("load extension");
-        }
-    });
+        });
 
     let mut app = PiApp::new(
         agent,
@@ -811,8 +809,7 @@ fn apply_msg(harness: &TestHarness, app: &mut PiApp, label: &str, msg: Message) 
         if !delta.before_excerpt.is_empty() || !delta.after_excerpt.is_empty() {
             ctx.push(("before_excerpt".to_string(), delta.before_excerpt.clone()));
             ctx.push(("after_excerpt".to_string(), delta.after_excerpt.clone()));
-        }
-    });
+        });
 
     StepOutcome {
         label: label.to_string(),

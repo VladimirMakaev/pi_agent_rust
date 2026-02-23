@@ -17,9 +17,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 mod read_tool {
     use super::*;
 
-    #[test]
-    fn test_read_existing_file() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_read_existing_file() {
             let temp_dir = tempfile::tempdir().unwrap();
             let test_file = temp_dir.path().join("test.txt");
             std::fs::write(&test_file, "line1\nline2\nline3\nline4\nline5").unwrap();
@@ -41,12 +40,10 @@ mod read_tool {
                 "    1→line1\n    2→line2\n    3→line3\n    4→line4\n    5→line5"
             );
             assert!(result.details.is_none());
-        });
     }
 
-    #[test]
-    fn test_read_with_offset_and_limit() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_read_with_offset_and_limit() {
             let temp_dir = tempfile::tempdir().unwrap();
             let test_file = temp_dir.path().join("test.txt");
             std::fs::write(&test_file, "line1\nline2\nline3\nline4\nline5").unwrap();
@@ -68,12 +65,10 @@ mod read_tool {
             assert!(text.contains("line3"));
             assert!(text.contains("[2 more lines in file. Use offset=4 to continue.]"));
             assert!(result.details.is_none());
-        });
     }
 
-    #[test]
-    fn test_read_offset_beyond_eof_reports_error() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_read_offset_beyond_eof_reports_error() {
             let harness = TestHarness::new("read_offset_beyond_eof_reports_error");
             let path = harness.create_file("tiny.txt", b"line1\nline2");
             let tool = pi::tools::ReadTool::new(harness.temp_dir());
@@ -93,12 +88,10 @@ mod read_tool {
                     ctx.push(("message".into(), message.clone()));
                 });
             assert!(message.contains("Offset 10 is beyond end of file"));
-        });
     }
 
-    #[test]
-    fn test_read_first_line_exceeds_limit_sets_truncation_details() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_read_first_line_exceeds_limit_sets_truncation_details() {
             let harness = TestHarness::new("read_first_line_exceeds_limit_sets_truncation_details");
             let long_line = "a".repeat(pi::tools::DEFAULT_MAX_BYTES + 128);
             let path = harness.create_file("huge.txt", long_line.as_bytes());
@@ -121,12 +114,10 @@ mod read_tool {
                 truncation.get("firstLineExceedsLimit"),
                 Some(&serde_json::Value::Bool(true))
             );
-        });
     }
 
-    #[test]
-    fn test_read_truncation_sets_details_and_hint() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_read_truncation_sets_details_and_hint() {
             let harness = TestHarness::new("read_truncation_sets_details_and_hint");
             let total_lines = pi::tools::DEFAULT_MAX_LINES + 5;
             let lines: Vec<String> = (1..=total_lines).map(|i| format!("line{i}")).collect();
@@ -173,12 +164,10 @@ mod read_tool {
                 truncation.get("truncatedBy"),
                 Some(&serde_json::Value::String("lines".to_string()))
             );
-        });
     }
 
-    #[test]
-    fn test_read_blocked_images_returns_error() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_read_blocked_images_returns_error() {
             let harness = TestHarness::new("read_blocked_images_returns_error");
             let path = harness.create_file("image.png", b"\x89PNG\r\n\x1A\n");
             let tool = pi::tools::ReadTool::with_settings(harness.temp_dir(), true, true);
@@ -197,13 +186,11 @@ mod read_tool {
                     ctx.push(("message".into(), message.clone()));
                 });
             assert!(message.contains("Images are blocked by configuration"));
-        });
     }
 
     #[cfg(unix)]
-    #[test]
-    fn test_read_permission_denied_is_reported() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_read_permission_denied_is_reported() {
             let harness = TestHarness::new("read_permission_denied_is_reported");
             let path = harness.create_file("secret.txt", b"top secret");
             let mut perms = std::fs::metadata(&path).unwrap().permissions();
@@ -227,12 +214,10 @@ mod read_tool {
                 });
             assert!(message.contains("Tool error: read:"));
             assert!(message.to_lowercase().contains("permission"));
-        });
     }
 
-    #[test]
-    fn test_read_nonexistent_file() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_read_nonexistent_file() {
             let temp_dir = tempfile::tempdir().unwrap();
             let tool = pi::tools::ReadTool::new(temp_dir.path());
             let input = serde_json::json!({
@@ -241,12 +226,10 @@ mod read_tool {
 
             let result = tool.execute("test-id", input, None).await;
             assert!(result.is_err());
-        });
     }
 
-    #[test]
-    fn test_read_directory() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_read_directory() {
             let temp_dir = tempfile::tempdir().unwrap();
             let tool = pi::tools::ReadTool::new(temp_dir.path());
             let input = serde_json::json!({
@@ -255,16 +238,14 @@ mod read_tool {
 
             let result = tool.execute("test-id", input, None).await;
             assert!(result.is_err());
-        });
     }
 }
 
 mod write_tool {
     use super::*;
 
-    #[test]
-    fn test_write_new_file() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_write_new_file() {
             let temp_dir = tempfile::tempdir().unwrap();
             let test_file = temp_dir.path().join("new_file.txt");
             let content = "Hello, World!\nLine 2";
@@ -287,12 +268,10 @@ mod write_tool {
             let text = get_text_content(&result.content);
             assert!(text.contains("Successfully wrote 20 bytes"));
             assert!(result.details.is_none());
-        });
     }
 
-    #[test]
-    fn test_write_reports_utf16_byte_count() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_write_reports_utf16_byte_count() {
             let harness = TestHarness::new("write_reports_utf16_byte_count");
             let test_file = harness.temp_path("utf16.txt");
             let content = "A😃";
@@ -312,13 +291,11 @@ mod write_tool {
             let text = get_text_content(&result.content);
             assert!(text.contains(&format!("Successfully wrote {expected} bytes")));
             assert_eq!(std::fs::read_to_string(&test_file).unwrap(), content);
-        });
     }
 
     #[cfg(unix)]
-    #[test]
-    fn test_write_permission_denied_is_reported() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_write_permission_denied_is_reported() {
             let harness = TestHarness::new("write_permission_denied_is_reported");
             let dir = harness.create_dir("readonly");
             let mut perms = std::fs::metadata(&dir).unwrap().permissions();
@@ -342,12 +319,10 @@ mod write_tool {
                     ctx.push(("message".into(), message.clone()));
                 });
             assert!(message.contains("Tool error: write:"));
-        });
     }
 
-    #[test]
-    fn test_write_creates_directories() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_write_creates_directories() {
             let temp_dir = tempfile::tempdir().unwrap();
             let test_file = temp_dir.path().join("nested/dir/file.txt");
 
@@ -360,16 +335,14 @@ mod write_tool {
             let result = tool.execute("test-id", input, None).await;
             assert!(result.is_ok());
             assert!(test_file.exists());
-        });
     }
 }
 
 mod edit_tool {
     use super::*;
 
-    #[test]
-    fn test_edit_replace_text() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_edit_replace_text() {
             let temp_dir = tempfile::tempdir().unwrap();
             let test_file = temp_dir.path().join("test.txt");
             std::fs::write(&test_file, "Hello, World!\nHow are you?").unwrap();
@@ -401,12 +374,10 @@ mod edit_tool {
                     .as_ref()
                     .is_some_and(|d| d.get("diff").is_some())
             );
-        });
     }
 
-    #[test]
-    fn test_edit_missing_file_reports_not_found() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_edit_missing_file_reports_not_found() {
             let harness = TestHarness::new("edit_missing_file_reports_not_found");
             let tool = pi::tools::EditTool::new(harness.temp_dir());
             let input = serde_json::json!({
@@ -426,12 +397,10 @@ mod edit_tool {
                     ctx.push(("message".into(), message.clone()));
                 });
             assert!(message.contains("File not found"));
-        });
     }
 
-    #[test]
-    fn test_edit_text_not_found() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_edit_text_not_found() {
             let temp_dir = tempfile::tempdir().unwrap();
             let test_file = temp_dir.path().join("test.txt");
             std::fs::write(&test_file, "Hello, World!").unwrap();
@@ -445,12 +414,10 @@ mod edit_tool {
 
             let result = tool.execute("test-id", input, None).await;
             assert!(result.is_err());
-        });
     }
 
-    #[test]
-    fn test_edit_multiple_occurrences() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_edit_multiple_occurrences() {
             let temp_dir = tempfile::tempdir().unwrap();
             let test_file = temp_dir.path().join("test.txt");
             std::fs::write(&test_file, "Hello, Hello, Hello!").unwrap();
@@ -468,16 +435,14 @@ mod edit_tool {
                 .expect_err("should error");
             let message = err.to_string();
             assert!(message.contains("Found 3 occurrences"));
-        });
     }
 }
 
 mod bash_tool {
     use super::*;
 
-    #[test]
-    fn test_bash_simple_command() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_bash_simple_command() {
             let temp_dir = tempfile::tempdir().unwrap();
             let tool = pi::tools::BashTool::new(temp_dir.path());
             let input = serde_json::json!({
@@ -492,12 +457,10 @@ mod bash_tool {
             let text = get_text_content(&result.content);
             assert!(text.contains("Hello, World!"));
             assert!(result.details.is_none());
-        });
     }
 
-    #[test]
-    fn test_bash_timeout_is_reported() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_bash_timeout_is_reported() {
             let harness = TestHarness::new("bash_timeout_is_reported");
             let tool = pi::tools::BashTool::new(harness.temp_dir());
             let input = serde_json::json!({
@@ -514,13 +477,11 @@ mod bash_tool {
                 ctx.push(("message".into(), message.clone()));
             });
             assert!(message.contains("Command timed out after 1 seconds"));
-        });
     }
 
     #[cfg(unix)]
-    #[test]
-    fn test_bash_truncation_sets_details() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_bash_truncation_sets_details() {
             let harness = TestHarness::new("bash_truncation_sets_details");
             let tool = pi::tools::BashTool::new(harness.temp_dir());
             let input = serde_json::json!({
@@ -537,12 +498,10 @@ mod bash_tool {
             let details = result.details.expect("expected details");
             assert!(details.get("truncation").is_some());
             assert!(details.get("fullOutputPath").is_some());
-        });
     }
 
-    #[test]
-    fn test_bash_exit_code() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_bash_exit_code() {
             let temp_dir = tempfile::tempdir().unwrap();
             let tool = pi::tools::BashTool::new(temp_dir.path());
             let input = serde_json::json!({
@@ -554,12 +513,10 @@ mod bash_tool {
                 .await
                 .expect_err("should error");
             assert!(err.to_string().contains("Command exited with code 42"));
-        });
     }
 
-    #[test]
-    fn test_bash_working_directory() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_bash_working_directory() {
             let temp_dir = tempfile::tempdir().unwrap();
             std::fs::write(temp_dir.path().join("test.txt"), "content").unwrap();
 
@@ -570,16 +527,14 @@ mod bash_tool {
 
             let result = tool.execute("test-id", input, None).await;
             assert!(result.is_ok());
-        });
     }
 }
 
 mod grep_tool {
     use super::*;
 
-    #[test]
-    fn test_grep_basic_pattern() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_grep_basic_pattern() {
             let temp_dir = tempfile::tempdir().unwrap();
             std::fs::write(
                 temp_dir.path().join("test.txt"),
@@ -601,12 +556,10 @@ mod grep_tool {
             assert!(text.contains("hello world"));
             assert!(text.contains("hello again"));
             // Details are only present when limits/truncation occur
-        });
     }
 
-    #[test]
-    fn test_grep_invalid_path_reports_error() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_grep_invalid_path_reports_error() {
             let harness = TestHarness::new("grep_invalid_path_reports_error");
             let tool = pi::tools::GrepTool::new(harness.temp_dir());
             let input = serde_json::json!({
@@ -625,12 +578,10 @@ mod grep_tool {
                     ctx.push(("message".into(), message.clone()));
                 });
             assert!(message.contains("Cannot access path"));
-        });
     }
 
-    #[test]
-    fn test_grep_case_insensitive() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_grep_case_insensitive() {
             let temp_dir = tempfile::tempdir().unwrap();
             std::fs::write(temp_dir.path().join("test.txt"), "Hello World\nHELLO WORLD").unwrap();
 
@@ -649,12 +600,10 @@ mod grep_tool {
             assert!(text.contains("Hello World"));
             assert!(text.contains("HELLO WORLD"));
             // Details are only present when limits/truncation occur
-        });
     }
 
-    #[test]
-    fn test_grep_limit_reached_sets_details() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_grep_limit_reached_sets_details() {
             let harness = TestHarness::new("grep_limit_reached_sets_details");
             harness.create_file("test.txt", b"match\nmatch\nmatch\n");
             let tool = pi::tools::GrepTool::new(harness.temp_dir());
@@ -678,12 +627,10 @@ mod grep_tool {
                 details.get("matchLimitReached"),
                 Some(&serde_json::Value::Number(1u64.into()))
             );
-        });
     }
 
-    #[test]
-    fn test_grep_long_line_truncates_and_marks_details() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_grep_long_line_truncates_and_marks_details() {
             let harness = TestHarness::new("grep_long_line_truncates_and_marks_details");
             let long_line = format!("match {}", "a".repeat(600));
             harness.create_file("long.txt", long_line.as_bytes());
@@ -707,12 +654,10 @@ mod grep_tool {
                 details.get("linesTruncated"),
                 Some(&serde_json::Value::Bool(true))
             );
-        });
     }
 
-    #[test]
-    fn test_grep_no_matches() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_grep_no_matches() {
             let temp_dir = tempfile::tempdir().unwrap();
             std::fs::write(temp_dir.path().join("test.txt"), "hello world").unwrap();
 
@@ -728,16 +673,14 @@ mod grep_tool {
 
             let text = get_text_content(&result.content);
             assert!(text.contains("No matches found"));
-        });
     }
 }
 
 mod find_tool {
     use super::*;
 
-    #[test]
-    fn test_find_glob_pattern() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_find_glob_pattern() {
             let temp_dir = tempfile::tempdir().unwrap();
             std::fs::write(temp_dir.path().join("file1.txt"), "").unwrap();
             std::fs::write(temp_dir.path().join("file2.txt"), "").unwrap();
@@ -758,12 +701,10 @@ mod find_tool {
             assert!(text.contains("file2.txt"));
             assert!(!text.contains("file.rs"));
             // Details are only present when limits/truncation occur
-        });
     }
 
-    #[test]
-    fn test_find_invalid_path_reports_error() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_find_invalid_path_reports_error() {
             let harness = TestHarness::new("find_invalid_path_reports_error");
             let tool = pi::tools::FindTool::new(harness.temp_dir());
             let input = serde_json::json!({
@@ -782,12 +723,10 @@ mod find_tool {
                     ctx.push(("message".into(), message.clone()));
                 });
             assert!(message.contains("Path not found"));
-        });
     }
 
-    #[test]
-    fn test_find_limit_reached_sets_details() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_find_limit_reached_sets_details() {
             let harness = TestHarness::new("find_limit_reached_sets_details");
             harness.create_file("file1.txt", b"");
             harness.create_file("file2.txt", b"");
@@ -809,12 +748,10 @@ mod find_tool {
                 details.get("resultLimitReached"),
                 Some(&serde_json::Value::Number(1u64.into()))
             );
-        });
     }
 
-    #[test]
-    fn test_find_no_matches() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_find_no_matches() {
             let temp_dir = tempfile::tempdir().unwrap();
             std::fs::write(temp_dir.path().join("file.txt"), "").unwrap();
 
@@ -830,16 +767,14 @@ mod find_tool {
 
             let text = get_text_content(&result.content);
             assert!(text.contains("No files found"));
-        });
     }
 }
 
 mod ls_tool {
     use super::*;
 
-    #[test]
-    fn test_ls_directory() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_ls_directory() {
             let temp_dir = tempfile::tempdir().unwrap();
             std::fs::write(temp_dir.path().join("file.txt"), "content").unwrap();
             std::fs::create_dir(temp_dir.path().join("subdir")).unwrap();
@@ -856,12 +791,10 @@ mod ls_tool {
             assert!(text.contains("file.txt"));
             assert!(text.contains("subdir/"));
             // Details are only present when limits/truncation occur
-        });
     }
 
-    #[test]
-    fn test_ls_nonexistent_directory() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_ls_nonexistent_directory() {
             let temp_dir = tempfile::tempdir().unwrap();
             let tool = pi::tools::LsTool::new(temp_dir.path());
             let input = serde_json::json!({
@@ -870,12 +803,10 @@ mod ls_tool {
 
             let result = tool.execute("test-id", input, None).await;
             assert!(result.is_err());
-        });
     }
 
-    #[test]
-    fn test_ls_path_is_file_reports_error() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_ls_path_is_file_reports_error() {
             let harness = TestHarness::new("ls_path_is_file_reports_error");
             let path = harness.create_file("file.txt", b"content");
             let tool = pi::tools::LsTool::new(harness.temp_dir());
@@ -889,13 +820,11 @@ mod ls_tool {
                 .expect_err("should error");
             let message = err.to_string();
             assert!(message.contains("Not a directory"));
-        });
     }
 
     #[cfg(unix)]
-    #[test]
-    fn test_ls_permission_denied_is_reported() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_ls_permission_denied_is_reported() {
             let harness = TestHarness::new("ls_permission_denied_is_reported");
             let dir = harness.create_dir("locked");
             let mut perms = std::fs::metadata(&dir).unwrap().permissions();
@@ -913,12 +842,10 @@ mod ls_tool {
                 .expect_err("should error");
             let message = err.to_string();
             assert!(message.contains("Cannot read directory"));
-        });
     }
 
-    #[test]
-    fn test_ls_limit_reached_sets_details() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_ls_limit_reached_sets_details() {
             let harness = TestHarness::new("ls_limit_reached_sets_details");
             harness.create_file("file1.txt", b"");
             harness.create_file("file2.txt", b"");
@@ -939,12 +866,10 @@ mod ls_tool {
                 details.get("entryLimitReached"),
                 Some(&serde_json::Value::Number(1u64.into()))
             );
-        });
     }
 
-    #[test]
-    fn test_ls_empty_directory() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn test_ls_empty_directory() {
             let temp_dir = tempfile::tempdir().unwrap();
             let tool = pi::tools::LsTool::new(temp_dir.path());
             let input = serde_json::json!({});
@@ -956,7 +881,6 @@ mod ls_tool {
 
             let text = get_text_content(&result.content);
             assert!(text.contains("empty directory"));
-        });
     }
 }
 
@@ -1376,9 +1300,8 @@ fn log_tool_execution(
 mod e2e_read {
     use super::*;
 
-    #[test]
-    fn e2e_read_success_with_artifacts() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn e2e_read_success_with_artifacts() {
             let harness = TestHarness::new("e2e_read_success_with_artifacts");
             let path = harness.create_file("sample.txt", b"alpha\nbeta\ngamma");
             let tool = pi::tools::ReadTool::new(harness.temp_dir());
@@ -1395,12 +1318,10 @@ mod e2e_read {
             assert!(text.contains("alpha"));
             assert!(text.contains("gamma"));
             assert!(!output.is_error);
-        });
     }
 
-    #[test]
-    fn e2e_read_empty_file() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn e2e_read_empty_file() {
             let harness = TestHarness::new("e2e_read_empty_file");
             let path = harness.create_file("empty.txt", b"");
             let tool = pi::tools::ReadTool::new(harness.temp_dir());
@@ -1418,12 +1339,10 @@ mod e2e_read {
                 text.contains("empty") || text.is_empty() || text.trim().is_empty(),
                 "empty file should produce empty or 'empty' message, got: {text}"
             );
-        });
     }
 
-    #[test]
-    fn e2e_read_missing_file_with_artifacts() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn e2e_read_missing_file_with_artifacts() {
             let harness = TestHarness::new("e2e_read_missing_file_with_artifacts");
             let tool = pi::tools::ReadTool::new(harness.temp_dir());
             let input = serde_json::json!({
@@ -1435,12 +1354,10 @@ mod e2e_read {
                     .await;
 
             assert!(result.is_err());
-        });
     }
 
-    #[test]
-    fn e2e_read_truncation_details_captured() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn e2e_read_truncation_details_captured() {
             let harness = TestHarness::new("e2e_read_truncation_details_captured");
             let total_lines = pi::tools::DEFAULT_MAX_LINES + 10;
             let mut content = String::new();
@@ -1477,16 +1394,14 @@ mod e2e_read {
                     .unwrap_or(0)
                     >= total_lines as u64
             );
-        });
     }
 }
 
 mod e2e_write {
     use super::*;
 
-    #[test]
-    fn e2e_write_new_file_with_artifacts() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn e2e_write_new_file_with_artifacts() {
             let harness = TestHarness::new("e2e_write_new_file_with_artifacts");
             let path = harness.temp_path("output.txt");
             let tool = pi::tools::WriteTool::new(harness.temp_dir());
@@ -1504,12 +1419,10 @@ mod e2e_write {
             assert!(path.exists());
             let disk = std::fs::read_to_string(&path).unwrap();
             assert_eq!(disk, "hello world\nline two");
-        });
     }
 
-    #[test]
-    fn e2e_write_overwrite_existing() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn e2e_write_overwrite_existing() {
             let harness = TestHarness::new("e2e_write_overwrite_existing");
             let path = harness.create_file("existing.txt", b"old content");
             let tool = pi::tools::WriteTool::new(harness.temp_dir());
@@ -1526,16 +1439,14 @@ mod e2e_write {
             assert!(!output.is_error);
             let disk = std::fs::read_to_string(&path).unwrap();
             assert_eq!(disk, "new content");
-        });
     }
 }
 
 mod e2e_edit {
     use super::*;
 
-    #[test]
-    fn e2e_edit_success_with_artifacts() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn e2e_edit_success_with_artifacts() {
             let harness = TestHarness::new("e2e_edit_success_with_artifacts");
             let path = harness.create_file("code.rs", b"fn main() {\n    println!(\"old\");\n}\n");
             let tool = pi::tools::EditTool::new(harness.temp_dir());
@@ -1558,12 +1469,10 @@ mod e2e_edit {
             // Verify diff details are present
             let details = output.details.expect("should have diff details");
             assert!(details.get("diff").is_some());
-        });
     }
 
-    #[test]
-    fn e2e_edit_text_not_found_with_artifacts() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn e2e_edit_text_not_found_with_artifacts() {
             let harness = TestHarness::new("e2e_edit_text_not_found_with_artifacts");
             let path = harness.create_file("stable.txt", b"content stays");
             let tool = pi::tools::EditTool::new(harness.temp_dir());
@@ -1581,16 +1490,14 @@ mod e2e_edit {
             // File should not be modified
             let disk = std::fs::read_to_string(&path).unwrap();
             assert_eq!(disk, "content stays");
-        });
     }
 }
 
 mod e2e_bash {
     use super::*;
 
-    #[test]
-    fn e2e_bash_success_with_artifacts() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn e2e_bash_success_with_artifacts() {
             let harness = TestHarness::new("e2e_bash_success_with_artifacts");
             let tool = pi::tools::BashTool::new(harness.temp_dir());
             let input = serde_json::json!({
@@ -1605,12 +1512,10 @@ mod e2e_bash {
             let text = get_text_content(&output.content);
             assert!(text.contains("hello"));
             assert!(text.contains("world"));
-        });
     }
 
-    #[test]
-    fn e2e_bash_stderr_captured() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn e2e_bash_stderr_captured() {
             let harness = TestHarness::new("e2e_bash_stderr_captured");
             let tool = pi::tools::BashTool::new(harness.temp_dir());
             let input = serde_json::json!({
@@ -1626,12 +1531,10 @@ mod e2e_bash {
             // Both stdout and stderr should be captured
             assert!(text.contains("stdout_msg"));
             assert!(text.contains("stderr_msg"));
-        });
     }
 
-    #[test]
-    fn e2e_bash_nonexistent_command() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn e2e_bash_nonexistent_command() {
             let harness = TestHarness::new("e2e_bash_nonexistent_command");
             let tool = pi::tools::BashTool::new(harness.temp_dir());
             let input = serde_json::json!({
@@ -1649,12 +1552,10 @@ mod e2e_bash {
                 message.contains("127") || message.contains("not found"),
                 "expected exit code 127 or 'not found' in: {message}"
             );
-        });
     }
 
-    #[test]
-    fn e2e_bash_timeout_with_artifacts() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn e2e_bash_timeout_with_artifacts() {
             let harness = TestHarness::new("e2e_bash_timeout_with_artifacts");
             let tool = pi::tools::BashTool::new(harness.temp_dir());
             let input = serde_json::json!({
@@ -1669,12 +1570,10 @@ mod e2e_bash {
             assert!(result.is_err());
             let message = result.unwrap_err().to_string();
             assert!(message.contains("timed out"));
-        });
     }
 
-    #[test]
-    fn e2e_bash_diagnostic_artifact_contains_required_fields() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn e2e_bash_diagnostic_artifact_contains_required_fields() {
             let harness = TestHarness::new("e2e_bash_diagnostic_artifact_contains_required_fields");
             let tool = pi::tools::BashTool::new(harness.temp_dir());
             let input = serde_json::json!({
@@ -1731,7 +1630,6 @@ mod e2e_bash {
                     .is_some(),
                 "expected workspace snapshot entries"
             );
-        });
     }
 }
 
@@ -1744,7 +1642,7 @@ mod e2e_grep {
             eprintln!("SKIP: rg (ripgrep) not available on PATH");
             return;
         }
-        asupersync::test_utils::run_test(|| async {
+        {
             let harness = TestHarness::new("e2e_grep_success_with_artifacts");
             harness.create_file("src/main.rs", b"fn main() {\n    println!(\"hello\");\n}\n");
             harness.create_file(
@@ -1768,7 +1666,6 @@ mod e2e_grep {
             let output = result.expect("should succeed");
             let text = get_text_content(&output.content);
             assert!(text.contains("hello"));
-        });
     }
 
     #[test]
@@ -1777,7 +1674,7 @@ mod e2e_grep {
             eprintln!("SKIP: rg (ripgrep) not available on PATH");
             return;
         }
-        asupersync::test_utils::run_test(|| async {
+        {
             let harness = TestHarness::new("e2e_grep_invalid_regex");
             harness.create_file("data.txt", b"some text");
             let tool = pi::tools::GrepTool::new(harness.temp_dir());
@@ -1790,7 +1687,6 @@ mod e2e_grep {
                     .await;
 
             assert!(result.is_err(), "invalid regex should fail");
-        });
     }
 
     #[test]
@@ -1799,7 +1695,7 @@ mod e2e_grep {
             eprintln!("SKIP: rg (ripgrep) not available on PATH");
             return;
         }
-        asupersync::test_utils::run_test(|| async {
+        {
             let harness = TestHarness::new("e2e_grep_with_context_lines");
             harness.create_file("data.txt", b"line1\nline2\nTARGET\nline4\nline5");
 
@@ -1821,7 +1717,6 @@ mod e2e_grep {
                 text.contains("line2") || text.contains("line4"),
                 "should contain context lines: {text}"
             );
-        });
     }
 }
 
@@ -1834,7 +1729,7 @@ mod e2e_find {
             eprintln!("SKIP: fd not available on PATH");
             return;
         }
-        asupersync::test_utils::run_test(|| async {
+        {
             let harness = TestHarness::new("e2e_find_success_with_artifacts");
             harness.create_file("src/main.rs", b"");
             harness.create_file("src/lib.rs", b"");
@@ -1856,7 +1751,6 @@ mod e2e_find {
             assert!(text.contains("lib.rs"));
             assert!(text.contains("test.rs"));
             assert!(!text.contains("readme.md"));
-        });
     }
 
     #[test]
@@ -1865,7 +1759,7 @@ mod e2e_find {
             eprintln!("SKIP: fd not available on PATH");
             return;
         }
-        asupersync::test_utils::run_test(|| async {
+        {
             let harness = TestHarness::new("e2e_find_invalid_path_with_artifacts");
             let tool = pi::tools::FindTool::new(harness.temp_dir());
             let input = serde_json::json!({
@@ -1880,16 +1774,14 @@ mod e2e_find {
             assert!(result.is_err());
             let message = result.unwrap_err().to_string();
             assert!(message.contains("Path not found"));
-        });
     }
 }
 
 mod e2e_ls {
     use super::*;
 
-    #[test]
-    fn e2e_ls_success_with_artifacts() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn e2e_ls_success_with_artifacts() {
             let harness = TestHarness::new("e2e_ls_success_with_artifacts");
             harness.create_file("alpha.txt", b"a");
             harness.create_file("beta.txt", b"b");
@@ -1906,12 +1798,10 @@ mod e2e_ls {
             assert!(text.contains("alpha.txt"));
             assert!(text.contains("beta.txt"));
             assert!(text.contains("subdir/"));
-        });
     }
 
-    #[test]
-    fn e2e_ls_nonexistent_with_artifacts() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn e2e_ls_nonexistent_with_artifacts() {
             let harness = TestHarness::new("e2e_ls_nonexistent_with_artifacts");
             let tool = pi::tools::LsTool::new(harness.temp_dir());
             let input = serde_json::json!({
@@ -1922,12 +1812,10 @@ mod e2e_ls {
                 execute_tool_with_diagnostics(&harness, &tool, "ls", "ls-002", input.clone()).await;
 
             assert!(result.is_err());
-        });
     }
 
-    #[test]
-    fn e2e_ls_file_not_dir_with_artifacts() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn e2e_ls_file_not_dir_with_artifacts() {
             let harness = TestHarness::new("e2e_ls_file_not_dir_with_artifacts");
             let path = harness.create_file("just_a_file.txt", b"contents");
             let tool = pi::tools::LsTool::new(harness.temp_dir());
@@ -1941,12 +1829,10 @@ mod e2e_ls {
             assert!(result.is_err());
             let message = result.unwrap_err().to_string();
             assert!(message.contains("Not a directory"));
-        });
     }
 
-    #[test]
-    fn e2e_ls_truncation_details_captured() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn e2e_ls_truncation_details_captured() {
             let harness = TestHarness::new("e2e_ls_truncation_details_captured");
             // Create enough files to exceed limit=2
             harness.create_file("a.txt", b"");
@@ -1969,7 +1855,6 @@ mod e2e_ls {
                 details.get("entryLimitReached"),
                 Some(&serde_json::Value::Number(2u64.into()))
             );
-        });
     }
 }
 
@@ -1977,7 +1862,7 @@ mod e2e_ls {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn e2e_all_tools_roundtrip() {
-    asupersync::test_utils::run_test(|| async {
+    {
         let harness = TestHarness::new("e2e_all_tools_roundtrip");
         harness.section("Setup workspace");
 
@@ -2141,9 +2026,8 @@ mod security_path_traversal {
     use super::*;
 
     /// Read tool follows parent-directory traversal (`../`) – by design.
-    #[test]
-    fn read_parent_dir_traversal() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn read_parent_dir_traversal() {
             let parent = tempfile::tempdir().unwrap();
             let child_dir = parent.path().join("child");
             std::fs::create_dir_all(&child_dir).unwrap();
@@ -2161,13 +2045,11 @@ mod security_path_traversal {
                 text.contains("TOP_SECRET_DATA"),
                 "parent traversal should reach file: {text}"
             );
-        });
     }
 
     /// Write tool creates files outside CWD via `../` – by design.
-    #[test]
-    fn write_parent_dir_traversal() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn write_parent_dir_traversal() {
             let parent = tempfile::tempdir().unwrap();
             let child_dir = parent.path().join("child");
             std::fs::create_dir_all(&child_dir).unwrap();
@@ -2183,13 +2065,11 @@ mod security_path_traversal {
 
             let written = std::fs::read_to_string(parent.path().join("escaped.txt")).unwrap();
             assert_eq!(written, "ESCAPED_CONTENT");
-        });
     }
 
     /// Edit tool operates on files outside CWD via `../` – by design.
-    #[test]
-    fn edit_parent_dir_traversal() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn edit_parent_dir_traversal() {
             let parent = tempfile::tempdir().unwrap();
             let child_dir = parent.path().join("child");
             std::fs::create_dir_all(&child_dir).unwrap();
@@ -2208,13 +2088,11 @@ mod security_path_traversal {
 
             let content = std::fs::read_to_string(&target).unwrap();
             assert_eq!(content, "MODIFIED_CONTENT");
-        });
     }
 
     /// Read tool allows absolute paths outside CWD – by design.
-    #[test]
-    fn read_absolute_path_outside_cwd() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn read_absolute_path_outside_cwd() {
             let outside = tempfile::tempdir().unwrap();
             let outside_file = outside.path().join("outside.txt");
             std::fs::write(&outside_file, "OUTSIDE_DATA").unwrap();
@@ -2228,14 +2106,13 @@ mod security_path_traversal {
             let output = result.expect("absolute path outside CWD should work");
             let text = get_text_content(&output.content);
             assert!(text.contains("OUTSIDE_DATA"));
-        });
     }
 
     /// Read tool follows symlinks that point outside CWD – by design.
     #[test]
     #[cfg(unix)]
     fn read_symlink_escape() {
-        asupersync::test_utils::run_test(|| async {
+        {
             let outside = tempfile::tempdir().unwrap();
             let secret = outside.path().join("secret.txt");
             std::fs::write(&secret, "SYMLINK_SECRET").unwrap();
@@ -2252,7 +2129,6 @@ mod security_path_traversal {
             let output = result.expect("symlink escape should succeed (by design)");
             let text = get_text_content(&output.content);
             assert!(text.contains("SYMLINK_SECRET"));
-        });
     }
 
     /// Write tool replaces symlinks with regular files (atomic rename).
@@ -2260,7 +2136,7 @@ mod security_path_traversal {
     #[test]
     #[cfg(unix)]
     fn write_replaces_symlink_with_regular_file() {
-        asupersync::test_utils::run_test(|| async {
+        {
             let outside = tempfile::tempdir().unwrap();
             let target = outside.path().join("target.txt");
             std::fs::write(&target, "ORIGINAL").unwrap();
@@ -2291,7 +2167,6 @@ mod security_path_traversal {
                 target_content, "ORIGINAL",
                 "original symlink target should be untouched"
             );
-        });
     }
 }
 
@@ -2299,9 +2174,8 @@ mod security_command_injection {
     use super::*;
 
     /// Bash tool's stdin is null – commands cannot read piped input.
-    #[test]
-    fn bash_stdin_is_null() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn bash_stdin_is_null() {
             let cwd = tempfile::tempdir().unwrap();
             let tool = pi::tools::BashTool::new(cwd.path());
             let input = serde_json::json!({
@@ -2320,13 +2194,11 @@ mod security_command_injection {
                 !text.contains("got: malicious"),
                 "stdin should not contain injected data"
             );
-        });
     }
 
     /// Bash tool installs EXIT trap for cleanup.
-    #[test]
-    fn bash_has_exit_trap() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn bash_has_exit_trap() {
             let cwd = tempfile::tempdir().unwrap();
             let tool = pi::tools::BashTool::new(cwd.path());
             let input = serde_json::json!({
@@ -2340,13 +2212,11 @@ mod security_command_injection {
                 text.contains("EXIT") || text.contains("exit"),
                 "expected EXIT trap to be set: {text}"
             );
-        });
     }
 
     /// Bash tool executes shell metacharacters (;, &&, ||, pipes) – by design.
-    #[test]
-    fn bash_metacharacter_execution() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn bash_metacharacter_execution() {
             let cwd = tempfile::tempdir().unwrap();
             let tool = pi::tools::BashTool::new(cwd.path());
             let input = serde_json::json!({
@@ -2358,13 +2228,11 @@ mod security_command_injection {
             assert!(text.contains('A'), "semicolon chaining should work: {text}");
             assert!(text.contains('B'), "echo B should execute: {text}");
             assert!(text.contains('C'), "conditional && should work: {text}");
-        });
     }
 
     /// Bash tool executes command substitution – by design.
-    #[test]
-    fn bash_command_substitution() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn bash_command_substitution() {
             let cwd = tempfile::tempdir().unwrap();
             let tool = pi::tools::BashTool::new(cwd.path());
             let input = serde_json::json!({
@@ -2382,7 +2250,6 @@ mod security_command_injection {
                 !text.contains("$(whoami)"),
                 "substitution should be expanded, not literal: {text}"
             );
-        });
     }
 }
 
@@ -2390,9 +2257,8 @@ mod security_environment {
     use super::*;
 
     /// Bash tool inherits the parent process environment.
-    #[test]
-    fn bash_env_inheritance() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn bash_env_inheritance() {
             let cwd = tempfile::tempdir().unwrap();
             let tool = pi::tools::BashTool::new(cwd.path());
             // PATH must be inherited for any command to work
@@ -2406,13 +2272,11 @@ mod security_environment {
                 text.contains("PATH=/"),
                 "PATH should be inherited from parent: {text}"
             );
-        });
     }
 
     /// Bash tool CWD matches the configured working directory.
-    #[test]
-    fn bash_cwd_matches_configured() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn bash_cwd_matches_configured() {
             let cwd = tempfile::tempdir().unwrap();
             let tool = pi::tools::BashTool::new(cwd.path());
             let input = serde_json::json!({
@@ -2431,13 +2295,11 @@ mod security_environment {
                 actual.contains(&expected) || expected.contains(&actual),
                 "CWD should match configured dir: actual={actual}, expected={expected}"
             );
-        });
     }
 
     /// Bash tool can access HOME environment variable – by design.
-    #[test]
-    fn bash_home_accessible() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn bash_home_accessible() {
             let cwd = tempfile::tempdir().unwrap();
             let tool = pi::tools::BashTool::new(cwd.path());
             let input = serde_json::json!({
@@ -2447,7 +2309,6 @@ mod security_environment {
             let output = result.expect("HOME should be accessible");
             let text = get_text_content(&output.content);
             assert!(!text.trim().is_empty(), "HOME should be non-empty: {text}");
-        });
     }
 }
 
@@ -2455,9 +2316,8 @@ mod security_unsafe_writes {
     use super::*;
 
     /// Write tool creates deeply nested directories automatically.
-    #[test]
-    fn write_creates_arbitrary_dirs() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn write_creates_arbitrary_dirs() {
             let cwd = tempfile::tempdir().unwrap();
             let tool = pi::tools::WriteTool::new(cwd.path());
             let deep_path = cwd.path().join("a/b/c/d/e/f/deeply_nested.txt");
@@ -2470,13 +2330,11 @@ mod security_unsafe_writes {
             assert!(deep_path.exists());
             let content = std::fs::read_to_string(&deep_path).unwrap();
             assert_eq!(content, "DEEP_CONTENT");
-        });
     }
 
     /// Write tool overwrites files without backup – by design.
-    #[test]
-    fn write_overwrites_without_backup() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn write_overwrites_without_backup() {
             let cwd = tempfile::tempdir().unwrap();
             let file = cwd.path().join("overwrite_me.txt");
             std::fs::write(&file, "ORIGINAL_VALUABLE_DATA").unwrap();
@@ -2495,13 +2353,11 @@ mod security_unsafe_writes {
             // No backup file should exist
             let backup = cwd.path().join("overwrite_me.txt.bak");
             assert!(!backup.exists(), "no backup is created (by design)");
-        });
     }
 
     /// Write tool does not create temp files – writes directly.
-    #[test]
-    fn write_no_temp_files() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn write_no_temp_files() {
             let cwd = tempfile::tempdir().unwrap();
             let file = cwd.path().join("direct_write.txt");
 
@@ -2524,13 +2380,11 @@ mod security_unsafe_writes {
                     .map(std::fs::DirEntry::file_name)
                     .collect::<Vec<_>>()
             );
-        });
     }
 
     /// Write tool can create files with potentially dangerous names.
-    #[test]
-    fn write_dangerous_filenames() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn write_dangerous_filenames() {
             let cwd = tempfile::tempdir().unwrap();
             let tool = pi::tools::WriteTool::new(cwd.path());
 
@@ -2553,13 +2407,11 @@ mod security_unsafe_writes {
             let result = tool.execute("sec-write-06b", input, None).await;
             result.expect("spaced filename should succeed");
             assert!(spaced.exists());
-        });
     }
 
     /// Edit tool operates directly on files, no copy-on-write.
-    #[test]
-    fn edit_no_copy_on_write() {
-        asupersync::test_utils::run_test(|| async {
+    #[tokio::test]
+    async fn edit_no_copy_on_write() {
             let cwd = tempfile::tempdir().unwrap();
             let file = cwd.path().join("edit_target.txt");
             std::fs::write(&file, "BEFORE_EDIT").unwrap();
@@ -2583,6 +2435,5 @@ mod security_unsafe_writes {
                 1,
                 "only the target file should exist after edit"
             );
-        });
     }
 }

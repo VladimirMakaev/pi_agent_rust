@@ -199,8 +199,7 @@ fn run_shape_test(shape: ExtensionShape, fixture_name: &str) -> ShapeTestResult 
                         )
                         .await
                         .map_err(|e| format!("execute_tool: {e}"))
-                }
-            });
+                });
 
             invoke_event.duration_ms = invoke_start.elapsed().as_millis() as u64;
             match result {
@@ -230,8 +229,7 @@ fn run_shape_test(shape: ExtensionShape, fixture_name: &str) -> ShapeTestResult 
                         )
                         .await
                         .map_err(|e| format!("execute_command: {e}"))
-                }
-            });
+                });
 
             invoke_event.duration_ms = invoke_start.elapsed().as_millis() as u64;
             match result {
@@ -264,8 +262,7 @@ fn run_shape_test(shape: ExtensionShape, fixture_name: &str) -> ShapeTestResult 
                         )
                         .await
                         .map_err(|e| format!("dispatch_event: {e}"))
-                }
-            });
+                });
 
             invoke_event.duration_ms = invoke_start.elapsed().as_millis() as u64;
             match result {

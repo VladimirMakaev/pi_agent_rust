@@ -2423,226 +2423,214 @@ mod retry_tests {
         }
     }
 
-    #[test]
-    fn rpc_auto_retry_retries_then_succeeds() {
-        let runtime = asupersync::runtime::RuntimeBuilder::new()
-            .blocking_threads(1, 8)
-            .build()
-            .expect("runtime build");
-        let runtime_handle = runtime.handle();
+    #[tokio::test]
+    async fn rpc_auto_retry_retries_then_succeeds() {
+        let runtime_handle = tokio::runtime::Handle::current();
 
-        runtime.block_on(async move {
-            let provider = Arc::new(FlakyProvider::new());
-            let tools = ToolRegistry::new(&[], Path::new("."), None);
-            let agent = Agent::new(provider, tools, AgentConfig::default());
-            let inner_session = Arc::new(Mutex::new(Session::in_memory()));
-            let agent_session = AgentSession::new(
-                agent,
-                inner_session,
-                false,
-                crate::compaction::ResolvedCompactionSettings::default(),
-            );
+        let provider = Arc::new(FlakyProvider::new());
+        let tools = ToolRegistry::new(&[], Path::new("."), None);
+        let agent = Agent::new(provider, tools, AgentConfig::default());
+        let inner_session = Arc::new(Mutex::new(Session::in_memory()));
+        let agent_session = AgentSession::new(
+            agent,
+            inner_session,
+            false,
+            crate::compaction::ResolvedCompactionSettings::default(),
+        );
 
-            let session = Arc::new(Mutex::new(agent_session));
+        let session = Arc::new(Mutex::new(agent_session));
 
-            let mut config = Config::default();
-            config.retry = Some(crate::config::RetrySettings {
-                enabled: Some(true),
-                max_retries: Some(1),
-                base_delay_ms: Some(1),
-                max_delay_ms: Some(1),
-            });
-
-            let mut shared = RpcSharedState::new(&config);
-            shared.auto_compaction_enabled = false;
-            let shared_state = Arc::new(Mutex::new(shared));
-
-            let is_streaming = Arc::new(AtomicBool::new(false));
-            let is_compacting = Arc::new(AtomicBool::new(false));
-            let abort_handle_slot: Arc<Mutex<Option<AbortHandle>>> = Arc::new(Mutex::new(None));
-            let retry_abort = Arc::new(AtomicBool::new(false));
-            let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
-
-            let auth_path = tempfile::tempdir()
-                .expect("tempdir")
-                .path()
-                .join("auth.json");
-            let auth = AuthStorage::load(auth_path).expect("auth load");
-
-            let options = RpcOptions {
-                config,
-                resources: ResourceLoader::empty(false),
-                available_models: Vec::new(),
-                scoped_models: Vec::new(),
-                auth,
-                runtime_handle,
-            };
-
-            run_prompt_with_retry(
-                session,
-                shared_state,
-                is_streaming,
-                is_compacting,
-                abort_handle_slot,
-                out_tx,
-                retry_abort,
-                options,
-                "hello".to_string(),
-                Vec::new(),
-                AgentCx::for_request(),
-            )
-            .await;
-
-            let mut saw_retry_start = false;
-            let mut saw_retry_end_success = false;
-
-            for line in out_rx.try_iter() {
-                let Ok(value) = serde_json::from_str::<Value>(&line) else {
-                    continue;
-                };
-                let Some(kind) = value.get("type").and_then(Value::as_str) else {
-                    continue;
-                };
-                match kind {
-                    "auto_retry_start" => {
-                        saw_retry_start = true;
-                    }
-                    "auto_retry_end" => {
-                        if value.get("success").and_then(Value::as_bool) == Some(true) {
-                            saw_retry_end_success = true;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            assert!(saw_retry_start, "missing auto_retry_start event");
-            assert!(
-                saw_retry_end_success,
-                "missing successful auto_retry_end event"
-            );
+        let mut config = Config::default();
+        config.retry = Some(crate::config::RetrySettings {
+            enabled: Some(true),
+            max_retries: Some(1),
+            base_delay_ms: Some(1),
+            max_delay_ms: Some(1),
         });
+
+        let mut shared = RpcSharedState::new(&config);
+        shared.auto_compaction_enabled = false;
+        let shared_state = Arc::new(Mutex::new(shared));
+
+        let is_streaming = Arc::new(AtomicBool::new(false));
+        let is_compacting = Arc::new(AtomicBool::new(false));
+        let abort_handle_slot: Arc<Mutex<Option<AbortHandle>>> = Arc::new(Mutex::new(None));
+        let retry_abort = Arc::new(AtomicBool::new(false));
+        let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
+
+        let auth_path = tempfile::tempdir()
+            .expect("tempdir")
+            .path()
+            .join("auth.json");
+        let auth = AuthStorage::load(auth_path).expect("auth load");
+
+        let options = RpcOptions {
+            config,
+            resources: ResourceLoader::empty(false),
+            available_models: Vec::new(),
+            scoped_models: Vec::new(),
+            auth,
+            runtime_handle,
+        };
+
+        run_prompt_with_retry(
+            session,
+            shared_state,
+            is_streaming,
+            is_compacting,
+            abort_handle_slot,
+            out_tx,
+            retry_abort,
+            options,
+            "hello".to_string(),
+            Vec::new(),
+            AgentCx::for_request(),
+        )
+        .await;
+
+        let mut saw_retry_start = false;
+        let mut saw_retry_end_success = false;
+
+        for line in out_rx.try_iter() {
+            let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            let Some(kind) = value.get("type").and_then(Value::as_str) else {
+                continue;
+            };
+            match kind {
+                "auto_retry_start" => {
+                    saw_retry_start = true;
+                }
+                "auto_retry_end" => {
+                    if value.get("success").and_then(Value::as_bool) == Some(true) {
+                        saw_retry_end_success = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        assert!(saw_retry_start, "missing auto_retry_start event");
+        assert!(
+            saw_retry_end_success,
+            "missing successful auto_retry_end event"
+        );
     }
 
-    #[test]
-    fn rpc_abort_retry_emits_ordered_retry_timeline() {
-        let runtime = asupersync::runtime::RuntimeBuilder::new()
-            .blocking_threads(1, 8)
-            .build()
-            .expect("runtime build");
-        let runtime_handle = runtime.handle();
+    #[tokio::test]
+    async fn rpc_abort_retry_emits_ordered_retry_timeline() {
+        let runtime_handle = tokio::runtime::Handle::current();
 
-        runtime.block_on(async move {
-            let provider = Arc::new(AlwaysErrorProvider);
-            let tools = ToolRegistry::new(&[], Path::new("."), None);
-            let agent = Agent::new(provider, tools, AgentConfig::default());
-            let inner_session = Arc::new(Mutex::new(Session::in_memory()));
-            let agent_session = AgentSession::new(
-                agent,
-                inner_session,
-                false,
-                crate::compaction::ResolvedCompactionSettings::default(),
-            );
+        let provider = Arc::new(AlwaysErrorProvider);
+        let tools = ToolRegistry::new(&[], Path::new("."), None);
+        let agent = Agent::new(provider, tools, AgentConfig::default());
+        let inner_session = Arc::new(Mutex::new(Session::in_memory()));
+        let agent_session = AgentSession::new(
+            agent,
+            inner_session,
+            false,
+            crate::compaction::ResolvedCompactionSettings::default(),
+        );
 
-            let session = Arc::new(Mutex::new(agent_session));
+        let session = Arc::new(Mutex::new(agent_session));
 
-            let mut config = Config::default();
-            config.retry = Some(crate::config::RetrySettings {
-                enabled: Some(true),
-                max_retries: Some(3),
-                base_delay_ms: Some(100),
-                max_delay_ms: Some(100),
-            });
-
-            let mut shared = RpcSharedState::new(&config);
-            shared.auto_compaction_enabled = false;
-            let shared_state = Arc::new(Mutex::new(shared));
-
-            let is_streaming = Arc::new(AtomicBool::new(false));
-            let is_compacting = Arc::new(AtomicBool::new(false));
-            let abort_handle_slot: Arc<Mutex<Option<AbortHandle>>> = Arc::new(Mutex::new(None));
-            let retry_abort = Arc::new(AtomicBool::new(false));
-            let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
-
-            let auth_path = tempfile::tempdir()
-                .expect("tempdir")
-                .path()
-                .join("auth.json");
-            let auth = AuthStorage::load(auth_path).expect("auth load");
-
-            let options = RpcOptions {
-                config,
-                resources: ResourceLoader::empty(false),
-                available_models: Vec::new(),
-                scoped_models: Vec::new(),
-                auth,
-                runtime_handle,
-            };
-
-            let retry_abort_for_thread = Arc::clone(&retry_abort);
-            let abort_thread = std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-                retry_abort_for_thread.store(true, Ordering::SeqCst);
-            });
-
-            run_prompt_with_retry(
-                session,
-                shared_state,
-                is_streaming,
-                is_compacting,
-                abort_handle_slot,
-                out_tx,
-                retry_abort,
-                options,
-                "hello".to_string(),
-                Vec::new(),
-                AgentCx::for_request(),
-            )
-            .await;
-            abort_thread.join().expect("abort thread join");
-
-            let mut timeline = Vec::new();
-            let mut last_agent_end_error = None::<String>;
-
-            for line in out_rx.try_iter() {
-                let Ok(value) = serde_json::from_str::<Value>(&line) else {
-                    continue;
-                };
-                let Some(kind) = value.get("type").and_then(Value::as_str) else {
-                    continue;
-                };
-                timeline.push(kind.to_string());
-                if kind == "agent_end" {
-                    last_agent_end_error = value
-                        .get("error")
-                        .and_then(Value::as_str)
-                        .map(str::to_string);
-                }
-            }
-
-            let retry_start_idx = timeline
-                .iter()
-                .position(|kind| kind == "auto_retry_start")
-                .expect("missing auto_retry_start");
-            let retry_end_idx = timeline
-                .iter()
-                .position(|kind| kind == "auto_retry_end")
-                .expect("missing auto_retry_end");
-            let agent_end_idx = timeline
-                .iter()
-                .rposition(|kind| kind == "agent_end")
-                .expect("missing agent_end");
-
-            assert!(
-                retry_start_idx < retry_end_idx && retry_end_idx < agent_end_idx,
-                "unexpected retry timeline ordering: {timeline:?}"
-            );
-            assert_eq!(
-                last_agent_end_error.as_deref(),
-                Some("Retry aborted"),
-                "expected retry-abort terminal error, timeline: {timeline:?}"
-            );
+        let mut config = Config::default();
+        config.retry = Some(crate::config::RetrySettings {
+            enabled: Some(true),
+            max_retries: Some(3),
+            base_delay_ms: Some(100),
+            max_delay_ms: Some(100),
         });
+
+        let mut shared = RpcSharedState::new(&config);
+        shared.auto_compaction_enabled = false;
+        let shared_state = Arc::new(Mutex::new(shared));
+
+        let is_streaming = Arc::new(AtomicBool::new(false));
+        let is_compacting = Arc::new(AtomicBool::new(false));
+        let abort_handle_slot: Arc<Mutex<Option<AbortHandle>>> = Arc::new(Mutex::new(None));
+        let retry_abort = Arc::new(AtomicBool::new(false));
+        let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
+
+        let auth_path = tempfile::tempdir()
+            .expect("tempdir")
+            .path()
+            .join("auth.json");
+        let auth = AuthStorage::load(auth_path).expect("auth load");
+
+        let options = RpcOptions {
+            config,
+            resources: ResourceLoader::empty(false),
+            available_models: Vec::new(),
+            scoped_models: Vec::new(),
+            auth,
+            runtime_handle,
+        };
+
+        let retry_abort_for_thread = Arc::clone(&retry_abort);
+        let abort_thread = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            retry_abort_for_thread.store(true, Ordering::SeqCst);
+        });
+
+        run_prompt_with_retry(
+            session,
+            shared_state,
+            is_streaming,
+            is_compacting,
+            abort_handle_slot,
+            out_tx,
+            retry_abort,
+            options,
+            "hello".to_string(),
+            Vec::new(),
+            AgentCx::for_request(),
+        )
+        .await;
+        abort_thread.join().expect("abort thread join");
+
+        let mut timeline = Vec::new();
+        let mut last_agent_end_error = None::<String>;
+
+        for line in out_rx.try_iter() {
+            let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            let Some(kind) = value.get("type").and_then(Value::as_str) else {
+                continue;
+            };
+            timeline.push(kind.to_string());
+            if kind == "agent_end" {
+                last_agent_end_error = value
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+            }
+        }
+
+        let retry_start_idx = timeline
+            .iter()
+            .position(|kind| kind == "auto_retry_start")
+            .expect("missing auto_retry_start");
+        let retry_end_idx = timeline
+            .iter()
+            .position(|kind| kind == "auto_retry_end")
+            .expect("missing auto_retry_end");
+        let agent_end_idx = timeline
+            .iter()
+            .rposition(|kind| kind == "agent_end")
+            .expect("missing agent_end");
+
+        assert!(
+            retry_start_idx < retry_end_idx && retry_end_idx < agent_end_idx,
+            "unexpected retry timeline ordering: {timeline:?}"
+        );
+        assert_eq!(
+            last_agent_end_error.as_deref(),
+            Some("Retry aborted"),
+            "expected retry-abort terminal error, timeline: {timeline:?}"
+        );
     }
 }
 
@@ -3782,11 +3770,14 @@ mod tests {
     }
 
     fn rpc_options_with_models(available_models: Vec<ModelEntry>) -> RpcOptions {
-        let runtime = asupersync::runtime::RuntimeBuilder::new()
-            .blocking_threads(1, 1)
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
             .build()
             .expect("runtime build");
-        let runtime_handle = runtime.handle();
+        let runtime_handle = runtime.handle().clone();
+        // Keep runtime alive by leaking it (test helper)
+        std::mem::forget(runtime);
 
         let auth_path = tempfile::tempdir()
             .expect("tempdir")

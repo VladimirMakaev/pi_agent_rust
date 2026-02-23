@@ -18,7 +18,7 @@ use std::hint::black_box;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 
-use asupersync::channel::mpsc;
+use tokio::sync::mpsc;
 use bubbles::viewport::Viewport;
 use bubbletea::{Message, Model as BubbleteaModel};
 use futures::stream;
@@ -37,14 +37,14 @@ use pi::tools::ToolRegistry;
 // Shared runtime (reused across benchmarks)
 // ---------------------------------------------------------------------------
 
-fn bench_runtime_handle() -> asupersync::runtime::RuntimeHandle {
-    static RT: OnceLock<asupersync::runtime::Runtime> = OnceLock::new();
+fn bench_runtime_handle() -> tokio::runtime::Handle {
+    static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RT.get_or_init(|| {
-        asupersync::runtime::RuntimeBuilder::new()
+        tokio::runtime::Builder::new()
             .worker_threads(1)
             .blocking_threads(1, 8)
             .build()
-            .expect("build asupersync runtime")
+            .expect("build tokio runtime")
     })
     .handle()
 }
@@ -122,7 +122,7 @@ fn create_bench_app() -> PiApp {
     let tools = ToolRegistry::new(&[], &cwd, Some(&config));
     let provider: Arc<dyn Provider> = Arc::new(DummyProvider);
     let agent = Agent::new(provider, tools, AgentConfig::default());
-    let session = Arc::new(asupersync::sync::Mutex::new(Session::in_memory()));
+    let session = Arc::new(tokio::sync::Mutex::new(Session::in_memory()));
     let resources = ResourceLoader::empty(config.enable_skill_commands());
     let resource_cli = ResourceCliOptions {
         no_skills: false,

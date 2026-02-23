@@ -106,7 +106,7 @@ fn stream_done(msg: AssistantMessage) -> Pin<Box<dyn Stream<Item = Result<Stream
 fn make_agent_session(
     cwd: &Path,
     provider: Arc<dyn Provider>,
-    session: Arc<asupersync::sync::Mutex<Session>>,
+    session: Arc<tokio::sync::Mutex<Session>>,
     max_tool_iterations: usize,
 ) -> AgentSession {
     let agent = Agent::new(
@@ -243,7 +243,7 @@ fn auth_401_surfaces_clear_error_no_retry() {
     let cwd = harness.temp_dir().to_path_buf();
 
     let result = run_async(async move {
-        let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+        let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
         )));
         let mut agent_session =
@@ -285,7 +285,7 @@ fn auth_403_surfaces_model_specific_error() {
     let cwd = harness.temp_dir().to_path_buf();
     let result = run_async(async move {
         let provider: Arc<dyn Provider> = Arc::new(ForbiddenProvider);
-        let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+        let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
         )));
         let mut agent_session = make_agent_session(&cwd, provider, session, 4);
@@ -384,7 +384,7 @@ fn rate_limit_429_surfaces_error_with_hint() {
     let cwd = harness.temp_dir().to_path_buf();
 
     let result = run_async(async move {
-        let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+        let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
         )));
         let mut agent_session =
@@ -421,7 +421,7 @@ fn quota_exhaustion_surfaces_clear_error() {
     let cwd = harness.temp_dir().to_path_buf();
     let result = run_async(async move {
         let provider: Arc<dyn Provider> = Arc::new(QuotaExhaustedProvider);
-        let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+        let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
         )));
         let mut agent_session = make_agent_session(&cwd, provider, session, 4);
@@ -523,7 +523,7 @@ fn timeout_connection_surfaces_bounded_error() {
     let cwd = harness.temp_dir().to_path_buf();
 
     let result = run_async(async move {
-        let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+        let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
         )));
         let mut agent_session =
@@ -560,7 +560,7 @@ fn timeout_stream_hang_surfaces_error() {
     let cwd = harness.temp_dir().to_path_buf();
     let result = run_async(async move {
         let provider: Arc<dyn Provider> = Arc::new(StreamTimeoutProvider);
-        let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+        let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
         )));
         let mut agent_session = make_agent_session(&cwd, provider, session, 4);
@@ -688,7 +688,7 @@ fn malformed_stream_without_start_handled() {
     let cwd = harness.temp_dir().to_path_buf();
     let result = run_async(async move {
         let provider: Arc<dyn Provider> = Arc::new(MalformedStreamProvider);
-        let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+        let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
         )));
         let mut agent_session = make_agent_session(&cwd, provider, session, 4);
@@ -717,7 +717,7 @@ fn malformed_truncated_response_preserved() {
     let cwd = harness.temp_dir().to_path_buf();
     let message = run_async(async move {
         let provider: Arc<dyn Provider> = Arc::new(TruncatedResponseProvider);
-        let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+        let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
         )));
         let mut agent_session = make_agent_session(&cwd, provider, session, 4);
@@ -754,7 +754,7 @@ fn malformed_empty_text_block_no_crash() {
     let cwd = harness.temp_dir().to_path_buf();
     let message = run_async(async move {
         let provider: Arc<dyn Provider> = Arc::new(EmptyContentProvider);
-        let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+        let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
         )));
         let mut agent_session = make_agent_session(&cwd, provider, session, 4);
@@ -1047,7 +1047,7 @@ fn tool_missing_name_propagates_error() {
         let provider: Arc<dyn Provider> = Arc::new(ToolFailurePropagationProvider::new(
             ToolFailureScenario::MissingTool,
         ));
-        let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+        let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
         )));
         let mut agent_session = make_agent_session(&cwd, provider, session, 6);
@@ -1081,7 +1081,7 @@ fn tool_bad_arguments_propagates_error() {
         let provider: Arc<dyn Provider> = Arc::new(ToolFailurePropagationProvider::new(
             ToolFailureScenario::BadArguments,
         ));
-        let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+        let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
         )));
         let mut agent_session = make_agent_session(&cwd, provider, session, 6);
@@ -1120,7 +1120,7 @@ fn tool_file_not_found_propagates_error() {
         let provider: Arc<dyn Provider> = Arc::new(ToolFailurePropagationProvider::new(
             ToolFailureScenario::FileNotFound { path: missing_path },
         ));
-        let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+        let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
         )));
         let mut agent_session = make_agent_session(&cwd, provider, session, 6);
@@ -1157,7 +1157,7 @@ fn tool_mixed_batch_both_results_propagated() {
         let provider: Arc<dyn Provider> = Arc::new(ToolFailurePropagationProvider::new(
             ToolFailureScenario::MixedBatch,
         ));
-        let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+        let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
         )));
         let mut agent_session = make_agent_session(&cwd, provider, session, 6);
@@ -1213,7 +1213,7 @@ fn tool_recovery_chain_fail_then_succeed() {
         let provider: Arc<dyn Provider> = Arc::new(ToolFailurePropagationProvider::new(
             ToolFailureScenario::RecoveryChain,
         ));
-        let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+        let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
         )));
         let mut agent_session = make_agent_session(&cwd, provider, session, 8);
@@ -1270,7 +1270,7 @@ fn session_clean_after_provider_failure() {
     harness.section("session_clean_after_failure");
 
     let cwd = harness.temp_dir().to_path_buf();
-    let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+    let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
         Some(cwd.clone()),
     )));
     let session_ref = Arc::clone(&session);
@@ -1285,19 +1285,17 @@ fn session_clean_after_provider_failure() {
             agent_session
                 .run_text("this will fail".to_string(), |_| {})
                 .await
-        }
-    });
+        });
     assert!(result.is_err(), "First attempt should fail");
 
     // Verify session is clean
     let messages = run_async({
         let session = Arc::clone(&session_ref);
         async move {
-            let cx = asupersync::Cx::for_testing();
-            let guard = session.lock(&cx).await.expect("lock session");
+            
+            let guard = session.lock().await.expect("lock session");
             guard.to_messages_for_current_path()
-        }
-    });
+        });
 
     harness
         .log()
@@ -1327,7 +1325,7 @@ fn session_reflects_tool_errors_accurately() {
     harness.section("session_tool_error_accuracy");
 
     let cwd = harness.temp_dir().to_path_buf();
-    let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+    let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
         Some(cwd.clone()),
     )));
     let session_ref = Arc::clone(&session);
@@ -1346,18 +1344,16 @@ fn session_reflects_tool_errors_accurately() {
                 .expect("should complete");
             agent_session.persist_session().await.expect("persist");
             msg
-        }
-    });
+        });
 
     // Verify session has correct message sequence
     let messages = run_async({
         let session = Arc::clone(&session_ref);
         async move {
-            let cx = asupersync::Cx::for_testing();
-            let guard = session.lock(&cx).await.expect("lock session");
+            
+            let guard = session.lock().await.expect("lock session");
             guard.to_messages_for_current_path()
-        }
-    });
+        });
 
     // Should have: user -> assistant(tool_call) -> tool_result(error) -> assistant(final)
     let tool_results: Vec<_> = messages

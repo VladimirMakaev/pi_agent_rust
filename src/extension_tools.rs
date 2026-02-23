@@ -275,8 +275,7 @@ mod tests {
     use crate::provider::{Context, Provider, StreamOptions};
     use crate::session::Session;
     use crate::tools::ToolRegistry;
-    use asupersync::runtime::RuntimeBuilder;
-    use asupersync::sync::Mutex;
+    use tokio::sync::Mutex;
     use async_trait::async_trait;
     use futures::Stream;
     use serde_json::json;

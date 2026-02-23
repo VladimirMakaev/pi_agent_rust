@@ -469,8 +469,7 @@ fn http_500_with_json_error_body() {
             "message": "Internal server error",
             "type": "server_error",
             "code": "internal_error"
-        }
-    });
+        });
     let (provider, _server) = setup_openai(
         &harness,
         make_response(
@@ -710,8 +709,7 @@ fn large_error_payload_is_handled() {
             "message": big_msg,
             "type": "server_error",
             "code": "internal_error"
-        }
-    });
+        });
     let (provider, _server) = setup_openai(
         &harness,
         make_response(

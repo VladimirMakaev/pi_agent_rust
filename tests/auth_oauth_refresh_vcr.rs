@@ -109,8 +109,7 @@ fn log_refresh_event(harness: &TestHarness, test: &str, event: &str, data: &[(&s
             ctx.push(("event".into(), event.to_string()));
             for (key, value) in &data_object {
                 ctx.push((key.clone(), value.as_str().unwrap_or_default().to_string()));
-            }
-        });
+            });
 }
 
 #[allow(clippy::too_many_lines)]
@@ -484,7 +483,7 @@ fn auth_oauth_refresh_race_condition_vcr() {
             // Use a generous iteration budget with yield_now() so the first future
             // actually gets scheduled on the single-threaded test runtime.
             // The previous 80-iteration / 10ms-sleep loop completed in ~160ms total
-            // because asupersync timers fire early under enable_parking(false),
+            // because timers can fire early in test scenarios,
             // starving the first refresh future.
             for _ in 0..500 {
                 if oauth_access_token(second_auth_path.as_path(), "anthropic").as_deref()
@@ -493,8 +492,8 @@ fn auth_oauth_refresh_race_condition_vcr() {
                     seen_refreshed = true;
                     break;
                 }
-                asupersync::runtime::yield_now().await;
-                asupersync::time::sleep(asupersync::time::wall_now(), Duration::from_millis(10))
+                tokio::task::yield_now().await;
+                tokio::time::sleep(Duration::from_millis(10))
                     .await;
             }
             assert!(

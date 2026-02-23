@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::sync::Mutex as TokioMutex;
 
 fn cassette_root() -> PathBuf {
     env::var("VCR_CASSETTE_DIR").map_or_else(
@@ -40,7 +41,7 @@ fn build_agent_session(session: Session, cassette_dir: &Path) -> AgentSession {
     let tools = ToolRegistry::new(&[], &std::env::current_dir().unwrap(), None);
     let config = AgentConfig::default();
     let agent = Agent::new(provider, tools, config);
-    let session = Arc::new(asupersync::sync::Mutex::new(session));
+    let session = Arc::new(tokio::sync::Mutex::new(session));
     AgentSession::new(
         agent,
         session,
@@ -69,15 +70,15 @@ async fn recv_line(rx: &Arc<Mutex<Receiver<String>>>, label: &str) -> Result<Str
             return Err(format!("{label}: timed out waiting for output"));
         }
 
-        asupersync::time::sleep(asupersync::time::wall_now(), Duration::from_millis(5)).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
 }
 
-#[test]
-fn rpc_rejects_invalid_json_and_missing_type() {
+#[tokio::test]
+async fn rpc_rejects_invalid_json_and_missing_type() {
     let harness = TestHarness::new("rpc_rejects_invalid_json_and_missing_type");
     let cassette_dir = cassette_root();
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .expect("build test runtime");
     let handle = runtime.handle();
@@ -95,16 +96,14 @@ fn rpc_rejects_invalid_json_and_missing_type() {
             runtime_handle: handle.clone(),
         };
 
-        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (in_tx, in_rx) = tokio::sync::mpsc::channel::<String>(16);
         let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
         let out_rx = Arc::new(Mutex::new(out_rx));
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
 
-        let cx = asupersync::Cx::for_testing();
-
         in_tx
-            .send(&cx, "{".to_string())
+            .send("{".to_string())
             .await
             .expect("send invalid json");
         let invalid_line = recv_line(&out_rx, "invalid json response")
@@ -112,7 +111,7 @@ fn rpc_rejects_invalid_json_and_missing_type() {
             .expect("recv invalid json response");
 
         in_tx
-            .send(&cx, r#"{"id":"1"}"#.to_string())
+            .send(r#"{"id":"1"}"#.to_string())
             .await
             .expect("send missing type");
         let missing_type_line = recv_line(&out_rx, "missing type response")
@@ -144,11 +143,11 @@ fn rpc_rejects_invalid_json_and_missing_type() {
     });
 }
 
-#[test]
-fn rpc_errors_on_unknown_command_and_missing_params() {
+#[tokio::test]
+async fn rpc_errors_on_unknown_command_and_missing_params() {
     let harness = TestHarness::new("rpc_errors_on_unknown_command_and_missing_params");
     let cassette_dir = cassette_root();
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .expect("build test runtime");
     let handle = runtime.handle();
@@ -166,16 +165,14 @@ fn rpc_errors_on_unknown_command_and_missing_params() {
             runtime_handle: handle.clone(),
         };
 
-        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (in_tx, in_rx) = tokio::sync::mpsc::channel::<String>(16);
         let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
         let out_rx = Arc::new(Mutex::new(out_rx));
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
 
-        let cx = asupersync::Cx::for_testing();
-
         in_tx
-            .send(&cx, r#"{"id":"1","type":"nope"}"#.to_string())
+            .send(r#"{"id":"1","type":"nope"}"#.to_string())
             .await
             .expect("send unknown command");
         let unknown_line = recv_line(&out_rx, "unknown command response")
@@ -183,7 +180,7 @@ fn rpc_errors_on_unknown_command_and_missing_params() {
             .expect("recv unknown command response");
 
         in_tx
-            .send(&cx, r#"{"id":"2","type":"prompt"}"#.to_string())
+            .send(r#"{"id":"2","type":"prompt"}"#.to_string())
             .await
             .expect("send prompt missing message");
         let prompt_missing_line = recv_line(&out_rx, "prompt missing message response")
@@ -192,7 +189,6 @@ fn rpc_errors_on_unknown_command_and_missing_params() {
 
         in_tx
             .send(
-                &cx,
                 r#"{"id":"3","type":"set_model","modelId":"x"}"#.to_string(),
             )
             .await
@@ -228,11 +224,11 @@ fn rpc_errors_on_unknown_command_and_missing_params() {
     });
 }
 
-#[test]
-fn rpc_get_messages_preserves_tool_call_identity_and_args() {
+#[tokio::test]
+async fn rpc_get_messages_preserves_tool_call_identity_and_args() {
     let harness = TestHarness::new("rpc_get_messages_preserves_tool_call_identity_and_args");
     let cassette_dir = cassette_root();
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .expect("build test runtime");
     let handle = runtime.handle();
@@ -287,15 +283,14 @@ fn rpc_get_messages_preserves_tool_call_identity_and_args() {
             runtime_handle: handle.clone(),
         };
 
-        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (in_tx, in_rx) = tokio::sync::mpsc::channel::<String>(16);
         let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
         let out_rx = Arc::new(Mutex::new(out_rx));
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
 
-        let cx = asupersync::Cx::for_testing();
         in_tx
-            .send(&cx, r#"{"id":"1","type":"get_messages"}"#.to_string())
+            .send(r#"{"id":"1","type":"get_messages"}"#.to_string())
             .await
             .expect("send get_messages");
 

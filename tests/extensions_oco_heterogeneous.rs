@@ -163,8 +163,7 @@ fn load_extensions_with_oco_mode(
             )
             .await
             .expect("start JS runtime for OCO E2E")
-        }
-    });
+        });
     manager.set_js_runtime(runtime);
     enable_reactor_if_needed(&manager);
 
@@ -189,8 +188,7 @@ fn load_extensions_with_oco_mode(
                 .load_js_extensions(specs)
                 .await
                 .expect("load JS extensions for OCO E2E");
-        }
-    });
+        });
 
     (manager, count)
 }
@@ -265,8 +263,7 @@ fn run_workload(
                 manager
                     .dispatch_event(ExtensionEventName::AgentStart, Some(payload))
                     .await
-            }
-        });
+            });
         let elapsed_us = u64::try_from(dispatch_start.elapsed().as_micros()).unwrap_or(u64::MAX);
         latencies_us.push(elapsed_us);
         if result.is_err() {

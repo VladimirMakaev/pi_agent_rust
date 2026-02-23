@@ -199,8 +199,7 @@ pub(crate) fn log_summary(harness: &TestHarness, scenario: &str, summary: &Strea
         }
         if let Some(error) = &summary.stream_error {
             ctx.push(("stream_error".into(), error.clone()));
-        }
-    });
+        });
     if !summary.timeline.is_empty() {
         harness.log().info(
             "timeline",

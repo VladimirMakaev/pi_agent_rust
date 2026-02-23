@@ -5,7 +5,7 @@
 
 mod common;
 
-use asupersync::runtime::RuntimeBuilder;
+use tokio::runtime::Builder as RuntimeBuilder;
 use async_trait::async_trait;
 use clap::Parser;
 use common::TestHarness;
@@ -210,8 +210,7 @@ fn run_cli(
     harness.log().info_ctx("action", "CLI env", |ctx| {
         for (key, value) in env {
             ctx.push((key.clone(), value.clone()));
-        }
-    });
+        });
 
     let mut command = Command::new(cli_binary_path());
     command
@@ -321,15 +320,14 @@ fn write_minimal_session(path: &Path, cwd: &Path, session_id: &str, message: &st
         "message": {
             "role": "user",
             "content": message
-        }
-    });
+        });
     std::fs::write(path, format!("{header}\n{user_entry}\n")).expect("write minimal session");
 }
 
 fn make_agent_session(
     cwd: &Path,
     provider: Arc<dyn Provider>,
-    session: Arc<asupersync::sync::Mutex<Session>>,
+    session: Arc<tokio::sync::Mutex<Session>>,
 ) -> AgentSession {
     let agent = Agent::new(
         provider,
@@ -379,15 +377,15 @@ fn write_jsonl_artifacts(harness: &TestHarness, test_name: &str) {
     );
 }
 
-async fn current_session_path(session: &Arc<asupersync::sync::Mutex<Session>>) -> PathBuf {
-    let cx = asupersync::Cx::for_testing();
-    let guard = session.lock(&cx).await.expect("lock session");
+async fn current_session_path(session: &Arc<tokio::sync::Mutex<Session>>) -> PathBuf {
+    
+    let guard = session.lock().await.expect("lock session");
     guard.path.clone().expect("session path")
 }
 
-async fn current_messages(session: &Arc<asupersync::sync::Mutex<Session>>) -> Vec<Message> {
-    let cx = asupersync::Cx::for_testing();
-    let guard = session.lock(&cx).await.expect("lock session");
+async fn current_messages(session: &Arc<tokio::sync::Mutex<Session>>) -> Vec<Message> {
+    
+    let guard = session.lock().await.expect("lock session");
     guard.to_messages_for_current_path()
 }
 
@@ -419,7 +417,7 @@ fn create_and_save() {
     let harness = TestHarness::new(test_name);
     run_async_test(async {
         let cwd = harness.temp_dir().to_path_buf();
-        let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+        let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
         )));
         let provider: Arc<dyn Provider> = Arc::new(PlannedProvider::new(vec![text_step(
@@ -478,7 +476,7 @@ fn reload_session() {
     let harness = TestHarness::new(test_name);
     run_async_test(async {
         let cwd = harness.temp_dir().to_path_buf();
-        let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+        let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
         )));
         let initial_provider: Arc<dyn Provider> = Arc::new(PlannedProvider::new(vec![text_step(
@@ -498,7 +496,7 @@ fn reload_session() {
         let reopened = Session::open(saved_path.to_string_lossy().as_ref())
             .await
             .expect("reopen saved session");
-        let reopened_handle = Arc::new(asupersync::sync::Mutex::new(reopened));
+        let reopened_handle = Arc::new(tokio::sync::Mutex::new(reopened));
 
         let continue_provider: Arc<dyn Provider> = Arc::new(PlannedProvider::new(vec![text_step(
             "continued response",
@@ -544,7 +542,7 @@ fn session_branching() {
     let harness = TestHarness::new(test_name);
     run_async_test(async {
         let cwd = harness.temp_dir().to_path_buf();
-        let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+        let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
         )));
         let provider: Arc<dyn Provider> = Arc::new(PlannedProvider::new(vec![
@@ -561,8 +559,8 @@ fn session_branching() {
         }
 
         let branched_from = {
-            let cx = asupersync::Cx::for_testing();
-            let mut guard = session.lock(&cx).await.expect("lock session");
+            
+            let mut guard = session.lock().await.expect("lock session");
             let user_ids = guard
                 .entries
                 .iter()
@@ -659,7 +657,7 @@ fn multi_turn_persistence() {
     run_async_test(async {
         let cwd = harness.temp_dir().to_path_buf();
         let fixture = harness.create_file("fixtures/persist.txt", "persisted-value\n");
-        let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+        let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
         )));
 

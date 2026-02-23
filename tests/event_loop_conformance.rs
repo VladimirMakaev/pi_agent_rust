@@ -12,7 +12,8 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-use asupersync::{Budget, LabConfig, LabRuntime};
+use asupersync::lab::{LabConfig, LabRuntime};
+use asupersync::types::Budget;
 
 #[derive(Debug, Deserialize)]
 struct Fixture {
@@ -142,8 +143,7 @@ fn run_case(case: &Case) {
                             unreachable!("{}: step {idx}: unknown timer {timer}", case.name)
                         });
                         ObservedTask::TimerFired { timer_id }
-                    }
-                });
+                    });
 
                 assert_eq!(
                     observed, expected_observed,

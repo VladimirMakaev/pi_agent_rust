@@ -24,23 +24,20 @@ export default function init(pi) {
     description: "Say hello from extension",
     handler: async (args, ctx) => {
       return { display: "Hello from ext-hello!" };
-    }
-  });
+    });
 
   pi.registerCommand("ext-echo", {
     description: "Echo arguments back",
     handler: async (args, ctx) => {
       return { display: "Echo: " + (args || "") };
-    }
-  });
+    });
 
   // --- Shortcuts ---
   pi.registerShortcut("ctrl+e", {
     description: "Quick edit shortcut",
     handler: async (ctx) => {
       return { display: "Ctrl+E triggered" };
-    }
-  });
+    });
 
   // --- Flags ---
   pi.registerFlag("ext-verbose", {
@@ -102,8 +99,7 @@ fn load_extension(harness: &common::TestHarness, source: &str) -> ExtensionManag
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start js runtime")
-        }
-    });
+        });
     manager.set_js_runtime(runtime);
 
     common::run_async({
@@ -113,8 +109,7 @@ fn load_extension(harness: &common::TestHarness, source: &str) -> ExtensionManag
                 .load_js_extensions(vec![spec])
                 .await
                 .expect("load extension");
-        }
-    });
+        });
 
     manager
 }
@@ -377,8 +372,7 @@ fn e2e_full_registration_lifecycle() {
                 if let Some(name) = cmd.get("name").and_then(|v| v.as_str()) {
                     ctx.push(("command".into(), name.to_string()));
                 }
-            }
-        });
+            });
 
     // ── Shortcuts ──
     harness
@@ -445,8 +439,7 @@ fn e2e_full_registration_lifecycle() {
                 if let Some(name) = flag.get("name").and_then(|v| v.as_str()) {
                     ctx.push(("flag".into(), name.to_string()));
                 }
-            }
-        });
+            });
 
     // ── Providers ──
     harness
@@ -530,8 +523,7 @@ fn e2e_command_execute_returns_display() {
             ctx.push(("success".into(), result.is_ok().to_string()));
             if let Ok(ref v) = result {
                 ctx.push(("output".into(), v.to_string()));
-            }
-        });
+            });
 
     assert!(
         result.is_ok(),
@@ -568,8 +560,7 @@ fn e2e_command_execute_with_args() {
             ctx.push(("success".into(), result.is_ok().to_string()));
             if let Ok(ref v) = result {
                 ctx.push(("output".into(), v.to_string()));
-            }
-        });
+            });
 
     assert!(
         result.is_ok(),
@@ -610,8 +601,7 @@ fn e2e_shortcut_execute() {
             ctx.push(("success".into(), result.is_ok().to_string()));
             if let Ok(ref v) = result {
                 ctx.push(("output".into(), v.to_string()));
-            }
-        });
+            });
 
     assert!(
         result.is_ok(),
@@ -764,8 +754,7 @@ export default function init(pi) {
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start js runtime")
-        }
-    });
+        });
     manager.set_js_runtime(runtime);
 
     common::run_async({
@@ -775,8 +764,7 @@ export default function init(pi) {
                 .load_js_extensions(vec![spec_a, spec_b])
                 .await
                 .expect("load extensions");
-        }
-    });
+        });
 
     harness
         .log()

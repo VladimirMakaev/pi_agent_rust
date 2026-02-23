@@ -1114,12 +1114,13 @@ mod tests {
     where
         T: Send + 'static,
     {
-        let runtime = asupersync::runtime::RuntimeBuilder::new()
-            .blocking_threads(1, 2)
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
             .build()
             .expect("build runtime");
         let join = runtime.handle().spawn(future);
-        runtime.block_on(join)
+        runtime.block_on(join).expect("join")
     }
 
     // ─── sanitize_test_name ──────────────────────────────────────────

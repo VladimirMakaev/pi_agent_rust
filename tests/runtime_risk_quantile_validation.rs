@@ -110,8 +110,7 @@ fn e2e_harden_flow_deterministic_replay() {
                 context: None,
             };
             let _ = dispatch_host_call_shared(&ctx, call).await;
-        }
-    });
+        });
 
     // Verify ledger integrity
     let artifact = manager.runtime_risk_ledger_artifact();
@@ -225,8 +224,7 @@ fn e2e_quarantine_flow_deterministic() {
                 context: None,
             };
             let _ = dispatch_host_call_shared(&ctx, call).await;
-        }
-    });
+        });
 
     let artifact = manager.runtime_risk_ledger_artifact();
     assert!(
@@ -323,8 +321,7 @@ fn e2e_calibration_produces_reproducible_artifacts() {
                 context: None,
             };
             let _ = dispatch_host_call_shared(&ctx, call).await;
-        }
-    });
+        });
 
     let artifact = manager.runtime_risk_ledger_artifact();
     let config = RuntimeRiskCalibrationConfig::default();
@@ -458,8 +455,7 @@ fn e2e_feature_vectors_deterministic_across_replays() {
                     context: None,
                 };
                 let _ = dispatch_host_call_shared(&ctx, call).await;
-            }
-        });
+            });
 
         let telemetry = manager.runtime_hostcall_telemetry_artifact();
         telemetry
@@ -545,8 +541,7 @@ fn e2e_ledger_integrity_after_truncation() {
                 context: None,
             };
             let _ = dispatch_host_call_shared(&ctx, call).await;
-        }
-    });
+        });
 
     let artifact = manager.runtime_risk_ledger_artifact();
     // Should have been truncated to ledger_limit (clamped minimum 32)
@@ -635,8 +630,7 @@ fn e2e_recovery_flow_score_trajectory() {
                 context: None,
             };
             let _ = dispatch_host_call_shared(&ctx, call).await;
-        }
-    });
+        });
 
     let artifact = manager.runtime_risk_ledger_artifact();
     assert!(!artifact.entries.is_empty());
@@ -771,8 +765,7 @@ fn e2e_conformal_residual_drift_detection() {
                 context: None,
             };
             let _ = dispatch_host_call_shared(&ctx, call).await;
-        }
-    });
+        });
 
     let artifact = manager.runtime_risk_ledger_artifact();
     let replay = replay_runtime_risk_ledger_artifact(&artifact).expect("replay succeeds");
@@ -863,8 +856,7 @@ fn e2e_structured_jsonl_log_schema_compliance() {
                 context: None,
             };
             let _ = dispatch_host_call_shared(&ctx, call).await;
-        }
-    });
+        });
 
     let telemetry = manager.runtime_hostcall_telemetry_artifact();
     for event in &telemetry.entries {

@@ -705,7 +705,7 @@ fn shadow_phase_allows_all_calls() {
         context: None,
     };
 
-    asupersync::test_utils::run_test(|| async {
+    run_async( async {
         let result = dispatch_host_call_shared(&ctx, call).await;
         // In shadow mode, all calls should proceed (not denied by risk).
         // The specific result depends on whether the call type has a handler,
@@ -735,7 +735,7 @@ fn enforce_all_phase_respects_risk_decisions() {
 
     let ctx = make_ctx(&tools, &http, &manager, &policy, "ext-enforce");
 
-    asupersync::test_utils::run_test(|| async {
+    run_async( async {
         // Dispatch a benign call first to establish baseline.
         let benign = benign_call(0);
         let _ = dispatch_host_call_shared(&ctx, benign).await;

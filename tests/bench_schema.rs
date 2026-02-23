@@ -3027,8 +3027,7 @@ fn extension_stratification_validator_accepts_golden_fixture() {
         "lineage": {
             "run_id_lineage": ["20260216T010101Z", "abc123def456"],
             "source_manifest_path": "target/perf/runs/20260216T010101Z/manifest.json"
-        }
-    });
+        });
 
     assert!(
         validate_extension_stratification_record(&golden).is_ok(),
@@ -3043,8 +3042,7 @@ fn extension_stratification_validator_rejects_missing_claim_integrity() {
         "run_id": "20260216T010101Z",
         "correlation_id": "abc123def456",
         "layers": [],
-        "lineage": { "run_id_lineage": ["20260216T010101Z", "abc123def456"] }
-    });
+        "lineage": { "run_id_lineage": ["20260216T010101Z", "abc123def456"] });
 
     let err = validate_extension_stratification_record(&malformed).expect_err("fixture must fail");
     assert!(

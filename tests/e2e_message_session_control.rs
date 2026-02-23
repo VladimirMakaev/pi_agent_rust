@@ -65,7 +65,7 @@ fn load_extension(harness: &common::TestHarness, source: &str) -> ExtSetup {
 
     let manager = ExtensionManager::new();
     let host_actions = Arc::new(RecordingHostActions::default());
-    let session_handle = SessionHandle(Arc::new(asupersync::sync::Mutex::new(
+    let session_handle = SessionHandle(Arc::new(tokio::sync::Mutex::new(
         Session::create_with_dir(Some(cwd.clone())),
     )));
 
@@ -85,8 +85,7 @@ fn load_extension(harness: &common::TestHarness, source: &str) -> ExtSetup {
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start js runtime")
-        }
-    });
+        });
     manager.set_js_runtime(runtime);
 
     common::run_async({
@@ -96,8 +95,7 @@ fn load_extension(harness: &common::TestHarness, source: &str) -> ExtSetup {
                 .load_js_extensions(vec![spec])
                 .await
                 .expect("load extension");
-        }
-    });
+        });
 
     ExtSetup {
         manager,
@@ -173,16 +171,14 @@ export default function init(pi) {
         options: { triggerTurn: false },
       });
       return { display: "Notification sent" };
-    }
-  });
+    });
 }
 "#,
     );
 
     let result = common::run_async({
         let manager = setup.manager.clone();
-        async move { manager.execute_command("notify", "", 5000).await }
-    });
+        async move { manager.execute_command("notify", "", 5000).await });
     assert!(result.is_ok(), "notify command should succeed: {result:?}");
 
     let messages = setup.host_actions.messages.lock().unwrap();
@@ -220,16 +216,14 @@ export default function init(pi) {
       });
       // The hostcall returns error, which we pass through
       return { display: "done", error: result };
-    }
-  });
+    });
 }
 "#,
     );
 
     let _ = common::run_async({
         let manager = setup.manager.clone();
-        async move { manager.execute_command("bad-msg", "", 5000).await }
-    });
+        async move { manager.execute_command("bad-msg", "", 5000).await });
 
     // No message should have been delivered
     let messages = setup.host_actions.messages.lock().unwrap();
@@ -258,16 +252,14 @@ export default function init(pi) {
         options: { deliverAs: "followUp" },
       });
       return { display: "Injected" };
-    }
-  });
+    });
 }
 "#,
     );
 
     let result = common::run_async({
         let manager = setup.manager.clone();
-        async move { manager.execute_command("inject", "", 5000).await }
-    });
+        async move { manager.execute_command("inject", "", 5000).await });
     assert!(result.is_ok(), "inject command should succeed: {result:?}");
 
     let user_msgs = setup.host_actions.user_messages.lock().unwrap();
@@ -306,16 +298,14 @@ export default function init(pi) {
           activeTools: activeTools.tools || [],
         })
       };
-    }
-  });
+    });
 }
 "#,
     );
 
     let result = common::run_async({
         let manager = setup.manager.clone();
-        async move { manager.execute_command("toggle-tools", "", 5000).await }
-    });
+        async move { manager.execute_command("toggle-tools", "", 5000).await });
     assert!(result.is_ok(), "toggle-tools should succeed: {result:?}");
 
     // Verify the manager state reflects the change
@@ -358,16 +348,14 @@ export default function init(pi) {
           thinkingLevel: thinking.thinkingLevel,
         })
       };
-    }
-  });
+    });
 }
 "#,
     );
 
     let result = common::run_async({
         let manager = setup.manager.clone();
-        async move { manager.execute_command("switch-model", "", 5000).await }
-    });
+        async move { manager.execute_command("switch-model", "", 5000).await });
     assert!(result.is_ok(), "switch-model should succeed: {result:?}");
 
     // Verify model via real session handle
@@ -380,8 +368,7 @@ export default function init(pi) {
 
             let thinking = handle.get_thinking_level().await;
             assert_eq!(thinking.as_deref(), Some("high"));
-        }
-    });
+        });
     write_jsonl_artifacts(&harness, test_name);
 }
 
@@ -402,16 +389,14 @@ export default function init(pi) {
       await pi.session("setName", { name: "My Feature Work" });
       const result = await pi.session("getName", {});
       return { display: "Session named: " + (result || "unknown") };
-    }
-  });
+    });
 }
 "#,
     );
 
     let result = common::run_async({
         let manager = setup.manager.clone();
-        async move { manager.execute_command("name-session", "", 5000).await }
-    });
+        async move { manager.execute_command("name-session", "", 5000).await });
     assert!(result.is_ok(), "name-session should succeed: {result:?}");
 
     // Verify name via real session
@@ -420,8 +405,7 @@ export default function init(pi) {
         async move {
             let state = handle.get_state().await;
             assert_eq!(state["sessionName"], "My Feature Work");
-        }
-    });
+        });
     write_jsonl_artifacts(&harness, test_name);
 }
 
@@ -439,8 +423,7 @@ export default function init(pi) {
     handler: async (args, ctx) => {
       // First append a message so a valid entry exists, then label it.
       await pi.session("appendMessage", {
-        message: { role: "user", content: "test message" }
-      });
+        message: { role: "user", content: "test message" });
       // Get entries to find the appended entry ID.
       const entries = await pi.session("getEntries", {});
       const lastEntry = entries[entries.length - 1];
@@ -451,8 +434,7 @@ export default function init(pi) {
         label: "important"
       });
       return { display: "Label set on " + targetId };
-    }
-  });
+    });
   pi.registerCommand("label-missing", {
     description: "Label a non-existent entry (should error)",
     handler: async (args, ctx) => {
@@ -461,8 +443,7 @@ export default function init(pi) {
         label: "important"
       });
       return { display: "Label set" };
-    }
-  });
+    });
 }
 "#,
     );
@@ -470,15 +451,13 @@ export default function init(pi) {
     // Happy path: label an entry that exists.
     let result = common::run_async({
         let manager = setup.manager.clone();
-        async move { manager.execute_command("label-entry", "", 5000).await }
-    });
+        async move { manager.execute_command("label-entry", "", 5000).await });
     assert!(result.is_ok(), "label-entry should succeed: {result:?}");
 
     // Error path: labeling a non-existent target returns an error (spec §4 set_label).
     let result = common::run_async({
         let manager = setup.manager;
-        async move { manager.execute_command("label-missing", "", 5000).await }
-    });
+        async move { manager.execute_command("label-missing", "", 5000).await });
     assert!(
         result.is_err(),
         "label-missing should error for unknown targetId"
@@ -501,19 +480,16 @@ export default function init(pi) {
     handler: async (args, ctx) => {
       await pi.session("appendEntry", {
         customType: "bookmark",
-        data: { url: "https://example.com", title: "Example" }
-      });
+        data: { url: "https://example.com", title: "Example" });
       return { display: "Entry appended" };
-    }
-  });
+    });
 }
 "#,
     );
 
     let result = common::run_async({
         let manager = setup.manager.clone();
-        async move { manager.execute_command("append", "", 5000).await }
-    });
+        async move { manager.execute_command("append", "", 5000).await });
     assert!(result.is_ok(), "append command should succeed: {result:?}");
 
     // Verify custom entry exists in real session
@@ -528,8 +504,7 @@ export default function init(pi) {
             let custom = custom.unwrap();
             assert_eq!(custom["customType"], "bookmark");
             assert_eq!(custom["data"]["url"].as_str(), Some("https://example.com"));
-        }
-    });
+        });
     write_jsonl_artifacts(&harness, test_name);
 }
 
@@ -568,26 +543,22 @@ export default function init(pi) {
           customType: "progress",
           content: "Step 5 of 5 complete",
           display: true,
-        }
-      });
+        });
 
       // 6. Append a bookmark
       await pi.session("appendEntry", {
         customType: "checkpoint",
-        data: { step: 5 }
-      });
+        data: { step: 5 });
 
       return { display: "Lifecycle complete" };
-    }
-  });
+    });
 }
 "#,
     );
 
     let result = common::run_async({
         let manager = setup.manager.clone();
-        async move { manager.execute_command("lifecycle", "", 10000).await }
-    });
+        async move { manager.execute_command("lifecycle", "", 10000).await });
     assert!(
         result.is_ok(),
         "lifecycle command should succeed: {result:?}"
@@ -617,8 +588,7 @@ export default function init(pi) {
                 .find(|e| e.get("type").and_then(Value::as_str) == Some("custom"));
             assert!(checkpoint.is_some(), "checkpoint entry should exist");
             assert_eq!(checkpoint.unwrap()["customType"], "checkpoint");
-        }
-    });
+        });
 
     // Verify tool filter (sync)
     assert_eq!(setup.manager.active_tools(), Some(vec!["read".to_string()]));

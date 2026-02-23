@@ -16,7 +16,7 @@ macro_rules! fixture_test {
     ($name:ident, $fixture:literal) => {
         #[test]
         fn $name() {
-            asupersync::test_utils::run_test(|| async {
+            run_async( async {
                 let fixture = load_fixture($fixture)
                     .unwrap_or_else(|e| panic!("Failed to load fixture '{}': {}", $fixture, e));
 

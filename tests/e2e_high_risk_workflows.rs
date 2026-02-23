@@ -109,7 +109,7 @@ fn stream_done(msg: AssistantMessage) -> Pin<Box<dyn Stream<Item = Result<Stream
 fn make_agent_session(
     cwd: &Path,
     provider: Arc<dyn Provider>,
-    session: Arc<asupersync::sync::Mutex<Session>>,
+    session: Arc<tokio::sync::Mutex<Session>>,
     max_tool_iterations: usize,
 ) -> AgentSession {
     let agent = Agent::new(
@@ -577,13 +577,12 @@ fn provider_error_on_stream_surfaces_to_caller() {
         async move {
             let provider: Arc<dyn Provider> =
                 Arc::new(ErrorOnStreamProvider::new("401 Unauthorized"));
-            let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+            let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
                 Some(cwd.clone()),
             )));
             let mut agent_session = make_agent_session(&cwd, provider, session, 4);
             agent_session.run_text("hello".to_string(), |_| {}).await
-        }
-    });
+        });
 
     assert!(result.is_err(), "Expected error from provider");
     let err_msg = result.unwrap_err().to_string();
@@ -609,15 +608,14 @@ fn provider_mid_stream_error_handled_gracefully() {
         let cwd = cwd.clone();
         async move {
             let provider: Arc<dyn Provider> = Arc::new(MidStreamErrorProvider::new());
-            let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+            let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
                 Some(cwd.clone()),
             )));
             let mut agent_session = make_agent_session(&cwd, provider, session, 4);
             agent_session
                 .run_text("tell me something".to_string(), |_| {})
                 .await
-        }
-    });
+        });
 
     assert!(result.is_err(), "Expected error from mid-stream failure");
     let err_msg = result.unwrap_err().to_string();
@@ -643,13 +641,12 @@ fn provider_empty_response_does_not_crash() {
         let cwd = cwd.clone();
         async move {
             let provider: Arc<dyn Provider> = Arc::new(EmptyResponseProvider);
-            let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+            let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
                 Some(cwd.clone()),
             )));
             let mut agent_session = make_agent_session(&cwd, provider, session, 4);
             agent_session.run_text("hello".to_string(), |_| {}).await
-        }
-    });
+        });
 
     // Empty response should still succeed (just no text content)
     let message = result.expect("empty response should not error");
@@ -674,7 +671,7 @@ fn provider_max_tokens_stop_reason_surfaced() {
         let cwd = cwd.clone();
         async move {
             let provider: Arc<dyn Provider> = Arc::new(MaxTokensProvider);
-            let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+            let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
                 Some(cwd.clone()),
             )));
             let mut agent_session = make_agent_session(&cwd, provider, session, 4);
@@ -682,8 +679,7 @@ fn provider_max_tokens_stop_reason_surfaced() {
                 .run_text("write a long essay".to_string(), |_| {})
                 .await
                 .expect("max tokens should not error")
-        }
-    });
+        });
 
     assert_eq!(
         message.stop_reason,
@@ -717,7 +713,7 @@ fn agent_loop_max_tool_iterations_enforced() {
         let cwd = cwd.clone();
         async move {
             let provider: Arc<dyn Provider> = Arc::new(InfiniteToolProvider::new());
-            let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+            let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
                 Some(cwd.clone()),
             )));
             // Set max_tool_iterations to 3 — after 3 tool rounds the agent should stop
@@ -736,8 +732,7 @@ fn agent_loop_max_tool_iterations_enforced() {
                     }));
                 })
                 .await
-        }
-    });
+        });
 
     // The agent should eventually terminate (either with error or a forced stop)
     let cap = capture.lock().expect("lock capture");
@@ -775,7 +770,7 @@ fn agent_loop_mixed_tool_success_and_error() {
         let cwd = cwd.clone();
         async move {
             let provider: Arc<dyn Provider> = Arc::new(MixedToolErrorProvider::new());
-            let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+            let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
                 Some(cwd.clone()),
             )));
             let mut agent_session = make_agent_session(&cwd, provider, session, 6);
@@ -790,8 +785,7 @@ fn agent_loop_mixed_tool_success_and_error() {
                 })
                 .await
                 .expect("mixed tools should complete")
-        }
-    });
+        });
 
     let cap = capture.lock().expect("lock capture");
     assert_eq!(
@@ -824,7 +818,7 @@ fn agent_event_lifecycle_ordering() {
         let cwd = cwd.clone();
         async move {
             let provider: Arc<dyn Provider> = Arc::new(EmptyResponseProvider);
-            let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+            let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
                 Some(cwd.clone()),
             )));
             let mut agent_session = make_agent_session(&cwd, provider, session, 4);
@@ -835,8 +829,7 @@ fn agent_event_lifecycle_ordering() {
                 })
                 .await
                 .expect("should complete")
-        }
-    });
+        });
 
     let event_list = events.lock().expect("lock events");
     // Must start with agent_start and end with agent_end
@@ -899,8 +892,7 @@ fn session_corrupted_jsonl_skips_bad_entries() {
         "message": {
             "role": "user",
             "content": "first message"
-        }
-    });
+        });
     let corrupted_line = "this is not valid json {{{";
     let valid_entry_2 = json!({
         "type": "message",
@@ -910,8 +902,7 @@ fn session_corrupted_jsonl_skips_bad_entries() {
         "message": {
             "role": "user",
             "content": "second message"
-        }
-    });
+        });
 
     let content = format!(
         "{}\n{}\n{}\n{}\n",
@@ -924,8 +915,7 @@ fn session_corrupted_jsonl_skips_bad_entries() {
 
     let result = run_async({
         let path = session_path.display().to_string();
-        async move { Session::open_with_diagnostics(&path).await }
-    });
+        async move { Session::open_with_diagnostics(&path).await });
 
     let (session, diagnostics) = result.expect("session should open despite corruption");
     assert_eq!(
@@ -985,8 +975,7 @@ fn session_header_only_opens_as_empty() {
 
     let result = run_async({
         let path = session_path.display().to_string();
-        async move { Session::open_with_diagnostics(&path).await }
-    });
+        async move { Session::open_with_diagnostics(&path).await });
 
     let (session, diagnostics) = result.expect("header-only session should open");
     assert!(diagnostics.skipped_entries.is_empty());
@@ -1036,8 +1025,7 @@ fn session_empty_file_returns_error() {
 
     let result = run_async({
         let path = session_path.display().to_string();
-        async move { Session::open_with_diagnostics(&path).await }
-    });
+        async move { Session::open_with_diagnostics(&path).await });
 
     assert!(result.is_err(), "Empty session file should error");
     let err_msg = result.unwrap_err().to_string();
@@ -1079,8 +1067,7 @@ fn session_orphaned_parent_links_reported() {
         "message": {
             "role": "user",
             "content": "orphaned message"
-        }
-    });
+        });
 
     let content = format!(
         "{}\n{}\n",
@@ -1091,8 +1078,7 @@ fn session_orphaned_parent_links_reported() {
 
     let result = run_async({
         let path = session_path.display().to_string();
-        async move { Session::open_with_diagnostics(&path).await }
-    });
+        async move { Session::open_with_diagnostics(&path).await });
 
     let (_, diagnostics) = result.expect("session should open despite orphans");
     assert!(
@@ -1129,8 +1115,7 @@ fn session_invalid_header_returns_descriptive_error() {
 
     let result = run_async({
         let path = session_path.display().to_string();
-        async move { Session::open_with_diagnostics(&path).await }
-    });
+        async move { Session::open_with_diagnostics(&path).await });
 
     assert!(result.is_err(), "Invalid header should error");
     let err_msg = result.unwrap_err().to_string();
@@ -1160,7 +1145,7 @@ fn session_persist_reload_messages_survive() {
         let cwd = cwd.clone();
         async move {
             let provider: Arc<dyn Provider> = Arc::new(EmptyResponseProvider);
-            let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+            let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
                 Some(cwd.clone()),
             )));
             let mut agent_session = make_agent_session(&cwd, provider, Arc::clone(&session), 4);
@@ -1173,11 +1158,10 @@ fn session_persist_reload_messages_survive() {
                 .await
                 .expect("persist session");
 
-            let cx = asupersync::Cx::for_testing();
-            let guard = session.lock(&cx).await.expect("lock session");
+            
+            let guard = session.lock().await.expect("lock session");
             guard.path.clone().expect("session has path")
-        }
-    });
+        });
 
     assert!(session_path.exists(), "Session file should exist");
 
@@ -1188,8 +1172,7 @@ fn session_persist_reload_messages_survive() {
             Session::open_with_diagnostics(&path_str)
                 .await
                 .expect("reload session")
-        }
-    });
+        });
 
     assert!(
         diagnostics.skipped_entries.is_empty(),
@@ -1512,7 +1495,7 @@ fn agent_tool_invalid_arguments_handled() {
         let cwd = cwd.clone();
         async move {
             let provider: Arc<dyn Provider> = Arc::new(InvalidToolArgsProvider::new());
-            let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+            let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
                 Some(cwd.clone()),
             )));
             let mut agent_session = make_agent_session(&cwd, provider, session, 6);
@@ -1520,8 +1503,7 @@ fn agent_tool_invalid_arguments_handled() {
                 .run_text("read with bad args".to_string(), |_| {})
                 .await
                 .expect("should complete despite bad args")
-        }
-    });
+        });
 
     assert_eq!(message.stop_reason, StopReason::Stop);
     let text = assistant_text(&message);
@@ -1618,7 +1600,7 @@ fn agent_tool_read_nonexistent_file_surfaces_error() {
                 call_count: AtomicUsize::new(0),
                 missing_path,
             });
-            let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+            let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
                 Some(cwd.clone()),
             )));
             let mut agent_session = make_agent_session(&cwd, provider, session, 6);
@@ -1633,8 +1615,7 @@ fn agent_tool_read_nonexistent_file_surfaces_error() {
                 })
                 .await
                 .expect("should complete")
-        }
-    });
+        });
 
     let cap = capture.lock().expect("lock capture");
     assert_eq!(cap.tool_starts, 1, "Should have 1 tool execution");
@@ -1678,8 +1659,7 @@ fn session_unicode_messages_round_trip() {
         "message": {
             "role": "user",
             "content": unicode_text
-        }
-    });
+        });
 
     let content = format!(
         "{}\n{}\n",
@@ -1690,8 +1670,7 @@ fn session_unicode_messages_round_trip() {
 
     let result = run_async({
         let path = session_path.display().to_string();
-        async move { Session::open_with_diagnostics(&path).await }
-    });
+        async move { Session::open_with_diagnostics(&path).await });
 
     let (session, diagnostics) = result.expect("unicode session should open");
     assert!(diagnostics.skipped_entries.is_empty());

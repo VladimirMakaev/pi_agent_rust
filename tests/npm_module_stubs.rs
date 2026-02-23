@@ -37,8 +37,7 @@ fn load_ext(harness: &common::TestHarness, source: &str) -> ExtensionManager {
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start js runtime")
-        }
-    });
+        });
     manager.set_js_runtime(runtime);
 
     common::run_async({
@@ -48,8 +47,7 @@ fn load_ext(harness: &common::TestHarness, source: &str) -> ExtensionManager {
                 .load_js_extensions(vec![spec])
                 .await
                 .expect("load extension");
-        }
-    });
+        });
 
     manager
 }
@@ -81,14 +79,12 @@ export default function activate(pi) {{
             mgr2.dispatch_event_with_response(ExtensionEventName::AgentStart, None, 10000)
                 .await
                 .expect("dispatch agent_start")
-        }
-    });
+        });
 
     common::run_async({
         async move {
             let _ = mgr.shutdown(Duration::from_secs(3)).await;
-        }
-    });
+        });
 
     response
         .and_then(|v| v.get("result").and_then(|r| r.as_str()).map(String::from))

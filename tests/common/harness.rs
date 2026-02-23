@@ -236,8 +236,7 @@ impl TestHarness {
         self.logger.info_ctx("test", message, |ctx| {
             for (key, value) in fields {
                 ctx.push(((*key).to_string(), (*value).to_string()));
-            }
-        });
+            });
     }
 
     /// Record an artifact for this test.
@@ -514,8 +513,7 @@ impl TestEnv {
         logger.info_ctx(category, message, |ctx| {
             for (key, value) in &self.vars {
                 ctx.push((key.clone(), value.clone()));
-            }
-        });
+            });
     }
 
     pub fn apply_to(&self, command: &mut std::process::Command) {
@@ -638,8 +636,7 @@ impl MockHttpServer {
                         break;
                     }
                 }
-            }
-        });
+            });
 
         let _ = ready_rx.recv();
 
@@ -819,8 +816,7 @@ fn handle_connection(
                 format!("header.{}", name.to_ascii_lowercase()),
                 value.clone(),
             ));
-        }
-    });
+        });
 
     let route_key = RouteKey { method, path };
     let response = route_queues
@@ -1351,10 +1347,7 @@ async fn collect_live_stream_summary(
     options: StreamOptions,
     timeout: Duration,
 ) -> Result<LiveStreamSummary, String> {
-    let now = asupersync::Cx::current()
-        .and_then(|cx| cx.timer_driver())
-        .map_or_else(asupersync::time::wall_now, |timer| timer.now());
-    let timeout_fut = asupersync::time::sleep(now, timeout).fuse();
+    let timeout_fut = tokio::time::sleep(timeout).fuse();
     let run_fut = async move {
         let stream = provider
             .stream(&context, &options)
@@ -1620,8 +1613,7 @@ pub async fn run_live_provider_target(
                         "redaction_policy".into(),
                         diagnostic.redaction_policy.to_string(),
                     ));
-                }
-            });
+                });
 
         final_trace = trace;
         final_summary = summary;
@@ -1668,7 +1660,7 @@ pub async fn run_live_provider_target(
                 },
             );
 
-            asupersync::time::sleep(asupersync::time::wall_now(), backoff).await;
+            tokio::time::sleep(backoff).await;
             continue;
         }
 
@@ -1713,8 +1705,7 @@ pub async fn run_live_provider_target(
                     "redaction_policy".into(),
                     diagnostic.redaction_policy.to_string(),
                 ));
-            }
-        });
+            });
 
     LiveProviderRun {
         provider: entry.model.provider.clone(),

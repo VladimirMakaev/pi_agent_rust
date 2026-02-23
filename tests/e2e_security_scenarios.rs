@@ -175,8 +175,7 @@ fn write_extension_package(root: &Path, name: &str, source: &str) {
         "private": true,
         "pi": {
             "extensions": [format!("extensions/{entry}")]
-        }
-    });
+        });
     fs::write(
         root.join("package.json"),
         serde_json::to_string_pretty(&pkg).unwrap(),
@@ -198,8 +197,7 @@ fn log_scenario_event(
         ctx.push(("extension_id".to_string(), ext_id.to_string()));
         for (k, v) in extra {
             ctx.push(((*k).to_string(), v.clone()));
-        }
-    });
+        });
 }
 
 // ============================================================================
@@ -264,15 +262,14 @@ export default function init(pi) {
 
     let t2 = Instant::now();
     for i in 0..10 {
-        asupersync::test_utils::run_test(|| {
-            let ctx = &ctx;
-            let call = benign_call(i);
-            async move {
+        run_async(async move {
+                let ctx = &ctx;
+                let call = benign_call(i);
+
                 // The call may return a validation error (no real runtime)
                 // but the risk scorer still processes it.
                 let _ = dispatch_host_call_shared(ctx, call).await;
-            }
-        });
+            });
     }
     log_scenario_event(
         &harness,
@@ -432,13 +429,12 @@ fn scenario_runtime_anomaly_escalation() {
     // Phase 1: Benign warmup (establish baseline)
     log_scenario_event(&harness, "execution", "Starting benign warmup", ext_id, &[]);
     for i in 0..20 {
-        asupersync::test_utils::run_test(|| {
-            let ctx = &ctx;
-            let call = benign_call(i);
-            async move {
+        run_async(async move {
+                let ctx = &ctx;
+                let call = benign_call(i);
+
                 let _ = dispatch_host_call_shared(ctx, call).await;
-            }
-        });
+            });
     }
 
     let ledger_after_benign = manager.runtime_risk_ledger_artifact();
@@ -470,13 +466,12 @@ fn scenario_runtime_anomaly_escalation() {
     );
     let mut adversarial_actions = Vec::new();
     for i in 0..15 {
-        asupersync::test_utils::run_test(|| {
-            let ctx = &ctx;
-            let call = adversarial_call(i);
-            async move {
+        run_async(async move {
+                let ctx = &ctx;
+                let call = adversarial_call(i);
+
                 let _ = dispatch_host_call_shared(ctx, call).await;
-            }
-        });
+            });
     }
 
     let ledger_after_adversarial = manager.runtime_risk_ledger_artifact();
@@ -593,13 +588,12 @@ fn scenario_quota_breach_enforcement() {
 
     // Burst past quota
     for i in 0..10 {
-        asupersync::test_utils::run_test(|| {
-            let ctx = &ctx;
-            let call = benign_call(i);
-            async move {
+        run_async(async move {
+                let ctx = &ctx;
+                let call = benign_call(i);
+
                 let _ = dispatch_host_call_shared(ctx, call).await;
-            }
-        });
+            });
     }
 
     let alerts = manager.security_alert_artifact();
@@ -725,22 +719,20 @@ fn scenario_incident_evidence_bundle_e2e() {
 
     // Generate mixed activity
     for i in 0..10 {
-        asupersync::test_utils::run_test(|| {
-            let ctx = &ctx;
-            let call = benign_call(i);
-            async move {
+        run_async(async move {
+                let ctx = &ctx;
+                let call = benign_call(i);
+
                 let _ = dispatch_host_call_shared(ctx, call).await;
-            }
-        });
+            });
     }
     for i in 0..5 {
-        asupersync::test_utils::run_test(|| {
-            let ctx = &ctx;
-            let call = adversarial_call(i);
-            async move {
+        run_async(async move {
+                let ctx = &ctx;
+                let call = adversarial_call(i);
+
                 let _ = dispatch_host_call_shared(ctx, call).await;
-            }
-        });
+            });
     }
 
     log_scenario_event(
@@ -826,35 +818,32 @@ fn scenario_recovery_after_adversarial_burst() {
 
     // Phase 1: Benign warmup
     for i in 0..15 {
-        asupersync::test_utils::run_test(|| {
-            let ctx = &ctx;
-            let call = benign_call(i);
-            async move {
+        run_async(async move {
+                let ctx = &ctx;
+                let call = benign_call(i);
+
                 let _ = dispatch_host_call_shared(ctx, call).await;
-            }
-        });
+            });
     }
 
     // Phase 2: Adversarial burst
     for i in 0..10 {
-        asupersync::test_utils::run_test(|| {
-            let ctx = &ctx;
-            let call = adversarial_call(i);
-            async move {
+        run_async(async move {
+                let ctx = &ctx;
+                let call = adversarial_call(i);
+
                 let _ = dispatch_host_call_shared(ctx, call).await;
-            }
-        });
+            });
     }
 
     // Phase 3: Recovery with benign calls
     for i in 0..30 {
-        asupersync::test_utils::run_test(|| {
-            let ctx = &ctx;
-            let call = recovery_call(i);
-            async move {
+        run_async(async move {
+                let ctx = &ctx;
+                let call = recovery_call(i);
+
                 let _ = dispatch_host_call_shared(ctx, call).await;
-            }
-        });
+            });
     }
 
     let ledger = manager.runtime_risk_ledger_artifact();
@@ -903,24 +892,22 @@ fn scenario_multi_extension_isolation() {
 
     // ext-alpha: benign only
     for i in 0..10 {
-        asupersync::test_utils::run_test(|| {
-            let ctx = &ctx_a;
-            let call = benign_call(i);
-            async move {
+        run_async(async move {
+                let ctx = &ctx_a;
+                let call = benign_call(i);
+
                 let _ = dispatch_host_call_shared(ctx, call).await;
-            }
-        });
+            });
     }
 
     // ext-beta: adversarial
     for i in 0..10 {
-        asupersync::test_utils::run_test(|| {
-            let ctx = &ctx_b;
-            let call = adversarial_call(i);
-            async move {
+        run_async(async move {
+                let ctx = &ctx_b;
+                let call = adversarial_call(i);
+
                 let _ = dispatch_host_call_shared(ctx, call).await;
-            }
-        });
+            });
     }
 
     let ledger = manager.runtime_risk_ledger_artifact();
@@ -994,13 +981,12 @@ fn scenario_secret_broker_detection() {
 
     // Probe for secrets
     for i in 0..5 {
-        asupersync::test_utils::run_test(|| {
-            let ctx = &ctx;
-            let call = secret_probe_call(i);
-            async move {
+        run_async(async move {
+                let ctx = &ctx;
+                let call = secret_probe_call(i);
+
                 let _ = dispatch_host_call_shared(ctx, call).await;
-            }
-        });
+            });
     }
 
     let secret_artifact = manager.secret_broker_artifact();
@@ -1063,12 +1049,11 @@ fn scenario_exec_mediation_strict() {
             context: None,
         };
 
-        asupersync::test_utils::run_test(|| {
-            let ctx = &ctx;
-            async move {
+        run_async(async move {
+                let ctx = &ctx;
+
                 let _ = dispatch_host_call_shared(ctx, call).await;
-            }
-        });
+            });
     }
 
     let exec_artifact = manager.exec_mediation_artifact();
@@ -1187,22 +1172,20 @@ fn scenario_deterministic_artifacts() {
         let ctx = make_ctx(&tools, &http, &manager, &policy, ext_id);
 
         for i in 0..5 {
-            asupersync::test_utils::run_test(|| {
-                let ctx = &ctx;
-                let call = benign_call(i);
-                async move {
+            run_async(async move {
+                    let ctx = &ctx;
+                    let call = benign_call(i);
+
                     let _ = dispatch_host_call_shared(ctx, call).await;
-                }
-            });
+                });
         }
         for i in 0..3 {
-            asupersync::test_utils::run_test(|| {
-                let ctx = &ctx;
-                let call = adversarial_call(i);
-                async move {
+            run_async(async move {
+                    let ctx = &ctx;
+                    let call = adversarial_call(i);
+
                     let _ = dispatch_host_call_shared(ctx, call).await;
-                }
-            });
+                });
         }
 
         let ledger = manager.runtime_risk_ledger_artifact();
@@ -1280,16 +1263,15 @@ fn scenario_shadow_mode_telemetry() {
 
     // Even adversarial calls should be allowed in shadow mode
     for i in 0..10 {
-        asupersync::test_utils::run_test(|| {
-            let ctx = &ctx;
-            let call = adversarial_call(i);
-            async move {
+        run_async(async move {
+                let ctx = &ctx;
+                let call = adversarial_call(i);
+
                 let result = dispatch_host_call_shared(ctx, call).await;
                 // In shadow mode, calls should not be denied by risk scorer
                 // (though policy may still deny them)
                 let _ = result;
-            }
-        });
+            });
     }
 
     let ledger = manager.runtime_risk_ledger_artifact();
@@ -1331,20 +1313,18 @@ fn scenario_filtered_incident_bundle() {
     let ctx_b = make_ctx(&tools, &http, &manager, &policy, "ext-b");
 
     for i in 0..5 {
-        asupersync::test_utils::run_test(|| {
-            let ctx = &ctx_a;
-            let call = benign_call(i);
-            async move {
+        run_async(async move {
+                let ctx = &ctx_a;
+                let call = benign_call(i);
+
                 let _ = dispatch_host_call_shared(ctx, call).await;
-            }
-        });
-        asupersync::test_utils::run_test(|| {
-            let ctx = &ctx_b;
-            let call = adversarial_call(i);
-            async move {
+            });
+        run_async(async move {
+                let ctx = &ctx_b;
+                let call = adversarial_call(i);
+
                 let _ = dispatch_host_call_shared(ctx, call).await;
-            }
-        });
+            });
     }
 
     // Export filtered to ext-a only
@@ -1407,13 +1387,12 @@ fn scenario_full_attack_lifecycle() {
 
     // Phase 1: Benign warmup (20 calls)
     for i in 0..20 {
-        asupersync::test_utils::run_test(|| {
-            let ctx = &ctx;
-            let call = benign_call(i);
-            async move {
+        run_async(async move {
+                let ctx = &ctx;
+                let call = benign_call(i);
+
                 let _ = dispatch_host_call_shared(ctx, call).await;
-            }
-        });
+            });
     }
     log_scenario_event(&harness, "execution", "Benign warmup complete", ext_id, &[]);
 
@@ -1421,21 +1400,19 @@ fn scenario_full_attack_lifecycle() {
     for i in 0..10 {
         // Alternate benign and adversarial
         if i % 3 == 0 {
-            asupersync::test_utils::run_test(|| {
-                let ctx = &ctx;
-                let call = adversarial_call(i);
-                async move {
+            run_async(async move {
+                    let ctx = &ctx;
+                    let call = adversarial_call(i);
+
                     let _ = dispatch_host_call_shared(ctx, call).await;
-                }
-            });
+                });
         } else {
-            asupersync::test_utils::run_test(|| {
-                let ctx = &ctx;
-                let call = benign_call(100 + i);
-                async move {
+            run_async(async move {
+                    let ctx = &ctx;
+                    let call = benign_call(100 + i);
+
                     let _ = dispatch_host_call_shared(ctx, call).await;
-                }
-            });
+                });
         }
     }
     log_scenario_event(
@@ -1448,13 +1425,12 @@ fn scenario_full_attack_lifecycle() {
 
     // Phase 3: Full adversarial burst
     for i in 0..15 {
-        asupersync::test_utils::run_test(|| {
-            let ctx = &ctx;
-            let call = adversarial_call(100 + i);
-            async move {
+        run_async(async move {
+                let ctx = &ctx;
+                let call = adversarial_call(100 + i);
+
                 let _ = dispatch_host_call_shared(ctx, call).await;
-            }
-        });
+            });
     }
     log_scenario_event(
         &harness,

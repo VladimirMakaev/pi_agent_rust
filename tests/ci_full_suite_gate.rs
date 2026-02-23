@@ -4876,8 +4876,7 @@ fn parameter_sweeps_gate_fails_closed_on_readiness_incoherence() {
                 { "name": "queue_max_items", "candidate_values": [1024, 2048] },
                 { "name": "compaction_quota_mb", "candidate_values": [64, 96] }
             ]
-        }
-    });
+        });
     std::fs::write(
         &artifact_path,
         serde_json::to_string_pretty(&payload).expect("serialize payload"),
@@ -4920,8 +4919,7 @@ fn parameter_sweeps_gate_passes_on_consistent_contract_shape() {
                 { "name": "queue_max_items", "candidate_values": [1024, 2048] },
                 { "name": "compaction_quota_mb", "candidate_values": [64, 96] }
             ]
-        }
-    });
+        });
     std::fs::write(
         &artifact_path,
         serde_json::to_string_pretty(&payload).expect("serialize payload"),

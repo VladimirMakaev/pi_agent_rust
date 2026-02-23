@@ -12,7 +12,7 @@
 
 mod common;
 
-use asupersync::channel::mpsc;
+use tokio::sync::mpsc;
 use bubbletea::{KeyMsg, KeyType, Model as BubbleteaModel};
 use common::TestHarness;
 use futures::stream;
@@ -35,13 +35,13 @@ use std::sync::{Arc, OnceLock};
 
 // ── Test infrastructure ─────────────────────────────────────────────
 
-fn test_runtime_handle() -> asupersync::runtime::RuntimeHandle {
-    static RT: OnceLock<asupersync::runtime::Runtime> = OnceLock::new();
+fn test_runtime_handle() -> tokio::runtime::Handle {
+    static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RT.get_or_init(|| {
-        asupersync::runtime::RuntimeBuilder::multi_thread()
+        tokio::runtime::Builder::multi_thread()
             .blocking_threads(1, 8)
             .build()
-            .expect("build asupersync runtime")
+            .expect("build tokio runtime")
     })
     .handle()
 }
@@ -123,7 +123,7 @@ fn build_app_with_models_and_config(
     let tools = ToolRegistry::new(&[], &cwd, Some(&config));
     let provider: Arc<dyn Provider> = Arc::new(DummyProvider);
     let agent = Agent::new(provider, tools, AgentConfig::default());
-    let session = Arc::new(asupersync::sync::Mutex::new(Session::in_memory()));
+    let session = Arc::new(tokio::sync::Mutex::new(Session::in_memory()));
     let resources = ResourceLoader::empty(config.enable_skill_commands());
     let resource_cli = ResourceCliOptions {
         no_skills: false,

@@ -415,9 +415,9 @@ fn stream_options_default_values() {
 // ===========================================================================
 
 /// Session::create() produces a valid session with UUID.
-#[test]
-fn session_create_has_valid_id() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn session_create_has_valid_id() {
+
         let session = Session::create();
         assert!(
             !session.header.id.is_empty(),
@@ -427,45 +427,49 @@ fn session_create_has_valid_id() {
             session.entries.is_empty(),
             "new session should have no entries"
         );
-    });
+    
+
 }
 
 /// Session::create_with_dir() uses the specified directory.
-#[test]
-fn session_create_with_dir() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn session_create_with_dir() {
+
         let h = TestHarness::new("session_with_dir");
         let session = Session::create_with_dir(Some(h.temp_dir().to_path_buf()));
         assert!(!session.header.id.is_empty());
-    });
+    
+
 }
 
 /// Session append_message adds entries.
-#[test]
-fn session_append_message_adds_entry() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn session_append_message_adds_entry() {
+
         let mut session = Session::create();
         let id = session.append_message(user_msg("hello world"));
         assert!(!id.is_empty(), "append should return non-empty ID");
         assert_eq!(session.entries.len(), 1, "should have 1 entry");
-    });
+    
+
 }
 
 /// Session set_name and get_name.
-#[test]
-fn session_name_round_trip() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn session_name_round_trip() {
+
         let mut session = Session::create();
         let _ = session.set_name("test-session-name");
         let name = session.get_name();
         assert_eq!(name.as_deref(), Some("test-session-name"));
-    });
+    
+
 }
 
 /// Session model change is recorded.
-#[test]
-fn session_model_change_entry() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn session_model_change_entry() {
+
         let mut session = Session::create();
         let id = session.append_model_change("openai".to_string(), "gpt-4".to_string());
         assert!(!id.is_empty());
@@ -478,48 +482,52 @@ fn session_model_change_entry() {
             }
             other => panic!("expected ModelChange, got {other:?}"),
         }
-    });
+    
+
 }
 
 /// Session thinking level change is recorded.
-#[test]
-fn session_thinking_level_change() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn session_thinking_level_change() {
+
         let mut session = Session::create();
         let id = session.append_thinking_level_change("high".to_string());
         assert!(!id.is_empty());
-    });
+    
+
 }
 
 /// Session add_label on nonexistent entry returns None.
-#[test]
-fn session_add_label_nonexistent_returns_none() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn session_add_label_nonexistent_returns_none() {
+
         let mut session = Session::create();
         let result = session.add_label("nonexistent-id", Some("label".to_string()));
         assert!(
             result.is_none(),
             "labeling nonexistent entry should return None"
         );
-    });
+    
+
 }
 
 /// Session add_label on existing entry succeeds.
-#[test]
-fn session_add_label_existing_entry() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn session_add_label_existing_entry() {
+
         let mut session = Session::create();
         let entry_id = session.append_message(user_msg("msg"));
         let label_id = session.add_label(&entry_id, Some("important".to_string()));
         assert!(label_id.is_some(), "labeling existing entry should succeed");
         assert_eq!(session.entries.len(), 2, "should have message + label");
-    });
+    
+
 }
 
 /// Session custom entry with arbitrary JSON data.
-#[test]
-fn session_custom_entry() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn session_custom_entry() {
+
         let mut session = Session::create();
         let id = session.append_custom_entry(
             "test-custom-type".to_string(),
@@ -527,28 +535,31 @@ fn session_custom_entry() {
         );
         assert!(!id.is_empty());
         assert_eq!(session.entries.len(), 1);
-    });
+    
+
 }
 
 /// entries_for_current_path on empty session.
-#[test]
-fn session_entries_for_current_path_empty() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn session_entries_for_current_path_empty() {
+
         let session = Session::create();
         let entries = session.entries_for_current_path();
         assert!(entries.is_empty(), "empty session should have empty path");
-    });
+    
+
 }
 
 /// entries_for_current_path with single message.
-#[test]
-fn session_entries_for_current_path_single() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn session_entries_for_current_path_single() {
+
         let mut session = Session::create();
         session.append_message(user_msg("msg"));
         let entries = session.entries_for_current_path();
         assert_eq!(entries.len(), 1, "should have 1 entry in path");
-    });
+    
+
 }
 
 // ===========================================================================
@@ -556,9 +567,9 @@ fn session_entries_for_current_path_single() {
 // ===========================================================================
 
 /// Session save creates a JSONL file, and open recovers it.
-#[test]
-fn session_save_and_open_round_trip() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn session_save_and_open_round_trip() {
+
         let h = TestHarness::new("session_round_trip");
         let mut session = Session::create_with_dir(Some(h.temp_dir().to_path_buf()));
 
@@ -579,13 +590,14 @@ fn session_save_and_open_round_trip() {
         let restored = Session::open(&path_str).await.expect("open should succeed");
         assert_eq!(restored.get_name().as_deref(), Some("round-trip-test"));
         assert!(!restored.entries.is_empty(), "should have entries");
-    });
+    
+
 }
 
 /// Session open on nonexistent file returns SessionNotFound.
-#[test]
-fn session_open_nonexistent_file() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn session_open_nonexistent_file() {
+
         let result = Session::open("/nonexistent/session/path.jsonl").await;
         assert!(result.is_err(), "opening nonexistent file should error");
         let err_msg = format!("{}", result.unwrap_err());
@@ -595,13 +607,14 @@ fn session_open_nonexistent_file() {
                 || err_msg.to_lowercase().contains("no such file"),
             "error should mention not found: got {err_msg}"
         );
-    });
+    
+
 }
 
 /// Session open_with_diagnostics on corrupted JSONL reports skipped entries.
-#[test]
-fn session_open_corrupted_jsonl_reports_diagnostics() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn session_open_corrupted_jsonl_reports_diagnostics() {
+
         let h = TestHarness::new("session_corrupted");
         let session_path = h.temp_dir().join("corrupted.jsonl");
 
@@ -644,26 +657,28 @@ fn session_open_corrupted_jsonl_reports_diagnostics() {
                 );
             }
         }
-    });
+    
+
 }
 
 /// Session open on empty file returns appropriate error.
-#[test]
-fn session_open_empty_file() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn session_open_empty_file() {
+
         let h = TestHarness::new("session_empty");
         let session_path = h.temp_dir().join("empty.jsonl");
         std::fs::File::create(&session_path).expect("create empty file");
 
         let result = Session::open(&session_path.to_string_lossy()).await;
         assert!(result.is_err(), "opening empty file should error");
-    });
+    
+
 }
 
 /// Session double-save doesn't corrupt file.
-#[test]
-fn session_double_save_idempotent() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn session_double_save_idempotent() {
+
         let h = TestHarness::new("session_double_save");
         let mut session = Session::create_with_dir(Some(h.temp_dir().to_path_buf()));
         session.append_message(user_msg("msg"));
@@ -677,13 +692,14 @@ fn session_double_save_idempotent() {
             .await
             .expect("open after double save");
         assert!(!restored.entries.is_empty());
-    });
+    
+
 }
 
 /// Session save after multiple mutations.
-#[test]
-fn session_save_after_mutations() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn session_save_after_mutations() {
+
         let h = TestHarness::new("session_mutations");
         let mut session = Session::create_with_dir(Some(h.temp_dir().to_path_buf()));
 
@@ -706,7 +722,8 @@ fn session_save_after_mutations() {
             "should have multiple entry types: got {}",
             restored.entries.len()
         );
-    });
+    
+
 }
 
 // ===========================================================================
@@ -714,9 +731,9 @@ fn session_save_after_mutations() {
 // ===========================================================================
 
 /// Session branching creates a new branch point.
-#[test]
-fn session_branch_creates_fork() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn session_branch_creates_fork() {
+
         let mut session = Session::create();
 
         let entry_id = session.append_message(user_msg("branch point"));
@@ -724,38 +741,41 @@ fn session_branch_creates_fork() {
         // Create branch from the entry
         let branched = session.create_branch_from(&entry_id);
         assert!(branched, "branch creation should succeed");
-    });
+    
+
 }
 
 /// Session get_entry returns None for nonexistent ID.
-#[test]
-fn session_get_entry_nonexistent() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn session_get_entry_nonexistent() {
+
         let session = Session::create();
         assert!(
             session.get_entry("nonexistent").is_none(),
             "nonexistent entry should return None"
         );
-    });
+    
+
 }
 
 /// Session get_children on empty session.
-#[test]
-fn session_get_children_empty() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn session_get_children_empty() {
+
         let session = Session::create();
         let children = session.get_children(None);
         assert!(
             children.is_empty(),
             "empty session should have no root children"
         );
-    });
+    
+
 }
 
 /// Session get_path_to_entry for existing entry.
-#[test]
-fn session_get_path_to_entry() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn session_get_path_to_entry() {
+
         let mut session = Session::create();
         let id1 = session.append_message(user_msg("first"));
         let _id2 = session.append_message(user_msg("second"));
@@ -765,7 +785,8 @@ fn session_get_path_to_entry() {
             !path.is_empty(),
             "path to existing entry should not be empty"
         );
-    });
+    
+
 }
 
 // ===========================================================================
@@ -773,9 +794,9 @@ fn session_get_path_to_entry() {
 // ===========================================================================
 
 /// create_provider for Anthropic provider with valid entry.
-#[test]
-fn create_provider_anthropic_succeeds() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn create_provider_anthropic_succeeds() {
+
         let entry = make_model_entry(
             "anthropic",
             "anthropic-messages",
@@ -788,13 +809,14 @@ fn create_provider_anthropic_succeeds() {
         );
         let p = provider.unwrap();
         assert_eq!(p.name(), "anthropic");
-    });
+    
+
 }
 
 /// create_provider for OpenAI provider.
-#[test]
-fn create_provider_openai_succeeds() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn create_provider_openai_succeeds() {
+
         let entry = make_model_entry(
             "openai",
             "openai-chat-completions",
@@ -802,23 +824,25 @@ fn create_provider_openai_succeeds() {
         );
         let provider = create_provider(&entry, None);
         assert!(provider.is_ok(), "OpenAI provider creation should succeed");
-    });
+    
+
 }
 
 /// create_provider for Cohere provider.
-#[test]
-fn create_provider_cohere_succeeds() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn create_provider_cohere_succeeds() {
+
         let entry = make_model_entry("cohere", "cohere-chat", "https://api.cohere.com");
         let provider = create_provider(&entry, None);
         assert!(provider.is_ok(), "Cohere provider creation should succeed");
-    });
+    
+
 }
 
 /// create_provider for Google Gemini provider.
-#[test]
-fn create_provider_gemini_succeeds() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn create_provider_gemini_succeeds() {
+
         let entry = make_model_entry(
             "google",
             "google-generativeai",
@@ -830,13 +854,14 @@ fn create_provider_gemini_succeeds() {
             "Gemini provider creation should succeed: {:?}",
             provider.err()
         );
-    });
+    
+
 }
 
 /// create_provider for unknown provider with unknown API returns error.
-#[test]
-fn create_provider_unknown_provider_and_api_errors() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn create_provider_unknown_provider_and_api_errors() {
+
         let entry = make_model_entry(
             "totally-unknown-provider",
             "totally-unknown-api",
@@ -861,13 +886,14 @@ fn create_provider_unknown_provider_and_api_errors() {
                 );
             }
         }
-    });
+    
+
 }
 
 /// create_provider with empty API field falls back to provider defaults.
-#[test]
-fn create_provider_empty_api_uses_default() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn create_provider_empty_api_uses_default() {
+
         // Anthropic with empty API should default to anthropic-messages
         let entry = make_model_entry("anthropic", "", "https://api.anthropic.com");
         let result = create_provider(&entry, None);
@@ -876,13 +902,14 @@ fn create_provider_empty_api_uses_default() {
             "anthropic with empty api should use default: {:?}",
             result.err()
         );
-    });
+    
+
 }
 
 /// create_provider for OpenAI Responses API variant.
-#[test]
-fn create_provider_openai_responses() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn create_provider_openai_responses() {
+
         let entry = make_model_entry("openai", "openai-responses", "https://api.openai.com/v1");
         let provider = create_provider(&entry, None);
         assert!(
@@ -890,13 +917,14 @@ fn create_provider_openai_responses() {
             "OpenAI Responses provider should succeed: {:?}",
             provider.err()
         );
-    });
+    
+
 }
 
 /// create_provider without extensions passes None correctly.
-#[test]
-fn create_provider_no_extensions() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn create_provider_no_extensions() {
+
         let entry = make_model_entry(
             "anthropic",
             "anthropic-messages",
@@ -905,7 +933,8 @@ fn create_provider_no_extensions() {
         // Explicitly pass None for extensions
         let result = create_provider(&entry, None);
         assert!(result.is_ok());
-    });
+    
+
 }
 
 // ===========================================================================
@@ -944,9 +973,9 @@ fn encode_cwd_special_chars() {
 // ===========================================================================
 
 /// Session header model can be updated.
-#[test]
-fn session_set_model_header() {
-    asupersync::test_utils::run_test(|| async {
+#[tokio::test]
+async fn session_set_model_header() {
+
         let mut session = Session::create();
         session.set_model_header(
             Some("openai".to_string()),
@@ -956,7 +985,8 @@ fn session_set_model_header() {
         // Verify header reflects the change
         assert_eq!(session.header.provider.as_deref(), Some("openai"));
         assert_eq!(session.header.model_id.as_deref(), Some("gpt-4-turbo"));
-    });
+    
+
 }
 
 // ===========================================================================

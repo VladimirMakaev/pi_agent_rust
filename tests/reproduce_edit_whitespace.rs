@@ -7,7 +7,7 @@ mod tests {
 
     #[test]
     fn test_edit_trailing_whitespace_fuzzy() {
-        asupersync::test_utils::run_test(|| async {
+        run_async( async {
             let tmp = tempdir().unwrap();
             let file_path = tmp.path().join("fuzzy.txt");
 

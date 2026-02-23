@@ -5,7 +5,7 @@ mod tests {
 
     #[test]
     fn test_edit_empty_old_text_is_rejected() {
-        asupersync::test_utils::run_test(|| async {
+        run_async( async {
             let tmp = tempfile::tempdir().unwrap();
             let file_path = tmp.path().join("test.txt");
             std::fs::write(&file_path, "content").unwrap();

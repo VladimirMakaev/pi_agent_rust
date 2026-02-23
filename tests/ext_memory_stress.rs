@@ -347,8 +347,7 @@ fn run_stress_loop(manager: &ExtensionManager, params: &StressParams) -> StressO
                     manager
                         .dispatch_event(ExtensionEventName::AgentStart, None)
                         .await
-                }
-            });
+                });
             if result.is_err() {
                 event_errors += 1;
             }
@@ -600,8 +599,7 @@ fn ext_memory_stress_real_extensions() {
     common::run_async({
         async move {
             let _ = manager.shutdown(Duration::from_secs(5)).await;
-        }
-    });
+        });
 
     let vd = compute_verdict(&outcome);
 
@@ -696,8 +694,7 @@ fn ext_memory_stress_inline() {
     common::run_async({
         async move {
             let _ = manager.shutdown(Duration::from_secs(5)).await;
-        }
-    });
+        });
 
     let vd = compute_verdict(&outcome);
     let inline_extension_names: Vec<String> = (0..ext_count)

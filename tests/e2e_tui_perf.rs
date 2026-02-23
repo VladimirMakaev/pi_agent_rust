@@ -23,8 +23,8 @@
 
 mod common;
 
-use asupersync::channel::mpsc;
-use asupersync::sync::Mutex;
+use tokio::sync::mpsc;
+use tokio::sync::Mutex;
 use bubbletea::{KeyMsg, KeyType, Message, Model as BubbleteaModel};
 use common::harness::TestHarness;
 use futures::stream;
@@ -47,12 +47,12 @@ use std::time::Instant;
 
 // ─── Test Infrastructure ─────────────────────────────────────────────────────
 
-fn test_runtime_handle() -> asupersync::runtime::RuntimeHandle {
-    static RT: OnceLock<asupersync::runtime::Runtime> = OnceLock::new();
+fn test_runtime_handle() -> tokio::runtime::Handle {
+    static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RT.get_or_init(|| {
-        asupersync::runtime::RuntimeBuilder::current_thread()
+        tokio::runtime::Builder::current_thread()
             .build()
-            .expect("build asupersync runtime")
+            .expect("build tokio runtime")
     })
     .handle()
 }
@@ -192,8 +192,7 @@ fn emit_perf_event(
     harness.log().info_ctx(event_type, test_name, |ctx| {
         for (k, v) in data.as_object().into_iter().flat_map(|m| m.iter()) {
             ctx.push((k.clone(), v.to_string()));
-        }
-    });
+        });
 }
 
 // Generate N synthetic conversation messages for perf testing.

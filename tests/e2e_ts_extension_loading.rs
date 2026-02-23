@@ -30,8 +30,7 @@ export default function init(pi: PiApi): void {
     description: "Hello from TypeScript",
     handler: async (args: string, ctx: any): Promise<any> => {
       return { display: "Hello from TS!" };
-    }
-  });
+    });
 }
 "#;
 
@@ -76,8 +75,7 @@ export default function init(pi: any): void {
     description: "TypeScript shortcut",
     handler: async (ctx: any): Promise<CommandResult> => {
       return { display: "Ctrl+T from TS" };
-    }
-  });
+    });
 
   // Flags with type annotations
   const verboseFlag: FlagOptions<"boolean"> = {
@@ -124,8 +122,7 @@ export default function init(pi: any): void {
     description: "Log with level " + "info",
     handler: async (_args: string): Promise<{ display: string }> => {
       return { display: "Logged at info" };
-    }
-  });
+    });
 
   pi.registerFlag("ts-log-level", {
     type: "string",
@@ -194,8 +191,7 @@ fn load_ts_extension(harness: &common::TestHarness, source: &str) -> ExtensionMa
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start js runtime")
-        }
-    });
+        });
     manager.set_js_runtime(runtime);
 
     common::run_async({
@@ -205,8 +201,7 @@ fn load_ts_extension(harness: &common::TestHarness, source: &str) -> ExtensionMa
                 .load_js_extensions(vec![spec])
                 .await
                 .expect("load .ts extension");
-        }
-    });
+        });
 
     manager
 }
@@ -432,8 +427,7 @@ fn ts_rich_command_executes_with_args() {
     // Execute ts-greet
     let result = common::run_async({
         let manager = manager.clone();
-        async move { manager.execute_command("ts-greet", "world", 5000).await }
-    });
+        async move { manager.execute_command("ts-greet", "world", 5000).await });
     assert!(
         result.is_ok(),
         "ts-greet execution should succeed: {result:?}"
@@ -718,8 +712,7 @@ export default function init(pi: any): void {
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start js runtime")
-        }
-    });
+        });
     manager.set_js_runtime(runtime);
 
     common::run_async({
@@ -729,8 +722,7 @@ export default function init(pi: any): void {
                 .load_js_extensions(vec![spec_a, spec_b])
                 .await
                 .expect("load multiple .ts extensions");
-        }
-    });
+        });
 
     harness
         .log()

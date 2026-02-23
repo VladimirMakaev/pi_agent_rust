@@ -469,8 +469,7 @@ fn bench_extension_load_init(c: &mut Criterion) {
                             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                                 .await
                                 .expect("start js runtime")
-                        }
-                    });
+                        });
                     manager.set_js_runtime(runtime);
                     manager
                 },
@@ -484,8 +483,7 @@ fn bench_extension_load_init(c: &mut Criterion) {
                                 .expect("load extension");
                             // Avoid leaking runtime threads during benchmark runs.
                             let _ok = manager.shutdown(Duration::from_millis(250)).await;
-                        }
-                    });
+                        });
                 },
                 BatchSize::SmallInput,
             );
@@ -516,8 +514,7 @@ fn bench_extension_tool_call_roundtrip(c: &mut Criterion) {
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start js runtime")
-        }
-    });
+        });
     manager.set_js_runtime(runtime);
 
     block_on({
@@ -527,8 +524,7 @@ fn bench_extension_tool_call_roundtrip(c: &mut Criterion) {
                 .load_js_extensions(vec![spec])
                 .await
                 .expect("load hello extension");
-        }
-    });
+        });
 
     let runtime = manager.js_runtime().expect("runtime should exist");
     let tool_name = "hello".to_string();
@@ -582,8 +578,7 @@ fn bench_extension_event_hook_dispatch(c: &mut Criterion) {
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start js runtime")
-        }
-    });
+        });
     manager.set_js_runtime(runtime);
 
     block_on({
@@ -593,8 +588,7 @@ fn bench_extension_event_hook_dispatch(c: &mut Criterion) {
                 .load_js_extensions(vec![spec])
                 .await
                 .expect("load pirate extension");
-        }
-    });
+        });
 
     let event_payload = json!({"systemPrompt": "You are Pi."});
     let manager_for_bench = manager.clone();
@@ -688,8 +682,7 @@ fn bench_hostcall_params_hash(c: &mut Criterion) {
         "name": "read",
         "input": {
             "path": "README.md"
-        }
-    });
+        });
 
     let mut large_input = serde_json::Map::new();
     for idx in 0..64 {

@@ -8,7 +8,7 @@
 
 use std::future::Future;
 
-use asupersync::runtime::RuntimeBuilder;
+use tokio::runtime::Builder as RuntimeBuilder;
 use pi::connectors::http::HttpConnector;
 use pi::extensions::{
     ExtensionPolicy, ExtensionPolicyMode, HostCallContext, HostCallErrorCode, HostCallPayload,
@@ -25,7 +25,7 @@ where
 {
     let runtime = RuntimeBuilder::current_thread()
         .build()
-        .expect("build asupersync runtime");
+        .expect("build tokio runtime");
     runtime.block_on(future)
 }
 
@@ -542,8 +542,7 @@ fn deny_all_matrix_through_dispatch() {
                 result.call_id, call_id,
                 "deny_all: call_id must be preserved"
             );
-        }
-    });
+        });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -698,8 +697,7 @@ fn denied_error_preserves_unique_call_ids() {
             let call = make_call(id, "exec", "exec", json!({"cmd": "test"}));
             let result = dispatch_host_call_shared(&ctx, call).await;
             assert_eq!(result.call_id, id, "correlation ID must be preserved");
-        }
-    });
+        });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -733,8 +731,7 @@ fn case_variants_of_denied_caps_blocked() {
                 "{variant}: expected Denied, got {:?}",
                 err.code
             );
-        }
-    });
+        });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -813,8 +810,7 @@ fn deny_caps_override_default_caps_through_dispatch() {
                 HostCallErrorCode::Denied,
                 "write should not be denied"
             );
-        }
-    });
+        });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -876,8 +872,7 @@ fn deny_caps_override_permissive_mode_through_dispatch() {
                 "events should pass policy check in permissive (not in deny_caps), msg: {}",
                 err.message
             );
-        }
-    });
+        });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1037,6 +1032,5 @@ fn tool_read_maps_to_read_and_allowed_by_default() {
                 HostCallErrorCode::Denied,
                 "read tool should not be denied by default policy"
             );
-        }
-    });
+        });
 }

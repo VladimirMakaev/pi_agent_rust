@@ -100,8 +100,7 @@ fn e2e_baseline_deterministic_from_benign_traces() {
                 context: None,
             };
             let _ = dispatch_host_call_shared(&ctx, call).await;
-        }
-    });
+        });
 
     let artifact = manager.runtime_risk_ledger_artifact();
     let verification = verify_runtime_risk_ledger_artifact(&artifact);
@@ -207,8 +206,7 @@ fn e2e_baseline_multi_capability_profiles() {
                 context: None,
             };
             let _ = dispatch_host_call_shared(&ctx, call).await;
-        }
-    });
+        });
 
     let artifact = manager.runtime_risk_ledger_artifact();
     let baseline = build_baseline_from_ledger(&artifact, ext_id).expect("multi baseline");
@@ -328,8 +326,7 @@ fn e2e_drift_detection_adversarial_shift() {
                 context: None,
             };
             let _ = dispatch_host_call_shared(&ctx, call).await;
-        }
-    });
+        });
 
     let artifact = manager.runtime_risk_ledger_artifact();
     let baseline = build_baseline_from_ledger_with_options(&artifact, ext_id, 3.0, 0.1, 1.0)
@@ -474,8 +471,7 @@ fn e2e_markov_transition_anomaly() {
                 context: None,
             };
             let _ = dispatch_host_call_shared(&ctx, call).await;
-        }
-    });
+        });
 
     let artifact = manager.runtime_risk_ledger_artifact();
     let baseline = build_baseline_from_ledger_with_options(&artifact, ext_id, 3.0, 0.1, 1.0)
@@ -588,8 +584,7 @@ fn e2e_baseline_artifact_roundtrip() {
                 context: None,
             };
             let _ = dispatch_host_call_shared(&ctx, call).await;
-        }
-    });
+        });
 
     let artifact = manager.runtime_risk_ledger_artifact();
     let baseline = build_baseline_from_ledger(&artifact, ext_id).expect("baseline");
@@ -668,8 +663,7 @@ fn e2e_baseline_jsonl_schema_compliance() {
                 context: None,
             };
             let _ = dispatch_host_call_shared(&ctx, call).await;
-        }
-    });
+        });
 
     let artifact = manager.runtime_risk_ledger_artifact();
     let baseline = build_baseline_from_ledger(&artifact, ext_id).expect("baseline");

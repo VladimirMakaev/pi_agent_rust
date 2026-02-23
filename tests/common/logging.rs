@@ -2280,8 +2280,7 @@ mod tests {
                         "temperature": 0.7
                     }
                 }
-            }
-        });
+            });
         redact_json_value(&mut val);
 
         assert_eq!(val["request"]["headers"]["Authorization"], REDACTED_VALUE);
@@ -2344,8 +2343,7 @@ mod tests {
                 "body": {
                     "api_key": "sk-also-leaked"
                 }
-            }
-        });
+            });
         let leaks = find_unredacted_keys(&val);
         assert_eq!(leaks.len(), 2);
         assert!(leaks.iter().any(|p| p.contains("Authorization")));

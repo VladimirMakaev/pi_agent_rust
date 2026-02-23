@@ -2,7 +2,7 @@
 
 mod common;
 
-use asupersync::channel::mpsc;
+use tokio::sync::mpsc;
 use bubbletea::{KeyMsg, KeyType, Message, Model as BubbleteaModel};
 use common::TestHarness;
 use futures::stream;
@@ -22,15 +22,15 @@ use std::fs;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 
-fn test_runtime_handle() -> asupersync::runtime::RuntimeHandle {
-    static RT: OnceLock<asupersync::runtime::Runtime> = OnceLock::new();
+fn test_runtime_handle() -> tokio::runtime::Handle {
+    static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RT.get_or_init(|| {
         // These tests run in parallel by default. Use a multi-thread runtime so
         // async tasks aren't starved under suite load.
-        asupersync::runtime::RuntimeBuilder::multi_thread()
+        tokio::runtime::Builder::multi_thread()
             .blocking_threads(1, 8)
             .build()
-            .expect("build asupersync runtime")
+            .expect("build tokio runtime")
     })
     .handle()
 }
@@ -101,7 +101,7 @@ fn build_app_with_config(harness: &TestHarness, config: Config) -> PiApp {
     let tools = ToolRegistry::new(&[], &cwd, Some(&config));
     let provider: Arc<dyn Provider> = Arc::new(DummyProvider);
     let agent = Agent::new(provider, tools, AgentConfig::default());
-    let session = Arc::new(asupersync::sync::Mutex::new(Session::in_memory()));
+    let session = Arc::new(tokio::sync::Mutex::new(Session::in_memory()));
     let resources = ResourceLoader::empty(config.enable_skill_commands());
     let resource_cli = ResourceCliOptions {
         no_skills: false,
@@ -205,8 +205,7 @@ fn snapshot(harness: &TestHarness, name: &str, app: &PiApp, context: &[(String, 
             ctx.push(("name".to_string(), name.to_string()));
             for (key, value) in context {
                 ctx.push((key.clone(), value.clone()));
-            }
-        });
+            });
     let view = normalize_snapshot(&BubbleteaModel::view(app));
     let path = harness.temp_path(format!("snapshot-{name}.txt"));
     fs::write(&path, &view).expect("write snapshot artifact");

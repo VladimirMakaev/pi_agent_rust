@@ -1626,7 +1626,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use asupersync::runtime::RuntimeBuilder;
     use std::fs;
     use std::future::Future;
 

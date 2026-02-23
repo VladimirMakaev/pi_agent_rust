@@ -38,8 +38,7 @@ fn create_repair_runtime(
             JsExtensionRuntimeHandle::start(config, tools, manager)
                 .await
                 .expect("start js runtime")
-        }
-    });
+        });
 
     (manager, runtime)
 }
@@ -56,8 +55,7 @@ fn load_ext(
             mgr.load_js_extensions(vec![spec])
                 .await
                 .expect("load extension");
-        }
-    });
+        });
 }
 
 fn dispatch_and_get_result(manager: ExtensionManager) -> String {
@@ -190,8 +188,7 @@ export default function(pi) {
             return { result: html.includes("DOCTYPE") ? "html_fallback" : "other" };
         } catch (e) {
             return { result: "error:" + e.message };
-        }
-    });
+        });
 }
 "#,
     )
@@ -223,8 +220,7 @@ export default function(pi) {
             return { result: css.includes("stylesheet") ? "css_fallback" : "other" };
         } catch (e) {
             return { result: "error:" + e.message };
-        }
-    });
+        });
 }
 "#,
     )
@@ -256,8 +252,7 @@ export default function(pi) {
             return { result: "read_ok" };
         } catch (e) {
             return { result: "json_error" };
-        }
-    });
+        });
 }
 "#,
     )

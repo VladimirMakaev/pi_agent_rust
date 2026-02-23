@@ -4198,7 +4198,6 @@ fn generate_entry_id(existing: &HashSet<String>) -> String {
 mod tests {
     use super::*;
     use crate::model::{Cost, StopReason, Usage};
-    use asupersync::runtime::RuntimeBuilder;
     use clap::Parser;
     use std::future::Future;
 

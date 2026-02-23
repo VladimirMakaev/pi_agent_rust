@@ -1110,7 +1110,6 @@ fn convert_tool_to_anthropic(tool: &ToolDef) -> AnthropicTool<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use asupersync::runtime::RuntimeBuilder;
     use futures::{StreamExt, stream};
     use serde::{Deserialize, Serialize};
     use serde_json::Value;

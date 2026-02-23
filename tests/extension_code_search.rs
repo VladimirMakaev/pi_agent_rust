@@ -117,8 +117,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 export default function init(api: ExtensionAPI) {
     api.registerProvider({
         name: "my-llm",
-        streamSimple: async function* (model, context) { yield "hello"; }
-    });
+        streamSimple: async function* (model, context) { yield "hello"; });
 }
 "#;
     assert!(is_true_extension(content));

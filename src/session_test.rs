@@ -4,7 +4,7 @@ use crate::model::SessionMessage;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use asupersync::sync::Mutex;
+use tokio::sync::Mutex;
 
 #[tokio::test]
 async fn test_session_save_persistence() {

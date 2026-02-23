@@ -2,7 +2,7 @@
 
 mod common;
 
-use asupersync::runtime::RuntimeBuilder;
+use tokio::runtime::Builder as RuntimeBuilder;
 use bubbletea::{KeyMsg, KeyType, Message};
 use clap::Parser;
 use common::TestHarness;
@@ -163,8 +163,7 @@ fn list_sessions_for_project_orders_by_mtime() {
         ctx.push(("count".to_string(), sessions.len().to_string()));
         if let Some(first) = sessions.first() {
             ctx.push(("first".to_string(), first.path.clone()));
-        }
-    });
+        });
     assert!(sessions.len() >= 2);
     assert_eq!(sessions[0].path, second_path);
     assert_eq!(sessions[1].path, first_path);

@@ -186,7 +186,7 @@ fn run_scripted(
             block_images: false,
         };
         let agent = pi::agent::Agent::new(provider, tools, config);
-        let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+        let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd),
         )));
         let mut agent_session =
@@ -731,8 +731,7 @@ fn sdk_extension_policy_safe_denies_exec_and_records_hostcall_telemetry() {
     handler: async () => {
       await pi.exec("echo", ["sdk-policy"]);
       return { display: "exec-ok" };
-    }
-  });
+    });
 }"#,
     );
 
@@ -1047,7 +1046,7 @@ fn sdk_conformance_session_tool_hooks() {
             block_images: false,
         };
         let agent = pi::agent::Agent::new(provider, tools, config);
-        let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+        let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd),
         )));
         let agent_session =
@@ -1129,7 +1128,7 @@ fn sdk_conformance_combined_callback_ordering() {
             block_images: false,
         };
         let agent = pi::agent::Agent::new(provider, tools, config);
-        let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+        let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd),
         )));
         let agent_session =

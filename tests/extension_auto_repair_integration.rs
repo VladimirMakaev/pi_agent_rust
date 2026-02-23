@@ -37,8 +37,7 @@ fn create_runtime(
             JsExtensionRuntimeHandle::start(config, tools, manager)
                 .await
                 .expect("start js runtime")
-        }
-    });
+        });
 
     (manager, runtime)
 }
@@ -51,8 +50,7 @@ fn load_and_verify(manager: &ExtensionManager, entry: &std::path::Path) {
             mgr.load_js_extensions(vec![spec])
                 .await
                 .expect("load extension");
-        }
-    });
+        });
 }
 
 fn dispatch_result(manager: ExtensionManager) -> String {
@@ -160,8 +158,7 @@ export default function activate(pi) {
             };
         } catch (e) {
             return { result: "error:" + e.message };
-        }
-    });
+        });
 }
 "#,
     )

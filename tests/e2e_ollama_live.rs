@@ -8,7 +8,7 @@
 //!   2. `ollama pull qwen2.5:0.5b`
 //!   3. `cargo test --test e2e_ollama_live`
 
-use asupersync::runtime::RuntimeBuilder;
+use tokio::runtime::Builder as RuntimeBuilder;
 use futures::StreamExt;
 use pi::model::{Message, StreamEvent, UserContent, UserMessage};
 use pi::models::ModelEntry;

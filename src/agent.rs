@@ -2116,7 +2116,6 @@ mod extensions_integration_tests {
     use super::*;
 
     use crate::session::Session;
-    use asupersync::runtime::RuntimeBuilder;
     use async_trait::async_trait;
     use futures::Stream;
     use serde_json::json;
@@ -2292,14 +2291,9 @@ mod extensions_integration_tests {
         }
     }
 
-    #[test]
-    fn agent_session_enable_extensions_registers_extension_tools() {
-        let runtime = RuntimeBuilder::current_thread()
-            .build()
-            .expect("runtime build");
-
-        runtime.block_on(async {
-            let temp_dir = tempfile::tempdir().expect("tempdir");
+    #[tokio::test]
+    async fn agent_session_enable_extensions_registers_extension_tools() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
             let entry_path = temp_dir.path().join("ext.mjs");
             std::fs::write(
                 &entry_path,
@@ -2364,17 +2358,11 @@ mod extensions_integration_tests {
                 details.get("from").and_then(serde_json::Value::as_str),
                 Some("extension")
             );
-        });
     }
 
-    #[test]
-    fn agent_session_enable_extensions_rejects_mixed_js_and_native_entries() {
-        let runtime = RuntimeBuilder::current_thread()
-            .build()
-            .expect("runtime build");
-
-        runtime.block_on(async {
-            let temp_dir = tempfile::tempdir().expect("tempdir");
+    #[tokio::test]
+    async fn agent_session_enable_extensions_rejects_mixed_js_and_native_entries() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
             let js_entry = temp_dir.path().join("ext.mjs");
             let native_entry = temp_dir.path().join("ext.native.json");
             std::fs::write(
@@ -2402,17 +2390,11 @@ mod extensions_integration_tests {
                 msg.contains("Mixed extension runtimes are not supported"),
                 "unexpected mixed-runtime error message: {msg}"
             );
-        });
     }
 
-    #[test]
-    fn extension_send_message_persists_custom_message_entry_when_idle() {
-        let runtime = RuntimeBuilder::current_thread()
-            .build()
-            .expect("runtime build");
-
-        runtime.block_on(async {
-            let temp_dir = tempfile::tempdir().expect("tempdir");
+    #[tokio::test]
+    async fn extension_send_message_persists_custom_message_entry_when_idle() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
             let entry_path = temp_dir.path().join("ext.mjs");
             std::fs::write(
                 &entry_path,
@@ -2485,17 +2467,11 @@ mod extensions_integration_tests {
                 }),
                 "expected custom message to be persisted, got {messages:?}"
             );
-        });
     }
 
-    #[test]
-    fn extension_send_message_persists_custom_message_entry_when_idle_after_await() {
-        let runtime = RuntimeBuilder::current_thread()
-            .build()
-            .expect("runtime build");
-
-        runtime.block_on(async {
-            let temp_dir = tempfile::tempdir().expect("tempdir");
+    #[tokio::test]
+    async fn extension_send_message_persists_custom_message_entry_when_idle_after_await() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
             let entry_path = temp_dir.path().join("ext.mjs");
             std::fs::write(
                 &entry_path,
@@ -2569,17 +2545,11 @@ mod extensions_integration_tests {
                 }),
                 "expected custom message to be persisted, got {messages:?}"
             );
-        });
     }
 
-    #[test]
-    fn send_user_message_steer_skips_remaining_tools() {
-        let runtime = RuntimeBuilder::current_thread()
-            .build()
-            .expect("runtime build");
-
-        runtime.block_on(async {
-            let temp_dir = tempfile::tempdir().expect("tempdir");
+    #[tokio::test]
+    async fn send_user_message_steer_skips_remaining_tools() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
             let entry_path = temp_dir.path().join("ext.mjs");
             std::fs::write(
                 &entry_path,
@@ -2624,17 +2594,11 @@ mod extensions_integration_tests {
 
             // A steer message should short-circuit remaining tool dispatch.
             assert_eq!(calls.load(Ordering::SeqCst), 1);
-        });
     }
 
-    #[test]
-    fn send_user_message_follow_up_does_not_skip_tools() {
-        let runtime = RuntimeBuilder::current_thread()
-            .build()
-            .expect("runtime build");
-
-        runtime.block_on(async {
-            let temp_dir = tempfile::tempdir().expect("tempdir");
+    #[tokio::test]
+    async fn send_user_message_follow_up_does_not_skip_tools() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
             let entry_path = temp_dir.path().join("ext.mjs");
             std::fs::write(
                 &entry_path,
@@ -2678,17 +2642,11 @@ mod extensions_integration_tests {
                 .expect("run_text");
 
             assert_eq!(calls.load(Ordering::SeqCst), 2);
-        });
     }
 
-    #[test]
-    fn tool_call_hook_can_block_tool_execution() {
-        let runtime = RuntimeBuilder::current_thread()
-            .build()
-            .expect("runtime build");
-
-        runtime.block_on(async {
-            let temp_dir = tempfile::tempdir().expect("tempdir");
+    #[tokio::test]
+    async fn tool_call_hook_can_block_tool_execution() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
             let entry_path = temp_dir.path().join("ext.mjs");
             std::fs::write(
                 &entry_path,
@@ -2743,17 +2701,11 @@ mod extensions_integration_tests {
             if let [ContentBlock::Text(text)] = output.content.as_slice() {
                 assert_eq!(text.text, "Tool execution blocked: blocked in test");
             }
-        });
     }
 
-    #[test]
-    fn tool_call_hook_errors_fail_open() {
-        let runtime = RuntimeBuilder::current_thread()
-            .build()
-            .expect("runtime build");
-
-        runtime.block_on(async {
-            let temp_dir = tempfile::tempdir().expect("tempdir");
+    #[tokio::test]
+    async fn tool_call_hook_errors_fail_open() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
             let entry_path = temp_dir.path().join("ext.mjs");
             std::fs::write(
                 &entry_path,
@@ -2795,17 +2747,11 @@ mod extensions_integration_tests {
             assert!(!is_error);
             assert!(!output.is_error);
             assert_eq!(calls.load(Ordering::SeqCst), 1);
-        });
     }
 
-    #[test]
-    fn tool_call_hook_absent_allows_tool_execution() {
-        let runtime = RuntimeBuilder::current_thread()
-            .build()
-            .expect("runtime build");
-
-        runtime.block_on(async {
-            let temp_dir = tempfile::tempdir().expect("tempdir");
+    #[tokio::test]
+    async fn tool_call_hook_absent_allows_tool_execution() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
             let entry_path = temp_dir.path().join("ext.mjs");
             std::fs::write(
                 &entry_path,
@@ -2843,17 +2789,11 @@ mod extensions_integration_tests {
             assert!(!is_error);
             assert!(!output.is_error);
             assert_eq!(calls.load(Ordering::SeqCst), 1);
-        });
     }
 
-    #[test]
-    fn tool_call_hook_returns_empty_allows_tool_execution() {
-        let runtime = RuntimeBuilder::current_thread()
-            .build()
-            .expect("runtime build");
-
-        runtime.block_on(async {
-            let temp_dir = tempfile::tempdir().expect("tempdir");
+    #[tokio::test]
+    async fn tool_call_hook_returns_empty_allows_tool_execution() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
             let entry_path = temp_dir.path().join("ext.mjs");
             std::fs::write(
                 &entry_path,
@@ -2893,17 +2833,11 @@ mod extensions_integration_tests {
             assert!(!is_error);
             assert!(!output.is_error);
             assert_eq!(calls.load(Ordering::SeqCst), 1);
-        });
     }
 
-    #[test]
-    fn tool_call_hook_can_block_bash_tool_execution() {
-        let runtime = RuntimeBuilder::current_thread()
-            .build()
-            .expect("runtime build");
-
-        runtime.block_on(async {
-            let temp_dir = tempfile::tempdir().expect("tempdir");
+    #[tokio::test]
+    async fn tool_call_hook_can_block_bash_tool_execution() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
             let entry_path = temp_dir.path().join("ext.mjs");
             std::fs::write(
                 &entry_path,
@@ -2956,17 +2890,11 @@ mod extensions_integration_tests {
             if let [ContentBlock::Text(text)] = output.content.as_slice() {
                 assert_eq!(text.text, "Tool execution blocked: blocked bash in test");
             }
-        });
     }
 
-    #[test]
-    fn tool_result_hook_can_modify_tool_output() {
-        let runtime = RuntimeBuilder::current_thread()
-            .build()
-            .expect("runtime build");
-
-        runtime.block_on(async {
-            let temp_dir = tempfile::tempdir().expect("tempdir");
+    #[tokio::test]
+    async fn tool_result_hook_can_modify_tool_output() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
             let entry_path = temp_dir.path().join("ext.mjs");
             std::fs::write(
                 &entry_path,
@@ -3024,17 +2952,11 @@ mod extensions_integration_tests {
             if let [ContentBlock::Text(text)] = output.content.as_slice() {
                 assert_eq!(text.text, "modified");
             }
-        });
     }
 
-    #[test]
-    fn tool_result_hook_can_modify_tool_not_found_error() {
-        let runtime = RuntimeBuilder::current_thread()
-            .build()
-            .expect("runtime build");
-
-        runtime.block_on(async {
-            let temp_dir = tempfile::tempdir().expect("tempdir");
+    #[tokio::test]
+    async fn tool_result_hook_can_modify_tool_not_found_error() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
             let entry_path = temp_dir.path().join("ext.mjs");
             std::fs::write(
                 &entry_path,
@@ -3088,17 +3010,11 @@ mod extensions_integration_tests {
             if let [ContentBlock::Text(text)] = output.content.as_slice() {
                 assert_eq!(text.text, "overridden");
             }
-        });
     }
 
-    #[test]
-    fn tool_result_hook_errors_fail_open() {
-        let runtime = RuntimeBuilder::current_thread()
-            .build()
-            .expect("runtime build");
-
-        runtime.block_on(async {
-            let temp_dir = tempfile::tempdir().expect("tempdir");
+    #[tokio::test]
+    async fn tool_result_hook_errors_fail_open() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
             let entry_path = temp_dir.path().join("ext.mjs");
             std::fs::write(
                 &entry_path,
@@ -3150,17 +3066,11 @@ mod extensions_integration_tests {
             if let [ContentBlock::Text(text)] = output.content.as_slice() {
                 assert_eq!(text.text, "ok");
             }
-        });
     }
 
-    #[test]
-    fn tool_result_hook_runs_on_blocked_tool_call() {
-        let runtime = RuntimeBuilder::current_thread()
-            .build()
-            .expect("runtime build");
-
-        runtime.block_on(async {
-            let temp_dir = tempfile::tempdir().expect("tempdir");
+    #[tokio::test]
+    async fn tool_result_hook_runs_on_blocked_tool_call() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
             let entry_path = temp_dir.path().join("ext.mjs");
             std::fs::write(
                 &entry_path,
@@ -3221,7 +3131,6 @@ mod extensions_integration_tests {
             if let [ContentBlock::Text(text)] = output.content.as_slice() {
                 assert_eq!(text.text, "override");
             }
-        });
     }
 }
 
@@ -3230,7 +3139,6 @@ mod abort_tests {
     use super::*;
     use crate::session::Session;
     use crate::tools::{Tool, ToolOutput, ToolRegistry, ToolUpdate};
-    use asupersync::runtime::RuntimeBuilder;
     use async_trait::async_trait;
     use futures::Stream;
     use serde_json::json;
@@ -3643,14 +3551,9 @@ mod abort_tests {
         });
     }
 
-    #[test]
-    fn abort_then_resume_preserves_session_history() {
-        let runtime = RuntimeBuilder::current_thread()
-            .build()
-            .expect("runtime build");
-        let handle = runtime.handle();
-
-        runtime.block_on(async move {
+    #[tokio::test]
+    async fn abort_then_resume_preserves_session_history() {
+        let handle = tokio::runtime::Handle::current();
             let provider = Arc::new(PhasedProvider::new(1));
             let tools = ToolRegistry::new(&[], Path::new("."), None);
             let agent = Agent::new(provider, tools, AgentConfig::default());
@@ -3721,17 +3624,11 @@ mod abort_tests {
                 Some(Message::Assistant(assistant))
                     if assistant.stop_reason == StopReason::Stop && assistant.error_message.is_none()
             ));
-        });
     }
 
-    #[test]
-    fn repeated_abort_then_resume_has_consistent_timeline_and_state() {
-        let runtime = RuntimeBuilder::current_thread()
-            .build()
-            .expect("runtime build");
-        let handle = runtime.handle();
-
-        runtime.block_on(async move {
+    #[tokio::test]
+    async fn repeated_abort_then_resume_has_consistent_timeline_and_state() {
+        let handle = tokio::runtime::Handle::current();
             let provider = Arc::new(PhasedProvider::new(2));
             let tools = ToolRegistry::new(&[], Path::new("."), None);
             let agent = Agent::new(provider, tools, AgentConfig::default());
@@ -3806,17 +3703,11 @@ mod abort_tests {
 
             let timeline = timeline.lock().expect("timeline lock").clone();
             assert_abort_resume_timeline_boundaries(&timeline);
-        });
     }
 
-    #[test]
-    fn abort_during_tool_execution_records_aborted_tool_result() {
-        let runtime = RuntimeBuilder::current_thread()
-            .build()
-            .expect("runtime build");
-        let handle = runtime.handle();
-
-        runtime.block_on(async move {
+    #[tokio::test]
+    async fn abort_during_tool_execution_records_aborted_tool_result() {
+        let handle = tokio::runtime::Handle::current();
             let provider = Arc::new(ToolCallProvider);
             let tools = ToolRegistry::from_tools(vec![Box::new(HangingTool)]);
             let agent = Agent::new(provider, tools, AgentConfig::default());
@@ -3875,7 +3766,6 @@ mod abort_tests {
                 "missing aborted tool marker in tool output: {:?}",
                 tool_result.content
             );
-        });
     }
 }
 
@@ -3884,14 +3774,13 @@ mod turn_event_tests {
     use super::*;
     use crate::session::Session;
     use crate::tools::{Tool, ToolOutput, ToolRegistry, ToolUpdate};
-    use asupersync::runtime::RuntimeBuilder;
     use async_trait::async_trait;
     use futures::Stream;
     use serde_json::json;
     use std::path::Path;
     use std::pin::Pin;
     use std::sync::atomic::AtomicUsize;
-    // Note: Mutex from super::* is asupersync::sync::Mutex (for Session)
+    // Note: Mutex from super::* is tokio::sync::Mutex (for Session)
     // Use std::sync::Mutex directly for synchronous event capture
 
     fn assistant_message(text: &str) -> AssistantMessage {

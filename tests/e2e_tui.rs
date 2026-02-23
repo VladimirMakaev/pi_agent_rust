@@ -838,8 +838,7 @@ fn write_minimal_session_jsonl(path: &Path, cwd: &Path, session_id: &str, marker
         "message": {
             "role": "user",
             "content": marker
-        }
-    });
+        });
 
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).expect("create restore session dir");

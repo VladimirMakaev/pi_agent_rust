@@ -854,7 +854,6 @@ struct CohereUsageTokens {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use asupersync::runtime::RuntimeBuilder;
     use futures::stream;
     use serde_json::{Value, json};
     use std::collections::HashMap;

@@ -128,8 +128,7 @@ fn setup_manager_with_extension(
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start js runtime")
-        }
-    });
+        });
     manager.set_js_runtime(runtime);
 
     common::run_async({
@@ -140,8 +139,7 @@ fn setup_manager_with_extension(
                 .load_js_extensions(vec![spec])
                 .await
                 .expect("load extension");
-        }
-    });
+        });
 
     manager
 }
@@ -149,8 +147,7 @@ fn setup_manager_with_extension(
 fn shutdown(manager: &ExtensionManager) {
     let _ = common::run_async({
         let manager = manager.clone();
-        async move { manager.shutdown(Duration::from_millis(500)).await }
-    });
+        async move { manager.shutdown(Duration::from_millis(500)).await });
 }
 
 fn make_record(
@@ -253,8 +250,7 @@ fn phase_event_dispatch(
                         NORMAL_TIMEOUT_MS,
                     )
                     .await
-            }
-        });
+            });
         match result {
             Ok(_) => successes += 1,
             Err(e) => last_err = Some(e.to_string()),
@@ -339,8 +335,7 @@ fn phase_budget_fallback(ext_name: &str, manager: &ExtensionManager) -> Lifecycl
                     SHORT_TIMEOUT_MS,
                 )
                 .await
-        }
-    });
+        });
 
     let elapsed = start.elapsed();
     // Budget fallback should not hang — either succeed quickly or return error/None.
@@ -358,8 +353,7 @@ fn phase_shutdown(ext_name: &str, manager: &ExtensionManager) -> LifecycleRecord
     let start = Instant::now();
     let ok = common::run_async({
         let manager = manager.clone();
-        async move { manager.shutdown(Duration::from_secs(2)).await }
-    });
+        async move { manager.shutdown(Duration::from_secs(2)).await });
     let elapsed = start.elapsed();
     let success = ok && elapsed < Duration::from_secs(2);
     let error = if !ok {
@@ -648,8 +642,7 @@ fn per_extension_diagnostics_collected() {
                             Some(json!({"systemPrompt": "diag test", "model": "test"})),
                         )
                         .await
-                }
-            });
+                });
         }
 
         let diag = collect_diagnostics(ext_name, &manager);
@@ -706,8 +699,7 @@ fn rapid_lifecycle_cycling() {
                             NORMAL_TIMEOUT_MS,
                         )
                         .await
-                }
-            });
+                });
 
             shutdown(&manager);
         }
@@ -846,8 +838,7 @@ fn measure_event_latencies(manager: &ExtensionManager, iterations: usize) -> Vec
                         NORMAL_TIMEOUT_MS,
                     )
                     .await
-            }
-        });
+            });
         samples.push(start.elapsed().as_secs_f64() * 1_000_000.0);
     }
 
@@ -891,8 +882,7 @@ fn setup_composed_manager(
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start js runtime")
-        }
-    });
+        });
     manager.set_js_runtime(runtime);
 
     common::run_async({
@@ -903,8 +893,7 @@ fn setup_composed_manager(
                 .load_js_extensions(specs)
                 .await
                 .expect("load extensions");
-        }
-    });
+        });
 
     manager
 }
@@ -1143,8 +1132,7 @@ fn composed_extension_load_succeeds() {
                     NORMAL_TIMEOUT_MS,
                 )
                 .await
-        }
-    });
+        });
     assert!(
         result.is_ok(),
         "composed dispatch should succeed: {result:?}"

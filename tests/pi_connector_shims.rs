@@ -108,8 +108,7 @@ fn exec_produces_correct_hostcall_kind() {
         match &req.kind {
             HostcallKind::Exec { cmd } => assert_eq!(cmd, "ls"),
             other => panic!("expected Exec, got {other:?}"),
-        }
-    });
+        });
 }
 
 #[test]
@@ -268,8 +267,7 @@ fn exec_no_args_defaults_to_empty() {
         match &req.kind {
             HostcallKind::Exec { cmd } => assert_eq!(cmd, "pwd"),
             other => panic!("expected Exec, got {other:?}"),
-        }
-    });
+        });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -457,8 +455,7 @@ fn session_produces_correct_hostcall_kind_with_op() {
         match &req.kind {
             HostcallKind::Session { op } => assert_eq!(op, "getState"),
             other => panic!("expected Session, got {other:?}"),
-        }
-    });
+        });
 }
 
 #[test]
@@ -693,8 +690,7 @@ fn events_produces_correct_hostcall_kind() {
         match &req.kind {
             HostcallKind::Events { op } => assert_eq!(op, "list"),
             other => panic!("expected Events, got {other:?}"),
-        }
-    });
+        });
 }
 
 #[test]
@@ -927,8 +923,7 @@ fn ui_produces_correct_hostcall_kind() {
         match &req.kind {
             HostcallKind::Ui { op } => assert_eq!(op, "select"),
             other => panic!("expected Ui, got {other:?}"),
-        }
-    });
+        });
 }
 
 #[test]

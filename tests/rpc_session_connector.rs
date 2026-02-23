@@ -59,20 +59,19 @@ async fn recv_line(rx: &Arc<Mutex<Receiver<String>>>, label: &str) -> Result<Str
             return Err(format!("{label}: timed out waiting for output"));
         }
 
-        asupersync::time::sleep(asupersync::time::wall_now(), Duration::from_millis(5)).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
 }
 
 /// Send a JSON command and receive the response.
 async fn send_recv(
-    in_tx: &asupersync::channel::mpsc::Sender<String>,
+    in_tx: &tokio::sync::mpsc::Sender<String>,
     out_rx: &Arc<Mutex<Receiver<String>>>,
     cmd: &str,
     label: &str,
 ) -> Value {
-    let cx = asupersync::Cx::for_testing();
     in_tx
-        .send(&cx, cmd.to_string())
+        .send(cmd.to_string())
         .await
         .expect("send command");
     let line = recv_line(out_rx, label).await.expect(label);
@@ -90,13 +89,13 @@ fn dummy_agent() -> Agent {
 /// Returns (`in_tx`, `out_rx`, `server_task`).
 fn setup_rpc(
     session: Session,
-    runtime_handle: &asupersync::runtime::RuntimeHandle,
+    runtime_handle: &tokio::runtime::Handle,
 ) -> (
-    asupersync::channel::mpsc::Sender<String>,
+    tokio::sync::mpsc::Sender<String>,
     Arc<Mutex<Receiver<String>>>,
-    asupersync::runtime::JoinHandle<pi::error::Result<()>>,
+    tokio::task::JoinHandle<pi::error::Result<()>>,
 ) {
-    let session = Arc::new(asupersync::sync::Mutex::new(session));
+    let session = Arc::new(tokio::sync::Mutex::new(session));
     let agent_session = AgentSession::new(
         dummy_agent(),
         session,
@@ -115,7 +114,7 @@ fn setup_rpc(
         runtime_handle: runtime_handle.clone(),
     };
 
-    let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+    let (in_tx, in_rx) = tokio::sync::mpsc::channel::<String>(16);
     let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
     let out_rx = Arc::new(Mutex::new(out_rx));
 
@@ -229,75 +228,64 @@ fn large_fork_session() -> (Session, String, String) {
 
 // ─── get_state tests ─────────────────────────────────────────────────────────
 
-#[test]
-fn rpc_get_state_fresh_session() {
+#[tokio::test]
+async fn rpc_get_state_fresh_session() {
     let harness = TestHarness::new("rpc_get_state_fresh");
     let logger = harness.log();
 
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
-        .build()
-        .expect("build runtime");
-    let handle = runtime.handle();
+    let handle = tokio::runtime::Handle::current();
 
-    runtime.block_on(async move {
-        let (in_tx, out_rx, server) = setup_rpc(Session::in_memory(), &handle);
+    let (in_tx, out_rx, server) = setup_rpc(Session::in_memory(), &handle);
 
-        let resp = send_recv(
-            &in_tx,
-            &out_rx,
-            r#"{"id":"1","type":"get_state"}"#,
-            "get_state",
-        )
-        .await;
+    let resp = send_recv(
+        &in_tx,
+        &out_rx,
+        r#"{"id":"1","type":"get_state"}"#,
+        "get_state",
+    )
+    .await;
 
-        assert_eq!(resp["type"], "response");
-        assert_eq!(resp["command"], "get_state");
-        assert_eq!(resp["success"], true);
-        assert_eq!(resp["id"], "1");
+    assert_eq!(resp["type"], "response");
+    assert_eq!(resp["command"], "get_state");
+    assert_eq!(resp["success"], true);
+    assert_eq!(resp["id"], "1");
 
-        let data = resp["data"].as_object().expect("data must be object");
+    let data = resp["data"].as_object().expect("data must be object");
 
-        // Required fields per spec.
-        let required_keys = [
-            "sessionFile",
-            "sessionId",
-            "sessionName",
-            "model",
-            "messageCount",
-            "pendingMessageCount",
-            "durabilityMode",
-            "isStreaming",
-        ];
-        for key in &required_keys {
-            assert!(data.contains_key(*key), "get_state missing key: {key}");
-        }
+    // Required fields per spec.
+    let required_keys = [
+        "sessionFile",
+        "sessionId",
+        "sessionName",
+        "model",
+        "messageCount",
+        "pendingMessageCount",
+        "durabilityMode",
+        "isStreaming",
+    ];
+    for key in &required_keys {
+        assert!(data.contains_key(*key), "get_state missing key: {key}");
+    }
 
-        logger.info_ctx("rpc", "get_state verified", |ctx| {
-            ctx.push((
-                "keys".into(),
-                format!("{:?}", data.keys().collect::<Vec<_>>()),
-            ));
-        });
-
-        // In-memory session has null sessionFile.
-        assert!(resp["data"]["sessionFile"].is_null());
-
-        drop(in_tx);
-        let result = server.await;
-        assert!(result.is_ok(), "server error: {result:?}");
+    logger.info_ctx("rpc", "get_state verified", |ctx| {
+        ctx.push((
+            "keys".into(),
+            format!("{:?}", data.keys().collect::<Vec<_>>()),
+        ));
     });
+
+    // In-memory session has null sessionFile.
+    assert!(resp["data"]["sessionFile"].is_null());
+
+    drop(in_tx);
+    let result = server.await;
+    assert!(result.is_ok(), "server error: {result:?}");
 }
 
-#[test]
-fn rpc_get_state_with_prepopulated_session() {
-    let _harness = TestHarness::new("rpc_get_state_prepopulated");
+#[tokio::test]
+async fn rpc_get_state_with_prepopulated_session() {
+    let handle = tokio::runtime::Handle::current();
 
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
-        .build()
-        .expect("build runtime");
-    let handle = runtime.handle();
-
-    runtime.block_on(async move {
         let (in_tx, out_rx, server) = setup_rpc(prepopulated_session(), &handle);
 
         let resp = send_recv(
@@ -315,21 +303,16 @@ fn rpc_get_state_with_prepopulated_session() {
 
         drop(in_tx);
         let _ = server.await;
-    });
+    
+
 }
 
 // ─── set_session_name tests ──────────────────────────────────────────────────
 
-#[test]
-fn rpc_set_session_name_then_get_state() {
-    let _harness = TestHarness::new("rpc_set_session_name");
+#[tokio::test]
+async fn rpc_set_session_name_then_get_state() {
+    let handle = tokio::runtime::Handle::current();
 
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
-        .build()
-        .expect("build runtime");
-    let handle = runtime.handle();
-
-    runtime.block_on(async move {
         let (in_tx, out_rx, server) = setup_rpc(Session::in_memory(), &handle);
 
         // Set the name.
@@ -356,19 +339,14 @@ fn rpc_set_session_name_then_get_state() {
 
         drop(in_tx);
         let _ = server.await;
-    });
+    
+
 }
 
-#[test]
-fn rpc_set_session_name_missing_name_returns_error() {
-    let _harness = TestHarness::new("rpc_set_session_name_error");
+#[tokio::test]
+async fn rpc_set_session_name_missing_name_returns_error() {
+    let handle = tokio::runtime::Handle::current();
 
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
-        .build()
-        .expect("build runtime");
-    let handle = runtime.handle();
-
-    runtime.block_on(async move {
         let (in_tx, out_rx, server) = setup_rpc(Session::in_memory(), &handle);
 
         // Missing "name" field.
@@ -387,19 +365,14 @@ fn rpc_set_session_name_missing_name_returns_error() {
 
         drop(in_tx);
         let _ = server.await;
-    });
+    
+
 }
 
-#[test]
-fn rpc_set_session_name_overwrite() {
-    let _harness = TestHarness::new("rpc_set_session_name_overwrite");
+#[tokio::test]
+async fn rpc_set_session_name_overwrite() {
+    let handle = tokio::runtime::Handle::current();
 
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
-        .build()
-        .expect("build runtime");
-    let handle = runtime.handle();
-
-    runtime.block_on(async move {
         let (in_tx, out_rx, server) = setup_rpc(Session::in_memory(), &handle);
 
         // First name.
@@ -431,21 +404,16 @@ fn rpc_set_session_name_overwrite() {
 
         drop(in_tx);
         let _ = server.await;
-    });
+    
+
 }
 
 // ─── set_thinking_level tests ────────────────────────────────────────────────
 
-#[test]
-fn rpc_set_thinking_level_no_model_succeeds() {
-    let _harness = TestHarness::new("rpc_set_thinking_level");
+#[tokio::test]
+async fn rpc_set_thinking_level_no_model_succeeds() {
+    let handle = tokio::runtime::Handle::current();
 
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
-        .build()
-        .expect("build runtime");
-    let handle = runtime.handle();
-
-    runtime.block_on(async move {
         let (in_tx, out_rx, server) = setup_rpc(Session::in_memory(), &handle);
 
         let resp = send_recv(
@@ -464,19 +432,14 @@ fn rpc_set_thinking_level_no_model_succeeds() {
 
         drop(in_tx);
         let _ = server.await;
-    });
+    
+
 }
 
-#[test]
-fn rpc_set_thinking_level_missing_level_returns_error() {
-    let _harness = TestHarness::new("rpc_set_thinking_level_error");
+#[tokio::test]
+async fn rpc_set_thinking_level_missing_level_returns_error() {
+    let handle = tokio::runtime::Handle::current();
 
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
-        .build()
-        .expect("build runtime");
-    let handle = runtime.handle();
-
-    runtime.block_on(async move {
         let (in_tx, out_rx, server) = setup_rpc(Session::in_memory(), &handle);
 
         let resp = send_recv(
@@ -490,19 +453,14 @@ fn rpc_set_thinking_level_missing_level_returns_error() {
 
         drop(in_tx);
         let _ = server.await;
-    });
+    
+
 }
 
-#[test]
-fn rpc_set_thinking_level_invalid_level_returns_error() {
-    let _harness = TestHarness::new("rpc_set_thinking_level_invalid");
+#[tokio::test]
+async fn rpc_set_thinking_level_invalid_level_returns_error() {
+    let handle = tokio::runtime::Handle::current();
 
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
-        .build()
-        .expect("build runtime");
-    let handle = runtime.handle();
-
-    runtime.block_on(async move {
         let (in_tx, out_rx, server) = setup_rpc(Session::in_memory(), &handle);
 
         let resp = send_recv(
@@ -516,21 +474,16 @@ fn rpc_set_thinking_level_invalid_level_returns_error() {
 
         drop(in_tx);
         let _ = server.await;
-    });
+    
+
 }
 
 // ─── get_messages tests ──────────────────────────────────────────────────────
 
-#[test]
-fn rpc_get_messages_empty_session() {
-    let _harness = TestHarness::new("rpc_get_messages_empty");
+#[tokio::test]
+async fn rpc_get_messages_empty_session() {
+    let handle = tokio::runtime::Handle::current();
 
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
-        .build()
-        .expect("build runtime");
-    let handle = runtime.handle();
-
-    runtime.block_on(async move {
         let (in_tx, out_rx, server) = setup_rpc(Session::in_memory(), &handle);
 
         let resp = send_recv(
@@ -546,19 +499,14 @@ fn rpc_get_messages_empty_session() {
 
         drop(in_tx);
         let _ = server.await;
-    });
+    
+
 }
 
-#[test]
-fn rpc_get_messages_with_content() {
-    let _harness = TestHarness::new("rpc_get_messages_content");
+#[tokio::test]
+async fn rpc_get_messages_with_content() {
+    let handle = tokio::runtime::Handle::current();
 
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
-        .build()
-        .expect("build runtime");
-    let handle = runtime.handle();
-
-    runtime.block_on(async move {
         let (in_tx, out_rx, server) = setup_rpc(prepopulated_session(), &handle);
 
         let resp = send_recv(
@@ -579,21 +527,16 @@ fn rpc_get_messages_with_content() {
 
         drop(in_tx);
         let _ = server.await;
-    });
+    
+
 }
 
 // ─── get_session_stats tests ─────────────────────────────────────────────────
 
-#[test]
-fn rpc_get_session_stats_empty() {
-    let _harness = TestHarness::new("rpc_get_session_stats_empty");
+#[tokio::test]
+async fn rpc_get_session_stats_empty() {
+    let handle = tokio::runtime::Handle::current();
 
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
-        .build()
-        .expect("build runtime");
-    let handle = runtime.handle();
-
-    runtime.block_on(async move {
         let (in_tx, out_rx, server) = setup_rpc(Session::in_memory(), &handle);
 
         let resp = send_recv(
@@ -612,19 +555,14 @@ fn rpc_get_session_stats_empty() {
 
         drop(in_tx);
         let _ = server.await;
-    });
+    
+
 }
 
-#[test]
-fn rpc_get_session_stats_with_messages() {
-    let _harness = TestHarness::new("rpc_get_session_stats_msgs");
+#[tokio::test]
+async fn rpc_get_session_stats_with_messages() {
+    let handle = tokio::runtime::Handle::current();
 
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
-        .build()
-        .expect("build runtime");
-    let handle = runtime.handle();
-
-    runtime.block_on(async move {
         let (in_tx, out_rx, server) = setup_rpc(prepopulated_session(), &handle);
 
         let resp = send_recv(
@@ -644,19 +582,14 @@ fn rpc_get_session_stats_with_messages() {
 
         drop(in_tx);
         let _ = server.await;
-    });
+    
+
 }
 
-#[test]
-fn rpc_get_session_stats_with_tool_calls() {
-    let _harness = TestHarness::new("rpc_get_session_stats_tools");
+#[tokio::test]
+async fn rpc_get_session_stats_with_tool_calls() {
+    let handle = tokio::runtime::Handle::current();
 
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
-        .build()
-        .expect("build runtime");
-    let handle = runtime.handle();
-
-    runtime.block_on(async move {
         let now = chrono::Utc::now().timestamp_millis();
         let mut session = Session::in_memory();
         session.header.provider = Some("openai".to_string());
@@ -739,19 +672,14 @@ fn rpc_get_session_stats_with_tool_calls() {
 
         drop(in_tx);
         let _ = server.await;
-    });
+    
+
 }
 
-#[test]
-fn rpc_get_session_stats_reports_durability_backlog_diagnostics() {
-    let _harness = TestHarness::new("rpc_get_session_stats_durability_backlog");
+#[tokio::test]
+async fn rpc_get_session_stats_reports_durability_backlog_diagnostics() {
+    let handle = tokio::runtime::Handle::current();
 
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
-        .build()
-        .expect("build runtime");
-    let handle = runtime.handle();
-
-    runtime.block_on(async move {
         let now = chrono::Utc::now().timestamp_millis();
         let mut session = Session::in_memory();
         session.set_autosave_durability_mode(AutosaveDurabilityMode::Throughput);
@@ -826,27 +754,22 @@ fn rpc_get_session_stats_reports_durability_backlog_diagnostics() {
 
         drop(in_tx);
         let _ = server.await;
-    });
+    
+
 }
 
-#[test]
-fn rpc_get_session_stats_stays_responsive_with_backlog() {
-    let harness = TestHarness::new("rpc_get_session_stats_backlog_responsive");
-    let logger = harness.log();
+#[tokio::test]
+async fn rpc_get_session_stats_stays_responsive_with_backlog() {
+    let handle = tokio::runtime::Handle::current();
 
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
-        .build()
-        .expect("build runtime");
-    let handle = runtime.handle();
-
-    runtime.block_on(async move {
         let mut session = Session::in_memory();
         session.set_autosave_durability_mode(AutosaveDurabilityMode::Balanced);
         for index in 0..256 {
             session.append_message(SessionMessage::User {
                 content: UserContent::Text(format!("queued-{index}")),
                 timestamp: Some(chrono::Utc::now().timestamp_millis()),
-            });
+            
+
         }
         let expected_pending = session.autosave_metrics().pending_mutations as u64;
         assert!(
@@ -895,24 +818,16 @@ fn rpc_get_session_stats_stays_responsive_with_backlog() {
     });
 }
 
-#[test]
-fn rpc_export_html_large_payload_state_budget() {
-    let _harness = TestHarness::new("rpc_export_html_large_payload_state_budget");
+#[tokio::test]
+async fn rpc_export_html_large_payload_state_budget() {
+    let handle = tokio::runtime::Handle::current();
 
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
-        .build()
-        .expect("build runtime");
-    let handle = runtime.handle();
-
-    runtime.block_on(async move {
         let (in_tx, out_rx, server) = setup_rpc(large_export_session(), &handle);
-        let cx = asupersync::Cx::for_testing();
         let export_dir = tempfile::tempdir().expect("tempdir");
         let export_path = export_dir.path().join("rpc-export-session.html");
 
         in_tx
             .send(
-                &cx,
                 serde_json::json!({
                     "id": "exp",
                     "type": "export_html",
@@ -926,7 +841,6 @@ fn rpc_export_html_large_payload_state_budget() {
         let state_start = Instant::now();
         in_tx
             .send(
-                &cx,
                 serde_json::json!({
                     "id": "state",
                     "type": "get_state",
@@ -980,26 +894,19 @@ fn rpc_export_html_large_payload_state_budget() {
 
         drop(in_tx);
         let _ = server.await;
-    });
+    
+
 }
 
-#[test]
-fn rpc_fork_large_payload_state_budget() {
-    let _harness = TestHarness::new("rpc_fork_large_payload_state_budget");
+#[tokio::test]
+async fn rpc_fork_large_payload_state_budget() {
+    let handle = tokio::runtime::Handle::current();
 
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
-        .build()
-        .expect("build runtime");
-    let handle = runtime.handle();
-
-    runtime.block_on(async move {
         let (session, target_id, target_text) = large_fork_session();
         let (in_tx, out_rx, server) = setup_rpc(session, &handle);
-        let cx = asupersync::Cx::for_testing();
 
         in_tx
             .send(
-                &cx,
                 serde_json::json!({
                     "id": "fork",
                     "type": "fork",
@@ -1013,7 +920,6 @@ fn rpc_fork_large_payload_state_budget() {
         let state_start = Instant::now();
         in_tx
             .send(
-                &cx,
                 serde_json::json!({
                     "id": "state",
                     "type": "get_state",
@@ -1062,21 +968,16 @@ fn rpc_fork_large_payload_state_budget() {
 
         drop(in_tx);
         let _ = server.await;
-    });
+    
+
 }
 
 // ─── get_last_assistant_text tests ───────────────────────────────────────────
 
-#[test]
-fn rpc_get_last_assistant_text_empty() {
-    let _harness = TestHarness::new("rpc_last_text_empty");
+#[tokio::test]
+async fn rpc_get_last_assistant_text_empty() {
+    let handle = tokio::runtime::Handle::current();
 
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
-        .build()
-        .expect("build runtime");
-    let handle = runtime.handle();
-
-    runtime.block_on(async move {
         let (in_tx, out_rx, server) = setup_rpc(Session::in_memory(), &handle);
 
         let resp = send_recv(
@@ -1096,19 +997,14 @@ fn rpc_get_last_assistant_text_empty() {
 
         drop(in_tx);
         let _ = server.await;
-    });
+    
+
 }
 
-#[test]
-fn rpc_get_last_assistant_text_with_content() {
-    let _harness = TestHarness::new("rpc_last_text_content");
+#[tokio::test]
+async fn rpc_get_last_assistant_text_with_content() {
+    let handle = tokio::runtime::Handle::current();
 
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
-        .build()
-        .expect("build runtime");
-    let handle = runtime.handle();
-
-    runtime.block_on(async move {
         let (in_tx, out_rx, server) = setup_rpc(prepopulated_session(), &handle);
 
         let resp = send_recv(
@@ -1123,21 +1019,16 @@ fn rpc_get_last_assistant_text_with_content() {
 
         drop(in_tx);
         let _ = server.await;
-    });
+    
+
 }
 
 // ─── set_model error tests ───────────────────────────────────────────────────
 
-#[test]
-fn rpc_set_model_missing_provider_returns_error() {
-    let _harness = TestHarness::new("rpc_set_model_no_provider");
+#[tokio::test]
+async fn rpc_set_model_missing_provider_returns_error() {
+    let handle = tokio::runtime::Handle::current();
 
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
-        .build()
-        .expect("build runtime");
-    let handle = runtime.handle();
-
-    runtime.block_on(async move {
         let (in_tx, out_rx, server) = setup_rpc(Session::in_memory(), &handle);
 
         let resp = send_recv(
@@ -1158,19 +1049,14 @@ fn rpc_set_model_missing_provider_returns_error() {
 
         drop(in_tx);
         let _ = server.await;
-    });
+    
+
 }
 
-#[test]
-fn rpc_set_model_missing_model_id_returns_error() {
-    let _harness = TestHarness::new("rpc_set_model_no_model_id");
+#[tokio::test]
+async fn rpc_set_model_missing_model_id_returns_error() {
+    let handle = tokio::runtime::Handle::current();
 
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
-        .build()
-        .expect("build runtime");
-    let handle = runtime.handle();
-
-    runtime.block_on(async move {
         let (in_tx, out_rx, server) = setup_rpc(Session::in_memory(), &handle);
 
         let resp = send_recv(
@@ -1184,19 +1070,14 @@ fn rpc_set_model_missing_model_id_returns_error() {
 
         drop(in_tx);
         let _ = server.await;
-    });
+    
+
 }
 
-#[test]
-fn rpc_set_model_unknown_model_returns_error() {
-    let _harness = TestHarness::new("rpc_set_model_unknown");
+#[tokio::test]
+async fn rpc_set_model_unknown_model_returns_error() {
+    let handle = tokio::runtime::Handle::current();
 
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
-        .build()
-        .expect("build runtime");
-    let handle = runtime.handle();
-
-    runtime.block_on(async move {
         let (in_tx, out_rx, server) = setup_rpc(Session::in_memory(), &handle);
 
         // No available_models configured → any model is "not found".
@@ -1218,21 +1099,16 @@ fn rpc_set_model_unknown_model_returns_error() {
 
         drop(in_tx);
         let _ = server.await;
-    });
+    
+
 }
 
 // ─── Unknown command tests ───────────────────────────────────────────────────
 
-#[test]
-fn rpc_unknown_command_returns_error() {
-    let _harness = TestHarness::new("rpc_unknown_command");
+#[tokio::test]
+async fn rpc_unknown_command_returns_error() {
+    let handle = tokio::runtime::Handle::current();
 
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
-        .build()
-        .expect("build runtime");
-    let handle = runtime.handle();
-
-    runtime.block_on(async move {
         let (in_tx, out_rx, server) = setup_rpc(Session::in_memory(), &handle);
 
         let resp = send_recv(
@@ -1246,22 +1122,16 @@ fn rpc_unknown_command_returns_error() {
 
         drop(in_tx);
         let _ = server.await;
-    });
+    
+
 }
 
 // ─── Multi-command session lifecycle ─────────────────────────────────────────
 
-#[test]
-fn rpc_session_lifecycle_multi_command() {
-    let harness = TestHarness::new("rpc_session_lifecycle");
-    let logger = harness.log();
+#[tokio::test]
+async fn rpc_session_lifecycle_multi_command() {
+    let handle = tokio::runtime::Handle::current();
 
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
-        .build()
-        .expect("build runtime");
-    let handle = runtime.handle();
-
-    runtime.block_on(async move {
         let (in_tx, out_rx, server) = setup_rpc(prepopulated_session(), &handle);
 
         // 1. Get initial state.
@@ -1340,21 +1210,16 @@ fn rpc_session_lifecycle_multi_command() {
         drop(in_tx);
         let result = server.await;
         assert!(result.is_ok(), "server error: {result:?}");
-    });
+    
+
 }
 
 // ─── Response ID echo tests ─────────────────────────────────────────────────
 
-#[test]
-fn rpc_response_echoes_request_id() {
-    let _harness = TestHarness::new("rpc_response_id_echo");
+#[tokio::test]
+async fn rpc_response_echoes_request_id() {
+    let handle = tokio::runtime::Handle::current();
 
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
-        .build()
-        .expect("build runtime");
-    let handle = runtime.handle();
-
-    runtime.block_on(async move {
         let (in_tx, out_rx, server) = setup_rpc(Session::in_memory(), &handle);
 
         // Various IDs.
@@ -1370,27 +1235,21 @@ fn rpc_response_echoes_request_id() {
 
         drop(in_tx);
         let _ = server.await;
-    });
+    
+
 }
 
 // ─── Malformed JSON handling ─────────────────────────────────────────────────
 
-#[test]
-fn rpc_malformed_json_does_not_crash_server() {
-    let _harness = TestHarness::new("rpc_malformed_json");
+#[tokio::test]
+async fn rpc_malformed_json_does_not_crash_server() {
+    let handle = tokio::runtime::Handle::current();
 
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
-        .build()
-        .expect("build runtime");
-    let handle = runtime.handle();
-
-    runtime.block_on(async move {
         let (in_tx, out_rx, server) = setup_rpc(Session::in_memory(), &handle);
 
         // Send malformed JSON.
-        let cx = asupersync::Cx::for_testing();
         in_tx
-            .send(&cx, "this is not json".to_string())
+            .send("this is not json".to_string())
             .await
             .expect("send malformed");
 
@@ -1403,9 +1262,8 @@ fn rpc_malformed_json_does_not_crash_server() {
         assert_eq!(error_val["success"], false);
 
         // Server should still accept valid commands after malformed input.
-        let cx = asupersync::Cx::for_testing();
         in_tx
-            .send(&cx, r#"{"id":"1","type":"get_state"}"#.to_string())
+            .send(r#"{"id":"1","type":"get_state"}"#.to_string())
             .await
             .expect("send get_state after malformed");
 
@@ -1426,5 +1284,6 @@ fn rpc_malformed_json_does_not_crash_server() {
 
         drop(in_tx);
         let _ = server.await;
-    });
+    
+
 }

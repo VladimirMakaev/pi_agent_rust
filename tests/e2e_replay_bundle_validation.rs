@@ -557,8 +557,7 @@ fn synthetic_failure_digest_structure_valid() {
             "line": 142,
             "column": 5,
             "message": "assertion `left == right` failed"
-        }
-    });
+        });
 
     // Validate structure
     assert_eq!(

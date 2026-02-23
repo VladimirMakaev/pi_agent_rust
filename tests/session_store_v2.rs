@@ -1347,7 +1347,7 @@ fn v2_resume_loads_same_entries_as_jsonl() -> PiResult<()> {
         .to_str()
         .expect("temporary jsonl path must be valid UTF-8")
         .to_string();
-    asupersync::test_utils::run_test(|| async move {
+    run_async( async move {
         let (session, diag) = pi::session::Session::open_with_diagnostics(&jsonl_str)
             .await
             .expect("session open should succeed");

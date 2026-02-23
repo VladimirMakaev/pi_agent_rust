@@ -606,8 +606,7 @@ fn generate_markdown(
                         .cloned()
                         .collect::<Vec<_>>()
                         .join("; ")
-                }
-            });
+                });
 
             let status_emoji = match overall {
                 "PASS" => "PASS",

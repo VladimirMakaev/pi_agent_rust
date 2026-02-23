@@ -1814,8 +1814,7 @@ fn extension_failure_parser_collects_non_pass_extensions() {
             "mock_gap": {
                 "scenarios": ["scn-001"]
             }
-        }
-    });
+        });
 
     let failures = parse_extension_failure_causes(&baseline);
     assert_eq!(
@@ -1860,8 +1859,7 @@ fn remediation_entry_schema_and_classification_are_complete() {
             "summary": {
                 "total_classified": 1
             }
-        }
-    });
+        });
 
     let backlog = build_extension_remediation_backlog(
         &dossier,
@@ -1935,8 +1933,7 @@ fn remediation_entries_are_sorted_deterministically() {
             "summary": {
                 "total_classified": 4
             }
-        }
-    });
+        });
 
     let backlog = build_extension_remediation_backlog(
         &dossier,
@@ -2023,8 +2020,7 @@ fn canonical_failure_trio_entries_have_owner_tracking_and_fallback_validation() 
                     "tracking_issue": "bd-3ar8v.6.3.5"
                 }
             ]
-        }
-    });
+        });
 
     let backlog = build_extension_remediation_backlog(
         &dossier,
@@ -2113,8 +2109,7 @@ fn remediation_backlog_artifact_shape_is_reproducible() {
             "summary": {
                 "total_classified": 2
             }
-        }
-    });
+        });
 
     let generated_at = "2026-02-17T00:00:00.000Z";
     let backlog_a = build_extension_remediation_backlog(

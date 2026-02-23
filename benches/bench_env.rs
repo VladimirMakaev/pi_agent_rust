@@ -202,8 +202,7 @@ pub fn print_env_banner_once() {
                     fp.thp
                 );
             }
-        }
-    });
+        });
 }
 
 /// Return a Criterion configuration with the environment banner printed.

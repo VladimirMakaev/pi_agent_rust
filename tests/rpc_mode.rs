@@ -125,7 +125,7 @@ async fn recv_line(rx: &Arc<Mutex<Receiver<String>>>, label: &str) -> Result<Str
             return Err(format!("{label}: timed out waiting for output"));
         }
 
-        asupersync::time::sleep(asupersync::time::wall_now(), Duration::from_millis(5)).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
 }
 
@@ -145,7 +145,7 @@ fn rpc_get_state_and_prompt() {
         return;
     }
 
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+    let runtime = tokio::runtime::Builder::current_thread()
         .build()
         .expect("build test runtime");
     let handle = runtime.handle();
@@ -169,7 +169,7 @@ fn rpc_get_state_and_prompt() {
         session.header.provider = Some("openai".to_string());
         session.header.model_id = Some(model);
         session.header.thinking_level = Some("off".to_string());
-        let session = Arc::new(asupersync::sync::Mutex::new(session));
+        let session = Arc::new(tokio::sync::Mutex::new(session));
 
         let agent_session = AgentSession::new(
             agent,
@@ -190,16 +190,16 @@ fn rpc_get_state_and_prompt() {
             runtime_handle: handle.clone(),
         };
 
-        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (in_tx, in_rx) = tokio::sync::mpsc::channel::<String>(16);
         let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
         let out_rx = Arc::new(Mutex::new(out_rx));
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
 
         // get_state
-        let cx = asupersync::Cx::for_testing();
+        
         in_tx
-            .send(&cx, r#"{"id":"1","type":"get_state"}"#.to_string())
+            .send(r#"{"id":"1","type":"get_state"}"#.to_string())
             .await
             .expect("send get_state");
 
@@ -320,7 +320,7 @@ fn rpc_get_state_and_prompt() {
 
         // get_session_stats
         in_tx
-            .send(&cx, r#"{"id":"3","type":"get_session_stats"}"#.to_string())
+            .send(r#"{"id":"3","type":"get_session_stats"}"#.to_string())
             .await
             .expect("send get_session_stats");
 
@@ -416,7 +416,7 @@ fn rpc_session_stats_counts_tool_calls_and_results() {
         logger.warn("vcr", message);
         return;
     }
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+    let runtime = tokio::runtime::Builder::current_thread()
         .build()
         .expect("build test runtime");
     let handle = runtime.handle();
@@ -476,7 +476,7 @@ fn rpc_session_stats_counts_tool_calls_and_results() {
             timestamp: Some(now),
         });
 
-        let session = Arc::new(asupersync::sync::Mutex::new(session));
+        let session = Arc::new(tokio::sync::Mutex::new(session));
         let agent_session = AgentSession::new(
             agent,
             session,
@@ -496,15 +496,15 @@ fn rpc_session_stats_counts_tool_calls_and_results() {
             runtime_handle: handle.clone(),
         };
 
-        let (in_tx, in_rx) = asupersync::channel::mpsc::channel::<String>(16);
+        let (in_tx, in_rx) = tokio::sync::mpsc::channel::<String>(16);
         let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
         let out_rx = Arc::new(Mutex::new(out_rx));
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
 
-        let cx = asupersync::Cx::for_testing();
+        
         in_tx
-            .send(&cx, r#"{"id":"1","type":"get_session_stats"}"#.to_string())
+            .send(r#"{"id":"1","type":"get_session_stats"}"#.to_string())
             .await
             .expect("send get_session_stats");
 

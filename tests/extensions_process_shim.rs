@@ -737,6 +737,5 @@ fn pijs_node_process_module_exports_enhanced() {
             "hasRelease",
         ] {
             assert_eq!(val[key], true, "node:process module should export {key}");
-        }
-    });
+        });
 }

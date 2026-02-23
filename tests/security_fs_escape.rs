@@ -34,8 +34,7 @@ fn load_ext(harness: &common::TestHarness, source: &str) -> ExtensionManager {
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start js runtime")
-        }
-    });
+        });
     manager.set_js_runtime(runtime);
 
     common::run_async({
@@ -45,8 +44,7 @@ fn load_ext(harness: &common::TestHarness, source: &str) -> ExtensionManager {
                 .load_js_extensions(vec![spec])
                 .await
                 .expect("load extension");
-        }
-    });
+        });
 
     manager
 }

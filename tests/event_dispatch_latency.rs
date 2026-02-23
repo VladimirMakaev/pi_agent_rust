@@ -168,8 +168,7 @@ fn load_synthetic_extensions(sources: &[(String, String)]) -> LoadedExtensions {
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start JS runtime")
-        }
-    });
+        });
     manager.set_js_runtime(runtime);
 
     let count = specs.len();
@@ -180,8 +179,7 @@ fn load_synthetic_extensions(sources: &[(String, String)]) -> LoadedExtensions {
                 .load_js_extensions(specs)
                 .await
                 .expect("load synthetic extensions");
-        }
-    });
+        });
 
     // Keep harness alive to preserve temp dir
     std::mem::forget(harness);
@@ -211,8 +209,7 @@ fn measure_event_latency(
         let _ = common::run_async({
             let manager = manager.clone();
             let payload = payload.cloned();
-            async move { manager.dispatch_event(event, payload).await }
-        });
+            async move { manager.dispatch_event(event, payload).await });
     }
 
     // Measure
@@ -222,8 +219,7 @@ fn measure_event_latency(
         let _ = common::run_async({
             let manager = manager.clone();
             let payload = payload.cloned();
-            async move { manager.dispatch_event(event, payload).await }
-        });
+            async move { manager.dispatch_event(event, payload).await });
         let elapsed_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
         latencies_us.push(elapsed_us);
     }
@@ -334,8 +330,7 @@ fn event_type_latency_single_extension() {
         let manager = loaded.manager;
         async move {
             let _ = manager.shutdown(Duration::from_millis(500)).await;
-        }
-    });
+        });
 }
 
 /// Measure scaling: how latency changes with 1, 5, 10, 20 extensions.
@@ -393,8 +388,7 @@ fn event_dispatch_scaling() {
             let manager = loaded.manager;
             async move {
                 let _ = manager.shutdown(Duration::from_millis(500)).await;
-            }
-        });
+            });
     }
 
     // Write scaling report
@@ -467,8 +461,7 @@ fn hostcall_roundtrip_latency() {
         let manager = loaded.manager;
         async move {
             let _ = manager.shutdown(Duration::from_millis(500)).await;
-        }
-    });
+        });
 }
 
 /// Measure overhead of dispatching events with no matching handlers.
@@ -510,8 +503,7 @@ fn no_handler_dispatch_overhead() {
         let manager = loaded.manager;
         async move {
             let _ = manager.shutdown(Duration::from_millis(500)).await;
-        }
-    });
+        });
 }
 
 /// Measure latency with real extensions from the conformance corpus.
@@ -572,8 +564,7 @@ fn real_extension_dispatch_latency() {
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start JS runtime")
-        }
-    });
+        });
     manager.set_js_runtime(runtime);
 
     let mut specs = Vec::new();
@@ -592,8 +583,7 @@ fn real_extension_dispatch_latency() {
                 .load_js_extensions(specs)
                 .await
                 .expect("load real extensions");
-        }
-    });
+        });
 
     eprintln!("\n  Real extension dispatch ({ext_count} extensions loaded):");
 
@@ -644,8 +634,7 @@ fn real_extension_dispatch_latency() {
         let manager = manager;
         async move {
             let _ = manager.shutdown(Duration::from_millis(500)).await;
-        }
-    });
+        });
 }
 
 /// Generate consolidated JSON report with all latency data.

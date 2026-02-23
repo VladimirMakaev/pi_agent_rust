@@ -307,8 +307,7 @@ fn benchmark_extension(entry: &ManifestEntry, warmup: usize, n: usize) -> ExtLoa
             let manager = manager.clone();
             let tools = Arc::clone(&tools);
             let js_config = js_config.clone();
-            async move { JsExtensionRuntimeHandle::start(js_config, tools, manager).await }
-        });
+            async move { JsExtensionRuntimeHandle::start(js_config, tools, manager).await });
         let runtime = match runtime_result {
             Ok(rt) => rt,
             Err(e) => {
@@ -322,8 +321,7 @@ fn benchmark_extension(entry: &ManifestEntry, warmup: usize, n: usize) -> ExtLoa
         let load_result = common::run_async({
             let manager = manager.clone();
             let spec = spec.clone();
-            async move { manager.load_js_extensions(vec![spec]).await }
-        });
+            async move { manager.load_js_extensions(vec![spec]).await });
 
         match load_result {
             Ok(()) => {
@@ -341,8 +339,7 @@ fn benchmark_extension(entry: &ManifestEntry, warmup: usize, n: usize) -> ExtLoa
         common::run_async({
             async move {
                 let _ = manager.shutdown(Duration::from_millis(250)).await;
-            }
-        });
+            });
     }
 
     // ── Warm-start ─────────────────────────────────────────────────────────
@@ -355,8 +352,7 @@ fn benchmark_extension(entry: &ManifestEntry, warmup: usize, n: usize) -> ExtLoa
     let warm_runtime_result = common::run_async({
         let manager = warm_manager.clone();
         let tools = Arc::clone(&tools);
-        async move { JsExtensionRuntimeHandle::start(js_config, tools, manager).await }
-    });
+        async move { JsExtensionRuntimeHandle::start(js_config, tools, manager).await });
     match warm_runtime_result {
         Ok(rt) => warm_manager.set_js_runtime(rt),
         Err(e) => {
@@ -370,8 +366,7 @@ fn benchmark_extension(entry: &ManifestEntry, warmup: usize, n: usize) -> ExtLoa
             let load_result = common::run_async({
                 let manager = warm_manager.clone();
                 let spec = spec.clone();
-                async move { manager.load_js_extensions(vec![spec]).await }
-            });
+                async move { manager.load_js_extensions(vec![spec]).await });
             if let Err(e) = load_result {
                 last_error = Some(format!("Warmup load error: {e}"));
                 warm_failures += n.max(1);
@@ -385,8 +380,7 @@ fn benchmark_extension(entry: &ManifestEntry, warmup: usize, n: usize) -> ExtLoa
                 let load_result = common::run_async({
                     let manager = warm_manager.clone();
                     let spec = spec.clone();
-                    async move { manager.load_js_extensions(vec![spec]).await }
-                });
+                    async move { manager.load_js_extensions(vec![spec]).await });
                 match load_result {
                     Ok(()) => {
                         #[allow(clippy::cast_possible_truncation)]
@@ -404,8 +398,7 @@ fn benchmark_extension(entry: &ManifestEntry, warmup: usize, n: usize) -> ExtLoa
         common::run_async({
             async move {
                 let _ = warm_manager.shutdown(Duration::from_millis(250)).await;
-            }
-        });
+            });
     }
 
     let success = cold_failures == 0

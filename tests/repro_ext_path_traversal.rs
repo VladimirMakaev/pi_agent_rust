@@ -39,6 +39,5 @@ fn repro_ext_path_traversal() {
                     "Unexpected error message: {e}",
                 );
             }
-        }
-    });
+        });
 }

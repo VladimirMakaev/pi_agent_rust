@@ -823,11 +823,12 @@ mod tests {
         Fut: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
-        let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
-            .expect("build asupersync runtime");
+            .expect("build tokio runtime");
         let join = runtime.handle().spawn(future);
-        runtime.block_on(join)
+        runtime.block_on(join).expect("join")
     }
 
     #[test]

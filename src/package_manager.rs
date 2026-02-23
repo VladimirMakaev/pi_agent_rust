@@ -3468,7 +3468,6 @@ fn maybe_emit_compat_ledgers(extensions: &[ResolvedResource]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use asupersync::runtime::RuntimeBuilder;
     use serde_json::json;
     use std::fs;
     use std::future::Future;

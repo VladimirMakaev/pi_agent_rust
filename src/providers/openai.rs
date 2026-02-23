@@ -1105,7 +1105,6 @@ fn convert_tool_to_openai(tool: &ToolDef) -> OpenAITool<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use asupersync::runtime::RuntimeBuilder;
     use futures::{StreamExt, stream};
     use serde::{Deserialize, Serialize};
     use serde_json::{Value, json};

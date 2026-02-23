@@ -13979,8 +13979,8 @@ mod wasm_host {
         use crate::connectors::http::HttpConnectorConfig;
         use crate::model::ContentBlock;
         use crate::tools::{Tool, ToolOutput, ToolRegistry, ToolUpdate};
-        use asupersync::runtime::RuntimeBuilder;
-        use asupersync::time::{sleep, wall_now};
+        // RuntimeBuilder replaced by tokio
+        use tokio::time::sleep;
         use async_trait::async_trait;
         use serde_json::json;
         use std::collections::BTreeMap;
@@ -13996,9 +13996,9 @@ mod wasm_host {
         where
             Fut: Future<Output = T>,
         {
-            let runtime = RuntimeBuilder::current_thread()
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
                 .build()
-                .expect("build asupersync runtime");
+                .expect("build tokio runtime");
             runtime.block_on(future)
         }
 
@@ -29203,7 +29203,7 @@ mod tests {
     #[test]
     fn extension_ui_request_roundtrip() {
         let manager = ExtensionManager::new();
-        let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
         let handle = runtime.handle();
@@ -29215,7 +29215,7 @@ mod tests {
             let responder = manager.clone();
             handle.spawn(async move {
                 let cx = Cx::for_request();
-                if let Ok(req) = ui_rx.recv(&cx).await {
+                if let Ok(req) = ui_rx.recv().await {
                     responder.respond_ui(ExtensionUiResponse {
                         id: req.id,
                         value: Some(json!(true)),
@@ -29233,7 +29233,7 @@ mod tests {
     #[test]
     fn js_hostcall_prompt_mode_asks_once_per_capability() {
         let manager = extension_manager_no_persisted_permissions();
-        let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
         let handle = runtime.handle();
@@ -29250,7 +29250,7 @@ mod tests {
             let responder = manager.clone();
             handle.spawn(async move {
                 let cx = Cx::for_request();
-                while let Ok(req) = ui_rx.recv(&cx).await {
+                while let Some(req) = ui_rx.recv().await {
                     prompt_count_clone.fetch_add(1, Ordering::SeqCst);
                     responder.respond_ui(ExtensionUiResponse {
                         id: req.id,
@@ -29308,7 +29308,7 @@ mod tests {
     #[test]
     fn js_runtime_pump_once_advances_timers_and_hostcalls() {
         let manager = ExtensionManager::new();
-        let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
 
@@ -29361,7 +29361,7 @@ mod tests {
                     wrote = true;
                     break;
                 }
-                sleep(wall_now(), Duration::from_millis(1)).await;
+                sleep(Duration::from_millis(1)).await;
             }
 
             assert!(wrote, "expected out.txt to be created after pumping");
@@ -29373,7 +29373,7 @@ mod tests {
     #[test]
     fn multi_entry_loader_skips_failing_non_primary_entrypoints() {
         let manager = ExtensionManager::new();
-        let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
 
@@ -30534,9 +30534,9 @@ mod tests {
     where
         Fut: std::future::Future<Output = T>,
     {
-        let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
             .build()
-            .expect("build asupersync runtime");
+            .expect("build tokio runtime");
         runtime.block_on(future)
     }
 
@@ -30603,15 +30603,15 @@ mod tests {
 
         let ((first, second), events) = capture_tracing_events(|| {
             run_async(async {
-                use asupersync::time::{timeout, wall_now};
+                use tokio::time::timeout;
                 use std::time::Duration;
 
-                let cx = asupersync::Cx::for_request();
-                let (ui_tx, ui_rx) = asupersync::channel::mpsc::channel(8);
+                // cx removed (tokio channels do not need context)
+                let (ui_tx, mut ui_rx) = tokio::sync::mpsc::channel(8);
                 manager.set_ui_sender(ui_tx);
 
                 let ui_task = async {
-                    let ui_request = timeout(wall_now(), Duration::from_secs(2), ui_rx.recv(&cx))
+                    let ui_request = timeout(Duration::from_secs(2), ui_rx.recv(&cx))
                         .await
                         .expect("timed out waiting for ui request")
                         .expect("ui request");
@@ -30628,7 +30628,7 @@ mod tests {
 
                     // Ensure the allow decision is cached (second hostcall should not prompt again).
                     if let Ok(Ok(_)) =
-                        timeout(wall_now(), Duration::from_millis(200), ui_rx.recv(&cx)).await
+                        timeout(Duration::from_millis(200), ui_rx.recv(&cx)).await
                     {
                         panic!("unexpected second ui prompt");
                     }
@@ -31117,18 +31117,18 @@ mod tests {
 
         let (prompt_outcomes, prompt_events) = capture_tracing_events(|| {
             run_async(async {
-                use asupersync::time::{timeout, wall_now};
+                use tokio::time::timeout;
                 use std::time::Duration;
 
-                let cx = asupersync::Cx::for_request();
-                let (ui_tx, ui_rx) = asupersync::channel::mpsc::channel(16);
+                // cx removed (tokio channels do not need context)
+                let (ui_tx, mut ui_rx) = tokio::sync::mpsc::channel(16);
                 manager_prompt.set_ui_sender(ui_tx);
                 let prompt_count = prompt_cases.len();
 
                 let ui_task = async {
                     for _ in 0..prompt_count {
                         let ui_request =
-                            timeout(wall_now(), Duration::from_secs(2), ui_rx.recv(&cx))
+                            timeout(Duration::from_secs(2), ui_rx.recv(&cx))
                                 .await
                                 .expect("timed out waiting for ui request")
                                 .expect("ui request");
@@ -31146,7 +31146,7 @@ mod tests {
 
                     // Ensure we don't leak an extra prompt that would hang on future runs.
                     if let Ok(Ok(_)) =
-                        timeout(wall_now(), Duration::from_millis(200), ui_rx.recv(&cx)).await
+                        timeout(Duration::from_millis(200), ui_rx.recv(&cx)).await
                     {
                         panic!("unexpected extra ui prompt");
                     }
@@ -31322,7 +31322,7 @@ mod tests {
 
     #[test]
     fn events_get_active_tools_returns_all_when_none_set() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools =
                 crate::tools::ToolRegistry::new(&["read", "bash", "edit"], Path::new("."), None);
@@ -31360,7 +31360,7 @@ mod tests {
 
     #[test]
     fn events_get_active_tools_returns_filtered_list() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools =
                 crate::tools::ToolRegistry::new(&["read", "bash", "edit"], Path::new("."), None);
@@ -31400,7 +31400,7 @@ mod tests {
 
     #[test]
     fn events_get_all_tools_returns_builtin_tools() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&["read", "bash"], Path::new("."), None);
 
@@ -31442,7 +31442,7 @@ mod tests {
 
     #[test]
     fn events_get_all_tools_includes_extension_tools() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&["read"], Path::new("."), None);
 
@@ -31498,7 +31498,7 @@ mod tests {
 
     #[test]
     fn events_set_active_tools_changes_get_active_tools_result() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools =
                 crate::tools::ToolRegistry::new(&["read", "bash", "edit"], Path::new("."), None);
@@ -31554,7 +31554,7 @@ mod tests {
 
     #[test]
     fn register_command_stores_metadata() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&["read"], Path::new("."), None);
 
@@ -31584,7 +31584,7 @@ mod tests {
 
     #[test]
     fn register_command_empty_name_fails() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
 
@@ -31607,7 +31607,7 @@ mod tests {
 
     #[test]
     fn register_command_missing_name_fails() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
 
@@ -31621,7 +31621,7 @@ mod tests {
 
     #[test]
     fn register_command_no_description_ok() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
 
@@ -31641,7 +31641,7 @@ mod tests {
 
     #[test]
     fn register_command_multiple_commands() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
 
@@ -31695,7 +31695,7 @@ mod tests {
 
     #[test]
     fn register_flag_stores_spec() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
 
@@ -31721,7 +31721,7 @@ mod tests {
 
     #[test]
     fn register_flag_empty_name_fails() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
 
@@ -31744,7 +31744,7 @@ mod tests {
 
     #[test]
     fn register_flag_hostcall_deduplicates_by_name() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
 
@@ -31777,7 +31777,7 @@ mod tests {
 
     #[test]
     fn register_flag_multiple_types() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
 
@@ -31828,7 +31828,7 @@ mod tests {
 
     #[test]
     fn register_provider_stores_config() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
 
@@ -31860,7 +31860,7 @@ mod tests {
 
     #[test]
     fn register_provider_missing_id_fails() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
 
@@ -31883,7 +31883,7 @@ mod tests {
 
     #[test]
     fn register_provider_missing_api_fails() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
 
@@ -31906,7 +31906,7 @@ mod tests {
 
     #[test]
     fn register_provider_unsupported_api_type_fails() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
 
@@ -31929,7 +31929,7 @@ mod tests {
 
     #[test]
     fn register_provider_all_valid_api_types() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
 
@@ -31959,7 +31959,7 @@ mod tests {
 
     #[test]
     fn register_provider_model_entries() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
 
@@ -31987,7 +31987,7 @@ mod tests {
 
     #[test]
     fn register_provider_oauth_config_extracted() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
 
@@ -32034,7 +32034,7 @@ mod tests {
 
     #[test]
     fn register_provider_without_oauth_config_has_none() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
 
@@ -32062,7 +32062,7 @@ mod tests {
 
     #[test]
     fn register_provider_oauth_missing_required_fields_ignored() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
 
@@ -32094,7 +32094,7 @@ mod tests {
 
     #[test]
     fn register_provider_oauth_no_redirect_uri() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
 
@@ -32219,7 +32219,7 @@ mod tests {
 
     #[test]
     fn register_all_apis_on_single_extension() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&["read"], Path::new("."), None);
 
@@ -32277,7 +32277,7 @@ mod tests {
 
     #[test]
     fn events_get_model_returns_null_when_no_session() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&["read"], Path::new("."), None);
 
@@ -32306,7 +32306,7 @@ mod tests {
 
     #[test]
     fn events_set_model_updates_in_memory_state() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&["read"], Path::new("."), None);
 
@@ -32330,7 +32330,7 @@ mod tests {
 
     #[test]
     fn events_set_model_invalidates_ctx_cache_generation() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&["read"], Path::new("."), None);
 
@@ -32352,7 +32352,7 @@ mod tests {
 
     #[test]
     fn events_get_thinking_level_returns_null_when_not_set() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&["read"], Path::new("."), None);
 
@@ -32381,7 +32381,7 @@ mod tests {
 
     #[test]
     fn events_set_thinking_level_updates_and_reflects() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&["read"], Path::new("."), None);
 
@@ -32428,7 +32428,7 @@ mod tests {
 
     #[test]
     fn events_set_thinking_level_invalidates_ctx_cache_generation() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&["read"], Path::new("."), None);
 
@@ -32450,7 +32450,7 @@ mod tests {
 
     #[test]
     fn events_set_model_snake_case_variant() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&["read"], Path::new("."), None);
 
@@ -32472,7 +32472,7 @@ mod tests {
 
     #[test]
     fn events_set_thinking_level_empty_becomes_none() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&["read"], Path::new("."), None);
 
@@ -32574,7 +32574,7 @@ mod tests {
 
     #[test]
     fn session_set_name_and_get_name() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let session = Arc::new(MockSession::new());
             manager.set_session(session.clone());
@@ -32613,7 +32613,7 @@ mod tests {
 
     #[test]
     fn session_set_name_invalidates_ctx_cache_generation() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let session = Arc::new(MockSession::new());
             manager.set_session(session.clone());
@@ -32635,7 +32635,7 @@ mod tests {
 
     #[test]
     fn session_set_label_dispatches_to_session() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let session = Arc::new(MockSession::new());
             manager.set_session(session.clone());
@@ -32661,7 +32661,7 @@ mod tests {
 
     #[test]
     fn session_append_message_snake_case_alias_succeeds() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let session = Arc::new(MockSession::new());
             manager.set_session(session.clone());
@@ -32685,7 +32685,7 @@ mod tests {
 
     #[test]
     fn session_append_message_invalidates_ctx_cache_generation() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let session = Arc::new(MockSession::new());
             manager.set_session(session.clone());
@@ -32712,7 +32712,7 @@ mod tests {
 
     #[test]
     fn session_set_model_invalidates_ctx_cache_generation() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let session = Arc::new(MockSession::new());
             manager.set_session(session.clone());
@@ -32737,7 +32737,7 @@ mod tests {
 
     #[test]
     fn session_set_thinking_level_invalidates_ctx_cache_generation() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let session = Arc::new(MockSession::new());
             manager.set_session(session.clone());
@@ -32759,7 +32759,7 @@ mod tests {
 
     #[test]
     fn session_set_label_invalidates_ctx_cache_generation() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let session = Arc::new(MockSession::new());
             manager.set_session(session.clone());
@@ -32784,7 +32784,7 @@ mod tests {
 
     #[test]
     fn session_set_label_requires_target_id() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let session = Arc::new(MockSession::new());
             manager.set_session(session.clone());
@@ -32803,7 +32803,7 @@ mod tests {
 
     #[test]
     fn session_set_label_null_label_clears() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let session = Arc::new(MockSession::new());
             manager.set_session(session.clone());
@@ -32829,7 +32829,7 @@ mod tests {
 
     #[test]
     fn session_dispatch_fails_without_session() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
 
             let outcome =
@@ -32840,7 +32840,7 @@ mod tests {
 
     #[test]
     fn session_model_control_via_session_dispatch() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&["read"], Path::new("."), None);
             let session = Arc::new(MockSession::new());
@@ -32892,7 +32892,7 @@ mod tests {
 
     #[test]
     fn session_thinking_level_via_session_dispatch() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&["read"], Path::new("."), None);
             let session = Arc::new(MockSession::new());
@@ -32974,7 +32974,7 @@ mod tests {
 
     #[test]
     fn events_send_message_dispatches_to_host_actions() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&["read"], Path::new("."), None);
             let actions = Arc::new(MockHostActions::new());
@@ -33016,7 +33016,7 @@ mod tests {
 
     #[test]
     fn events_send_message_requires_custom_type() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&["read"], Path::new("."), None);
             let actions = Arc::new(MockHostActions::new());
@@ -33043,7 +33043,7 @@ mod tests {
 
     #[test]
     fn events_send_message_without_host_actions_fails() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&["read"], Path::new("."), None);
 
@@ -33071,7 +33071,7 @@ mod tests {
 
     #[test]
     fn events_send_user_message_dispatches_to_host_actions() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&["read"], Path::new("."), None);
             let actions = Arc::new(MockHostActions::new());
@@ -33103,7 +33103,7 @@ mod tests {
 
     #[test]
     fn events_send_user_message_snake_case_alias_dispatches() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&["read"], Path::new("."), None);
             let actions = Arc::new(MockHostActions::new());
@@ -33133,7 +33133,7 @@ mod tests {
 
     #[test]
     fn events_send_user_message_empty_text_succeeds_noop() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&["read"], Path::new("."), None);
             let actions = Arc::new(MockHostActions::new());
@@ -33160,7 +33160,7 @@ mod tests {
 
     #[test]
     fn session_append_entry_dispatches_to_session() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let session = Arc::new(MockSession::new());
             manager.set_session(session.clone());
@@ -33182,7 +33182,7 @@ mod tests {
 
     #[test]
     fn session_append_entry_invalidates_ctx_cache_generation() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let session = Arc::new(MockSession::new());
             manager.set_session(session.clone());
@@ -33207,7 +33207,7 @@ mod tests {
 
     #[test]
     fn events_append_entry_dispatches_to_session() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&["read"], Path::new("."), None);
             let session = Arc::new(MockSession::new());
@@ -33231,7 +33231,7 @@ mod tests {
 
     #[test]
     fn events_append_entry_invalidates_ctx_cache_generation() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&["read"], Path::new("."), None);
             let session = Arc::new(MockSession::new());
@@ -33258,7 +33258,7 @@ mod tests {
 
     #[test]
     fn events_append_entry_without_session_fails() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&["read"], Path::new("."), None);
 
@@ -33280,7 +33280,7 @@ mod tests {
 
     #[test]
     fn session_unknown_op_returns_error() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let session = Arc::new(MockSession::new());
             manager.set_session(session.clone());
@@ -33296,7 +33296,7 @@ mod tests {
 
     #[test]
     fn register_flag_via_hostcall() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
 
@@ -33331,7 +33331,7 @@ mod tests {
 
     #[test]
     fn register_flag_missing_name_fails() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
 
@@ -33354,7 +33354,7 @@ mod tests {
 
     #[test]
     fn register_flag_dedup_last_write_wins() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
 
@@ -33384,7 +33384,7 @@ mod tests {
 
     #[test]
     fn get_flag_returns_registered_flag() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
 
@@ -33428,7 +33428,7 @@ mod tests {
 
     #[test]
     fn get_flag_missing_name_fails() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
 
@@ -33441,7 +33441,7 @@ mod tests {
 
     #[test]
     fn get_flag_unknown_returns_null() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
 
@@ -33475,7 +33475,7 @@ mod tests {
 
     #[test]
     fn list_flags_hostcall_returns_all() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
 
@@ -33557,7 +33557,7 @@ mod tests {
     #[test]
     fn stream_simple_yields_chunks_in_order() {
         let manager = ExtensionManager::new();
-        let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
 
@@ -33631,7 +33631,7 @@ mod tests {
     #[test]
     fn stream_simple_error_in_js_propagates() {
         let manager = ExtensionManager::new();
-        let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
 
@@ -33705,7 +33705,7 @@ mod tests {
     #[test]
     fn stream_simple_cancel_stops_iteration() {
         let manager = ExtensionManager::new();
-        let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
 
@@ -33877,7 +33877,7 @@ mod tests {
 
     #[test]
     fn extension_manager_shutdown_without_runtime_is_noop() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let ok = manager.shutdown(Duration::from_secs(1)).await;
             assert!(ok, "shutdown without runtime should succeed");
@@ -33912,7 +33912,7 @@ mod tests {
                 .state
                 .create_task(root, Budget::INFINITE, async move {
                     let cx = Cx::current().expect("cx");
-                    tx.send(&cx, "hello".to_string()).expect("send");
+                    tx.send("hello".to_string()).expect("send");
                 })
                 .expect("create send task");
             runtime.scheduler.lock().schedule(send_task, 0);
@@ -33922,7 +33922,7 @@ mod tests {
                 .state
                 .create_task(root, Budget::INFINITE, async move {
                     let cx = Cx::current().expect("cx");
-                    if let Ok(val) = rx.recv(&cx).await {
+                    if let Ok(val) = rx.recv().await {
                         *received_clone.lock().unwrap() = Some(val);
                     }
                 })
@@ -33961,7 +33961,7 @@ mod tests {
                 .state
                 .create_task(root, Budget::INFINITE, async move {
                     let cx = Cx::current().expect("cx");
-                    if rx.recv(&cx).await.is_err() {
+                    if rx.recv().await.is_err() {
                         got_error_clone.store(true, Ordering::SeqCst);
                     }
                 })
@@ -33994,8 +33994,8 @@ mod tests {
                             let cx = Cx::current().expect("cx");
                             // Simulate extension dispatch: send/recv on a channel.
                             let (tx, rx) = oneshot::channel::<u32>();
-                            tx.send(&cx, i).expect("send");
-                            let val = rx.recv(&cx).await.expect("recv");
+                            tx.send(i).expect("send");
+                            let val = rx.recv().await.expect("recv");
                             log.lock().unwrap().push(format!("task-{val}"));
                         })
                         .expect("create task");
@@ -34028,7 +34028,7 @@ mod tests {
                         .state
                         .create_task(root, Budget::INFINITE, async move {
                             // Yield to interleave with other tasks.
-                            asupersync::runtime::yield_now().await;
+                            tokio::task::yield_now().await;
                             log.lock().unwrap().push(format!("w-{i}"));
                         })
                         .expect("create task");
@@ -34057,7 +34057,7 @@ mod tests {
 
         #[test]
         fn region_shutdown_returns_true_when_no_runtime() {
-            asupersync::test_utils::run_test(|| async {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
                 let manager = ExtensionManager::new();
                 let region = ExtensionRegion::new(manager);
                 let ok = region.shutdown().await;
@@ -34067,7 +34067,7 @@ mod tests {
 
         #[test]
         fn region_shutdown_is_idempotent() {
-            asupersync::test_utils::run_test(|| async {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
                 let manager = ExtensionManager::new();
                 let region = ExtensionRegion::new(manager);
                 assert!(region.shutdown().await);
@@ -34078,7 +34078,7 @@ mod tests {
 
         #[test]
         fn manager_shutdown_clears_js_runtime_handle() {
-            asupersync::test_utils::run_test(|| async {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
                 let manager = ExtensionManager::new();
                 let tools = Arc::new(crate::tools::ToolRegistry::new(
                     &[],
@@ -34114,7 +34114,7 @@ mod tests {
 
         #[test]
         fn runtime_shutdown_treats_closed_exit_signal_as_success() {
-            asupersync::test_utils::run_test(|| async {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
                 let (sender, _rx) = mpsc::channel(1);
                 let (exit_tx, exit_rx) = oneshot::channel::<()>();
                 drop(exit_tx);
@@ -34134,7 +34134,7 @@ mod tests {
 
         #[test]
         fn region_with_runtime_shuts_down_cleanly() {
-            asupersync::test_utils::run_test(|| async {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
                 let manager = ExtensionManager::new();
                 let tools = Arc::new(crate::tools::ToolRegistry::new(
                     &[],
@@ -34166,7 +34166,7 @@ mod tests {
 
         #[test]
         fn region_with_custom_budget() {
-            asupersync::test_utils::run_test(|| async {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
                 let manager = ExtensionManager::new();
                 let region = ExtensionRegion::with_budget(manager, Duration::from_millis(100));
                 assert!(region.shutdown().await);
@@ -34175,7 +34175,7 @@ mod tests {
 
         #[test]
         fn region_drop_after_explicit_shutdown_is_silent() {
-            asupersync::test_utils::run_test(|| async {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
                 let manager = ExtensionManager::new();
                 let tools = Arc::new(crate::tools::ToolRegistry::new(
                     &[],
@@ -34204,7 +34204,7 @@ mod tests {
 
         #[test]
         fn region_into_inner_prevents_drop_shutdown() {
-            asupersync::test_utils::run_test(|| async {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
                 let manager = ExtensionManager::new();
                 let region = ExtensionRegion::new(manager);
                 let _manager = region.into_inner();
@@ -34214,7 +34214,7 @@ mod tests {
 
         #[test]
         fn weak_ref_breaks_arc_cycle() {
-            asupersync::test_utils::run_test(|| async {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
                 let manager = ExtensionManager::new();
                 let weak = Arc::downgrade(&manager.inner);
                 let tools = Arc::new(crate::tools::ToolRegistry::new(
@@ -34241,7 +34241,7 @@ mod tests {
                 assert!(ok, "shutdown should succeed");
 
                 // Give the thread a moment to fully exit.
-                asupersync::time::sleep(asupersync::time::wall_now(), Duration::from_millis(50))
+                tokio::time::sleep(Duration::from_millis(50))
                     .await;
 
                 // Now drop the manager — Arc should be the only strong ref.
@@ -34256,7 +34256,7 @@ mod tests {
 
         #[test]
         fn runtime_processes_commands_before_shutdown() {
-            asupersync::test_utils::run_test(|| async {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
                 let manager = ExtensionManager::new();
                 let tools = Arc::new(crate::tools::ToolRegistry::new(
                     &[],
@@ -34302,11 +34302,11 @@ mod tests {
 
     mod budget_tests {
         use super::*;
-        use asupersync::channel::oneshot;
+        use tokio::sync::oneshot;
 
         #[test]
         fn cx_with_deadline_has_finite_budget() {
-            asupersync::test_utils::run_test(|| async {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
                 let before = wall_now();
                 let cx = cx_with_deadline(500);
                 let budget = cx.budget();
@@ -34348,12 +34348,12 @@ mod tests {
 
         #[test]
         fn tight_deadline_cancels_blocked_recv() {
-            asupersync::test_utils::run_test(|| async {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
                 // Create a oneshot where nobody will send.
                 let (_tx, rx) = oneshot::channel::<()>();
                 let cx = cx_with_deadline(50); // 50ms deadline
                 let start = wall_now();
-                let result = timeout(wall_now(), Duration::from_millis(50), rx.recv(&cx)).await;
+                let result = timeout(Duration::from_millis(50), rx.recv(&cx)).await;
                 let elapsed = Duration::from_nanos(wall_now().duration_since(start));
                 assert!(
                     result.is_err() || matches!(result, Ok(Err(_))),
@@ -34369,7 +34369,7 @@ mod tests {
 
         #[test]
         fn tight_deadline_cancels_runtime_send() {
-            asupersync::test_utils::run_test(|| async {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
                 let manager = ExtensionManager::new();
                 let tools = Arc::new(crate::tools::ToolRegistry::new(
                     &[],
@@ -34484,7 +34484,7 @@ mod tests {
 
             #[test]
             fn events_dispatch_never_panics(op in op_strategy(), payload in json_value()) {
-                asupersync::test_utils::run_test(|| async move {
+                tokio::runtime::Runtime::new().unwrap().block_on(async move {
                     let manager = ExtensionManager::new();
                     let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
                     let _outcome = dispatch_hostcall_events(
@@ -34495,7 +34495,7 @@ mod tests {
 
             #[test]
             fn session_dispatch_never_panics(op in op_strategy(), payload in json_value()) {
-                asupersync::test_utils::run_test(|| async move {
+                tokio::runtime::Runtime::new().unwrap().block_on(async move {
                     let manager = ExtensionManager::new();
                     let session = Arc::new(MockSession::new());
                     manager.set_session(session);
@@ -34532,7 +34532,7 @@ mod tests {
                 }),
                 payload in json_value(),
             ) {
-                asupersync::test_utils::run_test(|| async move {
+                tokio::runtime::Runtime::new().unwrap().block_on(async move {
                     let manager = ExtensionManager::new();
                     let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
                     let outcome = dispatch_hostcall_events(
@@ -34565,7 +34565,7 @@ mod tests {
                 }),
                 payload in json_value(),
             ) {
-                asupersync::test_utils::run_test(|| async move {
+                tokio::runtime::Runtime::new().unwrap().block_on(async move {
                     let manager = ExtensionManager::new();
                     let session = Arc::new(MockSession::new());
                     manager.set_session(session);
@@ -34585,7 +34585,7 @@ mod tests {
                 key in unicode_string(),
                 value in unicode_string(),
             ) {
-                asupersync::test_utils::run_test(|| async move {
+                tokio::runtime::Runtime::new().unwrap().block_on(async move {
                     let manager = ExtensionManager::new();
                     let tools = crate::tools::ToolRegistry::new(&["read"], Path::new("."), None);
                     let actions = Arc::new(MockHostActions::new());
@@ -34605,7 +34605,7 @@ mod tests {
                 key in unicode_string(),
                 value in unicode_string(),
             ) {
-                asupersync::test_utils::run_test(|| async move {
+                tokio::runtime::Runtime::new().unwrap().block_on(async move {
                     let manager = ExtensionManager::new();
                     let session = Arc::new(MockSession::new());
                     manager.set_session(session);
@@ -34618,7 +34618,7 @@ mod tests {
 
             #[test]
             fn events_send_message_requires_custom_type(payload in json_value()) {
-                asupersync::test_utils::run_test(|| async move {
+                tokio::runtime::Runtime::new().unwrap().block_on(async move {
                     let manager = ExtensionManager::new();
                     let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
                     let actions = Arc::new(MockHostActions::new());
@@ -34651,7 +34651,7 @@ mod tests {
                 op in op_strategy(),
                 payload in json_value(),
             ) {
-                asupersync::test_utils::run_test(|| async move {
+                tokio::runtime::Runtime::new().unwrap().block_on(async move {
                     let manager = ExtensionManager::new();
                     let outcome = dispatch_hostcall_session(
                         "prop-call", &manager, &op, payload,
@@ -34668,7 +34668,7 @@ mod tests {
                 providers in prop::collection::vec("[a-z]{1,10}", 1..8),
                 models in prop::collection::vec("[a-z]{1,10}", 1..8),
             ) {
-                asupersync::test_utils::run_test(|| async move {
+                tokio::runtime::Runtime::new().unwrap().block_on(async move {
                     let manager = ExtensionManager::new();
                     let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
                     let count = providers.len().min(models.len());
@@ -34708,7 +34708,7 @@ mod tests {
                     1..10,
                 )
             ) {
-                asupersync::test_utils::run_test(|| async move {
+                tokio::runtime::Runtime::new().unwrap().block_on(async move {
                     let manager = ExtensionManager::new();
                     let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
                     for level in &levels {
@@ -34733,7 +34733,7 @@ mod tests {
             fn events_active_tools_roundtrip(
                 tools_list in prop::collection::vec("[a-z]{1,10}", 0..8)
             ) {
-                asupersync::test_utils::run_test(|| async move {
+                tokio::runtime::Runtime::new().unwrap().block_on(async move {
                     let manager = ExtensionManager::new();
                     let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
                     let _ = dispatch_hostcall_events(
@@ -34747,7 +34747,7 @@ mod tests {
 
             #[test]
             fn session_set_label_requires_target_id(label in ".*") {
-                asupersync::test_utils::run_test(|| async move {
+                tokio::runtime::Runtime::new().unwrap().block_on(async move {
                     let manager = ExtensionManager::new();
                     let session = Arc::new(MockSession::new());
                     manager.set_session(session);
@@ -34772,7 +34772,7 @@ mod tests {
 
             #[test]
             fn session_name_roundtrip(name in unicode_string()) {
-                asupersync::test_utils::run_test(|| async move {
+                tokio::runtime::Runtime::new().unwrap().block_on(async move {
                     let manager = ExtensionManager::new();
                     let session = Arc::new(MockSession::new());
                     manager.set_session(session);
@@ -35037,7 +35037,7 @@ mod tests {
             fn register_provider_malformed_never_panics(
                 payload in malformed_provider_payload()
             ) {
-                asupersync::test_utils::run_test(|| async move {
+                tokio::runtime::Runtime::new().unwrap().block_on(async move {
                     let manager = ExtensionManager::new();
                     let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
                     let _outcome = dispatch_hostcall_events(
@@ -35052,7 +35052,7 @@ mod tests {
                 provider_id in "[a-z][a-z0-9\\-]{0,24}",
                 oauth in malformed_oauth_object()
             ) {
-                asupersync::test_utils::run_test(|| async move {
+                tokio::runtime::Runtime::new().unwrap().block_on(async move {
                     let manager = ExtensionManager::new();
                     let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
                     let outcome = dispatch_hostcall_events(
@@ -35108,7 +35108,7 @@ mod tests {
                 name in "\\PC{0,50}",
                 description in prop::option::of("\\PC{0,100}"),
             ) {
-                asupersync::test_utils::run_test(|| async move {
+                tokio::runtime::Runtime::new().unwrap().block_on(async move {
                     let manager = ExtensionManager::new();
                     let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
                     let mut payload = json!({"name": name});
@@ -35128,7 +35128,7 @@ mod tests {
                 description in prop::option::of("\\PC{0,100}"),
                 default_val in prop::option::of(json_leaf()),
             ) {
-                asupersync::test_utils::run_test(|| async move {
+                tokio::runtime::Runtime::new().unwrap().block_on(async move {
                     let manager = ExtensionManager::new();
                     let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
                     let mut payload = json!({"name": name});
@@ -35150,7 +35150,7 @@ mod tests {
                 custom_type in "\\PC{0,30}",
                 data in json_value(),
             ) {
-                asupersync::test_utils::run_test(|| async move {
+                tokio::runtime::Runtime::new().unwrap().block_on(async move {
                     let manager = ExtensionManager::new();
                     let session = Arc::new(MockSession::new());
                     manager.set_session(session);
@@ -35170,7 +35170,7 @@ mod tests {
                 target_id in "\\PC{0,50}",
                 label in prop::option::of("\\PC{0,50}"),
             ) {
-                asupersync::test_utils::run_test(|| async move {
+                tokio::runtime::Runtime::new().unwrap().block_on(async move {
                     let manager = ExtensionManager::new();
                     let session = Arc::new(MockSession::new());
                     manager.set_session(session);
@@ -35193,7 +35193,7 @@ mod tests {
                 provider in "\\PC{0,30}",
                 model_id in "\\PC{0,30}",
             ) {
-                asupersync::test_utils::run_test(|| async move {
+                tokio::runtime::Runtime::new().unwrap().block_on(async move {
                     let manager = ExtensionManager::new();
                     let session = Arc::new(MockSession::new());
                     manager.set_session(session.clone());
@@ -35221,7 +35221,7 @@ mod tests {
                 op in op_strategy(),
                 payload in large_json_payload(200),
             ) {
-                asupersync::test_utils::run_test(|| async move {
+                tokio::runtime::Runtime::new().unwrap().block_on(async move {
                     let manager = ExtensionManager::new();
                     let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
                     let session = Arc::new(MockSession::new());
@@ -35238,7 +35238,7 @@ mod tests {
         /// Deeply nested JSON payloads (up to 50 levels) must not panic.
         #[test]
         fn dispatch_deeply_nested_payload_never_panics() {
-            asupersync::test_utils::run_test(|| async move {
+            tokio::runtime::Runtime::new().unwrap().block_on(async move {
                 let manager = ExtensionManager::new();
                 let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
                 let session = Arc::new(MockSession::new());
@@ -35264,7 +35264,7 @@ mod tests {
         /// `registerProvider` with valid API types should succeed.
         #[test]
         fn register_provider_valid_api_types_succeed() {
-            asupersync::test_utils::run_test(|| async move {
+            tokio::runtime::Runtime::new().unwrap().block_on(async move {
                 let manager = ExtensionManager::new();
                 let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
                 for api in [
@@ -35292,7 +35292,7 @@ mod tests {
         /// `registerProvider` with invalid API types should error.
         #[test]
         fn register_provider_invalid_api_types_error() {
-            asupersync::test_utils::run_test(|| async move {
+            tokio::runtime::Runtime::new().unwrap().block_on(async move {
                 let manager = ExtensionManager::new();
                 let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
                 for api in ["invalid-api", "openai", "anthropic", ""] {
@@ -35385,7 +35385,7 @@ mod tests {
                 (method, _expected_cap) in capability_method_strategy(),
                 payload in json_value(),
             ) {
-                asupersync::test_utils::run_test(|| async move {
+                tokio::runtime::Runtime::new().unwrap().block_on(async move {
                     let dir = tempfile::tempdir().expect("tempdir");
                     let tools = crate::tools::ToolRegistry::new(&[], dir.path(), None);
                     let http = crate::connectors::http::HttpConnector::with_defaults();
@@ -35440,7 +35440,7 @@ mod tests {
                 (method, _expected_cap) in capability_method_strategy(),
                 payload in json_value(),
             ) {
-                asupersync::test_utils::run_test(|| async move {
+                tokio::runtime::Runtime::new().unwrap().block_on(async move {
                     let dir = tempfile::tempdir().expect("tempdir");
                     let tools = crate::tools::ToolRegistry::new(&[], dir.path(), None);
                     let http = crate::connectors::http::HttpConnector::with_defaults();
@@ -35506,7 +35506,7 @@ mod tests {
                 (method, declared_capability, params) in capability_mismatch_case_strategy(),
                 call_suffix in "[a-z0-9]{1,12}",
             ) {
-                asupersync::test_utils::run_test(|| async move {
+                tokio::runtime::Runtime::new().unwrap().block_on(async move {
                     let dir = tempfile::tempdir().expect("tempdir");
                     let tools = crate::tools::ToolRegistry::new(&[], dir.path(), None);
                     let http = crate::connectors::http::HttpConnector::with_defaults();
@@ -35558,7 +35558,7 @@ mod tests {
                 ops in prop::collection::vec(op_strategy(), 3..8),
                 payloads in prop::collection::vec(json_value(), 3..8),
             ) {
-                asupersync::test_utils::run_test(|| async move {
+                tokio::runtime::Runtime::new().unwrap().block_on(async move {
                     let manager = ExtensionManager::new();
                     let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
                     let session = Arc::new(MockSession::new());
@@ -35596,7 +35596,7 @@ mod tests {
                 description in "\\PC{0,200}",
                 schema in json_value(),
             ) {
-                asupersync::test_utils::run_test(|| async move {
+                tokio::runtime::Runtime::new().unwrap().block_on(async move {
                     let manager = ExtensionManager::new();
                     let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
                     // Register an extension with a malformed tool definition.
@@ -35637,7 +35637,7 @@ mod tests {
         /// for deterministic coverage).
         #[test]
         fn capability_deny_all_covers_all_methods() {
-            asupersync::test_utils::run_test(|| async move {
+            tokio::runtime::Runtime::new().unwrap().block_on(async move {
                 let dir = tempfile::tempdir().expect("tempdir");
                 let tools = crate::tools::ToolRegistry::new(&[], dir.path(), None);
                 let http = crate::connectors::http::HttpConnector::with_defaults();
@@ -35694,7 +35694,7 @@ mod tests {
         /// across multiple dispatches preserves consistency.
         #[test]
         fn concurrent_session_state_interleaved() {
-            asupersync::test_utils::run_test(|| async move {
+            tokio::runtime::Runtime::new().unwrap().block_on(async move {
                 let manager = ExtensionManager::new();
                 let session = Arc::new(MockSession::new());
                 manager.set_session(session.clone());
@@ -35737,7 +35737,7 @@ mod tests {
         /// True parallel dispatch: spawn multiple hostcalls onto one runtime and one manager.
         #[test]
         fn concurrent_dispatch_parallel_tasks_same_manager_safe() {
-            let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
                 .build()
                 .expect("runtime build");
             let handle = runtime.handle();
@@ -35805,10 +35805,10 @@ mod tests {
         /// Session hostcall operations exercise a real SessionHandle, not MockSession.
         #[test]
         fn session_ops_with_real_session_handle_roundtrip() {
-            asupersync::test_utils::run_test(|| async move {
+            tokio::runtime::Runtime::new().unwrap().block_on(async move {
                 let manager = ExtensionManager::new();
                 let session = Arc::new(crate::session::SessionHandle(Arc::new(
-                    asupersync::sync::Mutex::new(crate::session::Session::create()),
+                    tokio::sync::Mutex::new(crate::session::Session::create()),
                 )));
                 manager.set_session(session.clone());
 
@@ -37282,7 +37282,7 @@ mod tests {
     /// UI confirm success path via shared dispatcher.
     #[test]
     fn shared_dispatch_ui_confirm_success() {
-        use asupersync::channel::mpsc;
+        use tokio::sync::mpsc;
 
         let dir = tempdir().expect("tempdir");
         let tools = ToolRegistry::new(&[], dir.path(), None);
@@ -37315,10 +37315,10 @@ mod tests {
         };
 
         run_async(async {
-            let cx = asupersync::Cx::for_request();
+            // cx removed (tokio channels do not need context)
 
             let ui_handler = async {
-                let req = ui_rx.recv(&cx).await.expect("ui recv");
+                let req = ui_rx.recv().await.expect("ui recv");
                 assert_eq!(req.method, "confirm");
                 manager.respond_ui(ExtensionUiResponse {
                     id: req.id,
@@ -37415,7 +37415,7 @@ mod tests {
     /// UI cancelled response maps to deterministic cancelled output.
     #[test]
     fn shared_dispatch_ui_cancelled_returns_deterministic_value() {
-        use asupersync::channel::mpsc;
+        use tokio::sync::mpsc;
 
         let dir = tempdir().expect("tempdir");
         let tools = ToolRegistry::new(&[], dir.path(), None);
@@ -37448,10 +37448,10 @@ mod tests {
         };
 
         run_async(async {
-            let cx = asupersync::Cx::for_request();
+            // cx removed (tokio channels do not need context)
 
             let ui_handler = async {
-                let req = ui_rx.recv(&cx).await.expect("ui recv");
+                let req = ui_rx.recv().await.expect("ui recv");
                 assert_eq!(req.method, "confirm");
                 // Simulate user cancellation.
                 manager.respond_ui(ExtensionUiResponse {
@@ -48186,7 +48186,7 @@ mod tests {
 
     #[test]
     fn dispatch_event_value_returns_none_when_no_hooks() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let mgr = ExtensionManager::new();
             let result = mgr
                 .dispatch_event(ExtensionEventName::MessageUpdate, None)
@@ -48197,7 +48197,7 @@ mod tests {
 
     #[test]
     fn dispatch_tool_call_returns_none_when_no_hooks() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let mgr = ExtensionManager::new();
             let tool_call = crate::model::ToolCall {
                 id: "tc-1".to_string(),
@@ -48213,7 +48213,7 @@ mod tests {
 
     #[test]
     fn dispatch_tool_result_returns_none_when_no_hooks() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let mgr = ExtensionManager::new();
             let tool_call = crate::model::ToolCall {
                 id: "tc-1".to_string(),
@@ -48264,7 +48264,7 @@ mod tests {
 
     #[test]
     fn rcu_register_provider_invalidates_snapshot() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
 
@@ -48304,7 +48304,7 @@ mod tests {
 
     #[test]
     fn rcu_register_flag_invalidates_snapshot() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
 
@@ -48491,7 +48491,7 @@ mod tests {
 
     #[test]
     fn rcu_extension_model_entries_uses_snapshot_providers() {
-        asupersync::test_utils::run_test(|| async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let manager = ExtensionManager::new();
             let tools = crate::tools::ToolRegistry::new(&[], Path::new("."), None);
 

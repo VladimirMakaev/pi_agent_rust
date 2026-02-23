@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 /// Create a real `SessionHandle` backed by an in-memory `Session`.
 fn create_test_session() -> SessionHandle {
-    SessionHandle(Arc::new(asupersync::sync::Mutex::new(Session::create())))
+    SessionHandle(Arc::new(tokio::sync::Mutex::new(Session::create())))
 }
 
 fn empty_payload(name: &str) -> RegisterPayload {
@@ -172,13 +172,12 @@ fn session_get_state_via_handle() {
     let handle = create_test_session();
     mgr.set_session(Arc::new(handle) as Arc<dyn ExtensionSession>);
 
-    asupersync::test_utils::run_test(|| {
-        let session = mgr.session_handle().expect("session attached");
-        async move {
+    run_async(async move {
+            let session = mgr.session_handle().expect("session attached");
+
             let state = session.get_state().await;
             assert!(state.get("sessionName").is_some());
-        }
-    });
+        });
 }
 
 #[test]
@@ -187,17 +186,16 @@ fn session_set_name_persists() {
     let handle = create_test_session();
     mgr.set_session(Arc::new(handle) as Arc<dyn ExtensionSession>);
 
-    asupersync::test_utils::run_test(|| {
-        let session = mgr.session_handle().expect("session attached");
-        async move {
+    run_async(async move {
+            let session = mgr.session_handle().expect("session attached");
+
             session
                 .set_name("My Test Session".to_string())
                 .await
                 .unwrap();
             let state = session.get_state().await;
             assert_eq!(state["sessionName"], "My Test Session");
-        }
-    });
+        });
 }
 
 #[test]
@@ -206,9 +204,9 @@ fn session_append_custom_entry() {
     let handle = create_test_session();
     mgr.set_session(Arc::new(handle) as Arc<dyn ExtensionSession>);
 
-    asupersync::test_utils::run_test(|| {
-        let session = mgr.session_handle().expect("session attached");
-        async move {
+    run_async(async move {
+            let session = mgr.session_handle().expect("session attached");
+
             session
                 .append_custom_entry(
                     "ext.note".to_string(),
@@ -225,8 +223,7 @@ fn session_append_custom_entry() {
             let custom = custom.unwrap();
             assert_eq!(custom["customType"], "ext.note");
             assert_eq!(custom["data"]["text"], "Hello from extension");
-        }
-    });
+        });
 }
 
 #[test]
@@ -235,9 +232,9 @@ fn session_set_model_persists() {
     let handle = create_test_session();
     mgr.set_session(Arc::new(handle) as Arc<dyn ExtensionSession>);
 
-    asupersync::test_utils::run_test(|| {
-        let session = mgr.session_handle().expect("session attached");
-        async move {
+    run_async(async move {
+            let session = mgr.session_handle().expect("session attached");
+
             session
                 .set_model("openai".to_string(), "gpt-4o".to_string())
                 .await
@@ -246,8 +243,7 @@ fn session_set_model_persists() {
             let (provider, model_id) = session.get_model().await;
             assert_eq!(provider.as_deref(), Some("openai"));
             assert_eq!(model_id.as_deref(), Some("gpt-4o"));
-        }
-    });
+        });
 }
 
 #[test]
@@ -256,9 +252,9 @@ fn session_get_model_returns_stored_value() {
     let handle = create_test_session();
     mgr.set_session(Arc::new(handle) as Arc<dyn ExtensionSession>);
 
-    asupersync::test_utils::run_test(|| {
-        let session = mgr.session_handle().expect("session attached");
-        async move {
+    run_async(async move {
+            let session = mgr.session_handle().expect("session attached");
+
             // Set model via the real session path, then verify read-back
             session
                 .set_model(
@@ -271,8 +267,7 @@ fn session_get_model_returns_stored_value() {
             let (provider, model_id) = session.get_model().await;
             assert_eq!(provider.as_deref(), Some("anthropic"));
             assert_eq!(model_id.as_deref(), Some("claude-opus-4-5-20251101"));
-        }
-    });
+        });
 }
 
 #[test]
@@ -281,17 +276,16 @@ fn session_set_thinking_level_persists() {
     let handle = create_test_session();
     mgr.set_session(Arc::new(handle) as Arc<dyn ExtensionSession>);
 
-    asupersync::test_utils::run_test(|| {
-        let session = mgr.session_handle().expect("session attached");
-        async move {
+    run_async(async move {
+            let session = mgr.session_handle().expect("session attached");
+
             session
                 .set_thinking_level("high".to_string())
                 .await
                 .unwrap();
             let level = session.get_thinking_level().await;
             assert_eq!(level.as_deref(), Some("high"));
-        }
-    });
+        });
 }
 
 #[test]
@@ -300,9 +294,9 @@ fn session_get_thinking_level_returns_stored_value() {
     let handle = create_test_session();
     mgr.set_session(Arc::new(handle) as Arc<dyn ExtensionSession>);
 
-    asupersync::test_utils::run_test(|| {
-        let session = mgr.session_handle().expect("session attached");
-        async move {
+    run_async(async move {
+            let session = mgr.session_handle().expect("session attached");
+
             // Set thinking level via the real session path, then verify read-back
             session
                 .set_thinking_level("medium".to_string())
@@ -310,8 +304,7 @@ fn session_get_thinking_level_returns_stored_value() {
                 .unwrap();
             let level = session.get_thinking_level().await;
             assert_eq!(level.as_deref(), Some("medium"));
-        }
-    });
+        });
 }
 
 #[test]
@@ -320,9 +313,9 @@ fn session_set_label_records_mutation() {
     let handle = create_test_session();
     mgr.set_session(Arc::new(handle) as Arc<dyn ExtensionSession>);
 
-    asupersync::test_utils::run_test(|| {
-        let session = mgr.session_handle().expect("session attached");
-        async move {
+    run_async(async move {
+            let session = mgr.session_handle().expect("session attached");
+
             // First create a custom entry so we have a valid target ID for the label
             session
                 .append_custom_entry("note".to_string(), Some(json!({"text": "target"})))
@@ -353,8 +346,7 @@ fn session_set_label_records_mutation() {
             let label_entry = label_entry.unwrap();
             assert_eq!(label_entry["targetId"], target_id);
             assert_eq!(label_entry["label"], "important");
-        }
-    });
+        });
 }
 
 #[test]
@@ -363,9 +355,9 @@ fn session_set_label_can_remove_label() {
     let handle = create_test_session();
     mgr.set_session(Arc::new(handle) as Arc<dyn ExtensionSession>);
 
-    asupersync::test_utils::run_test(|| {
-        let session = mgr.session_handle().expect("session attached");
-        async move {
+    run_async(async move {
+            let session = mgr.session_handle().expect("session attached");
+
             // Create a target entry
             session
                 .append_custom_entry("note".to_string(), Some(json!({"text": "target"})))
@@ -391,8 +383,7 @@ fn session_set_label_can_remove_label() {
             let label_entry = label_entry.unwrap();
             assert_eq!(label_entry["targetId"], target_id);
             assert!(label_entry.get("label").is_none() || label_entry["label"].is_null());
-        }
-    });
+        });
 }
 
 // ─── Cross-cutting Integration Tests ────────────────────────────────────────
@@ -436,27 +427,25 @@ fn multiple_sessions_can_be_swapped() {
     let verify_a = handle_a.clone();
     mgr.set_session(Arc::new(handle_a) as Arc<dyn ExtensionSession>);
 
-    asupersync::test_utils::run_test(|| {
-        let session = mgr.session_handle().expect("session attached");
-        async move {
+    run_async(async move {
+            let session = mgr.session_handle().expect("session attached");
+
             session.set_name("Session A".to_string()).await.unwrap();
-        }
-    });
+        });
 
     // Swap to session B
     let handle_b = create_test_session();
     let verify_b = handle_b.clone();
     mgr.set_session(Arc::new(handle_b) as Arc<dyn ExtensionSession>);
 
-    asupersync::test_utils::run_test(|| {
-        let session = mgr.session_handle().expect("session attached");
-        async move {
+    run_async(async move {
+            let session = mgr.session_handle().expect("session attached");
+
             session.set_name("Session B".to_string()).await.unwrap();
-        }
-    });
+        });
 
     // Verify both sessions recorded their respective names via the real Session
-    asupersync::test_utils::run_test(|| async move {
+    run_async( async move {
         let state_a = verify_a.get_state().await;
         assert_eq!(state_a["sessionName"], "Session A");
 

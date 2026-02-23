@@ -2,7 +2,7 @@
 
 mod common;
 
-use asupersync::runtime::RuntimeBuilder;
+use tokio::runtime::Builder as RuntimeBuilder;
 use common::{TestHarness, validate_jsonl};
 use pi::Error;
 use pi::model::{AssistantMessage, ContentBlock, StopReason, TextContent, Usage, UserContent};
@@ -994,8 +994,7 @@ fn save_round_trips_tool_result_message() {
             }
         } else {
             panic!("Expected Message entry, got {tool_result_entry:?}");
-        }
-    });
+        });
 }
 
 #[test]
@@ -1025,8 +1024,7 @@ fn save_round_trips_tool_error_result() {
             }
         } else {
             panic!("Expected Message entry");
-        }
-    });
+        });
 }
 
 // ============================================================================
@@ -1061,8 +1059,7 @@ fn save_preserves_unicode_message_content() {
             }
         } else {
             panic!("Expected Message entry");
-        }
-    });
+        });
 }
 
 #[test]
@@ -1094,8 +1091,7 @@ fn save_preserves_emoji_in_assistant_response() {
             }
         } else {
             panic!("Expected Message entry");
-        }
-    });
+        });
 }
 
 // ============================================================================
@@ -1133,8 +1129,7 @@ fn save_preserves_message_timestamps() {
             }
         } else {
             panic!("Expected Message entry");
-        }
-    });
+        });
 }
 
 #[test]

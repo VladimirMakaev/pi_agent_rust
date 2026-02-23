@@ -1377,8 +1377,7 @@ fn validate_must_pass_gate_payload_accepts_current_shape() {
             "must_pass_failed": 0,
             "must_pass_skipped": 0,
             "must_pass_pass_rate_pct": 100.0
-        }
-    });
+        });
 
     let summary = validate_must_pass_gate_payload(&payload)
         .expect("current must-pass payload shape should validate");
@@ -1396,8 +1395,7 @@ fn validate_must_pass_gate_payload_rejects_missing_lineage() {
         "observed": {
             "must_pass_total": 208,
             "must_pass_passed": 208
-        }
-    });
+        });
 
     let err = validate_must_pass_gate_payload(&payload)
         .expect_err("payload without run/correlation lineage must fail closed");
@@ -1417,8 +1415,7 @@ fn validate_perf_comparison_payload_accepts_current_shape() {
             "faster_count": 7,
             "slower_count": 1,
             "comparable_count": 2
-        }
-    });
+        });
 
     let summary = validate_perf_comparison_payload(&payload)
         .expect("current perf_comparison payload shape should validate");
@@ -1437,8 +1434,7 @@ fn validate_perf_comparison_payload_rejects_missing_overall_verdict() {
             "faster_count": 7,
             "slower_count": 1,
             "comparable_count": 2
-        }
-    });
+        });
 
     let err = validate_perf_comparison_payload(&payload)
         .expect_err("perf_comparison without overall_verdict should fail closed");
@@ -1460,8 +1456,7 @@ fn validate_parameter_sweeps_payload_accepts_current_shape() {
         },
         "source_identity": {
             "source_artifact": "tests/perf/runs/results/phase1_matrix_validation.json"
-        }
-    });
+        });
 
     let summary = validate_parameter_sweeps_payload(&payload)
         .expect("current parameter_sweeps payload shape should validate");
@@ -1482,8 +1477,7 @@ fn validate_parameter_sweeps_payload_rejects_unknown_readiness_status() {
         },
         "source_identity": {
             "source_artifact": "tests/perf/runs/results/phase1_matrix_validation.json"
-        }
-    });
+        });
 
     let err = validate_parameter_sweeps_payload(&payload)
         .expect_err("parameter_sweeps with non-contract readiness status must fail closed");

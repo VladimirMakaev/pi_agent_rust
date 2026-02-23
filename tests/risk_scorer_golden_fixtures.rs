@@ -116,8 +116,7 @@ fn run_golden_trace(
                 json!({ "level": "info", "message": format!("recovery-{idx}") }),
             )
             .await;
-        }
-    });
+        });
 
     manager.runtime_risk_ledger_artifact()
 }
@@ -517,8 +516,7 @@ fn golden_telemetry_ledger_agreement() {
                 json!({ "cmd": "echo", "args": ["test"] }),
             )
             .await;
-        }
-    });
+        });
 
     let ledger = manager.runtime_risk_ledger_artifact();
     let telemetry = manager.runtime_hostcall_telemetry_artifact();
@@ -609,8 +607,7 @@ fn golden_score_escalation_pattern() {
                 json!({ "level": "info", "message": "benign" }),
             )
             .await;
-        }
-    });
+        });
 
     let ledger_after_benign = manager.runtime_risk_ledger_artifact();
     let benign_scores: Vec<f64> = ledger_after_benign
@@ -630,8 +627,7 @@ fn golden_score_escalation_pattern() {
                 json!({ "cmd": "echo", "args": [idx.to_string()] }),
             )
             .await;
-        }
-    });
+        });
 
     let ledger_after_exec = manager.runtime_risk_ledger_artifact();
     let exec_scores: Vec<f64> = ledger_after_exec

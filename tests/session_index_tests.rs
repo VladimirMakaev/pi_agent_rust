@@ -4,7 +4,7 @@
 
 mod common;
 
-use asupersync::runtime::RuntimeBuilder;
+use tokio::runtime::Builder as RuntimeBuilder;
 use common::TestHarness;
 use pi::model::{AssistantMessage, ContentBlock, StopReason, TextContent, Usage, UserContent};
 use pi::session::{Session, SessionHeader, SessionMessage};
@@ -68,8 +68,7 @@ fn create_session_jsonl(
             "role": "user",
             "content": "Hello",
             "timestamp": 1_706_918_401_000_i64
-        }
-    });
+        });
     writeln!(file, "{}", serde_json::to_string(&entry).unwrap()).unwrap();
 
     harness
@@ -289,8 +288,7 @@ fn list_sessions_returns_newest_first() {
                         format!("session_{i}_last_modified_ms"),
                         meta.last_modified_ms.to_string(),
                     ));
-                }
-            });
+                });
 
         // Verify timestamps are in descending order
         assert!(
@@ -760,8 +758,7 @@ fn lock_prevents_concurrent_corruption() {
                 session.path = Some(sessions_root1.join(format!("t1_session_{i}.jsonl")));
                 session.save().await.expect("save session");
                 index.index_session(&session).expect("index session");
-            }
-        });
+            });
     });
 
     let handle2 = std::thread::spawn(move || {
@@ -776,8 +773,7 @@ fn lock_prevents_concurrent_corruption() {
                 session.path = Some(sessions_root2.join(format!("t2_session_{i}.jsonl")));
                 session.save().await.expect("save session");
                 index.index_session(&session).expect("index session");
-            }
-        });
+            });
     });
 
     handle1.join().expect("thread 1 join");

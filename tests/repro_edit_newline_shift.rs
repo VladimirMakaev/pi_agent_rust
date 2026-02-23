@@ -5,7 +5,7 @@ mod tests {
 
     #[test]
     fn repro_edit_off_by_one_on_subsequent_lines() {
-        asupersync::test_utils::run_test(|| async {
+        run_async( async {
             let dir = tempfile::tempdir().unwrap();
             let file_path = dir.path().join("test.txt");
 

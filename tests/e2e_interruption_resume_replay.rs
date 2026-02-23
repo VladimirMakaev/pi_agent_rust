@@ -109,7 +109,7 @@ fn stream_done(msg: AssistantMessage) -> Pin<Box<dyn Stream<Item = Result<Stream
 fn make_agent_session(
     cwd: &Path,
     provider: Arc<dyn Provider>,
-    session: Arc<asupersync::sync::Mutex<Session>>,
+    session: Arc<tokio::sync::Mutex<Session>>,
     max_tool_iterations: usize,
 ) -> AgentSession {
     let agent = Agent::new(
@@ -337,7 +337,7 @@ fn abort_before_run_returns_immediately() {
 
     let result = run_async(async move {
         let provider: Arc<dyn Provider> = Arc::new(SimpleProvider::new("should not appear"));
-        let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+        let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
         )));
         let mut agent_session = make_agent_session(&cwd, provider, session, 4);
@@ -388,7 +388,7 @@ fn abort_during_tool_execution() {
 
     let result = run_async(async move {
         let provider: Arc<dyn Provider> = Arc::new(ToolThenFinalizeProvider::new());
-        let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+        let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
         )));
         let mut agent_session = make_agent_session(&cwd, provider, session, 4);
@@ -450,7 +450,7 @@ fn resume_after_abort_continues_from_persisted_state() {
     let cwd = harness.temp_dir().to_path_buf();
 
     // Step 1: Run first turn normally, persist
-    let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+    let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
         Some(cwd.clone()),
     )));
     let session_path = run_async({
@@ -466,11 +466,10 @@ fn resume_after_abort_continues_from_persisted_state() {
             assert_eq!(msg.stop_reason, StopReason::Stop);
             agent_session.persist_session().await.expect("persist");
 
-            let cx = asupersync::Cx::for_testing();
-            let guard = session.lock(&cx).await.expect("lock session");
+            
+            let guard = session.lock().await.expect("lock session");
             guard.path.clone().expect("session has path")
-        }
-    });
+        });
 
     assert!(session_path.exists(), "Session file should exist");
     harness.record_artifact("session.jsonl", &session_path);
@@ -479,8 +478,7 @@ fn resume_after_abort_continues_from_persisted_state() {
     let reload_start = Instant::now();
     let (reloaded, diagnostics) = run_async({
         let path = session_path.display().to_string();
-        async move { Session::open_with_diagnostics(&path).await.expect("reload") }
-    });
+        async move { Session::open_with_diagnostics(&path).await.expect("reload") });
     let resume_ready_ms = reload_start.elapsed().as_millis();
     assert!(diagnostics.skipped_entries.is_empty(), "No corruption");
     assert!(
@@ -517,7 +515,7 @@ fn resume_multi_turn_conversation_intact() {
     harness.section("resume_multi_turn");
 
     let cwd = harness.temp_dir().to_path_buf();
-    let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+    let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
         Some(cwd.clone()),
     )));
 
@@ -533,8 +531,7 @@ fn resume_multi_turn_conversation_intact() {
                 .await
                 .expect("turn 1");
             agent_session.persist_session().await.expect("persist 1");
-        }
-    });
+        });
 
     // Turn 2
     run_async({
@@ -548,21 +545,19 @@ fn resume_multi_turn_conversation_intact() {
                 .await
                 .expect("turn 2");
             agent_session.persist_session().await.expect("persist 2");
-        }
-    });
+        });
 
     // Persisted session must exist and remain reloadable within resume UX budget.
     let session_path = run_async({
         let session = Arc::clone(&session);
         async move {
-            let cx = asupersync::Cx::for_testing();
-            let guard = session.lock(&cx).await.expect("lock");
+            
+            let guard = session.lock().await.expect("lock");
             guard
                 .path
                 .clone()
                 .expect("session path after persisted turns")
-        }
-    });
+        });
     assert!(
         session_path.exists(),
         "session file must exist after persists"
@@ -576,8 +571,7 @@ fn resume_multi_turn_conversation_intact() {
             Session::open_with_diagnostics(&path)
                 .await
                 .expect("reload multi-turn")
-        }
-    });
+        });
     let resume_ready_ms = reload_start.elapsed().as_millis();
     assert!(
         diagnostics.skipped_entries.is_empty(),
@@ -643,17 +637,16 @@ fn replay_same_input_produces_same_output() {
         let input = input.to_string();
         async move {
             let provider: Arc<dyn Provider> = Arc::new(ReplayVerifyProvider::new("run1"));
-            let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+            let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
                 Some(cwd.clone()),
             )));
             let mut agent_session = make_agent_session(&cwd, provider, session.clone(), 4);
             let msg = agent_session.run_text(input, |_| {}).await.expect("run 1");
-            let cx = asupersync::Cx::for_testing();
-            let guard = session.lock(&cx).await.expect("lock");
+            
+            let guard = session.lock().await.expect("lock");
             let messages = guard.to_messages_for_current_path();
             (assistant_text(&msg), messages.len())
-        }
-    });
+        });
 
     // Run 2 — same input, fresh provider with same deterministic behavior
     let (text_2, msg_count_2) = run_async({
@@ -661,17 +654,16 @@ fn replay_same_input_produces_same_output() {
         let input = input.to_string();
         async move {
             let provider: Arc<dyn Provider> = Arc::new(ReplayVerifyProvider::new("run1"));
-            let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+            let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
                 Some(cwd.clone()),
             )));
             let mut agent_session = make_agent_session(&cwd, provider, session.clone(), 4);
             let msg = agent_session.run_text(input, |_| {}).await.expect("run 2");
-            let cx = asupersync::Cx::for_testing();
-            let guard = session.lock(&cx).await.expect("lock");
+            
+            let guard = session.lock().await.expect("lock");
             let messages = guard.to_messages_for_current_path();
             (assistant_text(&msg), messages.len())
-        }
-    });
+        });
 
     // Replay parity assertions
     assert_eq!(text_1, text_2, "Same input should produce same output text");
@@ -703,7 +695,7 @@ fn replay_different_input_produces_different_output() {
         let cwd = cwd.clone();
         async move {
             let provider: Arc<dyn Provider> = Arc::new(ReplayVerifyProvider::new("inputA"));
-            let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+            let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
                 Some(cwd.clone()),
             )));
             let mut agent_session = make_agent_session(&cwd, provider, session, 4);
@@ -712,14 +704,13 @@ fn replay_different_input_produces_different_output() {
                 .await
                 .expect("run A");
             assistant_text(&msg)
-        }
-    });
+        });
 
     let text_b = run_async({
         let cwd = cwd.clone();
         async move {
             let provider: Arc<dyn Provider> = Arc::new(ReplayVerifyProvider::new("inputB"));
-            let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+            let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
                 Some(cwd.clone()),
             )));
             let mut agent_session = make_agent_session(&cwd, provider, session, 4);
@@ -728,8 +719,7 @@ fn replay_different_input_produces_different_output() {
                 .await
                 .expect("run B");
             assistant_text(&msg)
-        }
-    });
+        });
 
     assert_ne!(
         text_a, text_b,
@@ -759,7 +749,7 @@ fn cycle_run_abort_persist_reload_resume() {
     let cwd = harness.temp_dir().to_path_buf();
 
     // Phase 1: Normal first turn
-    let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+    let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
         Some(cwd.clone()),
     )));
 
@@ -774,8 +764,7 @@ fn cycle_run_abort_persist_reload_resume() {
                 .await
                 .expect("turn 1");
             agent_session.persist_session().await.expect("persist 1");
-        }
-    });
+        });
 
     // Phase 2: Second turn with abort
     let result = run_async({
@@ -789,18 +778,16 @@ fn cycle_run_abort_persist_reload_resume() {
             agent_session
                 .run_text_with_abort("second".to_string(), Some(signal), |_| {})
                 .await
-        }
-    });
+        });
 
     // Phase 3: Persist after abort
     run_async({
         let session = Arc::clone(&session);
         async move {
-            let cx = asupersync::Cx::for_testing();
-            let mut guard = session.lock(&cx).await.expect("lock");
+            
+            let mut guard = session.lock().await.expect("lock");
             guard.save().await.expect("save after abort");
-        }
-    });
+        });
 
     // Phase 4: Third turn — should succeed normally
     let turn3_msg = run_async({
@@ -813,8 +800,7 @@ fn cycle_run_abort_persist_reload_resume() {
                 .run_text("third".to_string(), |_| {})
                 .await
                 .expect("turn 3")
-        }
-    });
+        });
 
     let turn3_text = assistant_text(&turn3_msg);
     assert!(
@@ -826,11 +812,10 @@ fn cycle_run_abort_persist_reload_resume() {
     let messages = run_async({
         let session = Arc::clone(&session);
         async move {
-            let cx = asupersync::Cx::for_testing();
-            let guard = session.lock(&cx).await.expect("lock");
+            
+            let guard = session.lock().await.expect("lock");
             guard.to_messages_for_current_path()
-        }
-    });
+        });
 
     let user_msgs: Vec<_> = messages
         .iter()
@@ -861,7 +846,7 @@ fn cycle_tool_abort_then_fresh_success() {
     harness.section("cycle_tool_abort");
 
     let cwd = harness.temp_dir().to_path_buf();
-    let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+    let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
         Some(cwd.clone()),
     )));
 
@@ -882,8 +867,7 @@ fn cycle_tool_abort_then_fresh_success() {
                     }
                 })
                 .await
-        }
-    });
+        });
 
     harness.log().info(
         "phase1",
@@ -901,8 +885,7 @@ fn cycle_tool_abort_then_fresh_success() {
                 .run_text("try again".to_string(), |_| {})
                 .await
                 .expect("fresh run")
-        }
-    });
+        });
 
     let fresh_text = assistant_text(&fresh_msg);
     assert!(
@@ -935,7 +918,7 @@ fn events_balanced_start_end_normal_run() {
 
     run_async(async move {
         let provider: Arc<dyn Provider> = Arc::new(SimpleProvider::new("balanced"));
-        let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+        let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
         )));
         let mut agent_session = make_agent_session(&cwd, provider, session, 4);
@@ -984,7 +967,7 @@ fn events_balanced_tool_start_end() {
 
     run_async(async move {
         let provider: Arc<dyn Provider> = Arc::new(ToolThenFinalizeProvider::new());
-        let session = Arc::new(asupersync::sync::Mutex::new(Session::create_with_dir(
+        let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
         )));
         let mut agent_session = make_agent_session(&cwd, provider, session, 4);
