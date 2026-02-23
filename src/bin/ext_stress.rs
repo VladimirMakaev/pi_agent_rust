@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use asupersync::runtime::RuntimeBuilder;
 use asupersync::runtime::reactor::create_reactor;
-use asupersync::time::{sleep, wall_now};
+use tokio::time::sleep;
 use chrono::{SecondsFormat, Utc};
 use clap::{ArgAction, Parser};
 use pi::extensions::{
@@ -393,7 +393,7 @@ async fn run_loop(
     while start.elapsed() < duration {
         let now = Instant::now();
         if now < next_event {
-            sleep(wall_now(), next_event - now).await;
+            sleep(next_event - now).await;
             continue;
         }
 

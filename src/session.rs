@@ -14,7 +14,7 @@ use crate::model::{
 use crate::session_index::{SessionIndex, enqueue_session_index_snapshot_update};
 use crate::session_store_v2::{self, SessionStoreV2};
 use crate::tui::PiConsole;
-use asupersync::channel::oneshot;
+use tokio::sync::oneshot;
 use tokio::sync::Mutex;
 use async_trait::async_trait;
 use fs4::fs_std::FileExt;
@@ -803,12 +803,10 @@ impl Session {
                         .collect()
                 })
                 .unwrap_or_default();
-            let cx = asupersync::Cx::for_request();
-            let _ = tx.send(&cx, entries);
+            let _ = tx.send(entries);
         });
 
-        let cx = asupersync::Cx::for_request();
-        let entries = rx.recv(&cx).await.unwrap_or_default();
+        let entries = rx.await.unwrap_or_default();
 
         let scanned = scan_sessions_on_disk(&project_session_dir, entries.clone()).await?;
         let mut by_path: HashMap<PathBuf, SessionPickEntry> = HashMap::new();
@@ -1150,13 +1148,10 @@ impl Session {
 
         thread::spawn(move || {
             let res = crate::session::open_from_v2_store_blocking(path_buf);
-            let cx = asupersync::Cx::for_request();
-            let _ = tx.send(&cx, res);
+            let _ = tx.send(res);
         });
 
-        let cx = asupersync::Cx::for_request();
-        rx.recv(&cx)
-            .await
+        rx.await
             .map_err(|_| crate::Error::session("V2 open task cancelled"))?
     }
 
@@ -1166,13 +1161,10 @@ impl Session {
 
         thread::spawn(move || {
             let res = open_jsonl_blocking(path_buf);
-            let cx = asupersync::Cx::for_request();
-            let _ = tx.send(&cx, res);
+            let _ = tx.send(res);
         });
 
-        let cx = asupersync::Cx::for_request();
-        rx.recv(&cx)
-            .await
+        rx.await
             .map_err(|_| crate::Error::session("Open task cancelled"))?
     }
 
@@ -1248,12 +1240,10 @@ impl Session {
                     })
                     .unwrap_or_default();
             }
-            let cx = asupersync::Cx::for_request();
-            let _ = tx.send(&cx, indexed_sessions);
+            let _ = tx.send(indexed_sessions);
         });
 
-        let cx = asupersync::Cx::for_request();
-        let indexed_sessions = rx.recv(&cx).await.unwrap_or_default();
+        let indexed_sessions = rx.await.unwrap_or_default();
 
         let scanned = scan_sessions_on_disk(&project_session_dir, indexed_sessions.clone()).await?;
 
@@ -1573,15 +1563,11 @@ impl Session {
                             );
                             Ok(())
                         })();
-                        let cx = asupersync::Cx::for_request();
                         if tx
-                            .send(
-                                &cx,
-                                match res {
-                                    Ok(()) => Ok(entries),
-                                    Err(err) => Err((err, entries)),
-                                },
-                            )
+                            .send(match res {
+                                Ok(()) => Ok(entries),
+                                Err(err) => Err((err, entries)),
+                            })
                             .is_err()
                         {
                             tracing::debug!(
@@ -1590,9 +1576,7 @@ impl Session {
                         }
                     });
 
-                    let cx = asupersync::Cx::for_request();
                     let result = rx
-                        .recv(&cx)
                         .await
                         .map_err(|_| crate::Error::session("Save task cancelled"))?;
 
@@ -1668,17 +1652,14 @@ impl Session {
                                 );
                                 Ok(())
                             })();
-                            let cx = asupersync::Cx::for_request();
-                            if tx.send(&cx, res).is_err() {
+                            if tx.send(res).is_err() {
                                 tracing::debug!(
                                     "Session append task completed but receiver dropped (cancelled)"
                                 );
                             }
                         });
 
-                        let cx = asupersync::Cx::for_request();
                         let result = rx
-                            .recv(&cx)
                             .await
                             .map_err(|_| crate::Error::session("Append task cancelled"))?;
 
@@ -2650,14 +2631,11 @@ async fn scan_sessions_on_disk(
                 }
                 Ok(entries)
             })();
-            let cx = asupersync::Cx::for_request();
-            let _ = tx.send(&cx, res);
+            let _ = tx.send(res);
         })
         .map_err(|e| Error::session(format!("Failed to spawn session scan thread: {e}")))?;
 
-    let cx = asupersync::Cx::for_request();
-    rx.recv(&cx)
-        .await
+    rx.await
         .map_err(|_| Error::session("Scan task cancelled"))?
 }
 

@@ -19,7 +19,7 @@ use crate::extensions::{ExtensionManager, ExtensionRuntimeHandle};
 use crate::extensions_js::ExtensionToolDef;
 use crate::tools::{Tool, ToolOutput, ToolUpdate};
 #[cfg(feature = "wasm-host")]
-use asupersync::time::{timeout, wall_now};
+use tokio::time::timeout;
 
 const DEFAULT_EXTENSION_TOOL_TIMEOUT_MS: u64 = 60_000;
 
@@ -230,9 +230,8 @@ impl Tool for WasmExtensionToolWrapper {
         let fut = self.handle.handle_tool(&self.def.name, &input);
         let output_json = if self.timeout_ms > 0 {
             match timeout(
-                wall_now(),
                 Duration::from_millis(self.timeout_ms),
-                Box::pin(fut),
+                fut,
             )
             .await
             {

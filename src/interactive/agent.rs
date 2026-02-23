@@ -142,16 +142,13 @@ impl UiStreamDeltaBatcher {
                     self.pending_bytes = self.pending_bytes.saturating_sub(delta_bytes);
                     sent_any = true;
                 }
-                Err(err) => {
-                    match err {
-                        mpsc::SendError::Full(msg) => {
-                            self.pending.push_front(msg);
-                        }
-                        mpsc::SendError::Disconnected(_) | mpsc::SendError::Cancelled(_) => {
-                            self.pending.clear();
-                            self.pending_bytes = 0;
-                        }
-                    }
+                Err(mpsc::error::TrySendError::Full(msg)) => {
+                    self.pending.push_front(msg);
+                    break;
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    self.pending.clear();
+                    self.pending_bytes = 0;
                     break;
                 }
             }
@@ -256,9 +253,8 @@ async fn flush_ui_stream_batcher_with_backpressure(batcher: &StdMutex<UiStreamDe
         (sender, pending)
     };
 
-    let cx = Cx::for_request();
     for msg in pending {
-        if sender.send(&cx, msg).await.is_err() {
+        if sender.send(msg).await.is_err() {
             break;
         }
     }

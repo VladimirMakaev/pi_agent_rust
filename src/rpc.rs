@@ -29,9 +29,8 @@ use crate::providers;
 use crate::resources::ResourceLoader;
 use crate::session::SessionMessage;
 use crate::tools::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncate_tail};
-use asupersync::channel::{mpsc, oneshot};
-use tokio::sync::Mutex;
-use asupersync::time::{sleep, wall_now};
+use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::time::sleep;
 use memchr::memchr_iter;
 use serde_json::{Value, json};
 use std::collections::VecDeque;
@@ -163,11 +162,11 @@ fn try_send_line_with_backpressure(tx: &mpsc::Sender<String>, mut line: String) 
     loop {
         match tx.try_send(line) {
             Ok(()) => return true,
-            Err(mpsc::SendError::Full(unsent)) => {
+            Err(mpsc::error::TrySendError::Full(unsent)) => {
                 line = unsent;
                 std::thread::sleep(Duration::from_millis(10));
             }
-            Err(mpsc::SendError::Disconnected(_) | mpsc::SendError::Cancelled(_)) => {
+            Err(mpsc::error::TrySendError::Closed(_)) => {
                 return false;
             }
         }
@@ -303,10 +302,9 @@ pub async fn run_stdio(mut session: AgentSession, options: RpcOptions) -> Result
 pub async fn run(
     session: AgentSession,
     options: RpcOptions,
-    in_rx: mpsc::Receiver<String>,
+    mut in_rx: mpsc::Receiver<String>,
     out_tx: std::sync::mpsc::Sender<String>,
 ) -> Result<()> {
-    let cx = asupersync::Cx::for_request();
     let session_handle = Arc::clone(&session.session);
     let session = Arc::new(Mutex::new(session));
     let shared_state = Arc::new(Mutex::new(RpcSharedState::new(&options.config)));
@@ -362,8 +360,8 @@ pub async fn run(
         .map(|_| Arc::new(Mutex::new(RpcUiBridgeState::default())));
 
     if let Some(ref manager) = rpc_extension_manager {
-        let (extension_ui_tx, extension_ui_rx) =
-            asupersync::channel::mpsc::channel::<ExtensionUiRequest>(64);
+        let (extension_ui_tx, mut extension_ui_rx) =
+            mpsc::channel::<ExtensionUiRequest>(64);
         manager.set_ui_sender(extension_ui_tx);
 
         let out_tx_ui = out_tx.clone();
@@ -374,8 +372,7 @@ pub async fn run(
         let manager_ui = (*manager).clone();
         tokio::spawn(async move {
             const MAX_UI_PENDING_REQUESTS: usize = 64;
-            let cx = asupersync::Cx::for_request();
-            while let Ok(request) = extension_ui_rx.recv(&cx).await {
+            while let Some(request) = extension_ui_rx.recv().await {
                 if request.expects_response() {
                     let emit_now = {
                         let mut guard = ui_state.lock().await;
@@ -413,7 +410,7 @@ pub async fn run(
         });
     }
 
-    while let Ok(line) = in_rx.recv(&cx).await {
+    while let Some(line) = in_rx.recv().await {
         if line.trim().is_empty() {
             continue;
         }
@@ -1216,7 +1213,7 @@ pub async fn run(
                     .lock()
                     .await;
                 if let Some(running_bash) = running.take() {
-                    let _ = running_bash.abort_tx.send(&cx, ());
+                    let _ = running_bash.abort_tx.send(());
                 }
                 let _ = out_tx.send(response_ok(id, "abort_bash", None));
             }
@@ -1780,7 +1777,7 @@ async fn run_prompt_with_retry(
             if retry_abort.load(Ordering::SeqCst) {
                 break;
             }
-            sleep(wall_now(), Duration::from_millis(50)).await;
+            sleep(Duration::from_millis(50)).await;
         }
 
         if retry_abort.load(Ordering::SeqCst) {
@@ -1902,7 +1899,7 @@ fn rpc_emit_extension_ui_request(
     let out_tx_timeout = out_tx_ui;
 
     tokio::spawn(async move {
-        sleep(wall_now(), Duration::from_millis(fire_ms)).await;
+        sleep(Duration::from_millis(fire_ms)).await;
 
         let next = {
             let mut guard = ui_state_timeout.lock().await;
@@ -3286,7 +3283,7 @@ async fn ingest_bash_rpc_chunk(
 async fn run_bash_rpc(
     cwd: &std::path::Path,
     command: &str,
-    abort_rx: oneshot::Receiver<()>,
+    mut abort_rx: oneshot::Receiver<()>,
 ) -> Result<BashRpcResult> {
     #[derive(Clone, Copy)]
     enum StreamKind {
@@ -3402,7 +3399,7 @@ async fn run_bash_rpc(
             }
         }
 
-        sleep(wall_now(), tick).await;
+        sleep(tick).await;
     };
 
     // Drain remaining output
@@ -3430,7 +3427,7 @@ async fn run_bash_rpc(
                     drain_timed_out = true;
                     break;
                 }
-                sleep(wall_now(), tick).await;
+                sleep(tick).await;
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
         }
@@ -4094,7 +4091,7 @@ mod tests {
         assert!(try_send_line_with_backpressure(&tx, "line".to_string()));
         assert!(matches!(
             tx.try_send("next".to_string()),
-            Err(mpsc::SendError::Full(_))
+            Err(mpsc::error::TrySendError::Full(_))
         ));
     }
 

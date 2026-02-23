@@ -11,8 +11,7 @@
 //! - **Token tracking**: Real-time cost and token usage display
 //! - **Markdown rendering**: Assistant responses rendered with syntax highlighting
 
-use asupersync::Cx;
-use asupersync::channel::mpsc;
+use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 use async_trait::async_trait;
 use bubbles::spinner::{SpinnerModel, TickMsg as SpinnerTickMsg, spinners};
@@ -1038,12 +1037,11 @@ pub async fn run_interactive(
         let _ = crossterm::execute!(stdout, cursor::Hide);
     }
 
-    let (event_tx, event_rx) = mpsc::channel::<PiMsg>(1024);
+    let (event_tx, mut event_rx) = mpsc::channel::<PiMsg>(1024);
     let (ui_tx, ui_rx) = std::sync::mpsc::channel::<Message>();
 
     tokio::spawn(async move {
-        let cx = Cx::for_request();
-        while let Ok(msg) = event_rx.recv(&cx).await {
+        while let Some(msg) = event_rx.recv().await {
             if matches!(msg, PiMsg::UiShutdown) {
                 break;
             }
@@ -1054,13 +1052,12 @@ pub async fn run_interactive(
     let extensions = extensions;
 
     if let Some(manager) = &extensions {
-        let (extension_ui_tx, extension_ui_rx) = mpsc::channel::<ExtensionUiRequest>(64);
+        let (extension_ui_tx, mut extension_ui_rx) = mpsc::channel::<ExtensionUiRequest>(64);
         manager.set_ui_sender(extension_ui_tx);
 
         let extension_event_tx = event_tx.clone();
         tokio::spawn(async move {
-            let cx = Cx::for_request();
-            while let Ok(request) = extension_ui_rx.recv(&cx).await {
+            while let Some(request) = extension_ui_rx.recv().await {
                 let _ = extension_event_tx.try_send(PiMsg::ExtensionUiRequest(request));
             }
         });

@@ -26,12 +26,12 @@ use crate::session::SessionMessage;
 use crate::tools::ToolRegistry;
 use ast_grep_core::{AstGrep, Pattern};
 use ast_grep_language::SupportLang;
-use asupersync::channel::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot};
 use asupersync::runtime::RuntimeBuilder;
 #[cfg(feature = "wasm-host")]
 use tokio::sync::Mutex as AsyncMutex;
-use asupersync::time::{sleep, timeout, wall_now};
-use asupersync::{Budget, Cx};
+use tokio::time::{sleep, timeout};
+use asupersync::Budget;
 use async_trait::async_trait;
 use base64::Engine as _;
 use regex::Regex;
@@ -5372,7 +5372,7 @@ impl SecurityAlert {
     ) -> Self {
         Self {
             schema: SECURITY_ALERT_SCHEMA_VERSION.to_string(),
-            ts_ms: i64::try_from(wall_now().as_millis()).unwrap_or(i64::MAX),
+            ts_ms: i64::try_from(Instant::now().elapsed().as_millis()).unwrap_or(i64::MAX),
             sequence_id: 0,
             extension_id: extension_id.to_string(),
             category: SecurityAlertCategory::PolicyDenial,
@@ -5407,7 +5407,7 @@ impl SecurityAlert {
         );
         Self {
             schema: SECURITY_ALERT_SCHEMA_VERSION.to_string(),
-            ts_ms: i64::try_from(wall_now().as_millis()).unwrap_or(i64::MAX),
+            ts_ms: i64::try_from(Instant::now().elapsed().as_millis()).unwrap_or(i64::MAX),
             sequence_id: 0,
             extension_id: extension_id.to_string(),
             category: SecurityAlertCategory::ExecMediation,
@@ -5430,7 +5430,7 @@ impl SecurityAlert {
     pub fn from_secret_redaction(extension_id: &str, var_name: &str) -> Self {
         Self {
             schema: SECURITY_ALERT_SCHEMA_VERSION.to_string(),
-            ts_ms: i64::try_from(wall_now().as_millis()).unwrap_or(i64::MAX),
+            ts_ms: i64::try_from(Instant::now().elapsed().as_millis()).unwrap_or(i64::MAX),
             sequence_id: 0,
             extension_id: extension_id.to_string(),
             category: SecurityAlertCategory::SecretBroker,
@@ -5471,7 +5471,7 @@ impl SecurityAlert {
         };
         Self {
             schema: SECURITY_ALERT_SCHEMA_VERSION.to_string(),
-            ts_ms: i64::try_from(wall_now().as_millis()).unwrap_or(i64::MAX),
+            ts_ms: i64::try_from(Instant::now().elapsed().as_millis()).unwrap_or(i64::MAX),
             sequence_id: 0,
             extension_id: extension_id.to_string(),
             category: SecurityAlertCategory::AnomalyDenial,
@@ -5495,7 +5495,7 @@ impl SecurityAlert {
     pub fn from_quarantine(extension_id: &str, reason: &str, risk_score: f64) -> Self {
         Self {
             schema: SECURITY_ALERT_SCHEMA_VERSION.to_string(),
-            ts_ms: i64::try_from(wall_now().as_millis()).unwrap_or(i64::MAX),
+            ts_ms: i64::try_from(Instant::now().elapsed().as_millis()).unwrap_or(i64::MAX),
             sequence_id: 0,
             extension_id: extension_id.to_string(),
             category: SecurityAlertCategory::Quarantine,
@@ -5526,7 +5526,7 @@ impl SecurityAlert {
         };
         Self {
             schema: SECURITY_ALERT_SCHEMA_VERSION.to_string(),
-            ts_ms: i64::try_from(wall_now().as_millis()).unwrap_or(i64::MAX),
+            ts_ms: i64::try_from(Instant::now().elapsed().as_millis()).unwrap_or(i64::MAX),
             sequence_id: 0,
             extension_id: extension_id.to_string(),
             category: SecurityAlertCategory::ProfileTransition,
@@ -6034,7 +6034,7 @@ impl From<&RuntimeRiskLedgerArtifactEntry> for RuntimeRiskLedgerEntry {
 }
 
 fn runtime_risk_now_ms() -> i64 {
-    i64::try_from(wall_now().as_millis()).unwrap_or(i64::MAX)
+    i64::try_from(Instant::now().elapsed().as_millis()).unwrap_or(i64::MAX)
 }
 
 #[allow(clippy::missing_const_for_fn)]
@@ -13273,7 +13273,6 @@ mod wasm_host {
             let execute = tool.execute(&call.call_id, input, None);
             let output = if let Some(timeout_ms) = call_timeout_ms {
                 match timeout(
-                    wall_now(),
                     Duration::from_millis(timeout_ms),
                     Box::pin(execute),
                 )
@@ -13759,7 +13758,6 @@ mod wasm_host {
 
                 match call_timeout_ms {
                     Some(timeout_ms) => timeout(
-                        wall_now(),
                         Duration::from_millis(timeout_ms),
                         Box::pin(dispatch),
                     )
@@ -14263,7 +14261,7 @@ mod wasm_host {
                 _input: Value,
                 _on_update: Option<Box<dyn Fn(ToolUpdate) + Send + Sync>>,
             ) -> Result<ToolOutput> {
-                sleep(wall_now(), Duration::from_millis(200)).await;
+                sleep(Duration::from_millis(200)).await;
                 Ok(ToolOutput {
                     content: vec![],
                     details: None,
@@ -14943,12 +14941,12 @@ pub const EXTENSION_LOAD_BUDGET_MS: u64 = 60_000;
 ///
 /// The returned context will cancel any async operation that exceeds the
 /// deadline, integrating with asupersync's structured concurrency protocol.
-fn cx_with_deadline(timeout_ms: u64) -> Cx {
+fn cx_with_deadline(timeout_ms: u64) -> asupersync::Cx {
     let budget = Budget {
-        deadline: Some(wall_now() + Duration::from_millis(timeout_ms)),
+        deadline: Some(asupersync::time::wall_now() + Duration::from_millis(timeout_ms)),
         ..Budget::INFINITE
     };
-    Cx::for_request_with_budget(budget)
+    asupersync::Cx::for_request_with_budget(budget)
 }
 
 /// Event names for the extension lifecycle.
@@ -16617,7 +16615,7 @@ impl WasmExtensionHandle {
         };
 
         let response_json = if timeout_ms > 0 {
-            match timeout(wall_now(), Duration::from_millis(timeout_ms), Box::pin(fut)).await {
+            match timeout(Duration::from_millis(timeout_ms), Box::pin(fut)).await {
                 Ok(value) => value?,
                 Err(_) => {
                     return Err(Error::extension(format!(
@@ -16898,7 +16896,7 @@ impl JsExtensionRuntimeHandle {
         interceptor: Option<Arc<dyn HostcallInterceptor>>,
         policy: Option<ExtensionPolicy>,
     ) -> Result<Self> {
-        let (tx, rx) = mpsc::channel(32);
+        let (tx, mut rx) = mpsc::channel(32);
         let (init_tx, init_rx) = oneshot::channel();
         let (exit_tx, exit_rx) = oneshot::channel();
         let policy = policy.unwrap_or_default();
@@ -16923,7 +16921,6 @@ impl JsExtensionRuntimeHandle {
                 .build()
                 .expect("extension runtime build");
             runtime.block_on(async move {
-                let cx = Cx::for_request();
                 let runtime_config = config.clone();
                 let init = PiJsRuntime::with_clock_and_config_with_policy(
                     crate::scheduler::WallClock,
@@ -16933,11 +16930,11 @@ impl JsExtensionRuntimeHandle {
                 .await;
                 let mut js_runtime = match init {
                     Ok(runtime) => {
-                        let _ = init_tx.send(&cx, Ok(()));
+                        let _ = init_tx.send(Ok(()));
                         runtime
                     }
                     Err(err) => {
-                        let _ = init_tx.send(&cx, Err(err));
+                        let _ = init_tx.send(Err(err));
                         return;
                     }
                 };
@@ -16948,7 +16945,7 @@ impl JsExtensionRuntimeHandle {
                 let mut warm_reset_failures = 0_u64;
                 let mut cold_fallbacks = 0_u64;
 
-                while let Ok(cmd) = rx.recv(&cx).await {
+                while let Some(cmd) = rx.recv().await {
                     match cmd {
                         JsRuntimeCommand::Shutdown => break,
                         JsRuntimeCommand::LoadExtensions { specs, reply } => {
@@ -16999,7 +16996,7 @@ impl JsExtensionRuntimeHandle {
                                             has_loaded_extensions = false;
                                         }
                                         Err(err) => {
-                                            let _ = reply.send(&cx, Err(err));
+                                            let _ = reply.send(Err(err));
                                             continue;
                                         }
                                     }
@@ -17063,15 +17060,15 @@ impl JsExtensionRuntimeHandle {
                                     "Warm-reload reset diagnostics"
                                 );
                             }
-                            let _ = reply.send(&cx, result);
+                            let _ = reply.send(result);
                         }
                         JsRuntimeCommand::GetRegisteredTools { reply } => {
                             let result = js_runtime.get_registered_tools().await;
-                            let _ = reply.send(&cx, result);
+                            let _ = reply.send(result);
                         }
                         JsRuntimeCommand::PumpOnce { reply } => {
                             let result = pump_js_runtime_once(&js_runtime, &host).await;
-                            let _ = reply.send(&cx, result);
+                            let _ = reply.send(result);
                         }
                         JsRuntimeCommand::DispatchEvent {
                             event_name,
@@ -17089,7 +17086,7 @@ impl JsExtensionRuntimeHandle {
                                 timeout_ms,
                             )
                             .await;
-                            let _ = reply.send(&cx, result);
+                            let _ = reply.send(result);
                         }
                         JsRuntimeCommand::DispatchEventBatch {
                             events,
@@ -17105,7 +17102,7 @@ impl JsExtensionRuntimeHandle {
                                 timeout_ms,
                             )
                             .await;
-                            let _ = reply.send(&cx, result);
+                            let _ = reply.send(result);
                         }
                         JsRuntimeCommand::ExecuteTool {
                             tool_name,
@@ -17125,7 +17122,7 @@ impl JsExtensionRuntimeHandle {
                                 timeout_ms,
                             )
                             .await;
-                            let _ = reply.send(&cx, result);
+                            let _ = reply.send(result);
                         }
                         JsRuntimeCommand::ExecuteCommand {
                             command_name,
@@ -17143,7 +17140,7 @@ impl JsExtensionRuntimeHandle {
                                 timeout_ms,
                             )
                             .await;
-                            let _ = reply.send(&cx, result);
+                            let _ = reply.send(result);
                         }
                         JsRuntimeCommand::ExecuteShortcut {
                             key_id,
@@ -17159,7 +17156,7 @@ impl JsExtensionRuntimeHandle {
                                 timeout_ms,
                             )
                             .await;
-                            let _ = reply.send(&cx, result);
+                            let _ = reply.send(result);
                         }
                         JsRuntimeCommand::ProviderStreamSimpleStart {
                             provider_id,
@@ -17179,7 +17176,7 @@ impl JsExtensionRuntimeHandle {
                                 timeout_ms,
                             )
                             .await;
-                            let _ = reply.send(&cx, result);
+                            let _ = reply.send(result);
                         }
                         JsRuntimeCommand::ProviderStreamSimpleNext {
                             stream_id,
@@ -17193,7 +17190,7 @@ impl JsExtensionRuntimeHandle {
                                 timeout_ms,
                             )
                             .await;
-                            let _ = reply.send(&cx, result);
+                            let _ = reply.send(result);
                         }
                         JsRuntimeCommand::ProviderStreamSimpleCancel {
                             stream_id,
@@ -17208,7 +17205,7 @@ impl JsExtensionRuntimeHandle {
                             )
                             .await;
                             if let Some(reply) = reply {
-                                let _ = reply.send(&cx, result);
+                                let _ = reply.send(result);
                             }
                         }
                         JsRuntimeCommand::SetFlagValue {
@@ -17230,20 +17227,20 @@ impl JsExtensionRuntimeHandle {
                                     Ok(())
                                 })
                                 .await;
-                            let _ = reply.send(&cx, result);
+                            let _ = reply.send(result);
                         }
                         JsRuntimeCommand::DrainRepairEvents { reply } => {
                             let events = js_runtime.drain_repair_events();
-                            let _ = reply.send(&cx, events);
+                            let _ = reply.send(events);
                         }
                         JsRuntimeCommand::ResetTransientState { reply } => {
                             js_runtime.reset_transient_state();
-                            let _ = reply.send(&cx, Ok(()));
+                            let _ = reply.send(Ok(()));
                         }
                     }
                 }
                 // Signal that the runtime thread has exited its event loop.
-                let _ = exit_tx.send(&cx, ());
+                let _ = exit_tx.send(());
                 tracing::info!(
                     event = "extension_runtime.exit",
                     "JS extension runtime thread exiting"
@@ -17251,9 +17248,7 @@ impl JsExtensionRuntimeHandle {
             });
         });
 
-        let cx = Cx::for_request();
         init_rx
-            .recv(&cx)
             .await
             .map_err(|_| Error::extension("JS extension runtime init cancelled"))??;
 
@@ -17269,11 +17264,10 @@ impl JsExtensionRuntimeHandle {
     /// to exit its event loop.  Returns `true` if the runtime exited
     /// within the budget.
     pub async fn shutdown(&self, budget: Duration) -> bool {
-        let cx = Cx::for_request();
         let budget_ms = u64::try_from(budget.as_millis()).unwrap_or(u64::MAX);
 
         // Send shutdown command (ignore error if channel already closed).
-        let _ = self.sender.send(&cx, JsRuntimeCommand::Shutdown).await;
+        let _ = self.sender.send(JsRuntimeCommand::Shutdown).await;
 
         // Take the exit signal — only the first caller can await it.
         let exit_rx = {
@@ -17288,15 +17282,14 @@ impl JsExtensionRuntimeHandle {
             return true;
         };
 
-        match timeout(wall_now(), budget, rx.recv(&cx)).await {
+        match timeout(budget, rx).await {
             Ok(Ok(())) => true,
-            Ok(Err(err)) => {
+            Ok(Err(_)) => {
                 // Sender dropped without explicit ack: runtime is gone, so cleanup is
                 // complete, but log for postmortem visibility.
                 tracing::warn!(
                     event = "extension_runtime.shutdown_exit_signal_dropped",
                     budget_ms,
-                    error = %err,
                     "JS extension runtime exit signal channel closed before ack"
                 );
                 true
@@ -17317,7 +17310,6 @@ impl JsExtensionRuntimeHandle {
         specs: Vec<JsExtensionLoadSpec>,
     ) -> Result<Vec<JsExtensionSnapshot>> {
         let timeout_ms = EXTENSION_LOAD_BUDGET_MS;
-        let cx = cx_with_deadline(timeout_ms);
         let (reply_tx, reply_rx) = oneshot::channel();
         let command = JsRuntimeCommand::LoadExtensions {
             specs,
@@ -17325,16 +17317,15 @@ impl JsExtensionRuntimeHandle {
         };
         let fut = async move {
             self.sender
-                .send(&cx, command)
+                .send(command)
                 .await
                 .map_err(|_| Error::extension("JS extension runtime channel closed"))?;
             reply_rx
-                .recv(&cx)
                 .await
                 .map_err(|_| Error::extension("JS extension runtime task cancelled"))?
         };
 
-        timeout(wall_now(), Duration::from_millis(timeout_ms), Box::pin(fut))
+        timeout(Duration::from_millis(timeout_ms), Box::pin(fut))
             .await
             .unwrap_or_else(|_| {
                 Err(Error::extension(format!(
@@ -17345,21 +17336,19 @@ impl JsExtensionRuntimeHandle {
 
     pub async fn get_registered_tools(&self) -> Result<Vec<ExtensionToolDef>> {
         let timeout_ms = EXTENSION_QUERY_BUDGET_MS;
-        let cx = cx_with_deadline(timeout_ms);
         let (reply_tx, reply_rx) = oneshot::channel();
         let command = JsRuntimeCommand::GetRegisteredTools { reply: reply_tx };
         let fut = async move {
             self.sender
-                .send(&cx, command)
+                .send(command)
                 .await
                 .map_err(|_| Error::extension("JS extension runtime channel closed"))?;
             reply_rx
-                .recv(&cx)
                 .await
                 .map_err(|_| Error::extension("JS extension runtime task cancelled"))?
         };
 
-        timeout(wall_now(), Duration::from_millis(timeout_ms), Box::pin(fut))
+        timeout(Duration::from_millis(timeout_ms), Box::pin(fut))
             .await
             .unwrap_or_else(|_| {
                 Err(Error::extension(format!(
@@ -17370,21 +17359,19 @@ impl JsExtensionRuntimeHandle {
 
     pub async fn pump_once(&self) -> Result<bool> {
         let timeout_ms = EXTENSION_QUERY_BUDGET_MS;
-        let cx = cx_with_deadline(timeout_ms);
         let (reply_tx, reply_rx) = oneshot::channel();
         let command = JsRuntimeCommand::PumpOnce { reply: reply_tx };
         let fut = async move {
             self.sender
-                .send(&cx, command)
+                .send(command)
                 .await
                 .map_err(|_| Error::extension("JS extension runtime channel closed"))?;
             reply_rx
-                .recv(&cx)
                 .await
                 .map_err(|_| Error::extension("JS extension runtime task cancelled"))?
         };
 
-        timeout(wall_now(), Duration::from_millis(timeout_ms), Box::pin(fut))
+        timeout(Duration::from_millis(timeout_ms), Box::pin(fut))
             .await
             .unwrap_or_else(|_| {
                 Err(Error::extension(format!(
@@ -17400,7 +17387,6 @@ impl JsExtensionRuntimeHandle {
         ctx_payload: Arc<Value>,
         timeout_ms: u64,
     ) -> Result<Value> {
-        let cx = cx_with_deadline(timeout_ms);
         let (reply_tx, reply_rx) = oneshot::channel();
         let command = JsRuntimeCommand::DispatchEvent {
             event_name,
@@ -17411,16 +17397,15 @@ impl JsExtensionRuntimeHandle {
         };
         let fut = async move {
             self.sender
-                .send(&cx, command)
+                .send(command)
                 .await
                 .map_err(|_| Error::extension("JS extension runtime channel closed"))?;
             reply_rx
-                .recv(&cx)
                 .await
                 .map_err(|_| Error::extension("JS extension runtime task cancelled"))?
         };
 
-        timeout(wall_now(), Duration::from_millis(timeout_ms), Box::pin(fut))
+        timeout(Duration::from_millis(timeout_ms), Box::pin(fut))
             .await
             .unwrap_or_else(|_| {
                 Err(Error::extension(format!(
@@ -17439,7 +17424,6 @@ impl JsExtensionRuntimeHandle {
         if events.is_empty() {
             return Ok(Vec::new());
         }
-        let cx = cx_with_deadline(timeout_ms);
         let (reply_tx, reply_rx) = oneshot::channel();
         let command = JsRuntimeCommand::DispatchEventBatch {
             events,
@@ -17449,16 +17433,15 @@ impl JsExtensionRuntimeHandle {
         };
         let fut = async move {
             self.sender
-                .send(&cx, command)
+                .send(command)
                 .await
                 .map_err(|_| Error::extension("JS extension runtime channel closed"))?;
             reply_rx
-                .recv(&cx)
                 .await
                 .map_err(|_| Error::extension("JS extension runtime task cancelled"))?
         };
 
-        timeout(wall_now(), Duration::from_millis(timeout_ms), Box::pin(fut))
+        timeout(Duration::from_millis(timeout_ms), Box::pin(fut))
             .await
             .unwrap_or_else(|_| {
                 Err(Error::extension(format!(
@@ -17475,7 +17458,6 @@ impl JsExtensionRuntimeHandle {
         ctx_payload: Arc<Value>,
         timeout_ms: u64,
     ) -> Result<Value> {
-        let cx = cx_with_deadline(timeout_ms);
         let (reply_tx, reply_rx) = oneshot::channel();
         let command = JsRuntimeCommand::ExecuteTool {
             tool_name,
@@ -17487,16 +17469,15 @@ impl JsExtensionRuntimeHandle {
         };
         let fut = async move {
             self.sender
-                .send(&cx, command)
+                .send(command)
                 .await
                 .map_err(|_| Error::extension("JS extension runtime channel closed"))?;
             reply_rx
-                .recv(&cx)
                 .await
                 .map_err(|_| Error::extension("JS extension runtime task cancelled"))?
         };
 
-        timeout(wall_now(), Duration::from_millis(timeout_ms), Box::pin(fut))
+        timeout(Duration::from_millis(timeout_ms), Box::pin(fut))
             .await
             .unwrap_or_else(|_| {
                 Err(Error::extension(format!(
@@ -17512,7 +17493,6 @@ impl JsExtensionRuntimeHandle {
         ctx_payload: Arc<Value>,
         timeout_ms: u64,
     ) -> Result<Value> {
-        let cx = cx_with_deadline(timeout_ms);
         let (reply_tx, reply_rx) = oneshot::channel();
         let command = JsRuntimeCommand::ExecuteCommand {
             command_name,
@@ -17523,16 +17503,15 @@ impl JsExtensionRuntimeHandle {
         };
         let fut = async move {
             self.sender
-                .send(&cx, command)
+                .send(command)
                 .await
                 .map_err(|_| Error::extension("JS extension runtime channel closed"))?;
             reply_rx
-                .recv(&cx)
                 .await
                 .map_err(|_| Error::extension("JS extension runtime task cancelled"))?
         };
 
-        timeout(wall_now(), Duration::from_millis(timeout_ms), Box::pin(fut))
+        timeout(Duration::from_millis(timeout_ms), Box::pin(fut))
             .await
             .unwrap_or_else(|_| {
                 Err(Error::extension(format!(
@@ -17547,7 +17526,6 @@ impl JsExtensionRuntimeHandle {
         ctx_payload: Arc<Value>,
         timeout_ms: u64,
     ) -> Result<Value> {
-        let cx = cx_with_deadline(timeout_ms);
         let (reply_tx, reply_rx) = oneshot::channel();
         let command = JsRuntimeCommand::ExecuteShortcut {
             key_id,
@@ -17557,16 +17535,15 @@ impl JsExtensionRuntimeHandle {
         };
         let fut = async move {
             self.sender
-                .send(&cx, command)
+                .send(command)
                 .await
                 .map_err(|_| Error::extension("JS extension runtime channel closed"))?;
             reply_rx
-                .recv(&cx)
                 .await
                 .map_err(|_| Error::extension("JS extension runtime task cancelled"))?
         };
 
-        timeout(wall_now(), Duration::from_millis(timeout_ms), Box::pin(fut))
+        timeout(Duration::from_millis(timeout_ms), Box::pin(fut))
             .await
             .unwrap_or_else(|_| {
                 Err(Error::extension(format!(
@@ -17582,7 +17559,6 @@ impl JsExtensionRuntimeHandle {
         value: Value,
     ) -> Result<()> {
         let timeout_ms = EXTENSION_QUERY_BUDGET_MS;
-        let cx = cx_with_deadline(timeout_ms);
         let (reply_tx, reply_rx) = oneshot::channel();
         let command = JsRuntimeCommand::SetFlagValue {
             extension_id,
@@ -17592,16 +17568,15 @@ impl JsExtensionRuntimeHandle {
         };
         let fut = async move {
             self.sender
-                .send(&cx, command)
+                .send(command)
                 .await
                 .map_err(|_| Error::extension("JS extension runtime channel closed"))?;
             reply_rx
-                .recv(&cx)
                 .await
                 .map_err(|_| Error::extension("JS extension runtime task cancelled"))?
         };
 
-        timeout(wall_now(), Duration::from_millis(timeout_ms), Box::pin(fut))
+        timeout(Duration::from_millis(timeout_ms), Box::pin(fut))
             .await
             .unwrap_or_else(|_| {
                 Err(Error::extension(format!(
@@ -17612,13 +17587,12 @@ impl JsExtensionRuntimeHandle {
 
     /// Drain all accumulated auto-repair events from the JS runtime.
     pub async fn drain_repair_events(&self) -> Vec<ExtensionRepairEvent> {
-        let cx = cx_with_deadline(EXTENSION_QUERY_BUDGET_MS);
         let (reply_tx, reply_rx) = oneshot::channel();
         let command = JsRuntimeCommand::DrainRepairEvents { reply: reply_tx };
-        let Ok(()) = self.sender.send(&cx, command).await else {
+        let Ok(()) = self.sender.send(command).await else {
             return Vec::new();
         };
-        reply_rx.recv(&cx).await.unwrap_or_default()
+        reply_rx.await.unwrap_or_default()
     }
 
     /// Reset transient runtime state for warm isolate reuse.
@@ -17628,15 +17602,13 @@ impl JsExtensionRuntimeHandle {
     /// runtime to be returned to a warm pool and reloaded with a fresh set of
     /// extensions without paying the full cold-start cost.
     pub async fn reset_transient_state(&self) -> Result<()> {
-        let cx = cx_with_deadline(EXTENSION_QUERY_BUDGET_MS);
         let (reply_tx, reply_rx) = oneshot::channel();
         let command = JsRuntimeCommand::ResetTransientState { reply: reply_tx };
         self.sender
-            .send(&cx, command)
+            .send(command)
             .await
             .map_err(|_| Error::extension("runtime channel closed during reset"))?;
         reply_rx
-            .recv(&cx)
             .await
             .map_err(|_| Error::extension("reset reply channel closed"))?
     }
@@ -17649,7 +17621,6 @@ impl JsExtensionRuntimeHandle {
         options: Value,
         timeout_ms: u64,
     ) -> Result<String> {
-        let cx = cx_with_deadline(timeout_ms);
         let (reply_tx, reply_rx) = oneshot::channel();
         let command = JsRuntimeCommand::ProviderStreamSimpleStart {
             provider_id,
@@ -17661,16 +17632,15 @@ impl JsExtensionRuntimeHandle {
         };
         let fut = async move {
             self.sender
-                .send(&cx, command)
+                .send(command)
                 .await
                 .map_err(|_| Error::extension("JS extension runtime channel closed"))?;
             reply_rx
-                .recv(&cx)
                 .await
                 .map_err(|_| Error::extension("JS extension runtime task cancelled"))?
         };
 
-        timeout(wall_now(), Duration::from_millis(timeout_ms), Box::pin(fut))
+        timeout(Duration::from_millis(timeout_ms), Box::pin(fut))
             .await
             .unwrap_or_else(|_| {
                 Err(Error::extension(format!(
@@ -17684,7 +17654,6 @@ impl JsExtensionRuntimeHandle {
         stream_id: String,
         timeout_ms: u64,
     ) -> Result<Option<Value>> {
-        let cx = cx_with_deadline(timeout_ms);
         let (reply_tx, reply_rx) = oneshot::channel();
         let command = JsRuntimeCommand::ProviderStreamSimpleNext {
             stream_id,
@@ -17693,16 +17662,15 @@ impl JsExtensionRuntimeHandle {
         };
         let fut = async move {
             self.sender
-                .send(&cx, command)
+                .send(command)
                 .await
                 .map_err(|_| Error::extension("JS extension runtime channel closed"))?;
             reply_rx
-                .recv(&cx)
                 .await
                 .map_err(|_| Error::extension("JS extension runtime task cancelled"))?
         };
 
-        timeout(wall_now(), Duration::from_millis(timeout_ms), Box::pin(fut))
+        timeout(Duration::from_millis(timeout_ms), Box::pin(fut))
             .await
             .unwrap_or_else(|_| {
                 Err(Error::extension(format!(
@@ -17716,7 +17684,6 @@ impl JsExtensionRuntimeHandle {
         stream_id: String,
         timeout_ms: u64,
     ) -> Result<()> {
-        let cx = cx_with_deadline(timeout_ms);
         let (reply_tx, reply_rx) = oneshot::channel();
         let command = JsRuntimeCommand::ProviderStreamSimpleCancel {
             stream_id,
@@ -17725,16 +17692,15 @@ impl JsExtensionRuntimeHandle {
         };
         let fut = async move {
             self.sender
-                .send(&cx, command)
+                .send(command)
                 .await
                 .map_err(|_| Error::extension("JS extension runtime channel closed"))?;
             reply_rx
-                .recv(&cx)
                 .await
                 .map_err(|_| Error::extension("JS extension runtime task cancelled"))?
         };
 
-        timeout(wall_now(), Duration::from_millis(timeout_ms), Box::pin(fut))
+        timeout(Duration::from_millis(timeout_ms), Box::pin(fut))
             .await
             .unwrap_or_else(|_| {
                 Err(Error::extension(format!(
@@ -17767,10 +17733,8 @@ impl JsExtensionRuntimeHandle {
                     return;
                 };
                 runtime.block_on(async move {
-                    let cx = Cx::for_request();
                     let _ = sender
                         .send(
-                            &cx,
                             JsRuntimeCommand::ProviderStreamSimpleCancel {
                                 stream_id,
                                 timeout_ms,
@@ -22333,12 +22297,10 @@ async fn dispatch_hostcall_exec_ref(
             }))
         })();
 
-        let cx = Cx::for_request();
-        let _ = tx.send(&cx, result);
+        let _ = tx.send(result);
     });
 
-    let cx = Cx::for_request();
-    match rx.recv(&cx).await {
+    match rx.await {
         Ok(Ok(value)) => HostcallOutcome::Success(value),
         Ok(Err(err)) => HostcallOutcome::Error {
             code: "io".to_string(),
@@ -23370,7 +23332,7 @@ async fn await_js_task(
             }
             TaskTakeResult::Pending => {
                 if !runtime.has_pending() {
-                    sleep(wall_now(), Duration::from_millis(1)).await;
+                    sleep(Duration::from_millis(1)).await;
                 }
             }
             TaskTakeResult::Resolved(value) => return Ok(value),
@@ -23397,7 +23359,7 @@ async fn await_js_task(
                 match state.status.as_str() {
                     "pending" => {
                         if !runtime.has_pending() {
-                            sleep(wall_now(), Duration::from_millis(1)).await;
+                            sleep(Duration::from_millis(1)).await;
                         }
                     }
                     "resolved" => return Ok(state.value.unwrap_or(Value::Null)),
@@ -24079,13 +24041,13 @@ impl ExtensionManager {
     ///
     /// If a budget with constraints is set, returns a budget-constrained Cx.
     /// Otherwise returns a standard request-scoped Cx.
-    pub fn extension_cx(&self) -> Cx {
+    pub fn extension_cx(&self) -> asupersync::Cx {
         let budget = self.budget();
         if budget.deadline.is_some() || budget.poll_quota < u32::MAX || budget.cost_quota.is_some()
         {
-            Cx::for_request_with_budget(budget)
+            asupersync::Cx::for_request_with_budget(budget)
         } else {
-            Cx::for_request()
+            asupersync::Cx::for_request()
         }
     }
 
@@ -24097,7 +24059,7 @@ impl ExtensionManager {
     fn effective_timeout(&self, operation_timeout_ms: u64) -> u64 {
         let budget = self.budget();
         budget.deadline.map_or(operation_timeout_ms, |deadline| {
-            let now = wall_now();
+            let now = asupersync::time::wall_now();
             let remaining_ms = deadline.as_millis().saturating_sub(now.as_millis());
             operation_timeout_ms.min(remaining_ms)
         })
@@ -27169,7 +27131,6 @@ impl ExtensionManager {
         &self,
         mut request: ExtensionUiRequest,
     ) -> Result<Option<ExtensionUiResponse>> {
-        let cx = Cx::for_request();
         if request.id.trim().is_empty() {
             request.id = Uuid::new_v4().to_string();
         }
@@ -27185,7 +27146,7 @@ impl ExtensionManager {
 
         if !expects_response {
             ui_sender
-                .send(&cx, request)
+                .send(request)
                 .await
                 .map_err(|_| Error::extension("Extension UI channel closed"))?;
             return Ok(None);
@@ -27197,19 +27158,19 @@ impl ExtensionManager {
             guard.pending_ui.insert(request.id.clone(), tx);
         }
 
-        if ui_sender.send(&cx, request.clone()).await.is_err() {
+        if ui_sender.send(request.clone()).await.is_err() {
             self.inner.lock().unwrap().pending_ui.remove(&request.id);
             return Err(Error::extension("Extension UI channel closed"));
         }
 
         let response = if let Some(timeout_ms) = request.effective_timeout_ms() {
-            match timeout(wall_now(), Duration::from_millis(timeout_ms), rx.recv(&cx)).await {
+            match timeout(Duration::from_millis(timeout_ms), rx).await {
                 Ok(Ok(response)) => Ok(response),
                 Ok(Err(_)) => Err(Error::extension("Extension UI response dropped")),
                 Err(_) => Err(Error::extension("Extension UI request timed out")),
             }
         } else {
-            rx.recv(&cx)
+            rx
                 .await
                 .map_err(|_| Error::extension("Extension UI response dropped"))
         };
@@ -27224,12 +27185,11 @@ impl ExtensionManager {
     }
 
     pub fn respond_ui(&self, response: ExtensionUiResponse) -> bool {
-        let cx = Cx::for_request();
         let tx = {
             let mut guard = self.inner.lock().unwrap();
             guard.pending_ui.remove(&response.id)
         };
-        tx.is_some_and(|sender| sender.send(&cx, response).is_ok())
+        tx.is_some_and(|sender| sender.send(response).is_ok())
     }
 
     /// Build the context payload from the current inner state.

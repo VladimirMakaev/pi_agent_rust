@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use crate::extensions::strip_unc_prefix;
 use crate::model::{ContentBlock, ImageContent, TextContent};
 use asupersync::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, ReadBuf, SeekFrom};
-use asupersync::time::sleep;
+use tokio::time::sleep;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
@@ -1862,9 +1862,7 @@ pub(crate) async fn run_bash_command(
             }
         }
 
-        // Use wall clock for sleep timing.
-        let now = asupersync::time::wall_now();
-        sleep(now, tick).await;
+        sleep(tick).await;
     }
 
     let drain_deadline = Instant::now() + Duration::from_secs(2);
@@ -1875,8 +1873,7 @@ pub(crate) async fn run_bash_command(
                 if Instant::now() >= drain_deadline {
                     break;
                 }
-                let now = asupersync::time::wall_now();
-                sleep(now, tick).await;
+                sleep(tick).await;
             }
             Err(mpsc::TryRecvError::Disconnected) => break,
         }
@@ -3216,8 +3213,7 @@ impl Tool for GrepTool {
             match guard.try_wait_child() {
                 Ok(Some(_)) => break,
                 Ok(None) => {
-                    let now = asupersync::time::wall_now();
-                    sleep(now, tick).await;
+                    sleep(tick).await;
                 }
                 Err(e) => return Err(Error::tool("grep", e.to_string())),
             }
@@ -3557,8 +3553,7 @@ impl Tool for FindTool {
             match guard.try_wait_child() {
                 Ok(Some(_)) => break,
                 Ok(None) => {
-                    let now = asupersync::time::wall_now();
-                    sleep(now, tick).await;
+                    sleep(tick).await;
                 }
                 Err(e) => return Err(Error::tool("find", e.to_string())),
             }

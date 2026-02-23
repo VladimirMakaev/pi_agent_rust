@@ -12,7 +12,7 @@ use super::{
 };
 use crate::error::Result;
 use crate::http::client::Client;
-use asupersync::time::{timeout, wall_now};
+use tokio::time::timeout;
 use async_trait::async_trait;
 use futures::Stream;
 use futures::StreamExt;
@@ -448,9 +448,8 @@ impl HttpConnector {
             Ok(self.execute_request(&request).await)
         } else {
             timeout(
-                wall_now(),
                 Duration::from_millis(timeout_ms),
-                Box::pin(self.execute_request(&request)),
+                self.execute_request(&request),
             )
             .await
         };
@@ -641,9 +640,8 @@ impl HttpConnector {
             Ok(send_fut.await)
         } else {
             timeout(
-                wall_now(),
                 Duration::from_millis(timeout_ms),
-                Box::pin(send_fut),
+                send_fut,
             )
             .await
         };

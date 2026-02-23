@@ -13,9 +13,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use asupersync::Cx;
-use asupersync::channel::oneshot;
-use asupersync::time::{sleep, wall_now};
+use tokio::sync::oneshot;
+use tokio::time::sleep;
 use async_trait::async_trait;
 use serde_json::Value;
 use sha2::Digest as _;
@@ -2843,7 +2842,7 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
                         };
                     }
                     Err(mpsc::TryRecvError::Empty) => {
-                        sleep(wall_now(), Duration::from_millis(25)).await;
+                        sleep(Duration::from_millis(25)).await;
                     }
                     Err(mpsc::TryRecvError::Disconnected) => {
                         return HostcallOutcome::Error {
@@ -2992,17 +2991,10 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
                 }))
             })();
 
-            let cx = Cx::for_request();
-            if tx.send(&cx, result).is_err() {
-                tracing::trace!(
-                    call_id = %call_id_for_error,
-                    "Exec hostcall result dropped before completion"
-                );
-            }
+            let _ = tx.send(result);
         });
 
-        let cx = Cx::for_request();
-        match rx.recv(&cx).await {
+        match rx.await {
             Ok(Ok(value)) => HostcallOutcome::Success(value),
             Ok(Err(err)) => HostcallOutcome::Error {
                 code: "io".to_string(),
@@ -3546,7 +3538,7 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
             match state.status.as_str() {
                 "pending" => {
                     if !self.js_runtime().has_pending() {
-                        sleep(wall_now(), Duration::from_millis(1)).await;
+                        sleep(Duration::from_millis(1)).await;
                     }
                 }
                 "resolved" => return Ok(state.value.unwrap_or(Value::Null)),
@@ -3575,7 +3567,7 @@ impl<C: SchedulerClock + 'static> ExtensionDispatcher<C> {
                 }
             }
 
-            sleep(wall_now(), Duration::from_millis(0)).await;
+            sleep(Duration::from_millis(0)).await;
         }
     }
 }
