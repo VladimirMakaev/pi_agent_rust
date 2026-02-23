@@ -18,6 +18,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::pin::Pin;
 
@@ -532,9 +533,12 @@ where
 {
     event_source: SseStream<S>,
     partial: AssistantMessage,
-    current_tool_json: String,
-    current_tool_id: Option<String>,
-    current_tool_name: Option<String>,
+    /// Per-content-index JSON buffers for parallel tool calls.
+    tool_json_buffers: HashMap<usize, String>,
+    /// Per-content-index tool call IDs.
+    tool_ids: HashMap<usize, String>,
+    /// Per-content-index tool call names.
+    tool_names: HashMap<usize, String>,
     done: bool,
 }
 
@@ -565,9 +569,9 @@ where
                 error_message: None,
                 timestamp: chrono::Utc::now().timestamp_millis(),
             },
-            current_tool_json: String::new(),
-            current_tool_id: None,
-            current_tool_name: None,
+            tool_json_buffers: HashMap::new(),
+            tool_ids: HashMap::new(),
+            tool_names: HashMap::new(),
             done: false,
         }
     }
@@ -650,12 +654,14 @@ where
                 StreamEvent::ThinkingStart { content_index }
             }
             AnthropicContentBlock::ToolUse { id, name } => {
-                self.current_tool_json.clear();
-                self.current_tool_id = id;
-                self.current_tool_name = name;
+                let tool_id = id.unwrap_or_default();
+                let tool_name = name.unwrap_or_default();
+                self.tool_json_buffers.insert(content_index, String::new());
+                self.tool_ids.insert(content_index, tool_id.clone());
+                self.tool_names.insert(content_index, tool_name.clone());
                 self.partial.content.push(ContentBlock::ToolCall(ToolCall {
-                    id: self.current_tool_id.clone().unwrap_or_default(),
-                    name: self.current_tool_name.clone().unwrap_or_default(),
+                    id: tool_id,
+                    name: tool_name,
                     arguments: serde_json::Value::Null,
                     thought_signature: None,
                 }));
@@ -700,7 +706,10 @@ where
             }
             AnthropicDelta::InputJsonDelta { partial_json } => {
                 if let Some(partial_json) = partial_json {
-                    self.current_tool_json.push_str(&partial_json);
+                    self.tool_json_buffers
+                        .entry(idx)
+                        .or_default()
+                        .push_str(&partial_json);
                     Some(StreamEvent::ToolCallDelta {
                         content_index: idx,
                         delta: partial_json,
@@ -746,26 +755,25 @@ where
                 })
             }
             Some(ContentBlock::ToolCall(tc)) => {
-                let arguments: serde_json::Value =
-                    match serde_json::from_str(&self.current_tool_json) {
-                        Ok(args) => args,
-                        Err(e) => {
-                            tracing::warn!(
-                                error = %e,
-                                raw = %self.current_tool_json,
-                                "Failed to parse tool arguments as JSON"
-                            );
-                            serde_json::Value::Null
-                        }
-                    };
+                let raw_json = self.tool_json_buffers.remove(&idx).unwrap_or_default();
+                let arguments: serde_json::Value = match serde_json::from_str(&raw_json) {
+                    Ok(args) => args,
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            raw = %raw_json,
+                            "Failed to parse tool arguments as JSON"
+                        );
+                        serde_json::json!({})
+                    }
+                };
                 let tool_call = ToolCall {
-                    id: self.current_tool_id.take().unwrap_or_default(),
-                    name: self.current_tool_name.take().unwrap_or_default(),
+                    id: self.tool_ids.remove(&idx).unwrap_or_default(),
+                    name: self.tool_names.remove(&idx).unwrap_or_default(),
                     arguments: arguments.clone(),
                     thought_signature: None,
                 };
                 tc.arguments = arguments;
-                self.current_tool_json.clear();
 
                 Some(StreamEvent::ToolCallEnd {
                     content_index: idx,
