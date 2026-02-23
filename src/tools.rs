@@ -1,15 +1,17 @@
 //! Built-in tool implementations.
 //!
-//! Pi provides 7 built-in tools: read, bash, edit, write, grep, find, ls.
+//! Pi provides 8 built-in tools: read, bash, edit, write, grep, find, ls, task.
 //!
 //! Tools are exposed to the model via JSON Schema (see [`crate::provider::ToolDef`]) and executed
 //! locally by the agent loop. Each tool returns structured [`ContentBlock`] output suitable for
 //! rendering in the TUI and for inclusion in provider messages as tool results.
 
+use crate::agent::{Agent, AgentConfig};
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::extensions::strip_unc_prefix;
 use crate::model::{ContentBlock, ImageContent, TextContent};
+use crate::provider::Provider;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, ReadBuf};
 use std::io::SeekFrom;
 use tokio::time::sleep;
@@ -20,7 +22,7 @@ use std::fmt::Write as _;
 use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{OnceLock, mpsc};
+use std::sync::{Arc, OnceLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 use unicode_normalization::UnicodeNormalization;
@@ -1234,6 +1236,20 @@ impl ToolRegistry {
             .iter()
             .find(|t| t.name() == name)
             .map(std::convert::AsRef::as_ref)
+    }
+
+    /// Add the Task tool (sub-agent) to the registry.
+    ///
+    /// This is separate from `new()` because it requires a provider reference,
+    /// which is not available during initial registry construction.
+    pub fn add_task_tool(
+        &mut self,
+        cwd: &Path,
+        provider: Arc<dyn Provider>,
+        app_config: Option<Config>,
+    ) {
+        self.tools
+            .push(Box::new(TaskTool::new(cwd, provider, app_config)));
     }
 }
 
@@ -3880,6 +3896,165 @@ impl Tool for LsTool {
             details,
             is_error: false,
         })
+    }
+}
+
+// ============================================================================
+// Task Tool (Sub-Agent)
+// ============================================================================
+
+/// Default maximum iterations for a sub-agent.
+const TASK_DEFAULT_MAX_ITERATIONS: usize = 15;
+
+/// Read-only tools available to sub-agents.
+const TASK_ALLOWED_TOOLS: &[&str] = &["read", "grep", "find", "ls"];
+
+/// Input parameters for the task tool.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskInput {
+    /// Description of the task for the sub-agent.
+    description: String,
+    /// Maximum tool iterations (default: 15).
+    max_iterations: Option<usize>,
+}
+
+/// A tool that spawns a bounded sub-agent with read-only tools to investigate
+/// the codebase and return a summary.
+pub struct TaskTool {
+    cwd: PathBuf,
+    provider: Arc<dyn Provider>,
+    app_config: Option<Config>,
+}
+
+impl TaskTool {
+    /// Create a new TaskTool.
+    pub fn new(cwd: &Path, provider: Arc<dyn Provider>, app_config: Option<Config>) -> Self {
+        Self {
+            cwd: cwd.to_path_buf(),
+            provider,
+            app_config,
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for TaskTool {
+    fn name(&self) -> &str {
+        "task"
+    }
+
+    fn label(&self) -> &str {
+        "task"
+    }
+
+    fn description(&self) -> &str {
+        "Spawn a sub-agent to investigate the codebase. The sub-agent has read-only tools (read, grep, find, ls) and returns a summary of its findings. Use this for research, exploration, or gathering context without modifying files.\n\nExamples:\n{\"description\": \"Find all functions that handle authentication\"}\n{\"description\": \"Summarize the module structure under src/providers/\", \"maxIterations\": 20}"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string",
+                    "description": "Description of the research task for the sub-agent"
+                },
+                "maxIterations": {
+                    "type": "integer",
+                    "description": "Maximum tool iterations for the sub-agent (default: 15)"
+                }
+            },
+            "required": ["description"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        _tool_call_id: &str,
+        input: serde_json::Value,
+        on_update: Option<Box<dyn Fn(ToolUpdate) + Send + Sync>>,
+    ) -> Result<ToolOutput> {
+        let input: TaskInput =
+            serde_json::from_value(input).map_err(|e| Error::validation(e.to_string()))?;
+
+        let max_iterations = input
+            .max_iterations
+            .unwrap_or(TASK_DEFAULT_MAX_ITERATIONS)
+            .min(30); // hard cap
+
+        // Create a restricted tool registry with only read-only tools.
+        let tools = ToolRegistry::new(TASK_ALLOWED_TOOLS, &self.cwd, self.app_config.as_ref());
+
+        let system_prompt = format!(
+            "You are a research sub-agent. Your task:\n{}\n\n\
+             You have read-only tools: read, grep, find, ls. \
+             Investigate the codebase thoroughly and return a concise, structured summary \
+             of your findings. Focus on facts: file paths, line numbers, function names, \
+             and relevant code snippets.",
+            input.description
+        );
+
+        let config = AgentConfig {
+            system_prompt: Some(system_prompt),
+            max_tool_iterations: max_iterations,
+            ..AgentConfig::default()
+        };
+
+        let mut sub_agent = Agent::new(Arc::clone(&self.provider), tools, config);
+
+        // Emit progress updates if callback is available.
+        let update_fn = on_update;
+        let result = sub_agent
+            .run(
+                input.description.clone(),
+                move |_event| {
+                    // Optionally forward sub-agent events as progress updates.
+                    if let Some(ref cb) = update_fn {
+                        cb(ToolUpdate {
+                            content: vec![],
+                            details: None,
+                        });
+                    }
+                },
+            )
+            .await;
+
+        match result {
+            Ok(assistant_msg) => {
+                // Extract text content from the assistant's response.
+                let mut text_parts: Vec<String> = Vec::new();
+                for block in &assistant_msg.content {
+                    if let ContentBlock::Text(t) = block {
+                        text_parts.push(t.text.clone());
+                    }
+                }
+                let summary = if text_parts.is_empty() {
+                    "Sub-agent completed but produced no text output.".to_string()
+                } else {
+                    text_parts.join("\n")
+                };
+
+                Ok(ToolOutput {
+                    content: vec![ContentBlock::Text(TextContent::new(summary))],
+                    details: Some(serde_json::json!({
+                        "model": assistant_msg.model,
+                        "usage": {
+                            "input_tokens": assistant_msg.usage.input,
+                            "output_tokens": assistant_msg.usage.output,
+                        },
+                    })),
+                    is_error: false,
+                })
+            }
+            Err(e) => Ok(ToolOutput {
+                content: vec![ContentBlock::Text(TextContent::new(format!(
+                    "Sub-agent error: {e}"
+                )))],
+                details: None,
+                is_error: true,
+            }),
+        }
     }
 }
 
