@@ -1304,7 +1304,7 @@ impl Tool for ReadTool {
         "read"
     }
     fn description(&self) -> &str {
-        "Read the contents of a file. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete."
+        "Read the contents of a file. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.\n\nExamples:\n{\"path\": \"src/main.rs\"}\n{\"path\": \"src/lib.rs\", \"offset\": 100, \"limit\": 50}\n{\"path\": \"assets/logo.png\"}"
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -2005,7 +2005,7 @@ impl Tool for BashTool {
         "bash"
     }
     fn description(&self) -> &str {
-        "Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. `timeout` defaults to 120 seconds; set `timeout: 0` to disable."
+        "Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. `timeout` defaults to 120 seconds; set `timeout: 0` to disable.\n\nExamples:\n{\"command\": \"cargo build\"}\n{\"command\": \"git diff HEAD~1\", \"timeout\": 30}\n{\"command\": \"npm test\", \"timeout\": 0}"
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -2500,7 +2500,7 @@ impl Tool for EditTool {
         "edit"
     }
     fn description(&self) -> &str {
-        "Edit a file by replacing exact text. The oldText must match exactly (including whitespace). Use this for precise, surgical edits."
+        "Edit a file by replacing exact text. The oldText must match exactly (including whitespace). Use this for precise, surgical edits.\n\nExamples:\n{\"path\": \"src/main.rs\", \"oldText\": \"fn old_name(\", \"newText\": \"fn new_name(\"}\n{\"path\": \"config.toml\", \"oldText\": \"version = \\\"0.1.0\\\"\", \"newText\": \"version = \\\"0.2.0\\\"\"}"
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -2790,7 +2790,7 @@ impl Tool for WriteTool {
         "write"
     }
     fn description(&self) -> &str {
-        "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories."
+        "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.\n\nExamples:\n{\"path\": \"src/config.rs\", \"content\": \"pub const MAX_RETRIES: u32 = 3;\\n\"}\n{\"path\": \"tests/fixtures/input.json\", \"content\": \"{\\\"key\\\": \\\"value\\\"}\\n\"}"
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -3027,7 +3027,7 @@ impl Tool for GrepTool {
         "grep"
     }
     fn description(&self) -> &str {
-        "Search file contents for a pattern. Returns matching lines with file paths and line numbers. Respects .gitignore. Output is truncated to 100 matches or 50KB (whichever is hit first). Long lines are truncated to 500 chars."
+        "Search file contents for a pattern. Returns matching lines with file paths and line numbers. Respects .gitignore. Output is truncated to 100 matches or 50KB (whichever is hit first). Long lines are truncated to 500 chars.\n\nExamples:\n{\"pattern\": \"fn main\"}\n{\"pattern\": \"TODO|FIXME\", \"path\": \"src\", \"ignoreCase\": true}\n{\"pattern\": \"use serde\", \"glob\": \"*.rs\", \"context\": 2}\n{\"pattern\": \"error_code\", \"literal\": true, \"limit\": 20}"
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -3434,7 +3434,7 @@ impl Tool for FindTool {
         "find"
     }
     fn description(&self) -> &str {
-        "Search for files by glob pattern. Returns matching file paths relative to the search directory. Respects .gitignore. Output is truncated to 1000 results or 50KB (whichever is hit first)."
+        "Search for files by glob pattern. Returns matching file paths relative to the search directory. Respects .gitignore. Output is truncated to 1000 results or 50KB (whichever is hit first).\n\nExamples:\n{\"pattern\": \"**/*.rs\"}\n{\"pattern\": \"*.toml\", \"path\": \"src\"}\n{\"pattern\": \"**/*_test.go\", \"limit\": 50}"
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -3719,7 +3719,7 @@ impl Tool for LsTool {
         "ls"
     }
     fn description(&self) -> &str {
-        "List directory contents. Returns entries sorted alphabetically, with '/' suffix for directories. Includes dotfiles. Output is truncated to 500 entries or 50KB (whichever is hit first)."
+        "List directory contents. Returns entries sorted alphabetically, with '/' suffix for directories. Includes dotfiles. Output is truncated to 500 entries or 50KB (whichever is hit first).\n\nExamples:\n{\"path\": \"src\"}\n{\"path\": \".\", \"limit\": 20}\n{}"
     }
 
     fn parameters(&self) -> serde_json::Value {
