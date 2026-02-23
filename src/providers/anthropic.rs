@@ -390,6 +390,7 @@ impl Provider for AnthropicProvider {
         let mut request = self
             .client
             .post(&self.base_url)
+            .no_timeout()
             .header("Accept", "text/event-stream")
             .header("anthropic-version", ANTHROPIC_API_VERSION);
 

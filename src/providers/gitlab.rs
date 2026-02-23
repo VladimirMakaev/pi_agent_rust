@@ -271,6 +271,7 @@ impl Provider for GitLabProvider {
         let mut request = self
             .client
             .post(&url)
+            .no_timeout()
             .header("Authorization", format!("Bearer {api_key}"))
             .header("Content-Type", "application/json")
             .header("Accept", "application/json");

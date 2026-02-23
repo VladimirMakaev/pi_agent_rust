@@ -277,6 +277,7 @@ impl Provider for VertexProvider {
         let mut request = self
             .client
             .post(&url)
+            .no_timeout()
             .header("Accept", "text/event-stream")
             .header("Authorization", format!("Bearer {auth_value}"));
 

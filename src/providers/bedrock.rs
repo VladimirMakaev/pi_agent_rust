@@ -388,6 +388,7 @@ impl Provider for BedrockProvider {
         let mut request = self
             .client
             .post(url.as_str())
+            .no_timeout()
             .header("Content-Type", "application/json")
             .header("Accept", "application/json");
 

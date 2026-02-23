@@ -265,7 +265,7 @@ impl Provider for GeminiProvider {
         let url = self.streaming_url();
 
         // Build request (Content-Type set by .json() below)
-        let mut request = self.client.post(&url).header("Accept", "text/event-stream");
+        let mut request = self.client.post(&url).no_timeout().header("Accept", "text/event-stream");
 
         if self.google_cli_mode {
             let api_payload = options.api_key.clone().ok_or_else(|| {

@@ -204,6 +204,7 @@ impl Provider for AzureOpenAIProvider {
         let mut request = self
             .client
             .post(&endpoint_url)
+            .no_timeout()
             .header("Accept", "text/event-stream")
             .header("api-key", &auth_value); // Azure uses api-key header, not Authorization
 

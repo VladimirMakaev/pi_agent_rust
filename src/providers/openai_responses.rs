@@ -234,6 +234,7 @@ impl Provider for OpenAIResponsesProvider {
         let mut request = self
             .client
             .post(&self.base_url)
+            .no_timeout()
             .header("Accept", "text/event-stream");
 
         if let Some(ref auth_value) = auth_value {
