@@ -803,6 +803,9 @@ where
 
         if let Some(u) = usage {
             self.partial.usage.output = u.output_tokens;
+            if let Some(input) = u.input_tokens {
+                self.partial.usage.input = input;
+            }
             self.recompute_total_tokens();
         }
     }
@@ -942,6 +945,9 @@ struct AnthropicUsage {
 #[derive(Debug, Deserialize)]
 struct AnthropicDeltaUsage {
     output_tokens: u64,
+    /// Some providers (e.g. CCR) send input_tokens in the delta rather than message_start.
+    #[serde(default)]
+    input_tokens: Option<u64>,
 }
 
 /// Content block type from `content_block_start`.
