@@ -61,7 +61,7 @@ anyhow = "1.0.102"
 thiserror = "2"
 
 # Terminal output (rich_rust for beautiful TUI)
-rich_rust = { version = "0.2.0", features = ["full"] }
+rich_rust = { version = "0.2.1", features = ["full"] }
 crossterm = "0.29"
 
 # Interactive TUI (charmed_rust - bubbletea/lipgloss/bubbles/glamour)
