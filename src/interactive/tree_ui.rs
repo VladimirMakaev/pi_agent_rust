@@ -347,7 +347,6 @@ impl PiApp {
         let agent = Arc::clone(&self.agent);
         let extensions = self.extensions.clone();
         let reserve_tokens = self.config.branch_summary_reserve_tokens();
-        let runtime_handle = self.runtime_handle.clone();
 
         let Ok(agent_guard) = self.agent.try_lock() else {
             self.status_message = Some("Agent busy; try again".to_string());
@@ -361,9 +360,7 @@ impl PiApp {
         self.agent_state = AgentState::Processing;
         self.status_message = Some("Switching branches...".to_string());
 
-        runtime_handle.spawn(async move {
-            let cx = Cx::for_request();
-
+        tokio::spawn(async move {
             let from_id_for_event = pending
                 .old_leaf_id
                 .clone()
@@ -420,14 +417,7 @@ impl PiApp {
             };
 
             let messages_for_agent = {
-                let mut guard = match session.lock(&cx).await {
-                    Ok(guard) => guard,
-                    Err(err) => {
-                        let _ = event_tx
-                            .try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
-                        return;
-                    }
-                };
+                let mut guard = session.lock().await;
 
                 if let Some(target_id) = &pending.new_leaf_id {
                     if !guard.navigate_to(target_id) {
@@ -454,26 +444,12 @@ impl PiApp {
             };
 
             {
-                let mut agent_guard = match agent.lock(&cx).await {
-                    Ok(guard) => guard,
-                    Err(err) => {
-                        let _ = event_tx
-                            .try_send(PiMsg::AgentError(format!("Failed to lock agent: {err}")));
-                        return;
-                    }
-                };
+                let mut agent_guard = agent.lock().await;
                 agent_guard.replace_messages(messages_for_agent);
             }
 
             let (messages, usage) = {
-                let guard = match session.lock(&cx).await {
-                    Ok(guard) => guard,
-                    Err(err) => {
-                        let _ = event_tx
-                            .try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
-                        return;
-                    }
-                };
+                let guard = session.lock().await;
                 conversation_from_session(&guard)
             };
 

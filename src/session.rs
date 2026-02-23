@@ -3,7 +3,6 @@
 //! Sessions are stored as JSONL files with a tree structure that enables
 //! branching and history navigation.
 
-use crate::agent_cx::AgentCx;
 use crate::cli::Cli;
 use crate::config::Config;
 use crate::error::{Error, Result};
@@ -16,7 +15,7 @@ use crate::session_index::{SessionIndex, enqueue_session_index_snapshot_update};
 use crate::session_store_v2::{self, SessionStoreV2};
 use crate::tui::PiConsole;
 use asupersync::channel::oneshot;
-use asupersync::sync::Mutex;
+use tokio::sync::Mutex;
 use async_trait::async_trait;
 use fs4::fs_std::FileExt;
 use serde::{Deserialize, Serialize};
@@ -42,24 +41,7 @@ pub struct SessionHandle(pub Arc<Mutex<Session>>);
 #[async_trait]
 impl ExtensionSession for SessionHandle {
     async fn get_state(&self) -> Value {
-        let cx = AgentCx::for_request();
-        let Ok(session) = self.0.lock(cx.cx()).await else {
-            return serde_json::json!({
-                "model": null,
-                "thinkingLevel": "off",
-                "durabilityMode": "balanced",
-                "isStreaming": false,
-                "isCompacting": false,
-                "steeringMode": "one-at-a-time",
-                "followUpMode": "one-at-a-time",
-                "sessionFile": null,
-                "sessionId": "",
-                "sessionName": null,
-                "autoCompactionEnabled": false,
-                "messageCount": 0,
-                "pendingMessageCount": 0,
-            });
-        };
+        let session = self.0.lock().await;
         let session_file = session.path.as_ref().map(|p| p.display().to_string());
         let session_id = session.header.id.clone();
         let session_name = session.get_name();
@@ -104,10 +86,7 @@ impl ExtensionSession for SessionHandle {
     }
 
     async fn get_messages(&self) -> Vec<SessionMessage> {
-        let cx = AgentCx::for_request();
-        let Ok(session) = self.0.lock(cx.cx()).await else {
-            return Vec::new();
-        };
+        let session = self.0.lock().await;
         // Return messages for the current branch only, filtered to
         // user/assistant/toolResult/bashExecution/custom per spec §3.3.
         session
@@ -128,10 +107,7 @@ impl ExtensionSession for SessionHandle {
     }
 
     async fn get_entries(&self) -> Vec<Value> {
-        let cx = AgentCx::for_request();
-        let Ok(session) = self.0.lock(cx.cx()).await else {
-            return Vec::new();
-        };
+        let session = self.0.lock().await;
         session
             .entries
             .iter()
@@ -140,10 +116,7 @@ impl ExtensionSession for SessionHandle {
     }
 
     async fn get_branch(&self) -> Vec<Value> {
-        let cx = AgentCx::for_request();
-        let Ok(session) = self.0.lock(cx.cx()).await else {
-            return Vec::new();
-        };
+        let session = self.0.lock().await;
         session
             .entries_for_current_path()
             .iter()
@@ -152,34 +125,19 @@ impl ExtensionSession for SessionHandle {
     }
 
     async fn set_name(&self, name: String) -> Result<()> {
-        let cx = AgentCx::for_request();
-        let mut session = self
-            .0
-            .lock(cx.cx())
-            .await
-            .map_err(|e| Error::session(format!("Failed to lock session: {e}")))?;
+        let mut session = self.0.lock().await;
         session.set_name(&name);
         Ok(())
     }
 
     async fn append_message(&self, message: SessionMessage) -> Result<()> {
-        let cx = AgentCx::for_request();
-        let mut session = self
-            .0
-            .lock(cx.cx())
-            .await
-            .map_err(|e| Error::session(format!("Failed to lock session: {e}")))?;
+        let mut session = self.0.lock().await;
         session.append_message(message);
         Ok(())
     }
 
     async fn append_custom_entry(&self, custom_type: String, data: Option<Value>) -> Result<()> {
-        let cx = AgentCx::for_request();
-        let mut session = self
-            .0
-            .lock(cx.cx())
-            .await
-            .map_err(|e| Error::session(format!("Failed to lock session: {e}")))?;
+        let mut session = self.0.lock().await;
         if custom_type.trim().is_empty() {
             return Err(Error::validation("customType must not be empty"));
         }
@@ -188,22 +146,14 @@ impl ExtensionSession for SessionHandle {
     }
 
     async fn set_model(&self, provider: String, model_id: String) -> Result<()> {
-        let cx = AgentCx::for_request();
-        let mut session = self
-            .0
-            .lock(cx.cx())
-            .await
-            .map_err(|e| Error::session(format!("Failed to lock session: {e}")))?;
+        let mut session = self.0.lock().await;
         session.append_model_change(provider.clone(), model_id.clone());
         session.set_model_header(Some(provider), Some(model_id), None);
         Ok(())
     }
 
     async fn get_model(&self) -> (Option<String>, Option<String>) {
-        let cx = AgentCx::for_request();
-        let Ok(session) = self.0.lock(cx.cx()).await else {
-            return (None, None);
-        };
+        let session = self.0.lock().await;
         (
             session.header.provider.clone(),
             session.header.model_id.clone(),
@@ -211,32 +161,19 @@ impl ExtensionSession for SessionHandle {
     }
 
     async fn set_thinking_level(&self, level: String) -> Result<()> {
-        let cx = AgentCx::for_request();
-        let mut session = self
-            .0
-            .lock(cx.cx())
-            .await
-            .map_err(|e| Error::session(format!("Failed to lock session: {e}")))?;
+        let mut session = self.0.lock().await;
         session.append_thinking_level_change(level.clone());
         session.set_model_header(None, None, Some(level));
         Ok(())
     }
 
     async fn get_thinking_level(&self) -> Option<String> {
-        let cx = AgentCx::for_request();
-        let Ok(session) = self.0.lock(cx.cx()).await else {
-            return None;
-        };
+        let session = self.0.lock().await;
         session.header.thinking_level.clone()
     }
 
     async fn set_label(&self, target_id: String, label: Option<String>) -> Result<()> {
-        let cx = AgentCx::for_request();
-        let mut session = self
-            .0
-            .lock(cx.cx())
-            .await
-            .map_err(|e| Error::session(format!("Failed to lock session: {e}")))?;
+        let mut session = self.0.lock().await;
         if session.add_label(&target_id, label).is_none() {
             return Err(Error::validation(format!(
                 "target entry '{target_id}' not found in session"
@@ -866,12 +803,12 @@ impl Session {
                         .collect()
                 })
                 .unwrap_or_default();
-            let cx = AgentCx::for_request();
-            let _ = tx.send(cx.cx(), entries);
+            let cx = asupersync::Cx::for_request();
+            let _ = tx.send(&cx, entries);
         });
 
-        let cx = AgentCx::for_request();
-        let entries = rx.recv(cx.cx()).await.unwrap_or_default();
+        let cx = asupersync::Cx::for_request();
+        let entries = rx.recv(&cx).await.unwrap_or_default();
 
         let scanned = scan_sessions_on_disk(&project_session_dir, entries.clone()).await?;
         let mut by_path: HashMap<PathBuf, SessionPickEntry> = HashMap::new();
@@ -1213,12 +1150,12 @@ impl Session {
 
         thread::spawn(move || {
             let res = crate::session::open_from_v2_store_blocking(path_buf);
-            let cx = AgentCx::for_request();
-            let _ = tx.send(cx.cx(), res);
+            let cx = asupersync::Cx::for_request();
+            let _ = tx.send(&cx, res);
         });
 
-        let cx = AgentCx::for_request();
-        rx.recv(cx.cx())
+        let cx = asupersync::Cx::for_request();
+        rx.recv(&cx)
             .await
             .map_err(|_| crate::Error::session("V2 open task cancelled"))?
     }
@@ -1229,12 +1166,12 @@ impl Session {
 
         thread::spawn(move || {
             let res = open_jsonl_blocking(path_buf);
-            let cx = AgentCx::for_request();
-            let _ = tx.send(cx.cx(), res);
+            let cx = asupersync::Cx::for_request();
+            let _ = tx.send(&cx, res);
         });
 
-        let cx = AgentCx::for_request();
-        rx.recv(cx.cx())
+        let cx = asupersync::Cx::for_request();
+        rx.recv(&cx)
             .await
             .map_err(|_| crate::Error::session("Open task cancelled"))?
     }
@@ -1311,12 +1248,12 @@ impl Session {
                     })
                     .unwrap_or_default();
             }
-            let cx = AgentCx::for_request();
-            let _ = tx.send(cx.cx(), indexed_sessions);
+            let cx = asupersync::Cx::for_request();
+            let _ = tx.send(&cx, indexed_sessions);
         });
 
-        let cx = AgentCx::for_request();
-        let indexed_sessions = rx.recv(cx.cx()).await.unwrap_or_default();
+        let cx = asupersync::Cx::for_request();
+        let indexed_sessions = rx.recv(&cx).await.unwrap_or_default();
 
         let scanned = scan_sessions_on_disk(&project_session_dir, indexed_sessions.clone()).await?;
 
@@ -1636,10 +1573,10 @@ impl Session {
                             );
                             Ok(())
                         })();
-                        let cx = AgentCx::for_request();
+                        let cx = asupersync::Cx::for_request();
                         if tx
                             .send(
-                                cx.cx(),
+                                &cx,
                                 match res {
                                     Ok(()) => Ok(entries),
                                     Err(err) => Err((err, entries)),
@@ -1653,9 +1590,9 @@ impl Session {
                         }
                     });
 
-                    let cx = AgentCx::for_request();
+                    let cx = asupersync::Cx::for_request();
                     let result = rx
-                        .recv(cx.cx())
+                        .recv(&cx)
                         .await
                         .map_err(|_| crate::Error::session("Save task cancelled"))?;
 
@@ -1731,17 +1668,17 @@ impl Session {
                                 );
                                 Ok(())
                             })();
-                            let cx = AgentCx::for_request();
-                            if tx.send(cx.cx(), res).is_err() {
+                            let cx = asupersync::Cx::for_request();
+                            if tx.send(&cx, res).is_err() {
                                 tracing::debug!(
                                     "Session append task completed but receiver dropped (cancelled)"
                                 );
                             }
                         });
 
-                        let cx = AgentCx::for_request();
+                        let cx = asupersync::Cx::for_request();
                         let result = rx
-                            .recv(cx.cx())
+                            .recv(&cx)
                             .await
                             .map_err(|_| crate::Error::session("Append task cancelled"))?;
 
@@ -2713,13 +2650,13 @@ async fn scan_sessions_on_disk(
                 }
                 Ok(entries)
             })();
-            let cx = AgentCx::for_request();
-            let _ = tx.send(cx.cx(), res);
+            let cx = asupersync::Cx::for_request();
+            let _ = tx.send(&cx, res);
         })
         .map_err(|e| Error::session(format!("Failed to spawn session scan thread: {e}")))?;
 
-    let cx = AgentCx::for_request();
-    rx.recv(cx.cx())
+    let cx = asupersync::Cx::for_request();
+    rx.recv(&cx)
         .await
         .map_err(|_| Error::session("Scan task cancelled"))?
 }

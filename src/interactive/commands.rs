@@ -713,8 +713,7 @@ impl PiApp {
         } = pending;
         let code_input = code_input.to_string();
 
-        let runtime_handle = self.runtime_handle.clone();
-        runtime_handle.spawn(async move {
+        tokio::spawn(async move {
             let auth_path = crate::config::Config::auth_path();
             let mut auth = match crate::auth::AuthStorage::load_async(auth_path).await {
                 Ok(a) => a,
@@ -900,10 +899,8 @@ impl PiApp {
         let cwd = self.cwd.clone();
         let shell_path = self.config.shell_path.clone();
         let command_prefix = self.config.shell_command_prefix.clone();
-        let runtime_handle = self.runtime_handle.clone();
 
-        runtime_handle.spawn(async move {
-            let cx = Cx::for_request();
+        tokio::spawn(async move {
             let result = crate::tools::run_bash_command(
                 &cwd,
                 shell_path.as_deref(),
@@ -934,12 +931,12 @@ impl PiApp {
                             extra,
                         };
 
-                        if let Ok(mut session_guard) = session.lock(&cx).await {
-                            session_guard.append_message(bash_message);
+                        let mut session_guard = session.lock().await;
+                        session_guard.append_message(bash_message);
                             if save_enabled {
                                 let _ = session_guard.save().await;
                             }
-                        }
+                        drop(session_guard);
 
                         let mut display = display;
                         display.push_str("\n\n[Output excluded from model context]");
@@ -1342,7 +1339,6 @@ impl PiApp {
                 let event_tx = self.event_tx.clone();
                 let session = Arc::clone(&self.session);
                 let agent = Arc::clone(&self.agent);
-                let runtime_handle = self.runtime_handle.clone();
 
                 let previous_session_file = self
                     .session
@@ -1353,9 +1349,7 @@ impl PiApp {
                 self.agent_state = AgentState::Processing;
                 self.status_message = Some("Starting new session...".to_string());
 
-                runtime_handle.spawn(async move {
-                    let cx = Cx::for_request();
-
+                tokio::spawn(async move {
                     let cancelled = extensions
                         .dispatch_cancellable_event(
                             ExtensionEventName::SessionBeforeSwitch,
@@ -1372,15 +1366,7 @@ impl PiApp {
                     }
 
                     let new_session_id = {
-                        let mut guard = match session.lock(&cx).await {
-                            Ok(guard) => guard,
-                            Err(err) => {
-                                let _ = event_tx.try_send(PiMsg::AgentError(format!(
-                                    "Failed to lock session: {err}"
-                                )));
-                                return;
-                            }
-                        };
+                        let mut guard = session.lock().await;
                         let session_dir = guard.session_dir.clone();
                         let mut new_session = Session::create_with_dir(session_dir);
                         new_session.header.provider = Some(model_provider);
@@ -1392,15 +1378,7 @@ impl PiApp {
                     };
 
                     {
-                        let mut agent_guard = match agent.lock(&cx).await {
-                            Ok(guard) => guard,
-                            Err(err) => {
-                                let _ = event_tx.try_send(PiMsg::AgentError(format!(
-                                    "Failed to lock agent: {err}"
-                                )));
-                                return;
-                            }
-                        };
+                        let mut agent_guard = agent.lock().await;
                         agent_guard.replace_messages(Vec::new());
                         agent_guard.stream_options_mut().thinking_level = Some(ThinkingLevel::Off);
                     }
@@ -2114,9 +2092,8 @@ result in account suspension/ban. Prefer using an Anthropic API key (ANTHROPIC_A
         let cli = self.resource_cli.clone();
         let cwd = self.cwd.clone();
         let event_tx = self.event_tx.clone();
-        let runtime_handle = self.runtime_handle.clone();
 
-        runtime_handle.spawn(async move {
+        tokio::spawn(async move {
             let manager = PackageManager::new(cwd.clone());
             match ResourceLoader::load(&manager, &cwd, &config, &cli).await {
                 Ok(resources) => {

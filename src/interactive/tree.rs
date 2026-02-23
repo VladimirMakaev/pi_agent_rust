@@ -354,9 +354,7 @@ impl PiApp {
         self.agent_state = AgentState::Processing;
         self.status_message = Some("Forking session...".to_string());
 
-        let runtime_handle = self.runtime_handle.clone();
-        runtime_handle.spawn(async move {
-            let cx = asupersync::Cx::for_request();
+        tokio::spawn(async move {
             if let Some(manager) = extensions.clone() {
                 let cancelled = manager
                     .dispatch_cancellable_event(
@@ -378,14 +376,7 @@ impl PiApp {
             }
 
             let (fork_plan, parent_path, session_dir) = {
-                let guard = match session.lock(&cx).await {
-                    Ok(guard) => guard,
-                    Err(err) => {
-                        let _ = event_tx
-                            .try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
-                        return;
-                    }
-                };
+                let guard = session.lock().await;
                 let fork_plan = match guard.plan_fork_from_user_message(&selection.id) {
                     Ok(plan) => plan,
                     Err(err) => {
@@ -425,38 +416,17 @@ impl PiApp {
 
             let messages_for_agent = new_session.to_messages_for_current_path();
             {
-                let mut agent_guard = match agent.lock(&cx).await {
-                    Ok(guard) => guard,
-                    Err(err) => {
-                        let _ = event_tx
-                            .try_send(PiMsg::AgentError(format!("Failed to lock agent: {err}")));
-                        return;
-                    }
-                };
+                let mut agent_guard = agent.lock().await;
                 agent_guard.replace_messages(messages_for_agent);
             }
 
             {
-                let mut guard = match session.lock(&cx).await {
-                    Ok(guard) => guard,
-                    Err(err) => {
-                        let _ = event_tx
-                            .try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
-                        return;
-                    }
-                };
+                let mut guard = session.lock().await;
                 *guard = new_session;
             }
 
             let (messages, usage) = {
-                let guard = match session.lock(&cx).await {
-                    Ok(guard) => guard,
-                    Err(err) => {
-                        let _ = event_tx
-                            .try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
-                        return;
-                    }
-                };
+                let guard = session.lock().await;
                 conversation_from_session(&guard)
             };
 

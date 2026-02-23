@@ -13,8 +13,7 @@
 
 use asupersync::Cx;
 use asupersync::channel::mpsc;
-use asupersync::runtime::RuntimeHandle;
-use asupersync::sync::Mutex;
+use tokio::sync::Mutex;
 use async_trait::async_trait;
 use bubbles::spinner::{SpinnerModel, TickMsg as SpinnerTickMsg, spinners};
 use bubbles::textarea::TextArea;
@@ -278,12 +277,9 @@ impl PiApp {
         }
 
         let agent = Arc::clone(&self.agent);
-        let runtime_handle = self.runtime_handle.clone();
-        runtime_handle.spawn(async move {
-            let cx = Cx::for_request();
-            if let Ok(mut agent_guard) = agent.lock(&cx).await {
-                agent_guard.set_queue_modes(steering_mode, follow_up_mode);
-            }
+        tokio::spawn(async move {
+            let mut agent_guard = agent.lock().await;
+            agent_guard.set_queue_modes(steering_mode, follow_up_mode);
         });
     }
 
@@ -667,18 +663,8 @@ impl PiApp {
 
         let session = Arc::clone(&self.session);
         let event_tx = self.event_tx.clone();
-        let runtime_handle = self.runtime_handle.clone();
-        runtime_handle.spawn(async move {
-            let cx = Cx::for_request();
-
-            let mut session_guard = match session.lock(&cx).await {
-                Ok(guard) => guard,
-                Err(err) => {
-                    let _ = event_tx
-                        .try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
-                    return;
-                }
-            };
+        tokio::spawn(async move {
+            let mut session_guard = session.lock().await;
 
             if let Err(err) = session_guard.save().await {
                 let _ =
@@ -931,7 +917,6 @@ impl PiApp {
         let agent = Arc::clone(&self.agent);
         let extensions = self.extensions.clone();
         let event_tx = self.event_tx.clone();
-        let runtime_handle = self.runtime_handle.clone();
 
         let (session_dir, previous_session_file) = {
             let Ok(guard) = self.session.try_lock() else {
@@ -944,9 +929,7 @@ impl PiApp {
             )
         };
 
-        runtime_handle.spawn(async move {
-            let cx = Cx::for_request();
-
+        tokio::spawn(async move {
             if let Some(manager) = extensions.clone() {
                 let cancelled = manager
                     .dispatch_cancellable_event(
@@ -982,39 +965,18 @@ impl PiApp {
 
             // Replace the session.
             {
-                let mut session_guard = match session.lock(&cx).await {
-                    Ok(guard) => guard,
-                    Err(err) => {
-                        let _ = event_tx
-                            .try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
-                        return;
-                    }
-                };
+                let mut session_guard = session.lock().await;
                 *session_guard = loaded_session;
             }
 
             // Update the agent messages.
             {
-                let mut agent_guard = match agent.lock(&cx).await {
-                    Ok(guard) => guard,
-                    Err(err) => {
-                        let _ = event_tx
-                            .try_send(PiMsg::AgentError(format!("Failed to lock agent: {err}")));
-                        return;
-                    }
-                };
+                let mut agent_guard = agent.lock().await;
                 agent_guard.replace_messages(messages_for_agent);
             }
 
             let (messages, usage) = {
-                let session_guard = match session.lock(&cx).await {
-                    Ok(guard) => guard,
-                    Err(err) => {
-                        let _ = event_tx
-                            .try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
-                        return;
-                    }
-                };
+                let session_guard = session.lock().await;
                 conversation_from_session(&session_guard)
             };
 
@@ -1063,7 +1025,6 @@ pub async fn run_interactive(
     resource_cli: ResourceCliOptions,
     extensions: Option<ExtensionManager>,
     cwd: PathBuf,
-    runtime_handle: RuntimeHandle,
 ) -> anyhow::Result<()> {
     let show_hardware_cursor = config.show_hardware_cursor.unwrap_or_else(|| {
         std::env::var("PI_HARDWARE_CURSOR")
@@ -1080,7 +1041,7 @@ pub async fn run_interactive(
     let (event_tx, event_rx) = mpsc::channel::<PiMsg>(1024);
     let (ui_tx, ui_rx) = std::sync::mpsc::channel::<Message>();
 
-    runtime_handle.spawn(async move {
+    tokio::spawn(async move {
         let cx = Cx::for_request();
         while let Ok(msg) = event_rx.recv(&cx).await {
             if matches!(msg, PiMsg::UiShutdown) {
@@ -1097,7 +1058,7 @@ pub async fn run_interactive(
         manager.set_ui_sender(extension_ui_tx);
 
         let extension_event_tx = event_tx.clone();
-        runtime_handle.spawn(async move {
+        tokio::spawn(async move {
             let cx = Cx::for_request();
             while let Ok(request) = extension_ui_rx.recv(&cx).await {
                 let _ = extension_event_tx.try_send(PiMsg::ExtensionUiRequest(request));
@@ -1106,11 +1067,7 @@ pub async fn run_interactive(
     }
 
     let (messages, usage) = {
-        let cx = Cx::for_request();
-        let guard = session
-            .lock(&cx)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to lock session: {e}"))?;
+        let guard = session.lock().await;
         conversation_from_session(&guard)
     };
 
@@ -1126,7 +1083,6 @@ pub async fn run_interactive(
         available_models,
         pending_inputs,
         event_tx,
-        runtime_handle,
         save_enabled,
         extensions,
         None,
@@ -1316,7 +1272,6 @@ pub struct PiApp {
 
     // Async channel for agent events
     event_tx: mpsc::Sender<PiMsg>,
-    runtime_handle: RuntimeHandle,
 
     // Extension session state
     extension_streaming: Arc<AtomicBool>,
@@ -1399,7 +1354,6 @@ impl PiApp {
         available_models: Vec<ModelEntry>,
         pending_inputs: Vec<PendingInput>,
         event_tx: mpsc::Sender<PiMsg>,
-        runtime_handle: RuntimeHandle,
         save_enabled: bool,
         extensions: Option<ExtensionManager>,
         keybindings_override: Option<KeyBindings>,
@@ -1564,7 +1518,6 @@ impl PiApp {
             agent: Arc::new(Mutex::new(agent)),
             total_usage,
             event_tx,
-            runtime_handle,
             extension_streaming: extension_streaming.clone(),
             extension_compacting: extension_compacting.clone(),
             extension_ui_queue: VecDeque::new(),

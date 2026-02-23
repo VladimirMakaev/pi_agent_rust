@@ -4,9 +4,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use asupersync::runtime::reactor::create_reactor;
-use asupersync::runtime::{RuntimeBuilder, RuntimeHandle};
-use asupersync::sync::Mutex;
 use clap::Parser;
 use pi::agent::{Agent, AgentConfig, AgentSession};
 use pi::auth::AuthStorage;
@@ -43,21 +40,16 @@ fn main_impl() -> Result<()> {
     let cli = cli::Cli::parse();
     step!("CLI parsed: print={}", cli.print);
 
-    let reactor = create_reactor()?;
-    let runtime = RuntimeBuilder::multi_thread()
-        .blocking_threads(1, 8)
-        .with_reactor(reactor)
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
         .build()
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-    let handle = runtime.handle();
-    let runtime_handle = handle.clone();
 
-    let join = handle.spawn(Box::pin(run_debug(cli, runtime_handle)));
-    runtime.block_on(join)
+    runtime.block_on(run_debug(cli))
 }
 
 #[allow(clippy::too_many_lines)]
-async fn run_debug(mut cli: cli::Cli, _runtime_handle: RuntimeHandle) -> Result<()> {
+async fn run_debug(mut cli: cli::Cli) -> Result<()> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
     step!("1. Loading config...");
@@ -221,7 +213,7 @@ async fn run_debug(mut cli: cli::Cli, _runtime_handle: RuntimeHandle) -> Result<
         block_images: config.image_block_images(),
     };
     let tools = ToolRegistry::new(&enabled_tools, &cwd, Some(&config));
-    let session_arc = Arc::new(Mutex::new(session));
+    let session_arc = Arc::new(tokio::sync::Mutex::new(session));
     let compaction_settings = ResolvedCompactionSettings {
         enabled: config.compaction_enabled(),
         reserve_tokens: config.compaction_reserve_tokens(),
@@ -238,13 +230,8 @@ async fn run_debug(mut cli: cli::Cli, _runtime_handle: RuntimeHandle) -> Result<
 
     step!("12. Loading session history...");
     let history = {
-        let cx = pi::agent_cx::AgentCx::for_request();
         step!("    Locking session mutex...");
-        let session = agent_session
-            .session
-            .lock(cx.cx())
-            .await
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        let session = agent_session.session.lock().await;
         step!("    Session mutex locked");
         session.to_messages_for_current_path()
     };

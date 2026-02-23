@@ -37,7 +37,7 @@ use crate::models::{ModelEntry, ModelRegistry};
 use crate::provider::{Context, Provider, StreamOptions, ToolDef};
 use crate::session::{AutosaveFlushTrigger, Session, SessionHandle};
 use crate::tools::{Tool, ToolOutput, ToolRegistry, ToolUpdate};
-use asupersync::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, Notify};
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::FutureExt;
@@ -1955,12 +1955,10 @@ impl AgentSessionHostActions {
     }
 
     async fn append_to_session(&self, message: Message) -> Result<()> {
-        let cx = crate::agent_cx::AgentCx::for_request();
         let mut session = self
             .session
-            .lock(cx.cx())
-            .await
-            .map_err(|e| Error::session(e.to_string()))?;
+            .lock()
+            .await;
         session.append_model_message(message);
         Ok(())
     }
@@ -4347,12 +4345,10 @@ impl AgentSession {
 
     pub async fn set_provider_model(&mut self, provider_id: &str, model_id: &str) -> Result<()> {
         {
-            let cx = crate::agent_cx::AgentCx::for_request();
             let mut session = self
                 .session
-                .lock(cx.cx())
-                .await
-                .map_err(|e| Error::session(e.to_string()))?;
+                .lock()
+                .await;
             session.set_model_header(
                 Some(provider_id.to_string()),
                 Some(model_id.to_string()),
@@ -4472,12 +4468,10 @@ impl AgentSession {
         }
 
         let preparation = {
-            let cx = crate::agent_cx::AgentCx::for_request();
             let session = self
                 .session
-                .lock(cx.cx())
-                .await
-                .map_err(|e| Error::session(e.to_string()))?;
+                .lock()
+                .await;
             let entries = session
                 .entries_for_current_path()
                 .into_iter()
@@ -4511,12 +4505,10 @@ impl AgentSession {
         result: compaction::CompactionResult,
         on_event: AgentEventHandler,
     ) -> Result<()> {
-        let cx = crate::agent_cx::AgentCx::for_request();
         let mut session = self
             .session
-            .lock(cx.cx())
-            .await
-            .map_err(|e| Error::session(e.to_string()))?;
+            .lock()
+            .await;
 
         let details = compaction::compaction_details_to_value(&result.details).ok();
         let result_value = details.clone();
@@ -4552,12 +4544,10 @@ impl AgentSession {
         }
 
         let preparation = {
-            let cx = crate::agent_cx::AgentCx::for_request();
             let session = self
                 .session
-                .lock(cx.cx())
-                .await
-                .map_err(|e| Error::session(e.to_string()))?;
+                .lock()
+                .await;
             let entries = session
                 .entries_for_current_path()
                 .into_iter()
@@ -4843,12 +4833,10 @@ impl AgentSession {
         // Fire the `startup` lifecycle hook once extensions are loaded.
         // Fail-open: extension errors must not prevent the agent from running.
         let session_path = {
-            let cx = crate::agent_cx::AgentCx::for_request();
             let session = self
                 .session
-                .lock(cx.cx())
-                .await
-                .map_err(|e| Error::extension(e.to_string()))?;
+                .lock()
+                .await;
             session.path.as_ref().map(|p| p.display().to_string())
         };
 
@@ -4875,12 +4863,10 @@ impl AgentSession {
 
     pub async fn save_and_index(&mut self) -> Result<()> {
         if self.save_enabled {
-            let cx = crate::agent_cx::AgentCx::for_request();
             let mut session = self
                 .session
-                .lock(cx.cx())
-                .await
-                .map_err(|e| Error::session(e.to_string()))?;
+                .lock()
+                .await;
             session
                 .flush_autosave(AutosaveFlushTrigger::Periodic)
                 .await?;
@@ -4892,12 +4878,10 @@ impl AgentSession {
         if !self.save_enabled {
             return Ok(());
         }
-        let cx = crate::agent_cx::AgentCx::for_request();
         let mut session = self
             .session
-            .lock(cx.cx())
-            .await
-            .map_err(|e| Error::session(e.to_string()))?;
+            .lock()
+            .await;
         session
             .flush_autosave(AutosaveFlushTrigger::Periodic)
             .await?;
@@ -5048,12 +5032,10 @@ impl AgentSession {
     ) -> Result<AssistantMessage> {
         let on_event: AgentEventHandler = Arc::new(on_event);
         let session_model = {
-            let cx = crate::agent_cx::AgentCx::for_request();
             let session = self
                 .session
-                .lock(cx.cx())
-                .await
-                .map_err(|e| Error::session(e.to_string()))?;
+                .lock()
+                .await;
             (
                 session.header.provider.clone(),
                 session.header.model_id.clone(),
@@ -5066,12 +5048,10 @@ impl AgentSession {
 
         self.maybe_compact(Arc::clone(&on_event)).await?;
         let history = {
-            let cx = crate::agent_cx::AgentCx::for_request();
             let session = self
                 .session
-                .lock(cx.cx())
-                .await
-                .map_err(|e| Error::session(e.to_string()))?;
+                .lock()
+                .await;
             session.to_messages_for_current_path()
         };
         self.agent.replace_messages(history);
@@ -5085,12 +5065,10 @@ impl AgentSession {
         });
 
         {
-            let cx = crate::agent_cx::AgentCx::for_request();
             let mut session = self
                 .session
-                .lock(cx.cx())
-                .await
-                .map_err(|e| Error::session(e.to_string()))?;
+                .lock()
+                .await;
             session.append_model_message(user_message.clone());
             if self.save_enabled {
                 session.flush_autosave(AutosaveFlushTrigger::Manual).await?;
@@ -5120,12 +5098,10 @@ impl AgentSession {
     ) -> Result<AssistantMessage> {
         let on_event: AgentEventHandler = Arc::new(on_event);
         let session_model = {
-            let cx = crate::agent_cx::AgentCx::for_request();
             let session = self
                 .session
-                .lock(cx.cx())
-                .await
-                .map_err(|e| Error::session(e.to_string()))?;
+                .lock()
+                .await;
             (
                 session.header.provider.clone(),
                 session.header.model_id.clone(),
@@ -5138,12 +5114,10 @@ impl AgentSession {
 
         self.maybe_compact(Arc::clone(&on_event)).await?;
         let history = {
-            let cx = crate::agent_cx::AgentCx::for_request();
             let session = self
                 .session
-                .lock(cx.cx())
-                .await
-                .map_err(|e| Error::session(e.to_string()))?;
+                .lock()
+                .await;
             session.to_messages_for_current_path()
         };
         self.agent.replace_messages(history);
@@ -5157,12 +5131,10 @@ impl AgentSession {
         });
 
         {
-            let cx = crate::agent_cx::AgentCx::for_request();
             let mut session = self
                 .session
-                .lock(cx.cx())
-                .await
-                .map_err(|e| Error::session(e.to_string()))?;
+                .lock()
+                .await;
             session.append_model_message(user_message.clone());
             if self.save_enabled {
                 session.flush_autosave(AutosaveFlushTrigger::Manual).await?;
@@ -5187,12 +5159,10 @@ impl AgentSession {
     async fn persist_new_messages(&self, start_len: usize) -> Result<()> {
         let new_messages = self.agent.messages()[start_len..].to_vec();
         {
-            let cx = crate::agent_cx::AgentCx::for_request();
             let mut session = self
                 .session
-                .lock(cx.cx())
-                .await
-                .map_err(|e| Error::session(e.to_string()))?;
+                .lock()
+                .await;
             for message in new_messages {
                 session.append_model_message(message);
             }

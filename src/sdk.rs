@@ -1226,14 +1226,8 @@ impl AgentSessionHandle {
     /// Update thinking level and persist it to session metadata.
     pub async fn set_thinking_level(&mut self, level: crate::model::ThinkingLevel) -> Result<()> {
         let level_string = level.to_string();
-        let cx = crate::agent_cx::AgentCx::for_request();
         {
-            let mut guard = self
-                .session
-                .session
-                .lock(cx.cx())
-                .await
-                .map_err(|e| Error::session(e.to_string()))?;
+            let mut guard = self.session.session.lock().await;
             guard.set_model_header(None, None, Some(level_string.clone()));
             guard.append_thinking_level_change(level_string);
         }
@@ -1243,13 +1237,7 @@ impl AgentSessionHandle {
 
     /// Return all model messages for the current session path.
     pub async fn messages(&self) -> Result<Vec<Message>> {
-        let cx = crate::agent_cx::AgentCx::for_request();
-        let guard = self
-            .session
-            .session
-            .lock(cx.cx())
-            .await
-            .map_err(|e| Error::session(e.to_string()))?;
+        let guard = self.session.session.lock().await;
         Ok(guard.to_messages_for_current_path())
     }
 
@@ -1258,13 +1246,7 @@ impl AgentSessionHandle {
         let (provider, model_id) = self.model();
         let thinking_level = self.thinking_level();
         let save_enabled = self.session.save_enabled();
-        let cx = crate::agent_cx::AgentCx::for_request();
-        let guard = self
-            .session
-            .session
-            .lock(cx.cx())
-            .await
-            .map_err(|e| Error::session(e.to_string()))?;
+        let guard = self.session.session.lock().await;
         let session_id = Some(guard.header.id.clone());
         let message_count = guard.to_messages_for_current_path().len();
 
@@ -1575,7 +1557,7 @@ pub async fn create_agent_session(options: SessionOptions) -> Result<AgentSessio
     };
 
     let tools = ToolRegistry::new(&enabled_tools, &cwd, Some(&config));
-    let session_arc = Arc::new(asupersync::sync::Mutex::new(session));
+    let session_arc = Arc::new(tokio::sync::Mutex::new(session));
 
     let context_window_tokens = if selection.model_entry.model.context_window == 0 {
         ResolvedCompactionSettings::default().context_window_tokens
@@ -1624,11 +1606,7 @@ pub async fn create_agent_session(options: SessionOptions) -> Result<AgentSessio
     agent_session.set_auth_storage(auth);
 
     let history = {
-        let cx = crate::agent_cx::AgentCx::for_request();
-        let guard = session_arc
-            .lock(cx.cx())
-            .await
-            .map_err(|e| Error::session(e.to_string()))?;
+        let guard = session_arc.lock().await;
         guard.to_messages_for_current_path()
     };
     if !history.is_empty() {

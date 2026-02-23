@@ -29,7 +29,7 @@ use ast_grep_language::SupportLang;
 use asupersync::channel::{mpsc, oneshot};
 use asupersync::runtime::RuntimeBuilder;
 #[cfg(feature = "wasm-host")]
-use asupersync::sync::Mutex as AsyncMutex;
+use tokio::sync::Mutex as AsyncMutex;
 use asupersync::time::{sleep, timeout, wall_now};
 use asupersync::{Budget, Cx};
 use async_trait::async_trait;
@@ -16588,12 +16588,7 @@ impl WasmExtensionHandle {
     pub async fn handle_tool(&self, name: &str, input: &Value) -> Result<String> {
         let input_json = serde_json::to_string(input)
             .map_err(|err| Error::extension(format!("Serialize tool input: {err}")))?;
-        let cx = Cx::for_request();
-        let mut instance = self
-            .instance
-            .lock(&cx)
-            .await
-            .map_err(|err| Error::extension(format!("Lock wasm instance: {err}")))?;
+        let mut instance = self.instance.lock().await;
         instance.handle_tool(name, &input_json).await
     }
 
@@ -16605,12 +16600,7 @@ impl WasmExtensionHandle {
     ) -> Result<String> {
         let input_json = serde_json::to_string(input)
             .map_err(|err| Error::extension(format!("Serialize slash input: {err}")))?;
-        let cx = Cx::for_request();
-        let mut instance = self
-            .instance
-            .lock(&cx)
-            .await
-            .map_err(|err| Error::extension(format!("Lock wasm instance: {err}")))?;
+        let mut instance = self.instance.lock().await;
         instance.handle_slash(command, args, &input_json).await
     }
 
@@ -16621,13 +16611,8 @@ impl WasmExtensionHandle {
     ) -> Result<Option<Value>> {
         let event_json = serde_json::to_string(event)
             .map_err(|err| Error::extension(format!("Serialize event: {err}")))?;
-        let cx = Cx::for_request();
         let fut = async {
-            let mut instance = self
-                .instance
-                .lock(&cx)
-                .await
-                .map_err(|err| Error::extension(format!("Lock wasm instance: {err}")))?;
+            let mut instance = self.instance.lock().await;
             instance.handle_event(&event_json).await
         };
 
@@ -27965,7 +27950,6 @@ impl EventCoalescer {
         &self,
         event: ExtensionEventName,
         data: CoalescedPayload,
-        runtime_handle: &asupersync::runtime::RuntimeHandle,
     ) {
         let event_name_str = event.to_string();
 
@@ -27989,7 +27973,7 @@ impl EventCoalescer {
                 let manager = self.manager.clone();
                 let buffer = self.batch_buffer.clone();
                 let flag = self.batch_drain_scheduled.clone();
-                runtime_handle.spawn(async move {
+                tokio::spawn(async move {
                     loop {
                         // Drain the buffer; events that arrived between scheduling
                         // and execution are included in this batch.
@@ -28042,7 +28026,7 @@ impl EventCoalescer {
         let pending = self.pending.clone();
         let in_flight = self.in_flight.clone();
         let event_name_owned = event_name_str;
-        runtime_handle.spawn(async move {
+        tokio::spawn(async move {
             let mut next_payload = Some(data);
             loop {
                 let Some(payload) = next_payload.take() else {
@@ -28099,7 +28083,6 @@ impl EventCoalescer {
     pub fn dispatch_agent_event_lazy(
         &self,
         event: &AgentEvent,
-        runtime_handle: &asupersync::runtime::RuntimeHandle,
     ) {
         let Some(event_name) = extension_event_name_from_agent(event) else {
             return;
@@ -28114,7 +28097,7 @@ impl EventCoalescer {
         // Hook exists — defer serialization to the async task.
         let event_clone = event.clone();
         let lazy = Box::new(move || serde_json::to_value(&event_clone).ok());
-        self.dispatch_fire_and_forget(event_name, CoalescedPayload::Lazy(lazy), runtime_handle);
+        self.dispatch_fire_and_forget(event_name, CoalescedPayload::Lazy(lazy));
     }
 }
 

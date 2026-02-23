@@ -2,7 +2,6 @@
 //!
 //! Auth file: ~/.pi/agent/auth.json
 
-use crate::agent_cx::AgentCx;
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::provider_metadata::{canonical_provider_id, provider_auth_env_keys, provider_metadata};
@@ -233,12 +232,12 @@ impl AuthStorage {
         let (tx, rx) = oneshot::channel();
         std::thread::spawn(move || {
             let res = Self::load(path);
-            let cx = AgentCx::for_request();
-            let _ = tx.send(cx.cx(), res);
+            let cx = asupersync::Cx::for_request();
+            let _ = tx.send(&cx, res);
         });
 
-        let cx = AgentCx::for_request();
-        rx.recv(cx.cx())
+        let cx = asupersync::Cx::for_request();
+        rx.recv(&cx)
             .await
             .map_err(|_| Error::auth("Load task cancelled".to_string()))?
     }
@@ -282,12 +281,12 @@ impl AuthStorage {
 
         std::thread::spawn(move || {
             let res = this.save();
-            let cx = AgentCx::for_request();
-            let _ = tx.send(cx.cx(), res);
+            let cx = asupersync::Cx::for_request();
+            let _ = tx.send(&cx, res);
         });
 
-        let cx = AgentCx::for_request();
-        rx.recv(cx.cx())
+        let cx = asupersync::Cx::for_request();
+        rx.recv(&cx)
             .await
             .map_err(|_| Error::auth("Save task cancelled".to_string()))?
     }

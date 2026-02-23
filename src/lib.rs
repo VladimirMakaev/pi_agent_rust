@@ -41,7 +41,6 @@ extern crate self as pi;
 static GLOBAL_ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 pub mod agent;
-pub mod agent_cx;
 pub mod app;
 pub mod auth;
 pub mod autocomplete;

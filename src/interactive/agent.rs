@@ -754,7 +754,6 @@ impl PiApp {
         let args_str = args.join(" ");
         let cwd = self.cwd.display().to_string();
         let event_tx = self.event_tx.clone();
-        let runtime_handle = self.runtime_handle.clone();
 
         let ctx_payload = serde_json::json!({
             "cwd": cwd,
@@ -762,7 +761,7 @@ impl PiApp {
         });
 
         let cmd_for_msg = command_name.clone();
-        runtime_handle.spawn(async move {
+        tokio::spawn(async move {
             let result = runtime
                 .execute_command(
                     command_name,
@@ -818,7 +817,6 @@ impl PiApp {
         let key_id_owned = key_id.to_string();
         let cwd = self.cwd.display().to_string();
         let event_tx = self.event_tx.clone();
-        let runtime_handle = self.runtime_handle.clone();
 
         let ctx_payload = serde_json::json!({
             "cwd": cwd,
@@ -826,7 +824,7 @@ impl PiApp {
         });
 
         let key_for_msg = key_id_owned.clone();
-        runtime_handle.spawn(async move {
+        tokio::spawn(async move {
             let result = runtime
                 .execute_shortcut(
                     key_id_owned,
@@ -1002,12 +1000,10 @@ impl PiApp {
         let session = Arc::clone(&self.session);
         let save_enabled = self.save_enabled;
         let extensions = self.extensions.clone();
-        let runtime_handle = self.runtime_handle.clone();
         let (abort_handle, abort_signal) = AbortHandle::new();
         self.abort_handle = Some(abort_handle);
 
-        let runtime_handle_for_task = runtime_handle.clone();
-        runtime_handle.spawn(async move {
+        tokio::spawn(async move {
             let mut content_for_agent = content_for_agent;
             if let Some(manager) = extensions.clone() {
                 let (text, images) = split_content_blocks_for_input(&content_for_agent);
@@ -1036,21 +1032,11 @@ impl PiApp {
                     .await;
             }
 
-            let cx = Cx::for_request();
-            let mut agent_guard =
-                match asupersync::sync::OwnedMutexGuard::lock(Arc::clone(&agent), &cx).await {
-                    Ok(guard) => guard,
-                    Err(err) => {
-                        let _ = event_tx
-                            .try_send(PiMsg::AgentError(format!("Failed to lock agent: {err}")));
-                        return;
-                    }
-                };
+            let mut agent_guard = agent.lock().await;
             let previous_len = agent_guard.messages().len();
 
             let event_sender = event_tx.clone();
             let extensions = extensions.clone();
-            let runtime_handle = runtime_handle_for_task.clone();
             let coalescer = extensions
                 .as_ref()
                 .map(|m| crate::extensions::EventCoalescer::new(m.clone()));
@@ -1069,7 +1055,7 @@ impl PiApp {
                     }
 
                     if let Some(coal) = &coalescer {
-                        coal.dispatch_agent_event_lazy(&event, &runtime_handle);
+                        coal.dispatch_agent_event_lazy(&event);
                     }
                 })
                 .await;
@@ -1079,15 +1065,7 @@ impl PiApp {
                 agent_guard.messages()[previous_len..].to_vec();
             drop(agent_guard);
 
-            let mut session_guard =
-                match asupersync::sync::OwnedMutexGuard::lock(Arc::clone(&session), &cx).await {
-                    Ok(guard) => guard,
-                    Err(err) => {
-                        let _ = event_tx
-                            .try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
-                        return;
-                    }
-                };
+            let mut session_guard = session.lock().await;
             for message in new_messages {
                 session_guard.append_model_message(message);
             }
@@ -1231,11 +1209,8 @@ impl PiApp {
         // Auto-scroll to bottom when new message is added
         self.scroll_to_bottom();
 
-        let runtime_handle = self.runtime_handle.clone();
-
         // Spawn async task to run the agent
-        let runtime_handle_for_agent = runtime_handle.clone();
-        runtime_handle.spawn(async move {
+        tokio::spawn(async move {
             let mut message_for_agent = message_for_agent;
             let mut input_images = Vec::new();
             if let Some(manager) = extensions.clone() {
@@ -1265,16 +1240,7 @@ impl PiApp {
                     .await;
             }
 
-            let cx = Cx::for_request();
-            let mut agent_guard =
-                match asupersync::sync::OwnedMutexGuard::lock(Arc::clone(&agent), &cx).await {
-                    Ok(guard) => guard,
-                    Err(err) => {
-                        let _ = event_tx
-                            .try_send(PiMsg::AgentError(format!("Failed to lock agent: {err}")));
-                        return;
-                    }
-                };
+            let mut agent_guard = agent.lock().await;
             let previous_len = agent_guard.messages().len();
 
             let event_sender = event_tx.clone();
@@ -1298,7 +1264,7 @@ impl PiApp {
                         }
 
                         if let Some(coal) = &coalescer {
-                            coal.dispatch_agent_event_lazy(&event, &runtime_handle_for_agent);
+                            coal.dispatch_agent_event_lazy(&event);
                         }
                     })
                     .await
@@ -1320,7 +1286,7 @@ impl PiApp {
                             }
 
                             if let Some(coal) = &coalescer {
-                                coal.dispatch_agent_event_lazy(&event, &runtime_handle_for_agent);
+                                coal.dispatch_agent_event_lazy(&event);
                             }
                         },
                     )
@@ -1332,15 +1298,7 @@ impl PiApp {
                 agent_guard.messages()[previous_len..].to_vec();
             drop(agent_guard);
 
-            let mut session_guard =
-                match asupersync::sync::OwnedMutexGuard::lock(Arc::clone(&session), &cx).await {
-                    Ok(guard) => guard,
-                    Err(err) => {
-                        let _ = event_tx
-                            .try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
-                        return;
-                    }
-                };
+            let mut session_guard = session.lock().await;
             for message in new_messages {
                 session_guard.append_model_message(message);
             }

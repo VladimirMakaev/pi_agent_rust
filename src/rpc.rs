@@ -12,7 +12,6 @@
 #![allow(clippy::needless_pass_by_value)]
 
 use crate::agent::{AbortHandle, AgentEvent, AgentSession, QueueMode};
-use crate::agent_cx::AgentCx;
 use crate::auth::AuthStorage;
 use crate::compaction::{
     ResolvedCompactionSettings, compact, compaction_details_to_value, prepare_compaction,
@@ -31,8 +30,7 @@ use crate::resources::ResourceLoader;
 use crate::session::SessionMessage;
 use crate::tools::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncate_tail};
 use asupersync::channel::{mpsc, oneshot};
-use asupersync::runtime::RuntimeHandle;
-use asupersync::sync::{Mutex, OwnedMutexGuard};
+use tokio::sync::Mutex;
 use asupersync::time::{sleep, wall_now};
 use memchr::memchr_iter;
 use serde_json::{Value, json};
@@ -65,7 +63,6 @@ pub struct RpcOptions {
     pub available_models: Vec<ModelEntry>,
     pub scoped_models: Vec<RpcScopedModel>,
     pub auth: AuthStorage,
-    pub runtime_handle: RuntimeHandle,
 }
 
 #[derive(Debug, Clone)]
@@ -309,7 +306,7 @@ pub async fn run(
     in_rx: mpsc::Receiver<String>,
     out_tx: std::sync::mpsc::Sender<String>,
 ) -> Result<()> {
-    let cx = AgentCx::for_request();
+    let cx = asupersync::Cx::for_request();
     let session_handle = Arc::clone(&session.session);
     let session = Arc::new(Mutex::new(session));
     let shared_state = Arc::new(Mutex::new(RpcSharedState::new(&options.config)));
@@ -323,30 +320,21 @@ pub async fn run(
         use futures::future::BoxFuture;
         let steering_state = Arc::clone(&shared_state);
         let follow_state = Arc::clone(&shared_state);
-        let steering_cx = cx.clone();
-        let follow_cx = cx.clone();
         let mut guard = session
-            .lock(&cx)
-            .await
-            .map_err(|err| Error::session(format!("session lock failed: {err}")))?;
+            .lock()
+            .await;
         let steering_fetcher = move || -> BoxFuture<'static, Vec<Message>> {
             let steering_state = Arc::clone(&steering_state);
-            let steering_cx = steering_cx.clone();
             Box::pin(async move {
-                steering_state
-                    .lock(&steering_cx)
-                    .await
-                    .map_or_else(|_| Vec::new(), |mut state| state.pop_steering())
+                let mut state = steering_state.lock().await;
+                state.pop_steering()
             })
         };
         let follow_fetcher = move || -> BoxFuture<'static, Vec<Message>> {
             let follow_state = Arc::clone(&follow_state);
-            let follow_cx = follow_cx.clone();
             Box::pin(async move {
-                follow_state
-                    .lock(&follow_cx)
-                    .await
-                    .map_or_else(|_| Vec::new(), |mut state| state.pop_follow_up())
+                let mut state = follow_state.lock().await;
+                state.pop_follow_up()
             })
         };
         guard.agent.register_message_fetchers(
@@ -359,11 +347,9 @@ pub async fn run(
     // When extensions request UI (capability prompts, etc.), we emit them as
     // JSON notifications so the RPC client can respond programmatically.
     let rpc_extension_manager = {
-        let cx_ui = cx.clone();
         let guard = session
-            .lock(&cx_ui)
-            .await
-            .map_err(|err| Error::session(format!("session lock failed: {err}")))?;
+            .lock()
+            .await;
         guard
             .extensions
             .as_ref()
@@ -386,16 +372,13 @@ pub async fn run(
             .map(Arc::clone)
             .expect("rpc ui state should exist when extension manager exists");
         let manager_ui = (*manager).clone();
-        let runtime_handle_ui = options.runtime_handle.clone();
-        options.runtime_handle.spawn(async move {
+        tokio::spawn(async move {
             const MAX_UI_PENDING_REQUESTS: usize = 64;
-            let cx = AgentCx::for_request();
+            let cx = asupersync::Cx::for_request();
             while let Ok(request) = extension_ui_rx.recv(&cx).await {
                 if request.expects_response() {
                     let emit_now = {
-                        let Ok(mut guard) = ui_state.lock(&cx).await else {
-                            return;
-                        };
+                        let mut guard = ui_state.lock().await;
                         if guard.active.is_none() {
                             guard.active = Some(request.clone());
                             true
@@ -415,7 +398,6 @@ pub async fn run(
 
                     if emit_now {
                         rpc_emit_extension_ui_request(
-                            &runtime_handle_ui,
                             Arc::clone(&ui_state),
                             manager_ui.clone(),
                             out_tx_ui.clone(),
@@ -500,9 +482,8 @@ pub async fn run(
 
                     let queued_result = {
                         let mut state = shared_state
-                            .lock(&cx)
-                            .await
-                            .map_err(|err| Error::session(format!("state lock failed: {err}")))?;
+                            .lock()
+                            .await;
                         match streaming_behavior {
                             Some(StreamingBehavior::Steer) => {
                                 state.push_steering(build_user_message(&expanded, &images))
@@ -540,9 +521,7 @@ pub async fn run(
                 let retry_abort = retry_abort.clone();
                 let options = options.clone();
                 let expanded = expanded.clone();
-                let runtime_handle = options.runtime_handle.clone();
-                runtime_handle.spawn(async move {
-                    let cx = AgentCx::for_request();
+                tokio::spawn(async move {
                     run_prompt_with_retry(
                         session,
                         shared_state,
@@ -554,7 +533,6 @@ pub async fn run(
                         options,
                         expanded,
                         images,
-                        cx,
                     )
                     .await;
                 });
@@ -584,9 +562,8 @@ pub async fn run(
 
                 if is_streaming.load(Ordering::SeqCst) {
                     let result = shared_state
-                        .lock(&cx)
+                        .lock()
                         .await
-                        .map_err(|err| Error::session(format!("state lock failed: {err}")))?
                         .push_steering(build_user_message(&expanded, &[]));
 
                     match result {
@@ -613,9 +590,7 @@ pub async fn run(
                 let retry_abort = retry_abort.clone();
                 let options = options.clone();
                 let expanded = expanded.clone();
-                let runtime_handle = options.runtime_handle.clone();
-                runtime_handle.spawn(async move {
-                    let cx = AgentCx::for_request();
+                tokio::spawn(async move {
                     run_prompt_with_retry(
                         session,
                         shared_state,
@@ -627,7 +602,6 @@ pub async fn run(
                         options,
                         expanded,
                         Vec::new(),
-                        cx,
                     )
                     .await;
                 });
@@ -657,9 +631,8 @@ pub async fn run(
 
                 if is_streaming.load(Ordering::SeqCst) {
                     let result = shared_state
-                        .lock(&cx)
+                        .lock()
                         .await
-                        .map_err(|err| Error::session(format!("state lock failed: {err}")))?
                         .push_follow_up(build_user_message(&expanded, &[]));
 
                     match result {
@@ -686,9 +659,7 @@ pub async fn run(
                 let retry_abort = retry_abort.clone();
                 let options = options.clone();
                 let expanded = expanded.clone();
-                let runtime_handle = options.runtime_handle.clone();
-                runtime_handle.spawn(async move {
-                    let cx = AgentCx::for_request();
+                tokio::spawn(async move {
                     run_prompt_with_retry(
                         session,
                         shared_state,
@@ -700,7 +671,6 @@ pub async fn run(
                         options,
                         expanded,
                         Vec::new(),
-                        cx,
                     )
                     .await;
                 });
@@ -708,9 +678,8 @@ pub async fn run(
 
             "abort" => {
                 let handle = abort_handle
-                    .lock(&cx)
+                    .lock()
                     .await
-                    .map_err(|err| Error::session(format!("abort lock failed: {err}")))?
                     .clone();
                 if let Some(handle) = handle {
                     handle.abort();
@@ -721,15 +690,12 @@ pub async fn run(
             "get_state" => {
                 let snapshot = {
                     let state = shared_state
-                        .lock(&cx)
-                        .await
-                        .map_err(|err| Error::session(format!("state lock failed: {err}")))?;
+                        .lock()
+                        .await;
                     RpcStateSnapshot::from(&*state)
                 };
                 let data = {
-                    let inner_session = session_handle.lock(&cx).await.map_err(|err| {
-                        Error::session(format!("inner session lock failed: {err}"))
-                    })?;
+                    let inner_session = session_handle.lock().await;
                     session_state(
                         &inner_session,
                         &options,
@@ -743,9 +709,7 @@ pub async fn run(
 
             "get_session_stats" => {
                 let data = {
-                    let inner_session = session_handle.lock(&cx).await.map_err(|err| {
-                        Error::session(format!("inner session lock failed: {err}"))
-                    })?;
+                    let inner_session = session_handle.lock().await;
                     session_stats(&inner_session)
                 };
                 let _ = out_tx.send(response_ok(id, "get_session_stats", Some(data)));
@@ -753,9 +717,7 @@ pub async fn run(
 
             "get_messages" => {
                 let messages = {
-                    let inner_session = session_handle.lock(&cx).await.map_err(|err| {
-                        Error::session(format!("inner session lock failed: {err}"))
-                    })?;
+                    let inner_session = session_handle.lock().await;
                     inner_session
                         .entries_for_current_path()
                         .iter()
@@ -842,9 +804,8 @@ pub async fn run(
 
                 let result: Result<()> = async {
                     let mut guard = session
-                        .lock(&cx)
-                        .await
-                        .map_err(|err| Error::session(format!("session lock failed: {err}")))?;
+                        .lock()
+                        .await;
                     let provider_impl = providers::create_provider(
                         &entry,
                         guard
@@ -892,9 +853,8 @@ pub async fn run(
             "cycle_model" => {
                 let result = async {
                     let mut guard = session
-                        .lock(&cx)
-                        .await
-                        .map_err(|err| Error::session(format!("session lock failed: {err}")))?;
+                        .lock()
+                        .await;
                     cycle_model_for_rpc(&mut guard, &options).await
                 }
                 .await;
@@ -941,13 +901,10 @@ pub async fn run(
 
                 {
                     let mut guard = session
-                        .lock(&cx)
-                        .await
-                        .map_err(|err| Error::session(format!("session lock failed: {err}")))?;
+                        .lock()
+                        .await;
                     let level = {
-                        let inner_session = guard.session.lock(&cx).await.map_err(|err| {
-                            Error::session(format!("inner session lock failed: {err}"))
-                        })?;
+                        let inner_session = guard.session.lock().await;
                         current_model_entry(&inner_session, &options)
                             .map_or(level, |entry| entry.clamp_thinking_level(level))
                     };
@@ -966,13 +923,10 @@ pub async fn run(
             "cycle_thinking_level" => {
                 let next = {
                     let mut guard = session
-                        .lock(&cx)
-                        .await
-                        .map_err(|err| Error::session(format!("session lock failed: {err}")))?;
+                        .lock()
+                        .await;
                     let entry = {
-                        let inner_session = guard.session.lock(&cx).await.map_err(|err| {
-                            Error::session(format!("inner session lock failed: {err}"))
-                        })?;
+                        let inner_session = guard.session.lock().await;
                         current_model_entry(&inner_session, &options).cloned()
                     };
                     let Some(entry) = entry else {
@@ -1032,9 +986,8 @@ pub async fn run(
                     continue;
                 };
                 let mut state = shared_state
-                    .lock(&cx)
-                    .await
-                    .map_err(|err| Error::session(format!("state lock failed: {err}")))?;
+                    .lock()
+                    .await;
                 state.steering_mode = mode;
                 drop(state);
                 let _ = out_tx.send(response_ok(id, "set_steering_mode", None));
@@ -1058,9 +1011,8 @@ pub async fn run(
                     continue;
                 };
                 let mut state = shared_state
-                    .lock(&cx)
-                    .await
-                    .map_err(|err| Error::session(format!("state lock failed: {err}")))?;
+                    .lock()
+                    .await;
                 state.follow_up_mode = mode;
                 drop(state);
                 let _ = out_tx.send(response_ok(id, "set_follow_up_mode", None));
@@ -1076,9 +1028,8 @@ pub async fn run(
                     continue;
                 };
                 let mut state = shared_state
-                    .lock(&cx)
-                    .await
-                    .map_err(|err| Error::session(format!("state lock failed: {err}")))?;
+                    .lock()
+                    .await;
                 state.auto_compaction_enabled = enabled;
                 drop(state);
                 let _ = out_tx.send(response_ok(id, "set_auto_compaction", None));
@@ -1094,9 +1045,8 @@ pub async fn run(
                     continue;
                 };
                 let mut state = shared_state
-                    .lock(&cx)
-                    .await
-                    .map_err(|err| Error::session(format!("state lock failed: {err}")))?;
+                    .lock()
+                    .await;
                 state.auto_retry_enabled = enabled;
                 drop(state);
                 let _ = out_tx.send(response_ok(id, "set_auto_retry", None));
@@ -1118,13 +1068,10 @@ pub async fn run(
                 };
                 let result: Result<()> = async {
                     let mut guard = session
-                        .lock(&cx)
-                        .await
-                        .map_err(|err| Error::session(format!("session lock failed: {err}")))?;
+                        .lock()
+                        .await;
                     {
-                        let mut inner_session = guard.session.lock(&cx).await.map_err(|err| {
-                            Error::session(format!("inner session lock failed: {err}"))
-                        })?;
+                        let mut inner_session = guard.session.lock().await;
                         inner_session.append_session_info(Some(name.to_string()));
                     }
                     guard.persist_session().await?;
@@ -1145,9 +1092,7 @@ pub async fn run(
 
             "get_last_assistant_text" => {
                 let text = {
-                    let inner_session = session_handle.lock(&cx).await.map_err(|err| {
-                        Error::session(format!("inner session lock failed: {err}"))
-                    })?;
+                    let inner_session = session_handle.lock().await;
                     last_assistant_text(&inner_session)
                 };
                 let _ = out_tx.send(response_ok(
@@ -1168,12 +1113,9 @@ pub async fn run(
                 // any session lock.
                 let snapshot = {
                     let guard = session
-                        .lock(&cx)
-                        .await
-                        .map_err(|err| Error::session(format!("session lock failed: {err}")))?;
-                    let inner = guard.session.lock(&cx).await.map_err(|err| {
-                        Error::session(format!("inner session lock failed: {err}"))
-                    })?;
+                        .lock()
+                        .await;
+                    let inner = guard.session.lock().await;
                     inner.export_snapshot()
                 };
                 match export_html_snapshot(&snapshot, output_path.as_deref()).await {
@@ -1197,9 +1139,8 @@ pub async fn run(
                 };
 
                 let mut running = bash_state
-                    .lock(&cx)
-                    .await
-                    .map_err(|err| Error::session(format!("bash state lock failed: {err}")))?;
+                    .lock()
+                    .await;
                 if running.is_some() {
                     let _ = out_tx.send(response_error(
                         id,
@@ -1221,28 +1162,27 @@ pub async fn run(
                 let bash_state = Arc::clone(&bash_state);
                 let command = command.to_string();
                 let id_clone = id.clone();
-                let runtime_handle = options.runtime_handle.clone();
 
-                runtime_handle.spawn(async move {
-                    let cx = AgentCx::for_request();
+                tokio::spawn(async move {
                     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
                     let result = run_bash_rpc(&cwd, &command, abort_rx).await;
 
                     let response = match result {
                         Ok(result) => {
-                            if let Ok(mut guard) = session.lock(&cx).await {
-                                if let Ok(mut inner_session) = guard.session.lock(&cx).await {
-                                    inner_session.append_message(SessionMessage::BashExecution {
-                                        command: command.clone(),
-                                        output: result.output.clone(),
-                                        exit_code: result.exit_code,
-                                        cancelled: Some(result.cancelled),
-                                        truncated: Some(result.truncated),
-                                        full_output_path: result.full_output_path.clone(),
-                                        timestamp: Some(chrono::Utc::now().timestamp_millis()),
-                                        extra: std::collections::HashMap::default(),
-                                    });
-                                }
+                            {
+                                let mut guard = session.lock().await;
+                                let mut inner_session = guard.session.lock().await;
+                                inner_session.append_message(SessionMessage::BashExecution {
+                                    command: command.clone(),
+                                    output: result.output.clone(),
+                                    exit_code: result.exit_code,
+                                    cancelled: Some(result.cancelled),
+                                    truncated: Some(result.truncated),
+                                    full_output_path: result.full_output_path.clone(),
+                                    timestamp: Some(chrono::Utc::now().timestamp_millis()),
+                                    extra: std::collections::HashMap::default(),
+                                });
+                                drop(inner_session);
                                 let _ = guard.persist_session().await;
                             }
 
@@ -1262,7 +1202,8 @@ pub async fn run(
                     };
 
                     let _ = out_tx.send(response);
-                    if let Ok(mut running) = bash_state.lock(&cx).await {
+                    {
+                        let mut running = bash_state.lock().await;
                         if running.as_ref().is_some_and(|r| r.id == run_id) {
                             *running = None;
                         }
@@ -1272,9 +1213,8 @@ pub async fn run(
 
             "abort_bash" => {
                 let mut running = bash_state
-                    .lock(&cx)
-                    .await
-                    .map_err(|err| Error::session(format!("bash state lock failed: {err}")))?;
+                    .lock()
+                    .await;
                 if let Some(running_bash) = running.take() {
                     let _ = running_bash.abort_tx.send(&cx, ());
                 }
@@ -1289,13 +1229,10 @@ pub async fn run(
 
                 let result: Result<Value> = async {
                     let mut guard = session
-                        .lock(&cx)
-                        .await
-                        .map_err(|err| Error::session(format!("session lock failed: {err}")))?;
+                        .lock()
+                        .await;
                     let path_entries = {
-                        let mut inner_session = guard.session.lock(&cx).await.map_err(|err| {
-                            Error::session(format!("inner session lock failed: {err}"))
-                        })?;
+                        let mut inner_session = guard.session.lock().await;
                         inner_session.ensure_entry_ids();
                         inner_session
                             .entries_for_current_path()
@@ -1335,9 +1272,7 @@ pub async fn run(
                     let details_value = compaction_details_to_value(&result_data.details)?;
 
                     let messages = {
-                        let mut inner_session = guard.session.lock(&cx).await.map_err(|err| {
-                            Error::session(format!("inner session lock failed: {err}"))
-                        })?;
+                        let mut inner_session = guard.session.lock().await;
                         inner_session.append_compaction(
                             result_data.summary.clone(),
                             result_data.first_kept_entry_id.clone(),
@@ -1376,13 +1311,10 @@ pub async fn run(
                     .map(str::to_string);
                 {
                     let mut guard = session
-                        .lock(&cx)
-                        .await
-                        .map_err(|err| Error::session(format!("session lock failed: {err}")))?;
+                        .lock()
+                        .await;
                     let (session_dir, provider, model_id, thinking_level) = {
-                        let inner_session = guard.session.lock(&cx).await.map_err(|err| {
-                            Error::session(format!("inner session lock failed: {err}"))
-                        })?;
+                        let inner_session = guard.session.lock().await;
                         (
                             inner_session.session_dir.clone(),
                             inner_session.header.provider.clone(),
@@ -1406,9 +1338,7 @@ pub async fn run(
 
                     let session_id = new_session.header.id.clone();
                     {
-                        let mut inner_session = guard.session.lock(&cx).await.map_err(|err| {
-                            Error::session(format!("inner session lock failed: {err}"))
-                        })?;
+                        let mut inner_session = guard.session.lock().await;
                         *inner_session = new_session;
                     }
                     guard.agent.clear_messages();
@@ -1416,9 +1346,8 @@ pub async fn run(
                 }
                 {
                     let mut state = shared_state
-                        .lock(&cx)
-                        .await
-                        .map_err(|err| Error::session(format!("state lock failed: {err}")))?;
+                        .lock()
+                        .await;
                     state.steering.clear();
                     state.follow_up.clear();
                 }
@@ -1445,14 +1374,11 @@ pub async fn run(
                         let messages = new_session.to_messages_for_current_path();
                         let session_id = new_session.header.id.clone();
                         let mut guard = session
-                            .lock(&cx)
-                            .await
-                            .map_err(|err| Error::session(format!("session lock failed: {err}")))?;
+                            .lock()
+                        .await;
                         {
                             let mut inner_session =
-                                guard.session.lock(&cx).await.map_err(|err| {
-                                    Error::session(format!("inner session lock failed: {err}"))
-                                })?;
+                                guard.session.lock().await;
                             *inner_session = new_session;
                         }
                         guard.agent.replace_messages(messages);
@@ -1463,9 +1389,8 @@ pub async fn run(
                             Some(json!({ "cancelled": false })),
                         ));
                         let mut state = shared_state
-                            .lock(&cx)
-                            .await
-                            .map_err(|err| Error::session(format!("state lock failed: {err}")))?;
+                            .lock()
+                        .await;
                         state.steering.clear();
                         state.follow_up.clear();
                     }
@@ -1485,12 +1410,8 @@ pub async fn run(
                     async {
                         // Phase 1: Snapshot — brief lock to compute ForkPlan + extract metadata.
                         let (fork_plan, parent_path, session_dir, save_enabled, header_snapshot) = {
-                            let guard = session.lock(&cx).await.map_err(|err| {
-                                Error::session(format!("session lock failed: {err}"))
-                            })?;
-                            let inner = guard.session.lock(&cx).await.map_err(|err| {
-                                Error::session(format!("inner session lock failed: {err}"))
-                            })?;
+                            let guard = session.lock().await;
+                            let inner = guard.session.lock().await;
                             let plan = inner.plan_fork_from_user_message(entry_id)?;
                             let parent_path = inner.path.as_ref().map(|p| p.display().to_string());
                             let session_dir = inner.session_dir.clone();
@@ -1533,12 +1454,8 @@ pub async fn run(
 
                         // Phase 3: Swap — brief lock to install the new session.
                         {
-                            let mut guard = session.lock(&cx).await.map_err(|err| {
-                                Error::session(format!("session lock failed: {err}"))
-                            })?;
-                            let mut inner = guard.session.lock(&cx).await.map_err(|err| {
-                                Error::session(format!("inner session lock failed: {err}"))
-                            })?;
+                            let mut guard = session.lock().await;
+                            let mut inner = guard.session.lock().await;
                             *inner = new_session;
                             drop(inner);
                             guard.agent.replace_messages(messages);
@@ -1546,9 +1463,7 @@ pub async fn run(
                         }
 
                         {
-                            let mut state = shared_state.lock(&cx).await.map_err(|err| {
-                                Error::session(format!("state lock failed: {err}"))
-                            })?;
+                            let mut state = shared_state.lock().await;
                             state.steering.clear();
                             state.follow_up.clear();
                         }
@@ -1575,12 +1490,9 @@ pub async fn run(
                 // Snapshot entries under brief lock, compute messages outside.
                 let path_entries = {
                     let guard = session
-                        .lock(&cx)
-                        .await
-                        .map_err(|err| Error::session(format!("session lock failed: {err}")))?;
-                    let inner_session = guard.session.lock(&cx).await.map_err(|err| {
-                        Error::session(format!("inner session lock failed: {err}"))
-                    })?;
+                        .lock()
+                        .await;
+                    let inner_session = guard.session.lock().await;
                     inner_session
                         .entries_for_current_path()
                         .into_iter()
@@ -1618,14 +1530,7 @@ pub async fn run(
                     };
 
                     let (response, next_request) = {
-                        let Ok(mut guard) = ui_state.lock(&cx).await else {
-                            let _ = out_tx.send(response_error(
-                                id,
-                                "extension_ui_response",
-                                "Extension UI bridge unavailable",
-                            ));
-                            continue;
-                        };
+                        let mut guard = ui_state.lock().await;
 
                         let Some(active) = guard.active.clone() else {
                             let _ = out_tx.send(response_error(
@@ -1677,7 +1582,6 @@ pub async fn run(
 
                     if let Some(next) = next_request {
                         rpc_emit_extension_ui_request(
-                            &options.runtime_handle,
                             Arc::clone(ui_state),
                             (*manager).clone(),
                             out_tx.clone(),
@@ -1703,10 +1607,10 @@ pub async fn run(
     // Move the region out under lock, then await shutdown after releasing
     // the lock so we don't hold the session mutex across an async wait.
     let extension_region = session
-        .lock(&cx)
+        .lock()
         .await
-        .ok()
-        .and_then(|mut guard| guard.extensions.take());
+        .extensions
+        .take();
     if let Some(ext) = extension_region {
         ext.shutdown().await;
     }
@@ -1730,7 +1634,6 @@ async fn run_prompt_with_retry(
     options: RpcOptions,
     message: String,
     images: Vec<ImageContent>,
-    cx: AgentCx,
 ) {
     retry_abort.store(false, Ordering::SeqCst);
     is_streaming.store(true, Ordering::SeqCst);
@@ -1743,26 +1646,14 @@ async fn run_prompt_with_retry(
 
     loop {
         let (abort_handle, abort_signal) = AbortHandle::new();
-        if let Ok(mut guard) = OwnedMutexGuard::lock(Arc::clone(&abort_handle_slot), &cx).await {
+        {
+            let mut guard = abort_handle_slot.clone().lock_owned().await;
             *guard = Some(abort_handle);
-        } else {
-            is_streaming.store(false, Ordering::SeqCst);
-            return;
         }
 
-        let runtime_for_events = options.runtime_handle.clone();
-
         let result = {
-            let mut guard = match OwnedMutexGuard::lock(Arc::clone(&session), &cx).await {
-                Ok(guard) => guard,
-                Err(err) => {
-                    final_error = Some(format!("session lock failed: {err}"));
-                    final_error_hints = None;
-                    break;
-                }
-            };
+            let mut guard = session.clone().lock_owned().await;
             let extensions = guard.extensions.as_ref().map(|r| r.manager().clone());
-            let runtime_for_events_handler = runtime_for_events.clone();
             let event_tx = out_tx.clone();
             let coalescer = extensions
                 .as_ref()
@@ -1791,7 +1682,7 @@ async fn run_prompt_with_retry(
                 // Route non-lifecycle events through the coalescer for
                 // batched/coalesced dispatch with lazy serialization.
                 if let Some(coal) = &coalescer {
-                    coal.dispatch_agent_event_lazy(&event, &runtime_for_events_handler);
+                    coal.dispatch_agent_event_lazy(&event);
                 }
             };
 
@@ -1810,7 +1701,8 @@ async fn run_prompt_with_retry(
             }
         };
 
-        if let Ok(mut guard) = OwnedMutexGuard::lock(Arc::clone(&abort_handle_slot), &cx).await {
+        {
+            let mut guard = abort_handle_slot.clone().lock_owned().await;
             *guard = None;
         }
 
@@ -1828,15 +1720,11 @@ async fn run_prompt_with_retry(
                     // Check if this error is retryable. Context overflow and
                     // auth failures should NOT be retried.
                     if let Some(ref err_msg) = final_error {
-                        let context_window = if let Ok(guard) =
-                            OwnedMutexGuard::lock(Arc::clone(&session), &cx).await
-                        {
-                            guard.session.lock(&cx).await.map_or(None, |inner| {
-                                current_model_entry(&inner, &options)
-                                    .map(|e| e.model.context_window)
-                            })
-                        } else {
-                            None
+                        let context_window = {
+                            let guard = session.clone().lock_owned().await;
+                            let inner = guard.session.lock().await;
+                            current_model_entry(&inner, &options)
+                                .map(|e| e.model.context_window)
                         };
                         if !crate::error::is_retryable_error(
                             err_msg,
@@ -1865,9 +1753,10 @@ async fn run_prompt_with_retry(
             }
         }
 
-        let retry_enabled = OwnedMutexGuard::lock(Arc::clone(&shared_state), &cx)
-            .await
-            .is_ok_and(|state| state.auto_retry_enabled);
+        let retry_enabled = {
+            let state = shared_state.clone().lock_owned().await;
+            state.auto_retry_enabled
+        };
         if !retry_enabled || retry_count >= max_retries {
             break;
         }
@@ -1926,9 +1815,10 @@ async fn run_prompt_with_retry(
         return;
     }
 
-    let auto_compaction_enabled = OwnedMutexGuard::lock(Arc::clone(&shared_state), &cx)
-        .await
-        .is_ok_and(|state| state.auto_compaction_enabled);
+    let auto_compaction_enabled = {
+        let state = shared_state.clone().lock_owned().await;
+        state.auto_compaction_enabled
+    };
     if auto_compaction_enabled {
         maybe_auto_compact(session, options, is_compacting, out_tx).await;
     }
@@ -1985,7 +1875,6 @@ fn event(value: &Value) -> String {
 }
 
 fn rpc_emit_extension_ui_request(
-    runtime_handle: &RuntimeHandle,
     ui_state: Arc<Mutex<RpcUiBridgeState>>,
     manager: ExtensionManager,
     out_tx_ui: std::sync::mpsc::Sender<String>,
@@ -2011,16 +1900,12 @@ fn rpc_emit_extension_ui_request(
     let ui_state_timeout = Arc::clone(&ui_state);
     let manager_timeout = manager;
     let out_tx_timeout = out_tx_ui;
-    let runtime_handle_inner = runtime_handle.clone();
 
-    runtime_handle.spawn(async move {
+    tokio::spawn(async move {
         sleep(wall_now(), Duration::from_millis(fire_ms)).await;
-        let cx = AgentCx::for_request();
 
         let next = {
-            let Ok(mut guard) = ui_state_timeout.lock(cx.cx()).await else {
-                return;
-            };
+            let mut guard = ui_state_timeout.lock().await;
 
             let Some(active) = guard.active.as_ref() else {
                 return;
@@ -2029,7 +1914,7 @@ fn rpc_emit_extension_ui_request(
             // No-op if the active request has already advanced.
             if active.id != request_id {
                 return;
-            }
+            };
 
             // Resolve with cancellation defaults (downstream maps method -> default return value).
             let _ = manager_timeout.respond_ui(ExtensionUiResponse {
@@ -2048,7 +1933,6 @@ fn rpc_emit_extension_ui_request(
 
         if let Some(next) = next {
             rpc_emit_extension_ui_request(
-                &runtime_handle_inner,
                 ui_state_timeout,
                 manager_timeout,
                 out_tx_timeout,
@@ -2778,15 +2662,10 @@ async fn maybe_auto_compact(
     is_compacting: Arc<AtomicBool>,
     out_tx: std::sync::mpsc::Sender<String>,
 ) {
-    let cx = AgentCx::for_request();
     let (path_entries, context_window, reserve_tokens, settings) = {
-        let Ok(guard) = session.lock(cx.cx()).await else {
-            return;
-        };
+        let guard = session.lock().await;
         let (path_entries, context_window) = {
-            let Ok(mut inner_session) = guard.session.lock(cx.cx()).await else {
-                return;
-            };
+            let mut inner_session = guard.session.lock().await;
             inner_session.ensure_entry_ids();
             let Some(entry) = current_model_entry(&inner_session, &options) else {
                 return;
@@ -2824,10 +2703,7 @@ async fn maybe_auto_compact(
     is_compacting.store(true, Ordering::SeqCst);
 
     let (provider, key) = {
-        let Ok(guard) = session.lock(cx.cx()).await else {
-            is_compacting.store(false, Ordering::SeqCst);
-            return;
-        };
+        let guard = session.lock().await;
         let Some(key) = guard.agent.stream_options().api_key.clone() else {
             is_compacting.store(false, Ordering::SeqCst);
             let _ = out_tx.send(event(&json!({
@@ -2861,13 +2737,9 @@ async fn maybe_auto_compact(
                 }
             };
 
-            let Ok(mut guard) = session.lock(cx.cx()).await else {
-                return;
-            };
+            let mut guard = session.lock().await;
             let messages = {
-                let Ok(mut inner_session) = guard.session.lock(cx.cx()).await else {
-                    return;
-                };
+                let mut inner_session = guard.session.lock().await;
                 inner_session.append_compaction(
                     result.summary.clone(),
                     result.first_kept_entry_id.clone(),
@@ -3691,13 +3563,11 @@ async fn apply_thinking_level(
     guard: &mut AgentSession,
     level: crate::model::ThinkingLevel,
 ) -> Result<()> {
-    let cx = AgentCx::for_request();
     {
         let mut inner_session = guard
             .session
-            .lock(cx.cx())
-            .await
-            .map_err(|err| Error::session(format!("inner session lock failed: {err}")))?;
+            .lock()
+            .await;
         inner_session.header.thinking_level = Some(level.to_string());
         inner_session.append_thinking_level_change(level.to_string());
     }
@@ -3706,13 +3576,11 @@ async fn apply_thinking_level(
 }
 
 async fn apply_model_change(guard: &mut AgentSession, entry: &ModelEntry) -> Result<()> {
-    let cx = AgentCx::for_request();
     {
         let mut inner_session = guard
             .session
-            .lock(cx.cx())
-            .await
-            .map_err(|err| Error::session(format!("inner session lock failed: {err}")))?;
+            .lock()
+            .await;
         inner_session.header.provider = Some(entry.model.provider.clone());
         inner_session.header.model_id = Some(entry.model.id.clone());
         inner_session.append_model_change(entry.model.provider.clone(), entry.model.id.clone());
@@ -3802,13 +3670,11 @@ async fn cycle_model_for_rpc(
         return Ok(None);
     }
 
-    let cx = AgentCx::for_request();
     let (current_provider, current_model_id) = {
         let inner_session = guard
             .session
-            .lock(cx.cx())
-            .await
-            .map_err(|err| Error::session(format!("inner session lock failed: {err}")))?;
+            .lock()
+            .await;
         (
             inner_session.header.provider.clone(),
             inner_session.header.model_id.clone(),

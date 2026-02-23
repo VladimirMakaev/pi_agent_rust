@@ -18,9 +18,7 @@ use std::sync::Mutex as StdMutex;
 use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::{Result, bail};
-use asupersync::runtime::reactor::create_reactor;
-use asupersync::runtime::{RuntimeBuilder, RuntimeHandle};
-use asupersync::sync::Mutex;
+use tokio::sync::Mutex;
 use bubbletea::{Cmd, KeyMsg, KeyType, Message as BubbleMessage, Program, quit};
 use clap::error::ErrorKind;
 use pi::agent::{
@@ -283,16 +281,8 @@ fn main_impl() -> Result<()> {
         .init();
 
     // Run the application
-    let reactor = create_reactor()?;
-    let runtime = RuntimeBuilder::multi_thread()
-        .blocking_threads(1, 8)
-        .with_reactor(reactor)
-        .build()
-        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-    let handle = runtime.handle();
-    let runtime_handle = handle.clone();
-    let join = handle.spawn(Box::pin(run(cli, extension_flags, runtime_handle)));
-    runtime.block_on(join)
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(run(cli, extension_flags))
 }
 
 fn print_error_with_hints(err: &anyhow::Error) {
@@ -725,7 +715,6 @@ fn print_resolved_repair_policy(resolved: &pi::config::ResolvedRepairPolicy) -> 
 async fn run(
     mut cli: cli::Cli,
     extension_flags: Vec<cli::ExtensionCliFlag>,
-    runtime_handle: RuntimeHandle,
 ) -> Result<()> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
@@ -847,7 +836,7 @@ async fn run(
             Some((
                 pre_mgr,
                 pre_tools,
-                runtime_handle.spawn(async move {
+                tokio::spawn(async move {
                     let mut js_config = PiJsRuntimeConfig {
                         cwd: prewarm_cwd,
                         repair_mode: AgentSession::runtime_repair_mode_from_policy_mode(
@@ -890,7 +879,7 @@ async fn run(
         Some((
             pre_mgr,
             pre_tools,
-            runtime_handle.spawn(async move {
+            tokio::spawn(async move {
                 let runtime = NativeRustExtensionRuntimeHandle::start()
                     .await
                     .map(ExtensionRuntimeHandle::NativeRust)
@@ -1120,12 +1109,10 @@ async fn run(
     );
 
     let history = {
-        let cx = pi::agent_cx::AgentCx::for_request();
         let session = agent_session
             .session
-            .lock(cx.cx())
-            .await
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            .lock()
+            .await;
         session.to_messages_for_current_path()
     };
     if !history.is_empty() {
@@ -1275,7 +1262,6 @@ async fn run(
             available_models,
             rpc_scoped_models,
             auth.clone(),
-            runtime_handle.clone(),
         )
         .await
     } else if is_interactive {
@@ -1298,7 +1284,6 @@ async fn run(
             resources,
             resource_cli,
             cwd.clone(),
-            runtime_handle.clone(),
         )
         .await
     } else {
@@ -1308,7 +1293,6 @@ async fn run(
             initial,
             messages,
             &resources,
-            runtime_handle.clone(),
             &config,
         )
         .await;
@@ -1323,11 +1307,9 @@ async fn run(
     };
 
     // Best-effort autosave flush on shutdown.
-    let cx = pi::agent_cx::AgentCx::for_request();
-    if let Ok(mut guard) = session_handle.lock(cx.cx()).await {
-        if let Err(e) = guard.flush_autosave_on_shutdown().await {
-            eprintln!("Warning: Failed to flush session autosave: {e}");
-        }
+    let mut guard = session_handle.lock().await;
+    if let Err(e) = guard.flush_autosave_on_shutdown().await {
+        eprintln!("Warning: Failed to flush session autosave: {e}");
     }
 
     result
@@ -3684,7 +3666,6 @@ async fn run_rpc_mode(
     available_models: Vec<ModelEntry>,
     scoped_models: Vec<pi::rpc::RpcScopedModel>,
     auth: AuthStorage,
-    runtime_handle: RuntimeHandle,
 ) -> Result<()> {
     use futures::FutureExt;
 
@@ -3703,7 +3684,6 @@ async fn run_rpc_mode(
             available_models,
             scoped_models,
             auth,
-            runtime_handle,
         },
     )
     .fuse();
@@ -3731,7 +3711,6 @@ async fn run_print_mode(
     initial: Option<InitialMessage>,
     messages: Vec<String>,
     resources: &ResourceLoader,
-    runtime_handle: RuntimeHandle,
     config: &Config,
 ) -> Result<()> {
     if mode != "text" && mode != "json" {
@@ -3739,12 +3718,10 @@ async fn run_print_mode(
     }
 
     if mode == "json" {
-        let cx = pi::agent_cx::AgentCx::for_request();
         let session = session
             .session
-            .lock(cx.cx())
-            .await
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            .lock()
+            .await;
         println!("{}", serde_json::to_string(&session.header)?);
     }
     if initial.is_none() && messages.is_empty() {
@@ -3758,10 +3735,8 @@ async fn run_print_mode(
     let mut last_message: Option<AssistantMessage> = None;
     let extensions = session.extensions.as_ref().map(|r| r.manager().clone());
     let emit_json_events = mode == "json";
-    let runtime_for_events = runtime_handle.clone();
     let make_event_handler = move || {
         let extensions = extensions.clone();
-        let runtime_for_events = runtime_for_events.clone();
         let coalescer = extensions
             .as_ref()
             .map(|m| pi::extensions::EventCoalescer::new(m.clone()));
@@ -3774,7 +3749,7 @@ async fn run_print_mode(
             // Route non-lifecycle events through the coalescer for
             // batched/coalesced dispatch with lazy serialization.
             if let Some(coal) = &coalescer {
-                coal.dispatch_agent_event_lazy(&event, &runtime_for_events);
+                coal.dispatch_agent_event_lazy(&event);
             }
         }
     };
@@ -4098,7 +4073,6 @@ async fn run_interactive_mode(
     resources: ResourceLoader,
     resource_cli: ResourceCliOptions,
     cwd: PathBuf,
-    runtime_handle: RuntimeHandle,
 ) -> Result<()> {
     let mut pending = Vec::new();
     if let Some(initial) = initial {
@@ -4132,7 +4106,6 @@ async fn run_interactive_mode(
         resource_cli,
         extensions,
         cwd,
-        runtime_handle,
     )
     .await;
     // Explicitly shut down extension runtimes so the QuickJS GC can

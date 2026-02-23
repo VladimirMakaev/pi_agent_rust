@@ -287,12 +287,11 @@ impl PiApp {
         self.abort_handle = Some(abort_handle);
 
         let event_tx = self.event_tx.clone();
-        let runtime_handle = self.runtime_handle.clone();
         let session = Arc::clone(&self.session);
         let cwd = self.cwd.clone();
         let gh_path_override = self.config.gh_path.clone();
 
-        runtime_handle.spawn(async move {
+        tokio::spawn(async move {
             let gh = gh_path_override
                 .as_ref()
                 .filter(|value| !value.trim().is_empty())
@@ -337,15 +336,9 @@ impl PiApp {
                 return;
             }
 
-            let cx = asupersync::Cx::for_request();
-            let (html, session_name) = match session.lock(&cx).await {
-                Ok(guard) => (guard.to_html(), guard.get_name()),
-                Err(err) => {
-                    let _ = event_tx
-                        .try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
-                    return;
-                }
-            };
+            let guard = session.lock().await;
+            let (html, session_name) = (guard.to_html(), guard.get_name());
+            drop(guard);
 
             if abort_signal.is_aborted() {
                 let _ = event_tx.try_send(PiMsg::System("Share cancelled".to_string()));

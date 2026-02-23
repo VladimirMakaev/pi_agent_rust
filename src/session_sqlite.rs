@@ -1,4 +1,3 @@
-use crate::agent_cx::AgentCx;
 use crate::error::{Error, Result};
 use crate::session::{SessionEntry, SessionHeader};
 use crate::session_metrics;
@@ -79,11 +78,11 @@ pub async fn load_session(path: &Path) -> Result<(SessionHeader, Vec<SessionEntr
         });
     }
 
-    let cx = AgentCx::for_request();
-    let conn = map_outcome(SqliteConnection::open(cx.cx(), path).await)?;
+    let cx = asupersync::Cx::for_request();
+    let conn = map_outcome(SqliteConnection::open(&cx, path).await)?;
 
     let header_rows = map_outcome(
-        conn.query(cx.cx(), "SELECT json FROM pi_session_header LIMIT 1", &[])
+        conn.query(&cx, "SELECT json FROM pi_session_header LIMIT 1", &[])
             .await,
     )?;
     let header_row = header_rows
@@ -94,7 +93,7 @@ pub async fn load_session(path: &Path) -> Result<(SessionHeader, Vec<SessionEntr
 
     let entry_rows = map_outcome(
         conn.query(
-            cx.cx(),
+            &cx,
             "SELECT json FROM pi_session_entries ORDER BY seq ASC",
             &[],
         )
@@ -121,11 +120,11 @@ pub async fn load_session_meta(path: &Path) -> Result<SqliteSessionMeta> {
         });
     }
 
-    let cx = AgentCx::for_request();
-    let conn = map_outcome(SqliteConnection::open(cx.cx(), path).await)?;
+    let cx = asupersync::Cx::for_request();
+    let conn = map_outcome(SqliteConnection::open(&cx, path).await)?;
 
     let header_rows = map_outcome(
-        conn.query(cx.cx(), "SELECT json FROM pi_session_header LIMIT 1", &[])
+        conn.query(&cx, "SELECT json FROM pi_session_header LIMIT 1", &[])
             .await,
     )?;
     let header_row = header_rows
@@ -136,7 +135,7 @@ pub async fn load_session_meta(path: &Path) -> Result<SqliteSessionMeta> {
 
     let meta_rows = map_outcome(
         conn.query(
-            cx.cx(),
+            &cx,
             "SELECT key,value FROM pi_session_meta WHERE key IN ('message_count','name')",
             &[],
         )
@@ -160,7 +159,7 @@ pub async fn load_session_meta(path: &Path) -> Result<SqliteSessionMeta> {
     } else {
         let entry_rows = map_outcome(
             conn.query(
-                cx.cx(),
+                &cx,
                 "SELECT json FROM pi_session_entries ORDER BY seq ASC",
                 &[],
             )
@@ -526,22 +525,22 @@ pub async fn save_session(
         asupersync::fs::create_dir_all(parent).await?;
     }
 
-    let cx = AgentCx::for_request();
-    let conn = map_outcome(SqliteConnection::open(cx.cx(), path).await)?;
-    map_outcome(conn.execute_batch(cx.cx(), INIT_SQL).await)?;
+    let cx = asupersync::Cx::for_request();
+    let conn = map_outcome(SqliteConnection::open(&cx, path).await)?;
+    map_outcome(conn.execute_batch(&cx, INIT_SQL).await)?;
 
-    let tx = map_outcome(conn.begin_immediate(cx.cx()).await)?;
+    let tx = map_outcome(conn.begin_immediate(&cx).await)?;
 
     map_outcome(
-        tx.execute(cx.cx(), "DELETE FROM pi_session_entries", &[])
+        tx.execute(&cx, "DELETE FROM pi_session_entries", &[])
             .await,
     )?;
     map_outcome(
-        tx.execute(cx.cx(), "DELETE FROM pi_session_header", &[])
+        tx.execute(&cx, "DELETE FROM pi_session_header", &[])
             .await,
     )?;
     map_outcome(
-        tx.execute(cx.cx(), "DELETE FROM pi_session_meta", &[])
+        tx.execute(&cx, "DELETE FROM pi_session_meta", &[])
             .await,
     )?;
 
@@ -561,7 +560,7 @@ pub async fn save_session(
 
     map_outcome(
         tx.execute(
-            cx.cx(),
+            &cx,
             "INSERT INTO pi_session_header (id,json) VALUES (?1,?2)",
             &[
                 SqliteValue::Text(header.id.clone()),
@@ -574,7 +573,7 @@ pub async fn save_session(
     for (idx, json) in entry_jsons.into_iter().enumerate() {
         map_outcome(
             tx.execute(
-                cx.cx(),
+                &cx,
                 "INSERT INTO pi_session_entries (seq,json) VALUES (?1,?2)",
                 &[
                     SqliteValue::Integer(i64::try_from(idx + 1).unwrap_or(i64::MAX)),
@@ -588,7 +587,7 @@ pub async fn save_session(
     let (message_count, name) = compute_message_count_and_name(entries);
     map_outcome(
         tx.execute(
-            cx.cx(),
+            &cx,
             "INSERT INTO pi_session_meta (key,value) VALUES (?1,?2)",
             &[
                 SqliteValue::Text("message_count".to_string()),
@@ -600,7 +599,7 @@ pub async fn save_session(
     if let Some(name) = name {
         map_outcome(
             tx.execute(
-                cx.cx(),
+                &cx,
                 "INSERT INTO pi_session_meta (key,value) VALUES (?1,?2)",
                 &[
                     SqliteValue::Text("name".to_string()),
@@ -611,7 +610,7 @@ pub async fn save_session(
         )?;
     }
 
-    map_outcome(tx.commit(cx.cx()).await)?;
+    map_outcome(tx.commit(&cx).await)?;
     Ok(())
 }
 
@@ -633,16 +632,16 @@ pub async fn append_entries(
     let metrics = session_metrics::global();
     let _timer = metrics.start_timer(&metrics.sqlite_append);
 
-    let cx = AgentCx::for_request();
-    let conn = map_outcome(SqliteConnection::open(cx.cx(), path).await)?;
+    let cx = asupersync::Cx::for_request();
+    let conn = map_outcome(SqliteConnection::open(&cx, path).await)?;
 
     // Ensure WAL mode is active (no-op if already set).
     map_outcome(
-        conn.execute_batch(cx.cx(), "PRAGMA journal_mode = WAL")
+        conn.execute_batch(&cx, "PRAGMA journal_mode = WAL")
             .await,
     )?;
 
-    let tx = map_outcome(conn.begin_immediate(cx.cx()).await)?;
+    let tx = map_outcome(conn.begin_immediate(&cx).await)?;
 
     // Serialize and insert only the new entries.
     let serialize_timer = metrics.start_timer(&metrics.sqlite_serialize);
@@ -660,7 +659,7 @@ pub async fn append_entries(
         let seq = start_seq + i + 1; // 1-based
         map_outcome(
             tx.execute(
-                cx.cx(),
+                &cx,
                 "INSERT INTO pi_session_entries (seq,json) VALUES (?1,?2)",
                 &[
                     SqliteValue::Integer(i64::try_from(seq).unwrap_or(i64::MAX)),
@@ -674,7 +673,7 @@ pub async fn append_entries(
     // Upsert meta counters (INSERT OR REPLACE).
     map_outcome(
         tx.execute(
-            cx.cx(),
+            &cx,
             "INSERT OR REPLACE INTO pi_session_meta (key,value) VALUES (?1,?2)",
             &[
                 SqliteValue::Text("message_count".to_string()),
@@ -686,7 +685,7 @@ pub async fn append_entries(
     if let Some(name) = session_name {
         map_outcome(
             tx.execute(
-                cx.cx(),
+                &cx,
                 "INSERT OR REPLACE INTO pi_session_meta (key,value) VALUES (?1,?2)",
                 &[
                     SqliteValue::Text("name".to_string()),
@@ -697,6 +696,6 @@ pub async fn append_entries(
         )?;
     }
 
-    map_outcome(tx.commit(cx.cx()).await)?;
+    map_outcome(tx.commit(&cx).await)?;
     Ok(())
 }

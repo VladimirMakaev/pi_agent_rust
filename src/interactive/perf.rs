@@ -413,7 +413,6 @@ impl PiApp {
         let session = Arc::clone(&self.session);
         let agent = Arc::clone(&self.agent);
         let extensions = self.extensions.clone();
-        let runtime_handle = self.runtime_handle.clone();
         let reserve_tokens = self.config.compaction_reserve_tokens();
         let keep_recent_tokens = self.config.compaction_keep_recent_tokens();
         let custom_instructions = args.trim().to_string();
@@ -429,19 +428,9 @@ impl PiApp {
         self.extension_compacting
             .store(true, std::sync::atomic::Ordering::SeqCst);
 
-        runtime_handle.spawn(async move {
-            let cx = asupersync::Cx::for_request();
-
+        tokio::spawn(async move {
             let (session_id, path_entries) = {
-                let mut guard = match session.lock(&cx).await {
-                    Ok(guard) => guard,
-                    Err(err) => {
-                        is_compacting.store(false, std::sync::atomic::Ordering::SeqCst);
-                        let _ = event_tx
-                            .try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
-                        return;
-                    }
-                };
+                let mut guard = session.lock().await;
                 guard.ensure_entry_ids();
                 let session_id = guard.header.id.clone();
                 let entries = guard
@@ -507,15 +496,7 @@ impl PiApp {
             let details = crate::compaction::compaction_details_to_value(&result.details).ok();
 
             let messages_for_agent = {
-                let mut guard = match session.lock(&cx).await {
-                    Ok(guard) => guard,
-                    Err(err) => {
-                        is_compacting.store(false, std::sync::atomic::Ordering::SeqCst);
-                        let _ = event_tx
-                            .try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
-                        return;
-                    }
-                };
+                let mut guard = session.lock().await;
 
                 guard.append_compaction(
                     result.summary.clone(),
@@ -529,28 +510,12 @@ impl PiApp {
             };
 
             {
-                let mut agent_guard = match agent.lock(&cx).await {
-                    Ok(guard) => guard,
-                    Err(err) => {
-                        is_compacting.store(false, std::sync::atomic::Ordering::SeqCst);
-                        let _ = event_tx
-                            .try_send(PiMsg::AgentError(format!("Failed to lock agent: {err}")));
-                        return;
-                    }
-                };
+                let mut agent_guard = agent.lock().await;
                 agent_guard.replace_messages(messages_for_agent);
             }
 
             let (messages, usage) = {
-                let guard = match session.lock(&cx).await {
-                    Ok(guard) => guard,
-                    Err(err) => {
-                        is_compacting.store(false, std::sync::atomic::Ordering::SeqCst);
-                        let _ = event_tx
-                            .try_send(PiMsg::AgentError(format!("Failed to lock session: {err}")));
-                        return;
-                    }
-                };
+                let guard = session.lock().await;
                 conversation_from_session(&guard)
             };
 
