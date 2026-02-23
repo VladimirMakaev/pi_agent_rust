@@ -89,7 +89,7 @@ fn main_impl() -> Result<()> {
     let args = Args::parse();
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
-        .num_workers(4)
+        .worker_threads(4)
         .max_blocking_threads(8)
         .enable_all()
         .build()?;

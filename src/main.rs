@@ -1124,10 +1124,9 @@ async fn run(
         // auth refresh, model selection, and session creation).
         let pre_warmed = if let Some((mgr, tools, join_handle)) = extension_prewarm_handle {
             match join_handle.await {
-                Ok(runtime) => {
+                Ok(Ok(runtime)) => {
                     tracing::info!(
                         event = "pi.extension_runtime.prewarm.success",
-                        runtime = runtime.runtime_name(),
                         "Pre-warmed extension runtime ready"
                     );
                     Some(PreWarmedExtensionRuntime {
@@ -1136,11 +1135,19 @@ async fn run(
                         tools,
                     })
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     tracing::warn!(
                         event = "pi.extension_runtime.prewarm.failed",
                         error = %e,
                         "Extension runtime pre-warm failed, falling back to inline creation"
+                    );
+                    None
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        event = "pi.extension_runtime.prewarm.failed",
+                        error = %e,
+                        "Extension runtime pre-warm task panicked, falling back to inline creation"
                     );
                     None
                 }
