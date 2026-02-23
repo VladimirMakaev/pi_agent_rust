@@ -150,7 +150,8 @@ fn run_compaction_thread(
     custom_instructions: Option<String>,
     tx: mpsc::Sender<CompactionOutcome>,
 ) {
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .expect("build runtime for background compaction");
 

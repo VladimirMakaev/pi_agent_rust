@@ -27,11 +27,9 @@ use crate::tools::ToolRegistry;
 use ast_grep_core::{AstGrep, Pattern};
 use ast_grep_language::SupportLang;
 use tokio::sync::{mpsc, oneshot};
-use asupersync::runtime::RuntimeBuilder;
 #[cfg(feature = "wasm-host")]
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::{sleep, timeout};
-use asupersync::Budget;
 use async_trait::async_trait;
 use base64::Engine as _;
 use regex::Regex;
@@ -52,6 +50,50 @@ use std::thread;
 use std::time::{Duration, Instant};
 use url::Url;
 use uuid::Uuid;
+
+/// Minimal budget type for extension timeout configuration.
+///
+/// This is a lightweight replacement for `asupersync::Budget` that tracks
+/// deadline constraints for extension operations. It's used in production code
+/// to configure timeouts, while test code still uses `asupersync` for actual
+/// structured concurrency.
+#[derive(Debug, Clone, Copy)]
+pub struct Budget {
+    /// Absolute deadline (Duration since UNIX_EPOCH), or None for no deadline.
+    pub deadline: Option<Duration>,
+    /// Maximum number of async poll operations (used only in test contexts with asupersync).
+    pub poll_quota: u32,
+    /// Optional cost budget (used only in test contexts with asupersync).
+    pub cost_quota: Option<u64>,
+}
+
+impl Budget {
+    /// Infinite budget with no constraints.
+    pub const INFINITE: Self = Self {
+        deadline: None,
+        poll_quota: u32::MAX,
+        cost_quota: None,
+    };
+
+    /// Create a budget with a deadline N seconds from now.
+    pub fn with_deadline_secs(secs: u64) -> Self {
+        let deadline = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            + Duration::from_secs(secs);
+        Self {
+            deadline: Some(deadline),
+            poll_quota: u32::MAX,
+            cost_quota: None,
+        }
+    }
+}
+
+impl Default for Budget {
+    fn default() -> Self {
+        Self::INFINITE
+    }
+}
 
 /// Canonicalize a path, stripping the `\\?\` verbatim prefix on Windows.
 ///
@@ -14937,18 +14979,6 @@ pub const EXTENSION_QUERY_BUDGET_MS: u64 = 10_000;
 /// Default cancellation budget for extension loading (ms).
 pub const EXTENSION_LOAD_BUDGET_MS: u64 = 60_000;
 
-/// Create a [`Cx`] with a deadline budget derived from `timeout_ms`.
-///
-/// The returned context will cancel any async operation that exceeds the
-/// deadline, integrating with asupersync's structured concurrency protocol.
-fn cx_with_deadline(timeout_ms: u64) -> asupersync::Cx {
-    let budget = Budget {
-        deadline: Some(asupersync::time::wall_now() + Duration::from_millis(timeout_ms)),
-        ..Budget::INFINITE
-    };
-    asupersync::Cx::for_request_with_budget(budget)
-}
-
 /// Event names for the extension lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExtensionEventName {
@@ -16917,7 +16947,8 @@ impl JsExtensionRuntimeHandle {
         };
 
         thread::spawn(move || {
-            let runtime = RuntimeBuilder::current_thread()
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
                 .build()
                 .expect("extension runtime build");
             runtime.block_on(async move {
@@ -17728,7 +17759,7 @@ impl JsExtensionRuntimeHandle {
         let _ = std::thread::Builder::new()
             .name("pi-js-stream-cancel".to_owned())
             .spawn(move || {
-                let Ok(runtime) = asupersync::runtime::RuntimeBuilder::current_thread().build()
+                let Ok(runtime) = tokio::runtime::Builder::new_current_thread().enable_all().build()
                 else {
                     return;
                 };
@@ -24041,11 +24072,20 @@ impl ExtensionManager {
     ///
     /// If a budget with constraints is set, returns a budget-constrained Cx.
     /// Otherwise returns a standard request-scoped Cx.
+    ///
+    /// This method is only used in test code and requires asupersync to be available.
+    #[cfg(test)]
     pub fn extension_cx(&self) -> asupersync::Cx {
         let budget = self.budget();
+        // Convert our local Budget to asupersync::Budget
+        let asupersync_budget = asupersync::Budget {
+            deadline: budget.deadline,
+            poll_quota: budget.poll_quota,
+            cost_quota: budget.cost_quota,
+        };
         if budget.deadline.is_some() || budget.poll_quota < u32::MAX || budget.cost_quota.is_some()
         {
-            asupersync::Cx::for_request_with_budget(budget)
+            asupersync::Cx::for_request_with_budget(asupersync_budget)
         } else {
             asupersync::Cx::for_request()
         }
@@ -24059,8 +24099,12 @@ impl ExtensionManager {
     fn effective_timeout(&self, operation_timeout_ms: u64) -> u64 {
         let budget = self.budget();
         budget.deadline.map_or(operation_timeout_ms, |deadline| {
-            let now = asupersync::time::wall_now();
-            let remaining_ms = deadline.as_millis().saturating_sub(now.as_millis());
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default();
+            let deadline_ms = deadline.as_millis() as u64;
+            let now_ms = now.as_millis() as u64;
+            let remaining_ms = deadline_ms.saturating_sub(now_ms);
             operation_timeout_ms.min(remaining_ms)
         })
     }
@@ -28276,6 +28320,25 @@ mod tests {
     use super::*;
     use jsonschema::Validator;
     use tempfile::tempdir;
+
+    /// Helper to get current wall time (for test budget construction).
+    fn wall_now() -> Duration {
+        asupersync::time::wall_now()
+    }
+
+    /// Create a [`asupersync::Cx`] with a deadline budget derived from `timeout_ms`.
+    ///
+    /// The returned context will cancel any async operation that exceeds the
+    /// deadline, integrating with the structured concurrency protocol.
+    /// This is a test-only helper function.
+    fn cx_with_deadline(timeout_ms: u64) -> asupersync::Cx {
+        use asupersync::time::wall_now;
+        let budget = asupersync::Budget {
+            deadline: Some(wall_now() + Duration::from_millis(timeout_ms)),
+            ..asupersync::Budget::INFINITE
+        };
+        asupersync::Cx::for_request_with_budget(budget)
+    }
 
     fn compiled_extension_protocol_schema() -> Validator {
         let schema_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))

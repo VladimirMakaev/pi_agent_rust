@@ -1,8 +1,6 @@
 use crate::error::{Error, Result};
 use crate::session::{SessionEntry, SessionHeader};
 use crate::session_metrics;
-use asupersync::Outcome;
-use asupersync::database::{SqliteConnection, SqliteError, SqliteRow, SqliteValue};
 use std::path::Path;
 
 const INIT_SQL: &str = r"
@@ -31,22 +29,6 @@ pub struct SqliteSessionMeta {
     pub header: SessionHeader,
     pub message_count: u64,
     pub name: Option<String>,
-}
-
-fn map_outcome<T>(outcome: Outcome<T, SqliteError>) -> Result<T> {
-    match outcome {
-        Outcome::Ok(value) => Ok(value),
-        Outcome::Err(err) => Err(Error::session(format!("SQLite session error: {err}"))),
-        Outcome::Cancelled(_) => Err(Error::Aborted),
-        Outcome::Panicked(payload) => Err(Error::session(format!(
-            "SQLite session operation panicked: {payload:?}"
-        ))),
-    }
-}
-
-fn row_get_str<'a>(row: &'a SqliteRow, column: &str) -> Result<&'a str> {
-    row.get_str(column)
-        .map_err(|err| Error::session(format!("SQLite row read failed: {err}")))
 }
 
 fn compute_message_count_and_name(entries: &[SessionEntry]) -> (u64, Option<String>) {
@@ -78,36 +60,43 @@ pub async fn load_session(path: &Path) -> Result<(SessionHeader, Vec<SessionEntr
         });
     }
 
-    let cx = asupersync::Cx::for_request();
-    let conn = map_outcome(SqliteConnection::open(&cx, path).await)?;
+    let path = path.to_path_buf();
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = rusqlite::Connection::open(&path)
+            .map_err(|e| Error::session(format!("Failed to open SQLite session: {e}")))?;
 
-    let header_rows = map_outcome(
-        conn.query(&cx, "SELECT json FROM pi_session_header LIMIT 1", &[])
-            .await,
-    )?;
-    let header_row = header_rows
-        .first()
-        .ok_or_else(|| Error::session("SQLite session missing header row"))?;
-    let header_json = row_get_str(header_row, "json")?;
-    let header: SessionHeader = serde_json::from_str(header_json)?;
+        // Load header
+        let header_json: String = conn
+            .query_row("SELECT json FROM pi_session_header LIMIT 1", [], |row| {
+                row.get(0)
+            })
+            .map_err(|e| Error::session(format!("Failed to load session header: {e}")))?;
 
-    let entry_rows = map_outcome(
-        conn.query(
-            &cx,
-            "SELECT json FROM pi_session_entries ORDER BY seq ASC",
-            &[],
-        )
-        .await,
-    )?;
+        let header: SessionHeader = serde_json::from_str(&header_json)?;
 
-    let mut entries = Vec::with_capacity(entry_rows.len());
-    for row in entry_rows {
-        let json = row_get_str(&row, "json")?;
-        let entry: SessionEntry = serde_json::from_str(json)?;
-        entries.push(entry);
-    }
+        // Load entries
+        let mut stmt = conn
+            .prepare("SELECT json FROM pi_session_entries ORDER BY seq ASC")
+            .map_err(|e| Error::session(format!("Failed to prepare query: {e}")))?;
 
-    Ok((header, entries))
+        let entries = stmt
+            .query_map([], |row| {
+                let json: String = row.get(0)?;
+                Ok(json)
+            })
+            .map_err(|e| Error::session(format!("Failed to query entries: {e}")))?
+            .collect::<std::result::Result<Vec<String>, rusqlite::Error>>()
+            .map_err(|e| Error::session(format!("Failed to read entries: {e}")))?
+            .into_iter()
+            .map(|json| serde_json::from_str(&json))
+            .collect::<std::result::Result<Vec<SessionEntry>, serde_json::Error>>()?;
+
+        Ok::<_, Error>((header, entries))
+    })
+    .await
+    .map_err(|e| Error::session(format!("Task join error: {e}")))??;
+
+    Ok(result)
 }
 
 pub async fn load_session_meta(path: &Path) -> Result<SqliteSessionMeta> {
@@ -120,70 +109,82 @@ pub async fn load_session_meta(path: &Path) -> Result<SqliteSessionMeta> {
         });
     }
 
-    let cx = asupersync::Cx::for_request();
-    let conn = map_outcome(SqliteConnection::open(&cx, path).await)?;
+    let path = path.to_path_buf();
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = rusqlite::Connection::open(&path)
+            .map_err(|e| Error::session(format!("Failed to open SQLite session: {e}")))?;
 
-    let header_rows = map_outcome(
-        conn.query(&cx, "SELECT json FROM pi_session_header LIMIT 1", &[])
-            .await,
-    )?;
-    let header_row = header_rows
-        .first()
-        .ok_or_else(|| Error::session("SQLite session missing header row"))?;
-    let header_json = row_get_str(header_row, "json")?;
-    let header: SessionHeader = serde_json::from_str(header_json)?;
+        // Load header
+        let header_json: String = conn
+            .query_row("SELECT json FROM pi_session_header LIMIT 1", [], |row| {
+                row.get(0)
+            })
+            .map_err(|e| Error::session(format!("Failed to load session header: {e}")))?;
 
-    let meta_rows = map_outcome(
-        conn.query(
-            &cx,
-            "SELECT key,value FROM pi_session_meta WHERE key IN ('message_count','name')",
-            &[],
-        )
-        .await,
-    )?;
+        let header: SessionHeader = serde_json::from_str(&header_json)?;
 
-    let mut message_count: Option<u64> = None;
-    let mut name: Option<String> = None;
-    for row in meta_rows {
-        let key = row_get_str(&row, "key")?;
-        let value = row_get_str(&row, "value")?;
-        match key {
-            "message_count" => message_count = value.parse::<u64>().ok(),
-            "name" => name = Some(value.to_string()),
-            _ => {}
-        }
-    }
+        // Load meta
+        let mut stmt = conn
+            .prepare("SELECT key,value FROM pi_session_meta WHERE key IN ('message_count','name')")
+            .map_err(|e| Error::session(format!("Failed to prepare meta query: {e}")))?;
 
-    let message_count = if let Some(message_count) = message_count {
-        message_count
-    } else {
-        let entry_rows = map_outcome(
-            conn.query(
-                &cx,
-                "SELECT json FROM pi_session_entries ORDER BY seq ASC",
-                &[],
-            )
-            .await,
-        )?;
+        let meta_rows = stmt
+            .query_map([], |row| {
+                let key: String = row.get(0)?;
+                let value: String = row.get(1)?;
+                Ok((key, value))
+            })
+            .map_err(|e| Error::session(format!("Failed to query meta: {e}")))?
+            .collect::<std::result::Result<Vec<(String, String)>, rusqlite::Error>>()
+            .map_err(|e| Error::session(format!("Failed to read meta: {e}")))?;
 
-        let mut entries = Vec::with_capacity(entry_rows.len());
-        for row in entry_rows {
-            let json = row_get_str(&row, "json")?;
-            let entry: SessionEntry = serde_json::from_str(json)?;
-            entries.push(entry);
+        let mut message_count: Option<u64> = None;
+        let mut name: Option<String> = None;
+        for (key, value) in meta_rows {
+            match key.as_str() {
+                "message_count" => message_count = value.parse::<u64>().ok(),
+                "name" => name = Some(value),
+                _ => {}
+            }
         }
 
-        let (message_count, fallback_name) = compute_message_count_and_name(&entries);
-        if name.is_none() {
-            name = fallback_name;
-        }
-        message_count
-    };
-    Ok(SqliteSessionMeta {
-        header,
-        message_count,
-        name,
+        // If message_count not in meta, compute from entries
+        let message_count = if let Some(count) = message_count {
+            count
+        } else {
+            let mut stmt = conn
+                .prepare("SELECT json FROM pi_session_entries ORDER BY seq ASC")
+                .map_err(|e| Error::session(format!("Failed to prepare entries query: {e}")))?;
+
+            let entries = stmt
+                .query_map([], |row| {
+                    let json: String = row.get(0)?;
+                    Ok(json)
+                })
+                .map_err(|e| Error::session(format!("Failed to query entries: {e}")))?
+                .collect::<std::result::Result<Vec<String>, rusqlite::Error>>()
+                .map_err(|e| Error::session(format!("Failed to read entries: {e}")))?
+                .into_iter()
+                .map(|json| serde_json::from_str(&json))
+                .collect::<std::result::Result<Vec<SessionEntry>, serde_json::Error>>()?;
+
+            let (message_count, fallback_name) = compute_message_count_and_name(&entries);
+            if name.is_none() {
+                name = fallback_name;
+            }
+            message_count
+        };
+
+        Ok::<_, Error>(SqliteSessionMeta {
+            header,
+            message_count,
+            name,
+        })
     })
+    .await
+    .map_err(|e| Error::session(format!("Task join error: {e}")))??;
+
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -377,51 +378,6 @@ mod tests {
         assert_eq!(name, Some("Named".to_string()));
     }
 
-    // -- map_outcome tests --
-
-    #[test]
-    fn map_outcome_ok() {
-        let outcome: Outcome<i32, SqliteError> = Outcome::Ok(42);
-        let result = map_outcome(outcome);
-        assert_eq!(result.unwrap(), 42);
-    }
-
-    #[test]
-    fn map_outcome_err() {
-        let outcome: Outcome<i32, SqliteError> = Outcome::Err(SqliteError::ConnectionClosed);
-        let result = map_outcome(outcome);
-        let err = result.unwrap_err();
-        match err {
-            Error::Session(message) => {
-                assert!(message.contains("SQLite session error"));
-            }
-            other => panic!("expected Session error, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn map_outcome_cancelled() {
-        use asupersync::types::CancelKind;
-        let reason = asupersync::CancelReason::new(CancelKind::User);
-        let outcome: Outcome<i32, SqliteError> = Outcome::Cancelled(reason);
-        let result = map_outcome(outcome);
-        assert!(matches!(result.unwrap_err(), Error::Aborted));
-    }
-
-    #[test]
-    fn map_outcome_panicked() {
-        use asupersync::types::PanicPayload;
-        let outcome: Outcome<i32, SqliteError> = Outcome::Panicked(PanicPayload::new("test panic"));
-        let result = map_outcome(outcome);
-        let err = result.unwrap_err();
-        match err {
-            Error::Session(message) => {
-                assert!(message.contains("panicked"));
-            }
-            other => panic!("expected Session error, got {other:?}"),
-        }
-    }
-
     // -- SqliteSessionMeta struct --
 
     #[test]
@@ -522,27 +478,8 @@ pub async fn save_session(
     let _save_timer = metrics.start_timer(&metrics.sqlite_save);
 
     if let Some(parent) = path.parent() {
-        asupersync::fs::create_dir_all(parent).await?;
+        tokio::fs::create_dir_all(parent).await?;
     }
-
-    let cx = asupersync::Cx::for_request();
-    let conn = map_outcome(SqliteConnection::open(&cx, path).await)?;
-    map_outcome(conn.execute_batch(&cx, INIT_SQL).await)?;
-
-    let tx = map_outcome(conn.begin_immediate(&cx).await)?;
-
-    map_outcome(
-        tx.execute(&cx, "DELETE FROM pi_session_entries", &[])
-            .await,
-    )?;
-    map_outcome(
-        tx.execute(&cx, "DELETE FROM pi_session_header", &[])
-            .await,
-    )?;
-    map_outcome(
-        tx.execute(&cx, "DELETE FROM pi_session_meta", &[])
-            .await,
-    )?;
 
     // Serialize header + entries and track serialization time + bytes.
     let serialize_timer = metrics.start_timer(&metrics.sqlite_serialize);
@@ -558,59 +495,65 @@ pub async fn save_session(
     serialize_timer.finish();
     metrics.record_bytes(&metrics.sqlite_bytes, total_json_bytes);
 
-    map_outcome(
-        tx.execute(
-            &cx,
-            "INSERT INTO pi_session_header (id,json) VALUES (?1,?2)",
-            &[
-                SqliteValue::Text(header.id.clone()),
-                SqliteValue::Text(header_json),
-            ],
-        )
-        .await,
-    )?;
-
-    for (idx, json) in entry_jsons.into_iter().enumerate() {
-        map_outcome(
-            tx.execute(
-                &cx,
-                "INSERT INTO pi_session_entries (seq,json) VALUES (?1,?2)",
-                &[
-                    SqliteValue::Integer(i64::try_from(idx + 1).unwrap_or(i64::MAX)),
-                    SqliteValue::Text(json),
-                ],
-            )
-            .await,
-        )?;
-    }
-
     let (message_count, name) = compute_message_count_and_name(entries);
-    map_outcome(
-        tx.execute(
-            &cx,
-            "INSERT INTO pi_session_meta (key,value) VALUES (?1,?2)",
-            &[
-                SqliteValue::Text("message_count".to_string()),
-                SqliteValue::Text(message_count.to_string()),
-            ],
-        )
-        .await,
-    )?;
-    if let Some(name) = name {
-        map_outcome(
-            tx.execute(
-                &cx,
-                "INSERT INTO pi_session_meta (key,value) VALUES (?1,?2)",
-                &[
-                    SqliteValue::Text("name".to_string()),
-                    SqliteValue::Text(name),
-                ],
-            )
-            .await,
-        )?;
-    }
+    let header_id = header.id.clone();
+    let path = path.to_path_buf();
 
-    map_outcome(tx.commit(&cx).await)?;
+    tokio::task::spawn_blocking(move || {
+        let mut conn = rusqlite::Connection::open(&path)
+            .map_err(|e| Error::session(format!("Failed to open SQLite session: {e}")))?;
+
+        conn.execute_batch(INIT_SQL)
+            .map_err(|e| Error::session(format!("Failed to initialize database: {e}")))?;
+
+        let tx = conn
+            .transaction()
+            .map_err(|e| Error::session(format!("Failed to begin transaction: {e}")))?;
+
+        tx.execute("DELETE FROM pi_session_entries", [])
+            .map_err(|e| Error::session(format!("Failed to delete entries: {e}")))?;
+        tx.execute("DELETE FROM pi_session_header", [])
+            .map_err(|e| Error::session(format!("Failed to delete header: {e}")))?;
+        tx.execute("DELETE FROM pi_session_meta", [])
+            .map_err(|e| Error::session(format!("Failed to delete meta: {e}")))?;
+
+        tx.execute(
+            "INSERT INTO pi_session_header (id,json) VALUES (?1,?2)",
+            rusqlite::params![header_id, header_json],
+        )
+        .map_err(|e| Error::session(format!("Failed to insert header: {e}")))?;
+
+        for (idx, json) in entry_jsons.into_iter().enumerate() {
+            let seq = i64::try_from(idx + 1).unwrap_or(i64::MAX);
+            tx.execute(
+                "INSERT INTO pi_session_entries (seq,json) VALUES (?1,?2)",
+                rusqlite::params![seq, json],
+            )
+            .map_err(|e| Error::session(format!("Failed to insert entry: {e}")))?;
+        }
+
+        tx.execute(
+            "INSERT INTO pi_session_meta (key,value) VALUES (?1,?2)",
+            rusqlite::params!["message_count", message_count.to_string()],
+        )
+        .map_err(|e| Error::session(format!("Failed to insert message_count: {e}")))?;
+
+        if let Some(name) = name {
+            tx.execute(
+                "INSERT INTO pi_session_meta (key,value) VALUES (?1,?2)",
+                rusqlite::params!["name", name],
+            )
+            .map_err(|e| Error::session(format!("Failed to insert name: {e}")))?;
+        }
+
+        tx.commit()
+            .map_err(|e| Error::session(format!("Failed to commit transaction: {e}")))?;
+
+        Ok::<_, Error>(())
+    })
+    .await
+    .map_err(|e| Error::session(format!("Task join error: {e}")))??;
+
     Ok(())
 }
 
@@ -632,17 +575,6 @@ pub async fn append_entries(
     let metrics = session_metrics::global();
     let _timer = metrics.start_timer(&metrics.sqlite_append);
 
-    let cx = asupersync::Cx::for_request();
-    let conn = map_outcome(SqliteConnection::open(&cx, path).await)?;
-
-    // Ensure WAL mode is active (no-op if already set).
-    map_outcome(
-        conn.execute_batch(&cx, "PRAGMA journal_mode = WAL")
-            .await,
-    )?;
-
-    let tx = map_outcome(conn.begin_immediate(&cx).await)?;
-
     // Serialize and insert only the new entries.
     let serialize_timer = metrics.start_timer(&metrics.sqlite_serialize);
     let mut total_json_bytes = 0u64;
@@ -655,47 +587,52 @@ pub async fn append_entries(
     serialize_timer.finish();
     metrics.record_bytes(&metrics.sqlite_bytes, total_json_bytes);
 
-    for (i, json) in entry_jsons.into_iter().enumerate() {
-        let seq = start_seq + i + 1; // 1-based
-        map_outcome(
+    let path = path.to_path_buf();
+    let session_name = session_name.map(String::from);
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = rusqlite::Connection::open(&path)
+            .map_err(|e| Error::session(format!("Failed to open SQLite session: {e}")))?;
+
+        // Ensure WAL mode is active (no-op if already set).
+        conn.execute_batch("PRAGMA journal_mode = WAL")
+            .map_err(|e| Error::session(format!("Failed to set WAL mode: {e}")))?;
+
+        let tx = conn
+            .transaction()
+            .map_err(|e| Error::session(format!("Failed to begin transaction: {e}")))?;
+
+        for (i, json) in entry_jsons.into_iter().enumerate() {
+            let seq = i64::try_from(start_seq + i + 1).unwrap_or(i64::MAX);
             tx.execute(
-                &cx,
                 "INSERT INTO pi_session_entries (seq,json) VALUES (?1,?2)",
-                &[
-                    SqliteValue::Integer(i64::try_from(seq).unwrap_or(i64::MAX)),
-                    SqliteValue::Text(json),
-                ],
+                rusqlite::params![seq, json],
             )
-            .await,
-        )?;
-    }
+            .map_err(|e| Error::session(format!("Failed to insert entry: {e}")))?;
+        }
 
-    // Upsert meta counters (INSERT OR REPLACE).
-    map_outcome(
+        // Upsert meta counters (INSERT OR REPLACE).
         tx.execute(
-            &cx,
             "INSERT OR REPLACE INTO pi_session_meta (key,value) VALUES (?1,?2)",
-            &[
-                SqliteValue::Text("message_count".to_string()),
-                SqliteValue::Text(message_count.to_string()),
-            ],
+            rusqlite::params!["message_count", message_count.to_string()],
         )
-        .await,
-    )?;
-    if let Some(name) = session_name {
-        map_outcome(
-            tx.execute(
-                &cx,
-                "INSERT OR REPLACE INTO pi_session_meta (key,value) VALUES (?1,?2)",
-                &[
-                    SqliteValue::Text("name".to_string()),
-                    SqliteValue::Text(name.to_string()),
-                ],
-            )
-            .await,
-        )?;
-    }
+        .map_err(|e| Error::session(format!("Failed to upsert message_count: {e}")))?;
 
-    map_outcome(tx.commit(&cx).await)?;
+        if let Some(name) = session_name {
+            tx.execute(
+                "INSERT OR REPLACE INTO pi_session_meta (key,value) VALUES (?1,?2)",
+                rusqlite::params!["name", name],
+            )
+            .map_err(|e| Error::session(format!("Failed to upsert name: {e}")))?;
+        }
+
+        tx.commit()
+            .map_err(|e| Error::session(format!("Failed to commit transaction: {e}")))?;
+
+        Ok::<_, Error>(())
+    })
+    .await
+    .map_err(|e| Error::session(format!("Task join error: {e}")))??;
+
     Ok(())
 }

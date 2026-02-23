@@ -3107,9 +3107,9 @@ async fn export_html_snapshot(
     );
 
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        asupersync::fs::create_dir_all(parent).await?;
+        tokio::fs::create_dir_all(parent).await?;
     }
-    asupersync::fs::write(&path, html).await?;
+    tokio::fs::write(&path, html).await?;
     Ok(path.display().to_string())
 }
 
@@ -3143,7 +3143,7 @@ async fn ingest_bash_rpc_chunk(
     total_bytes: &mut usize,
     total_lines: &mut usize,
     last_byte_was_newline: &mut bool,
-    temp_file: &mut Option<asupersync::fs::File>,
+    temp_file: &mut Option<tokio::fs::File>,
     temp_file_path: &mut Option<PathBuf>,
     spill_failed: &mut bool,
     max_chunks_bytes: usize,
@@ -3193,7 +3193,7 @@ async fn ingest_bash_rpc_chunk(
 
         if expected_inode.is_some() || !cfg!(unix) {
             // Re-open async for writing
-            match asupersync::fs::OpenOptions::new()
+            match tokio::fs::OpenOptions::new()
                 .append(true)
                 .open(&path)
                 .await
@@ -3223,7 +3223,7 @@ async fn ingest_bash_rpc_chunk(
                     if identity_match {
                         // Flush existing chunks to the new file
                         for existing in chunks.iter() {
-                            use asupersync::io::AsyncWriteExt;
+                            use tokio::io::AsyncWriteExt;
                             if let Err(e) = file.write_all(existing).await {
                                 tracing::warn!("Failed to flush bash chunk to temp file: {e}");
                                 *spill_failed = true;
@@ -3254,7 +3254,7 @@ async fn ingest_bash_rpc_chunk(
     // Write new chunk to file if we have one
     if let Some(file) = temp_file.as_mut() {
         if *total_bytes <= crate::tools::BASH_FILE_LIMIT_BYTES {
-            use asupersync::io::AsyncWriteExt;
+            use tokio::io::AsyncWriteExt;
             if let Err(e) = file.write_all(&bytes).await {
                 tracing::warn!("Failed to write bash chunk to temp file: {e}");
                 *spill_failed = true;
@@ -3357,7 +3357,7 @@ async fn run_bash_rpc(
     let mut total_bytes = 0usize;
     let mut total_lines = 0usize;
     let mut last_byte_was_newline = false;
-    let mut temp_file: Option<asupersync::fs::File> = None;
+    let mut temp_file: Option<tokio::fs::File> = None;
     let mut temp_file_path: Option<PathBuf> = None;
     let max_chunks_bytes = DEFAULT_MAX_BYTES * 2;
 

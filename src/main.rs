@@ -3960,8 +3960,7 @@ where
                     });
                 }
 
-                asupersync::time::sleep(
-                    asupersync::time::wall_now(),
+                tokio::time::sleep(
                     Duration::from_millis(u64::from(delay_ms)),
                 )
                 .await;
@@ -4019,8 +4018,7 @@ where
                         });
                     }
 
-                    asupersync::time::sleep(
-                        asupersync::time::wall_now(),
+                    tokio::time::sleep(
                         Duration::from_millis(u64::from(delay_ms)),
                     )
                     .await;

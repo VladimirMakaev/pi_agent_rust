@@ -7,8 +7,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use asupersync::runtime::RuntimeBuilder;
-use asupersync::runtime::reactor::create_reactor;
 use tokio::time::sleep;
 use chrono::{SecondsFormat, Utc};
 use clap::{ArgAction, Parser};
@@ -90,15 +88,14 @@ fn main() {
 fn main_impl() -> Result<()> {
     let args = Args::parse();
 
-    let reactor = create_reactor()?;
-    let runtime = RuntimeBuilder::multi_thread()
-        .blocking_threads(1, 8)
-        .with_reactor(reactor)
-        .build()
-        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .num_workers(4)
+        .max_blocking_threads(8)
+        .enable_all()
+        .build()?;
     let handle = runtime.handle();
-    let join = handle.spawn(Box::pin(run(args)));
-    runtime.block_on(join)
+    let join = handle.spawn(run(args));
+    runtime.block_on(join)?
 }
 
 #[allow(clippy::too_many_lines)]

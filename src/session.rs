@@ -1483,7 +1483,7 @@ impl Session {
             let encoded_cwd = encode_cwd(&cwd);
             let project_session_dir = base_dir.join(&encoded_cwd);
 
-            asupersync::fs::create_dir_all(&project_session_dir).await?;
+            tokio::fs::create_dir_all(&project_session_dir).await?;
 
             let timestamp = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S%.3fZ");
             // Robust against malformed/legacy session ids: keep a short, filename-safe suffix.

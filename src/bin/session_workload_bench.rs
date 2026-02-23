@@ -393,7 +393,8 @@ fn run() -> Result<()> {
         let append_ms = append_started.elapsed().as_secs_f64() * 1000.0;
 
         let save_started = Instant::now();
-        let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .map_err(|err| pi::Error::session(format!("runtime init failed: {err}")))?;
         runtime.block_on(async { session.save().await })?;
@@ -423,7 +424,8 @@ fn run() -> Result<()> {
         return Ok(());
     }
 
-    let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .map_err(|err| pi::Error::session(format!("runtime init failed: {err}")))?;
 

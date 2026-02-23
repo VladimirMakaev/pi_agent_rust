@@ -10,7 +10,8 @@ use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::extensions::strip_unc_prefix;
 use crate::model::{ContentBlock, ImageContent, TextContent};
-use asupersync::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, ReadBuf, SeekFrom};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, ReadBuf};
+use std::io::SeekFrom;
 use tokio::time::sleep;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -1354,7 +1355,7 @@ impl Tool for ReadTool {
 
         let path = resolve_read_path(&input.path, &self.cwd);
 
-        if let Ok(meta) = asupersync::fs::metadata(&path).await {
+        if let Ok(meta) = tokio::fs::metadata(&path).await {
             if meta.len() > READ_TOOL_MAX_BYTES {
                 return Err(Error::tool(
                     "read",
@@ -1367,7 +1368,7 @@ impl Tool for ReadTool {
             }
         }
 
-        let mut file = asupersync::fs::File::open(&path)
+        let mut file = tokio::fs::File::open(&path)
             .await
             .map_err(|e| Error::tool("read", e.to_string()))?;
 
@@ -2545,7 +2546,7 @@ impl Tool for EditTool {
         let absolute_path = resolve_read_path(&input.path, &self.cwd);
 
         // Match legacy behavior: any access failure is reported as "File not found".
-        if asupersync::fs::OpenOptions::new()
+        if tokio::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .open(&absolute_path)
@@ -2558,7 +2559,7 @@ impl Tool for EditTool {
             ));
         }
 
-        if let Ok(meta) = asupersync::fs::metadata(&absolute_path).await {
+        if let Ok(meta) = tokio::fs::metadata(&absolute_path).await {
             if meta.len() > READ_TOOL_MAX_BYTES {
                 return Err(Error::tool(
                     "edit",
@@ -2572,7 +2573,7 @@ impl Tool for EditTool {
         }
 
         // Read bytes and decode strictly as UTF-8 to avoid corrupting binary files.
-        let raw = asupersync::fs::read(&absolute_path)
+        let raw = tokio::fs::read(&absolute_path)
             .await
             .map_err(|e| Error::tool("edit", format!("Failed to read file: {e}")))?;
         let raw_content = String::from_utf8(raw).map_err(|_| {
@@ -2831,7 +2832,7 @@ impl Tool for WriteTool {
 
         // Create parent directories if needed
         if let Some(parent) = path.parent() {
-            asupersync::fs::create_dir_all(parent)
+            tokio::fs::create_dir_all(parent)
                 .await
                 .map_err(|e| Error::tool("write", format!("Failed to create directories: {e}")))?;
         }
@@ -3771,7 +3772,7 @@ impl Tool for LsTool {
         }
 
         let mut entries = Vec::new();
-        let mut read_dir = asupersync::fs::read_dir(&dir_path)
+        let mut read_dir = tokio::fs::read_dir(&dir_path)
             .await
             .map_err(|e| Error::tool("ls", format!("Cannot read directory: {e}")))?;
 
@@ -3987,7 +3988,7 @@ struct BashOutputState {
     start_time: std::time::Instant,
     timeout_ms: Option<u64>,
     temp_file_path: Option<PathBuf>,
-    temp_file: Option<asupersync::fs::File>,
+    temp_file: Option<tokio::fs::File>,
     chunks: VecDeque<Vec<u8>>,
     chunks_bytes: usize,
     max_chunks_bytes: usize,
@@ -4052,7 +4053,7 @@ async fn ingest_bash_chunk(chunk: Vec<u8>, state: &mut BashOutputState) -> Resul
             }
         };
 
-        let mut file = asupersync::fs::OpenOptions::new()
+        let mut file = tokio::fs::OpenOptions::new()
             .append(true)
             .open(&path)
             .await
@@ -4324,7 +4325,7 @@ async fn get_file_lines_async<'a>(
 ) -> &'a [String] {
     if !cache.contains_key(path) {
         // Prevent OOM on huge files: skip reading if > 10MB
-        if let Ok(meta) = asupersync::fs::metadata(path).await {
+        if let Ok(meta) = tokio::fs::metadata(path).await {
             if meta.len() > 10 * 1024 * 1024 {
                 cache.insert(path.to_path_buf(), Vec::new());
                 return &[];
@@ -4332,7 +4333,7 @@ async fn get_file_lines_async<'a>(
         }
 
         // Match Node's `readFileSync(..., "utf-8")` behavior: decode lossily rather than failing.
-        let bytes = asupersync::fs::read(path).await.unwrap_or_default();
+        let bytes = tokio::fs::read(path).await.unwrap_or_default();
         let content = String::from_utf8_lossy(&bytes).to_string();
         let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
         let lines: Vec<String> = normalized.split('\n').map(str::to_string).collect();
