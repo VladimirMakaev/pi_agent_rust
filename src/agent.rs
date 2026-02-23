@@ -1508,10 +1508,30 @@ impl Agent {
                     break;
                 }
 
-                let result = self
-                    .execute_tool(tool_call.clone(), Arc::clone(&on_event))
-                    .await;
-                tool_outputs[index] = Some(result);
+                // Race tool execution against the abort signal so that a
+                // long-running (or hanging) tool is cancelled promptly.
+                if let Some(signal) = abort.as_ref() {
+                    use futures::future::{Either, select};
+                    let tool_fut =
+                        self.execute_tool(tool_call.clone(), Arc::clone(&on_event)).fuse();
+                    let abort_fut = signal.wait().fuse();
+                    futures::pin_mut!(tool_fut, abort_fut);
+                    match select(tool_fut, abort_fut).await {
+                        Either::Left((result, _)) => {
+                            tool_outputs[index] = Some(result);
+                        }
+                        Either::Right(_) => {
+                            // Abort fired — leave tool_outputs[index] as None
+                            // so Phase 3 records it as aborted.
+                            break;
+                        }
+                    }
+                } else {
+                    let result = self
+                        .execute_tool(tool_call.clone(), Arc::clone(&on_event))
+                        .await;
+                    tool_outputs[index] = Some(result);
+                }
             }
         }
 
