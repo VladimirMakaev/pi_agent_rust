@@ -497,15 +497,15 @@ impl PiApp {
             output.push_str(&self.render_model_selector(selector));
         }
 
-        // Input area (only when idle and no overlay open)
-        if self.agent_state == AgentState::Idle
-            && self.session_picker.is_none()
+        // Input area (hidden when overlays are open)
+        let no_overlay = self.session_picker.is_none()
             && self.settings_ui.is_none()
             && self.theme_picker.is_none()
             && self.capability_prompt.is_none()
             && self.branch_picker.is_none()
-            && self.model_selector.is_none()
-        {
+            && self.model_selector.is_none();
+
+        if no_overlay && self.agent_state == AgentState::Idle {
             output.push_str(&self.render_input());
 
             // Autocomplete dropdown (if open)
@@ -618,104 +618,48 @@ impl PiApp {
     }
 
     pub(super) fn render_input(&self) -> String {
-        let mut output = String::new();
+        self.render_input_inner(false)
+    }
 
-        let thinking_level = self
-            .session
-            .try_lock()
-            .ok()
-            .and_then(|guard| guard.header.thinking_level.clone())
-            .and_then(|level| level.parse::<ThinkingLevel>().ok())
-            .or_else(|| {
-                self.config
-                    .default_thinking_level
-                    .as_deref()
-                    .and_then(|level| level.parse::<ThinkingLevel>().ok())
-            })
-            .unwrap_or(ThinkingLevel::Off);
+    /// Render the input area, optionally in "queued" mode (shown during processing).
+    fn render_input_inner(&self, is_queued: bool) -> String {
+        let mut output = String::new();
 
         let input_text = self.input.value();
         let is_bash_mode = parse_bash_command(&input_text).is_some();
 
-        let (thinking_label, thinking_style, thinking_border_style) = match thinking_level {
-            ThinkingLevel::Off => (
-                "off",
-                self.styles.muted_bold.clone(),
-                self.styles.border.clone(),
-            ),
-            ThinkingLevel::Minimal => (
-                "minimal",
-                self.styles.accent.clone(),
-                self.styles.accent.clone(),
-            ),
-            ThinkingLevel::Low => (
-                "low",
-                self.styles.accent.clone(),
-                self.styles.accent.clone(),
-            ),
-            ThinkingLevel::Medium => (
-                "medium",
-                self.styles.accent_bold.clone(),
-                self.styles.accent.clone(),
-            ),
-            ThinkingLevel::High => (
-                "high",
-                self.styles.warning_bold.clone(),
-                self.styles.warning.clone(),
-            ),
-            ThinkingLevel::XHigh => (
-                "xhigh",
-                self.styles.error_bold.clone(),
-                self.styles.error_bold.clone(),
-            ),
-        };
-
-        let thinking_plain = format!("[thinking: {thinking_label}]");
-        let thinking_badge = thinking_style.render(&thinking_plain);
-        let bash_badge = is_bash_mode.then(|| self.styles.warning_bold.render("[bash]"));
-
-        let max_width = self.term_width.saturating_sub(2);
-        let reserved = 2
-            + thinking_plain.chars().count()
-            + if is_bash_mode {
-                2 + "[bash]".chars().count()
-            } else {
-                0
-            };
-        let available_for_mode = max_width.saturating_sub(reserved);
-        let mut mode_text = match self.input_mode {
-            InputMode::SingleLine => "Enter: send  Shift+Enter: newline  Alt+Enter: multi-line",
-            InputMode::MultiLine => "Alt+Enter: send  Enter: newline  Esc: single-line",
-        }
-        .to_string();
-        if mode_text.chars().count() > available_for_mode {
-            mode_text = truncate(&mode_text, available_for_mode);
-        }
-        let mut header_line = String::new();
-        header_line.push_str(&self.styles.muted.render(&mode_text));
-        header_line.push_str("  ");
-        header_line.push_str(&thinking_badge);
-        if let Some(bash_badge) = bash_badge {
-            header_line.push_str("  ");
-            header_line.push_str(&bash_badge);
-        }
-        let _ = writeln!(output, "\n  {header_line}");
-
-        let padding = " ".repeat(self.editor_padding_x);
-        let line_prefix = format!("  {padding}");
-        let border_style = if is_bash_mode {
-            self.styles.warning_bold.clone()
+        // Horizontal rule width (terminal width minus indent)
+        let rule_width = self.term_width.saturating_sub(4);
+        let rule = "─".repeat(rule_width);
+        let rule_style = if is_bash_mode {
+            &self.styles.warning
         } else {
-            thinking_border_style
+            &self.styles.border
         };
-        let border = border_style.render("│");
-        for line in self.input.view().lines() {
-            output.push_str(&line_prefix);
-            output.push_str(&border);
-            output.push(' ');
+
+        // Top horizontal rule
+        let _ = writeln!(output, "\n  {}", rule_style.render(&rule));
+
+        // Queued mode label
+        if is_queued {
+            let _ = writeln!(
+                output,
+                "  {}",
+                self.styles.muted.render("Enter: queue steering  |  Opt+Enter: queue follow-up")
+            );
+        }
+
+        // Render the TextArea view (includes prompt, cursor, and padding).
+        // Indent each line with 2 spaces to match our layout.
+        let view_text = self.input.view();
+        for line in view_text.lines() {
+            output.push_str("  ");
             output.push_str(line);
             output.push('\n');
         }
+
+        // Bottom horizontal rule
+        let _ = writeln!(output, "  {}", rule_style.render(&rule));
 
         output
     }
@@ -746,8 +690,8 @@ impl PiApp {
             .as_ref()
             .map_or_else(String::new, |b| format!("  |  {b}"));
         let mode_hint = match self.input_mode {
-            InputMode::SingleLine => "Shift+Enter: newline  |  Alt+Enter: multi-line",
-            InputMode::MultiLine => "Enter: newline  |  Alt+Enter: send  |  Esc: single-line",
+            InputMode::SingleLine => "Ctrl+J: newline  |  Opt+Enter: multi-line",
+            InputMode::MultiLine => "Enter: newline  |  Opt+Enter: send  |  Esc: single-line",
         };
         let footer_long = format!(
             "Tokens: {input} in / {output_tokens} out{cost_str}{branch_str}  |  {persistence_str}  |  {mode_hint}  |  /help  |  Ctrl+C: quit"

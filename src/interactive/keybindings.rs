@@ -631,6 +631,7 @@ impl PiApp {
                 if self.input_mode == InputMode::MultiLine {
                     // In multi-line mode, Enter inserts a newline (Alt+Enter submits).
                     self.input.insert_rune('\n');
+                    self.auto_grow_input();
                     return None;
                 }
                 let value = self.input.value();
@@ -650,7 +651,7 @@ impl PiApp {
                 let value = self.input.value();
                 if self.input_mode == InputMode::SingleLine && value.trim().is_empty() {
                     self.input_mode = InputMode::MultiLine;
-                    self.set_input_height(6);
+                    self.auto_grow_input();
                     self.status_message = Some("Multi-line mode".to_string());
                     return None;
                 }
@@ -662,7 +663,7 @@ impl PiApp {
             AppAction::NewLine => {
                 self.input.insert_rune('\n');
                 self.input_mode = InputMode::MultiLine;
-                self.set_input_height(6);
+                self.auto_grow_input();
                 None
             }
 

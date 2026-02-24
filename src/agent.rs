@@ -510,6 +510,12 @@ impl Agent {
 
     /// Build context for a completion request.
     fn build_context(&mut self) -> Context<'_> {
+        // Ensure every tool_use has a matching tool_result.  When the user
+        // cancels mid-stream, the abort handler stores the partial assistant
+        // message which may contain ToolCall entries that never got executed.
+        // The Anthropic API requires every tool_use to have a tool_result.
+        Self::patch_orphaned_tool_calls(&mut self.messages);
+
         let messages: Cow<'_, [Message]> = if self.config.block_images {
             let mut msgs = self.messages.clone();
             // Filter out hidden custom messages.
@@ -565,6 +571,54 @@ impl Agent {
             system_prompt: self.config.system_prompt.as_deref().map(Cow::Borrowed),
             messages,
             tools,
+        }
+    }
+
+    /// Insert synthetic tool_result messages for any ToolCall entries in
+    /// assistant messages that have no matching ToolResult in the conversation.
+    /// This happens when the user cancels mid-tool-execution: the assistant
+    /// message includes tool_use blocks, but the tool never ran or completed.
+    fn patch_orphaned_tool_calls(messages: &mut Vec<Message>) {
+        use std::collections::HashSet;
+
+        // Collect all tool_call_ids that have a ToolResult.
+        let answered: HashSet<String> = messages
+            .iter()
+            .filter_map(|m| {
+                if let Message::ToolResult(r) = m {
+                    Some(r.tool_call_id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Find orphaned tool_calls (in assistant messages, no matching result).
+        let mut orphans: Vec<(String, String)> = Vec::new(); // (id, name)
+        for msg in messages.iter() {
+            if let Message::Assistant(a) = msg {
+                for block in &a.content {
+                    if let ContentBlock::ToolCall(tc) = block {
+                        if !answered.contains(&tc.id) {
+                            orphans.push((tc.id.clone(), tc.name.clone()));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Add synthetic "aborted" tool results for each orphan.
+        for (tool_call_id, tool_name) in orphans {
+            messages.push(Message::ToolResult(Arc::new(ToolResultMessage {
+                tool_call_id,
+                tool_name,
+                content: vec![ContentBlock::Text(TextContent::new(
+                    "Tool execution aborted by user".to_string(),
+                ))],
+                details: None,
+                is_error: true,
+                timestamp: Utc::now().timestamp_millis(),
+            })));
         }
     }
 
@@ -659,6 +713,23 @@ impl Agent {
         message.stop_reason = StopReason::Aborted;
         message.error_message = Some("Aborted".to_string());
         message.timestamp = Utc::now().timestamp_millis();
+
+        // Remove incomplete ToolCall entries with empty/invalid IDs.
+        // These occur when the user cancels mid-stream before the provider
+        // has finished sending the tool_use block.  The Anthropic API
+        // requires tool_use.id to match ^[a-zA-Z0-9_-]+.
+        message.content.retain(|block| {
+            if let ContentBlock::ToolCall(tc) = block {
+                let valid = !tc.id.is_empty()
+                    && tc
+                        .id
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+                return valid;
+            }
+            true
+        });
+
         message
     }
 

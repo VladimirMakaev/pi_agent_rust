@@ -2722,9 +2722,7 @@ fn load_session_meta_jsonl(path: &Path) -> Result<SessionPickEntry> {
 
 #[cfg(feature = "sqlite-sessions")]
 fn load_session_meta_sqlite(path: &Path) -> Result<SessionPickEntry> {
-    let meta = futures::executor::block_on(async {
-        crate::session_sqlite::load_session_meta(path).await
-    })?;
+    let meta = crate::session_sqlite::load_session_meta_sync(path)?;
     let header = meta.header;
 
     let metadata = std::fs::metadata(path)

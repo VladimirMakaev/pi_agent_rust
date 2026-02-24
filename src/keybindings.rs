@@ -1376,7 +1376,11 @@ impl KeyBindings {
         // Text Input
         m.insert(
             AppAction::NewLine,
-            vec![KeyBinding::shift("enter"), KeyBinding::ctrl("enter")],
+            vec![
+                KeyBinding::shift("enter"),
+                KeyBinding::ctrl("enter"),
+                KeyBinding::ctrl("j"),
+            ],
         );
         m.insert(AppAction::Submit, vec![KeyBinding::plain("enter")]);
         m.insert(AppAction::Tab, vec![KeyBinding::plain("tab")]);

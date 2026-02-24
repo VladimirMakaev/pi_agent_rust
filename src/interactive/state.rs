@@ -36,6 +36,8 @@ pub(super) struct PendingOAuth {
 }
 
 /// Tool output line count above which blocks auto-collapse.
+/// Tool outputs containing diffs are never auto-collapsed since diffs
+/// are important visual feedback.
 pub(super) const TOOL_AUTO_COLLAPSE_THRESHOLD: usize = 20;
 /// Number of preview lines to show when a tool block is collapsed.
 pub(super) const TOOL_COLLAPSE_PREVIEW_LINES: usize = 5;
@@ -62,13 +64,16 @@ impl ConversationMessage {
     }
 
     /// Create a tool output message with auto-collapse for large outputs.
+    /// Tool outputs containing diffs are never collapsed since diffs provide
+    /// important visual feedback about file changes.
     pub(super) fn tool(content: String) -> Self {
+        let has_diff = content.contains("\nDiff:\n");
         let line_count = memchr::memchr_iter(b'\n', content.as_bytes()).count() + 1;
         Self {
             role: MessageRole::Tool,
             content,
             thinking: None,
-            collapsed: line_count > TOOL_AUTO_COLLAPSE_THRESHOLD,
+            collapsed: !has_diff && line_count > TOOL_AUTO_COLLAPSE_THRESHOLD,
         }
     }
 }
@@ -776,32 +781,64 @@ impl ListItem for HistoryItem {
     }
 }
 
+/// Maximum number of prompt history entries to persist.
+const HISTORY_MAX_ENTRIES: usize = 500;
+
 #[derive(Clone)]
 pub(super) struct HistoryList {
     // We never render the list UI; we use it as a battle-tested cursor+navigation model.
     // The final item is always a sentinel representing "empty input".
     list: List<HistoryItem, DefaultDelegate>,
+    /// Path to the persistent history file (if available).
+    history_path: Option<std::path::PathBuf>,
 }
 
 impl HistoryList {
     pub(super) fn new() -> Self {
-        let mut list = List::new(
-            vec![HistoryItem {
-                value: String::new(),
-            }],
-            DefaultDelegate::new(),
-            0,
-            0,
-        );
+        Self::with_path(None)
+    }
+
+    /// Create a HistoryList that loads from and persists to the given file.
+    pub(super) fn with_path(path: Option<std::path::PathBuf>) -> Self {
+        let mut items: Vec<HistoryItem> = Vec::new();
+
+        // Load persisted history if file exists.
+        if let Some(ref p) = path {
+            if let Ok(contents) = std::fs::read_to_string(p) {
+                for line in contents.lines() {
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty() {
+                        items.push(HistoryItem {
+                            value: trimmed.to_string(),
+                        });
+                    }
+                }
+                // Keep only the most recent entries.
+                if items.len() > HISTORY_MAX_ENTRIES {
+                    items = items.split_off(items.len() - HISTORY_MAX_ENTRIES);
+                }
+            }
+        }
+
+        // Sentinel (empty input) is always the last item.
+        items.push(HistoryItem {
+            value: String::new(),
+        });
+
+        let mut list = List::new(items, DefaultDelegate::new(), 0, 0);
 
         // Keep behavior minimal/predictable for now; this is used as an index model.
         list.filtering_enabled = false;
         list.infinite_scrolling = false;
 
         // Start at the "empty input" sentinel.
-        list.select(0);
+        let last = list.items().len().saturating_sub(1);
+        list.select(last);
 
-        Self { list }
+        Self {
+            list,
+            history_path: path,
+        }
     }
 
     pub(super) fn entries(&self) -> &[HistoryItem] {
@@ -828,13 +865,41 @@ impl HistoryList {
 
     pub(super) fn push(&mut self, value: String) {
         let mut items = self.entries().to_vec();
-        items.push(HistoryItem { value });
+        // Deduplicate: remove the previous occurrence if it matches.
+        items.retain(|item| item.value != value);
+        items.push(HistoryItem {
+            value: value.clone(),
+        });
+        // Trim to max entries.
+        if items.len() > HISTORY_MAX_ENTRIES {
+            items = items.split_off(items.len() - HISTORY_MAX_ENTRIES);
+        }
         items.push(HistoryItem {
             value: String::new(),
         });
 
         self.list.set_items(items);
         self.reset_cursor();
+
+        // Persist to disk (best-effort, don't block on errors).
+        self.append_to_file(&value);
+    }
+
+    /// Append a single entry to the history file.
+    fn append_to_file(&self, value: &str) {
+        if let Some(ref path) = self.history_path {
+            use std::io::Write;
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                let _ = writeln!(f, "{value}");
+            }
+        }
     }
 
     pub(super) fn cursor_up(&mut self) {

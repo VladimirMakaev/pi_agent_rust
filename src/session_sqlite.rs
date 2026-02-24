@@ -110,81 +110,91 @@ pub async fn load_session_meta(path: &Path) -> Result<SqliteSessionMeta> {
     }
 
     let path = path.to_path_buf();
-    let result = tokio::task::spawn_blocking(move || {
-        let conn = rusqlite::Connection::open(&path)
-            .map_err(|e| Error::session(format!("Failed to open SQLite session: {e}")))?;
-
-        // Load header
-        let header_json: String = conn
-            .query_row("SELECT json FROM pi_session_header LIMIT 1", [], |row| {
-                row.get(0)
-            })
-            .map_err(|e| Error::session(format!("Failed to load session header: {e}")))?;
-
-        let header: SessionHeader = serde_json::from_str(&header_json)?;
-
-        // Load meta
-        let mut stmt = conn
-            .prepare("SELECT key,value FROM pi_session_meta WHERE key IN ('message_count','name')")
-            .map_err(|e| Error::session(format!("Failed to prepare meta query: {e}")))?;
-
-        let meta_rows = stmt
-            .query_map([], |row| {
-                let key: String = row.get(0)?;
-                let value: String = row.get(1)?;
-                Ok((key, value))
-            })
-            .map_err(|e| Error::session(format!("Failed to query meta: {e}")))?
-            .collect::<std::result::Result<Vec<(String, String)>, rusqlite::Error>>()
-            .map_err(|e| Error::session(format!("Failed to read meta: {e}")))?;
-
-        let mut message_count: Option<u64> = None;
-        let mut name: Option<String> = None;
-        for (key, value) in meta_rows {
-            match key.as_str() {
-                "message_count" => message_count = value.parse::<u64>().ok(),
-                "name" => name = Some(value),
-                _ => {}
-            }
-        }
-
-        // If message_count not in meta, compute from entries
-        let message_count = if let Some(count) = message_count {
-            count
-        } else {
-            let mut stmt = conn
-                .prepare("SELECT json FROM pi_session_entries ORDER BY seq ASC")
-                .map_err(|e| Error::session(format!("Failed to prepare entries query: {e}")))?;
-
-            let entries = stmt
-                .query_map([], |row| {
-                    let json: String = row.get(0)?;
-                    Ok(json)
-                })
-                .map_err(|e| Error::session(format!("Failed to query entries: {e}")))?
-                .collect::<std::result::Result<Vec<String>, rusqlite::Error>>()
-                .map_err(|e| Error::session(format!("Failed to read entries: {e}")))?
-                .into_iter()
-                .map(|json| serde_json::from_str(&json))
-                .collect::<std::result::Result<Vec<SessionEntry>, serde_json::Error>>()?;
-
-            let (message_count, fallback_name) = compute_message_count_and_name(&entries);
-            if name.is_none() {
-                name = fallback_name;
-            }
-            message_count
-        };
-
-        Ok::<_, Error>(SqliteSessionMeta {
-            header,
-            message_count,
-            name,
-        })
-    })
-    .await
-    .map_err(|e| Error::session(format!("Task join error: {e}")))??;
+    let result = tokio::task::spawn_blocking(move || load_session_meta_sync(&path))
+        .await
+        .map_err(|e| Error::session(format!("Task join error: {e}")))??;
 
     Ok(result)
+}
+
+/// Synchronous version of [`load_session_meta`] for use on non-Tokio threads
+/// (e.g. the session-scan std::thread).
+pub fn load_session_meta_sync(path: &Path) -> Result<SqliteSessionMeta> {
+    if !path.exists() {
+        return Err(Error::SessionNotFound {
+            path: path.display().to_string(),
+        });
+    }
+
+    let conn = rusqlite::Connection::open(path)
+        .map_err(|e| Error::session(format!("Failed to open SQLite session: {e}")))?;
+
+    // Load header
+    let header_json: String = conn
+        .query_row("SELECT json FROM pi_session_header LIMIT 1", [], |row| {
+            row.get(0)
+        })
+        .map_err(|e| Error::session(format!("Failed to load session header: {e}")))?;
+
+    let header: SessionHeader = serde_json::from_str(&header_json)?;
+
+    // Load meta
+    let mut stmt = conn
+        .prepare("SELECT key,value FROM pi_session_meta WHERE key IN ('message_count','name')")
+        .map_err(|e| Error::session(format!("Failed to prepare meta query: {e}")))?;
+
+    let meta_rows = stmt
+        .query_map([], |row| {
+            let key: String = row.get(0)?;
+            let value: String = row.get(1)?;
+            Ok((key, value))
+        })
+        .map_err(|e| Error::session(format!("Failed to query meta: {e}")))?
+        .collect::<std::result::Result<Vec<(String, String)>, rusqlite::Error>>()
+        .map_err(|e| Error::session(format!("Failed to read meta: {e}")))?;
+
+    let mut message_count: Option<u64> = None;
+    let mut name: Option<String> = None;
+    for (key, value) in meta_rows {
+        match key.as_str() {
+            "message_count" => message_count = value.parse::<u64>().ok(),
+            "name" => name = Some(value),
+            _ => {}
+        }
+    }
+
+    // If message_count not in meta, compute from entries
+    let message_count = if let Some(count) = message_count {
+        count
+    } else {
+        let mut stmt = conn
+            .prepare("SELECT json FROM pi_session_entries ORDER BY seq ASC")
+            .map_err(|e| Error::session(format!("Failed to prepare entries query: {e}")))?;
+
+        let entries = stmt
+            .query_map([], |row| {
+                let json: String = row.get(0)?;
+                Ok(json)
+            })
+            .map_err(|e| Error::session(format!("Failed to query entries: {e}")))?
+            .collect::<std::result::Result<Vec<String>, rusqlite::Error>>()
+            .map_err(|e| Error::session(format!("Failed to read entries: {e}")))?
+            .into_iter()
+            .map(|json| serde_json::from_str(&json))
+            .collect::<std::result::Result<Vec<SessionEntry>, serde_json::Error>>()?;
+
+        let (message_count, fallback_name) = compute_message_count_and_name(&entries);
+        if name.is_none() {
+            name = fallback_name;
+        }
+        message_count
+    };
+
+    Ok(SqliteSessionMeta {
+        header,
+        message_count,
+        name,
+    })
 }
 
 #[cfg(test)]

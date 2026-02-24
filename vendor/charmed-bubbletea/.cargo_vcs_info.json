@@ -1,0 +1,7 @@
+{
+  "git": {
+    "sha1": "eed5f91a9e661d9cc1490bf12b0ac67fe436b569",
+    "dirty": true
+  },
+  "path_in_vcs": "crates/bubbletea"
+}

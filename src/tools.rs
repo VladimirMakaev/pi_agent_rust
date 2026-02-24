@@ -6,7 +6,7 @@
 //! locally by the agent loop. Each tool returns structured [`ContentBlock`] output suitable for
 //! rendering in the TUI and for inclusion in provider messages as tool results.
 
-use crate::agent::{Agent, AgentConfig};
+use crate::agent::{Agent, AgentConfig, AgentEvent};
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::extensions::strip_unc_prefix;
@@ -2846,6 +2846,9 @@ impl Tool for WriteTool {
 
         let path = resolve_path(&input.path, &self.cwd);
 
+        // Read existing file content (if any) for diff generation
+        let old_content = tokio::fs::read_to_string(&path).await.ok();
+
         // Create parent directories if needed
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent)
@@ -2887,12 +2890,36 @@ impl Tool for WriteTool {
             .persist(&path)
             .map_err(|e| Error::tool("write", format!("Failed to persist file: {e}")))?;
 
+        // Generate diff for the TUI
+        let details = {
+            let new_normalized = normalize_to_lf(&input.content);
+            let (diff, first_changed_line) = match &old_content {
+                Some(old) => {
+                    let old_normalized = normalize_to_lf(old);
+                    generate_diff_string(&old_normalized, &new_normalized)
+                }
+                None => {
+                    // New file: diff against empty string (all lines shown as additions)
+                    generate_diff_string("", &new_normalized)
+                }
+            };
+            let mut details = serde_json::Map::new();
+            details.insert("diff".to_string(), serde_json::Value::String(diff));
+            if let Some(line) = first_changed_line {
+                details.insert(
+                    "firstChangedLine".to_string(),
+                    serde_json::Value::Number(serde_json::Number::from(line)),
+                );
+            }
+            Some(serde_json::Value::Object(details))
+        };
+
         Ok(ToolOutput {
             content: vec![ContentBlock::Text(TextContent::new(format!(
                 "Successfully wrote {} bytes to {}",
                 bytes_written, input.path
             )))],
-            details: None,
+            details,
             is_error: false,
         })
     }
@@ -4008,13 +4035,55 @@ impl Tool for TaskTool {
         let result = sub_agent
             .run(
                 input.description.clone(),
-                move |_event| {
-                    // Optionally forward sub-agent events as progress updates.
+                move |event| {
                     if let Some(ref cb) = update_fn {
-                        cb(ToolUpdate {
-                            content: vec![],
-                            details: None,
-                        });
+                        // Forward sub-agent tool events as status text so the TUI
+                        // shows what the sub-agent is doing in real-time.
+                        let status = match event {
+                            AgentEvent::ToolExecutionStart {
+                                tool_name, args, ..
+                            } => {
+                                // Extract a short description from args
+                                let detail = args
+                                    .get("path")
+                                    .or_else(|| args.get("pattern"))
+                                    .or_else(|| args.get("command"))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                if detail.is_empty() {
+                                    Some(format!("sub-agent: {tool_name}"))
+                                } else {
+                                    Some(format!("sub-agent: {tool_name} {detail}"))
+                                }
+                            }
+                            AgentEvent::ToolExecutionEnd {
+                                tool_name,
+                                result,
+                                ..
+                            } => {
+                                // Forward tool results (including diffs) from the sub-agent
+                                let mut parts = Vec::new();
+                                for block in &result.content {
+                                    if let ContentBlock::Text(t) = block {
+                                        parts.push(t.text.clone());
+                                    }
+                                }
+                                let text = parts.join("\n");
+                                if text.is_empty() {
+                                    Some(format!("sub-agent: {tool_name} done"))
+                                } else {
+                                    Some(format!("sub-agent: {tool_name} done\n{text}"))
+                                }
+                            }
+                            _ => None,
+                        };
+
+                        if let Some(status_text) = status {
+                            cb(ToolUpdate {
+                                content: vec![ContentBlock::Text(TextContent::new(status_text))],
+                                details: None,
+                            });
+                        }
                     }
                 },
             )

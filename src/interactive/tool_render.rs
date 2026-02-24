@@ -71,10 +71,16 @@ pub(super) fn render_tool_message(text: &str, styles: &TuiStyles) -> String {
         return out;
     }
 
-    // Extract file path from "Successfully replaced text in {path}." pattern.
+    // Extract file path from tool success messages.
     let file_path = pre_diff_lines.iter().find_map(|line| {
+        // EditTool: "Successfully replaced text in {path}."
         line.strip_prefix("Successfully replaced text in ")
             .and_then(|rest| rest.strip_suffix('.'))
+            .or_else(|| {
+                // WriteTool: "Successfully wrote N bytes to {path}"
+                line.strip_prefix("Successfully wrote ")
+                    .and_then(|rest| rest.split(" bytes to ").nth(1))
+            })
     });
 
     // Render diff header.

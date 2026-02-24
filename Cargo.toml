@@ -235,5 +235,7 @@ module_name_repetitions = "allow"
 # republished with that method, remove the `try_downcast` workaround in
 # src/interactive.rs and delete this commented block.
 #
-# [patch.crates-io]
-# charmed-bubbletea = { path = "../charmed_rust/crates/bubbletea" }
+# Patched locally to eliminate full-screen Clear flicker:
+# MoveTo(0,0) + write + Clear(FromCursorDown) instead of Clear(All).
+[patch.crates-io]
+charmed-bubbletea = { path = "vendor/charmed-bubbletea" }

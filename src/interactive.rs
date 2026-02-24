@@ -780,20 +780,21 @@ impl PiApp {
         }
 
         // Input area vs processing spinner.
-        let show_input = self.agent_state == AgentState::Idle
-            && self.session_picker.is_none()
+        let no_overlay = self.session_picker.is_none()
             && self.settings_ui.is_none()
             && self.theme_picker.is_none()
             && self.capability_prompt.is_none()
             && self.branch_picker.is_none()
             && self.model_selector.is_none();
 
-        if show_input {
-            // render_input: "\n  header\n" (2 rows) + input.height() rows.
-            chrome += 2 + self.input.height();
-        } else if self.show_processing_status_spinner() {
-            // Processing spinner: "\n  spinner Processing...\n" = 2 rows.
-            chrome += 2;
+        if no_overlay && self.agent_state == AgentState::Idle {
+            // render_input: "\n  ───\n" (2 rows) + input.height() rows + "  ───\n" (1 row).
+            chrome += 3 + self.input.height();
+        } else if self.agent_state != AgentState::Idle {
+            if self.show_processing_status_spinner() {
+                // Processing spinner: "\n  spinner Processing...\n" = 2 rows.
+                chrome += 2;
+            }
         }
 
         self.term_height.saturating_sub(chrome)
@@ -804,6 +805,17 @@ impl PiApp {
     fn set_input_height(&mut self, h: usize) {
         self.input.set_height(h);
         self.resize_conversation_viewport();
+    }
+
+    /// Auto-grow the input area to fit the current content, up to max_height.
+    /// Minimum height is 3 lines (single-line mode minimum).
+    fn auto_grow_input(&mut self) {
+        let lines = self.input.line_count();
+        // At least 3 lines (room for cursor), at most max_height (20).
+        let desired = lines.clamp(3, self.input.max_height);
+        if desired != self.input.height() {
+            self.set_input_height(desired);
+        }
     }
 
     /// Rebuild the conversation viewport after a height change (terminal resize or
@@ -1126,6 +1138,9 @@ pub enum PiMsg {
         name: String,
         tool_id: String,
         is_error: bool,
+        /// Final tool result (content + details with diffs etc.)
+        content: Vec<ContentBlock>,
+        details: Option<Value>,
     },
     /// Agent finished with final message.
     AgentDone {
@@ -1376,18 +1391,18 @@ impl PiApp {
         let mut input = TextArea::new();
         input.placeholder = "Type a message... (/help, /exit)".to_string();
         input.show_line_numbers = false;
-        input.prompt = "> ".to_string();
+        input.prompt = "❯ ".to_string();
         input.set_height(3); // Start with 3 lines
         input.set_width(term_width.saturating_sub(4 + editor_padding_x));
-        input.max_height = 10; // Allow expansion up to 10 lines
+        input.max_height = 20; // Allow expansion up to 20 lines
         input.focus();
 
         let spinner = SpinnerModel::with_spinner(spinners::dot()).style(styles.accent.clone());
 
         // Configure viewport for conversation history.
         // Height budget at startup (idle):
-        // header(4) + scroll-indicator reserve(1) + input_decoration(2) + input_lines + footer(2).
-        let chrome = 4 + 1 + 2 + 2;
+        // header(4) + scroll-indicator reserve(1) + input_decoration(3) + input_lines + footer(2).
+        let chrome = 4 + 1 + 3 + 2;
         let viewport_height = term_height.saturating_sub(chrome + input.height());
         let mut conversation_viewport =
             Viewport::new(term_width.saturating_sub(2), viewport_height);
@@ -1478,9 +1493,11 @@ impl PiApp {
         let git_branch = read_git_branch(&cwd);
         let startup_welcome = build_startup_welcome_message(&config);
 
+        let history_path = Some(Config::global_dir().join("prompt_history.txt"));
+
         let mut app = Self {
             input,
-            history: HistoryList::new(),
+            history: HistoryList::with_path(history_path),
             input_mode: InputMode::SingleLine,
             pending_inputs: VecDeque::from(pending_inputs),
             message_queue,

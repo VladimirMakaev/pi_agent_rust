@@ -221,12 +221,15 @@ fn dispatch_agent_event_to_ui(event: &AgentEvent, batcher: &mut UiStreamDeltaBat
             tool_name,
             tool_call_id,
             is_error,
+            result,
             ..
         } => {
             batcher.send_immediate(PiMsg::ToolEnd {
                 name: tool_name.clone(),
                 tool_id: tool_call_id.clone(),
                 is_error: *is_error,
+                content: result.content.clone(),
+                details: result.details.clone(),
             });
         }
         AgentEvent::AgentEnd { messages, .. } => {
@@ -327,11 +330,29 @@ impl PiApp {
                     self.pending_tool_output = Some(format!("Tool {name} output:\n{output}"));
                 }
             }
-            PiMsg::ToolEnd { .. } => {
+            PiMsg::ToolEnd {
+                name,
+                content,
+                details,
+                ..
+            } => {
                 self.agent_state = AgentState::Processing;
                 self.current_tool = None;
                 self.tool_progress = None;
-                if let Some(output) = self.pending_tool_output.take() {
+
+                // Use pending_tool_output (from streaming ToolUpdate events) if available.
+                // Otherwise, format the final tool result directly — this covers tools
+                // like write/edit that complete without intermediate updates.
+                let output = self.pending_tool_output.take().or_else(|| {
+                    format_tool_output(
+                        &content,
+                        details.as_ref(),
+                        self.config.terminal_show_images(),
+                    )
+                    .map(|o| format!("Tool {name} output:\n{o}"))
+                });
+
+                if let Some(output) = output {
                     self.messages.push(ConversationMessage::tool(output));
                     self.scroll_to_bottom();
                 }
@@ -936,7 +957,7 @@ impl PiApp {
         self.input.set_value(&combined);
         if combined.contains('\n') {
             self.input_mode = InputMode::MultiLine;
-            self.set_input_height(6);
+            self.auto_grow_input();
         }
         self.input.focus();
 
