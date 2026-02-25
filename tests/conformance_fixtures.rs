@@ -3,6 +3,8 @@
 //! This test module runs all fixture-based conformance tests to ensure
 //! the Rust implementation matches the TypeScript reference.
 
+mod common;
+
 #[path = "conformance/mod.rs"]
 mod conformance;
 
@@ -16,7 +18,7 @@ macro_rules! fixture_test {
     ($name:ident, $fixture:literal) => {
         #[test]
         fn $name() {
-            run_async( async {
+            common::run_async( async {
                 let fixture = load_fixture($fixture)
                     .unwrap_or_else(|e| panic!("Failed to load fixture '{}': {}", $fixture, e));
 

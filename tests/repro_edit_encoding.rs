@@ -1,3 +1,5 @@
+mod common;
+
 use pi::tools::{EditTool, Tool};
 use serde_json::json;
 use std::fs::File;
@@ -6,7 +8,7 @@ use tempfile::tempdir;
 
 #[test]
 fn test_edit_tool_fails_on_invalid_utf8() {
-    run_async( async {
+    common::run_async( async {
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("test.bin");
 

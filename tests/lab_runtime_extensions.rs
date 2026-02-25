@@ -6,8 +6,8 @@
 //! - Invariant verification via oracle suite
 //! - Budget enforcement testing
 
+use asupersync::Budget;
 use asupersync::lab::{LabConfig, LabRuntime};
-use asupersync::types::Budget;
 use pi::extensions::{ExtensionManager, PROTOCOL_VERSION, RegisterPayload};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -249,9 +249,9 @@ fn budget_set_and_get_deterministic() {
             r.lock().unwrap().push("default_ok".to_string());
 
             // with_budget constructor sets the budget.
-            let budget = Budget {
-                deadline: Some(asupersync::types::Time::from_millis(5_000)),
-                ..Budget::INFINITE
+            let budget = pi::extensions::Budget {
+                deadline: Some(std::time::Duration::from_millis(5_000)),
+                ..pi::extensions::Budget::INFINITE
             };
             let mgr2 = ExtensionManager::with_budget(budget);
             let b2 = mgr2.budget();
@@ -259,7 +259,7 @@ fn budget_set_and_get_deterministic() {
             r.lock().unwrap().push("with_budget_ok".to_string());
 
             // set_budget modifies it.
-            mgr2.set_budget(Budget::INFINITE);
+            mgr2.set_budget(pi::extensions::Budget::INFINITE);
             let b3 = mgr2.budget();
             assert!(b3.deadline.is_none(), "budget should be cleared");
             r.lock().unwrap().push("set_budget_ok".to_string());

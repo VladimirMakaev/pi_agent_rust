@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+mod common;
+
 use pi::PiResult;
 use pi::session::{CustomEntry, EntryBase, MigrationState, SessionEntry};
 use pi::session_store_v2::{
@@ -1347,7 +1349,7 @@ fn v2_resume_loads_same_entries_as_jsonl() -> PiResult<()> {
         .to_str()
         .expect("temporary jsonl path must be valid UTF-8")
         .to_string();
-    run_async( async move {
+    common::run_async( async move {
         let (session, diag) = pi::session::Session::open_with_diagnostics(&jsonl_str)
             .await
             .expect("session open should succeed");

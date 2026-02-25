@@ -476,7 +476,8 @@ fn all_available_providers_simple_text() {
                 };
                 write_result_artifact(&vr);
                 vr
-            });
+            }
+        });
 
         if result.passed {
             passed += 1;

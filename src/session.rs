@@ -471,6 +471,12 @@ impl AutosaveQueue {
             let dropped = dropped as u64;
             self.backpressure_events = self.backpressure_events.saturating_add(dropped);
             self.coalesced_mutations = self.coalesced_mutations.saturating_add(dropped);
+            tracing::warn!(
+                dropped_count = dropped,
+                batch_size = ticket.batch_size,
+                restored,
+                "Session flush failed; {dropped} mutations dropped (queue at capacity)"
+            );
         }
     }
 }
@@ -4207,7 +4213,7 @@ mod tests {
     }
 
     fn run_async<T>(future: impl Future<Output = T>) -> T {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
             .build()
             .expect("build runtime");
         runtime.block_on(future)
@@ -4929,7 +4935,7 @@ mod tests {
         let path2 = path.clone();
 
         let t1 = std::thread::spawn(move || {
-            let runtime = RuntimeBuilder::current_thread()
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
                 .build()
                 .expect("build runtime");
             runtime.block_on(async move {
@@ -4942,7 +4948,7 @@ mod tests {
         });
 
         let t2 = std::thread::spawn(move || {
-            let runtime = RuntimeBuilder::current_thread()
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
                 .build()
                 .expect("build runtime");
             runtime.block_on(async move {

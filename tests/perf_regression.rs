@@ -1058,6 +1058,7 @@ fn config_parse_latency() {
         },
         "extensions": {
             "paths": ["/home/user/.pi/extensions"]
+            }
         });
     let config_str = serde_json::to_string(&config).unwrap();
 

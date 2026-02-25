@@ -947,6 +947,7 @@ mod tests {
                 .expect("build runtime")
         })
         .handle()
+        .clone()
     }
 
     fn model_entry(
@@ -1014,7 +1015,6 @@ mod tests {
             available,
             Vec::new(),
             event_tx,
-            runtime_handle(),
             true,
             None,
             Some(KeyBindings::new()),

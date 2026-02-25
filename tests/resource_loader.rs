@@ -95,6 +95,7 @@ fn load_skills_defaults_and_collision_diagnostics() {
             ctx.push(("count".into(), result.diagnostics.len().to_string()));
             for (idx, diag) in result.diagnostics.iter().enumerate() {
                 ctx.push((format!("diag_{idx}"), diag.message.clone()));
+                }
             });
 
     assert_eq!(result.skills.len(), 2, "collision should de-dupe alpha");
@@ -151,6 +152,7 @@ fn load_skills_reports_unknown_frontmatter_fields() {
                 format!("skill_{}", skill.name),
                 skill.file_path.display().to_string(),
             ));
+            }
         });
     harness
         .log()
@@ -158,6 +160,7 @@ fn load_skills_reports_unknown_frontmatter_fields() {
             ctx.push(("count".into(), result.diagnostics.len().to_string()));
             for (idx, diag) in result.diagnostics.iter().enumerate() {
                 ctx.push((format!("diag_{idx}"), diag.message.clone()));
+                }
             });
 
     assert_eq!(result.skills.len(), 1);
@@ -200,6 +203,7 @@ fn load_skills_requires_description() {
             ctx.push(("count".into(), result.diagnostics.len().to_string()));
             for (idx, diag) in result.diagnostics.iter().enumerate() {
                 ctx.push((format!("diag_{idx}"), diag.message.clone()));
+                }
             });
 
     assert!(result.skills.is_empty());
@@ -252,6 +256,7 @@ fn prompt_template_description_and_collision_diagnostics() {
                 format!("prompt_desc_{}", prompt.name),
                 prompt.description.clone(),
             ));
+            }
         });
     harness
         .log()
@@ -259,6 +264,7 @@ fn prompt_template_description_and_collision_diagnostics() {
             ctx.push(("count".into(), diagnostics.len().to_string()));
             for (idx, diag) in diagnostics.iter().enumerate() {
                 ctx.push((format!("diag_{idx}"), diag.message.clone()));
+                }
             });
 
     assert_eq!(deduped.len(), 1);
@@ -319,6 +325,7 @@ fn themes_load_ini_and_dedupe_collisions() {
                 theme.file_path.display().to_string(),
             ));
             ctx.push((format!("theme_src_{}", theme.name), theme.source.clone()));
+            }
         });
 
     assert!(
@@ -374,6 +381,7 @@ fn themes_invalid_ini_emits_warning() {
             ctx.push(("count".into(), result.diagnostics.len().to_string()));
             for (idx, diag) in result.diagnostics.iter().enumerate() {
                 ctx.push((format!("diag_{idx}"), diag.message.clone()));
+                }
             });
 
     assert!(result.themes.is_empty());
@@ -451,6 +459,7 @@ fn resolved_paths_feed_skill_and_prompt_loaders_with_collision_diagnostics() {
         ctx.push(("count".into(), skills_result.skills.len().to_string()));
         for skill in &skills_result.skills {
             ctx.push((skill.name.clone(), skill.file_path.display().to_string()));
+            }
         });
     harness
         .log()
@@ -458,6 +467,7 @@ fn resolved_paths_feed_skill_and_prompt_loaders_with_collision_diagnostics() {
             ctx.push(("count".into(), skills_result.diagnostics.len().to_string()));
             for (idx, diag) in skills_result.diagnostics.iter().enumerate() {
                 ctx.push((format!("diag_{idx}"), diag.message.clone()));
+                }
             });
 
     let alpha = skills_result
@@ -497,6 +507,7 @@ fn resolved_paths_feed_skill_and_prompt_loaders_with_collision_diagnostics() {
         ctx.push(("count".into(), prompts.len().to_string()));
         for prompt in &prompts {
             ctx.push((prompt.name.clone(), prompt.file_path.display().to_string()));
+            }
         });
     harness
         .log()
@@ -504,6 +515,7 @@ fn resolved_paths_feed_skill_and_prompt_loaders_with_collision_diagnostics() {
             ctx.push(("count".into(), diagnostics.len().to_string()));
             for (idx, diag) in diagnostics.iter().enumerate() {
                 ctx.push((format!("diag_{idx}"), diag.message.clone()));
+                }
             });
 
     let collision = prompts

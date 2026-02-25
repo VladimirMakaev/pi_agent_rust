@@ -38,11 +38,13 @@ use std::sync::{Arc, OnceLock};
 fn test_runtime_handle() -> tokio::runtime::Handle {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RT.get_or_init(|| {
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("build tokio runtime")
     })
     .handle()
+    .clone()
 }
 
 struct DummyProvider;
@@ -138,7 +140,6 @@ fn build_app(harness: &TestHarness, extensions: Option<ExtensionManager>) -> PiA
         available_models,
         Vec::new(),
         event_tx,
-        test_runtime_handle(),
         false,
         extensions,
         Some(KeyBindings::new()),
@@ -438,25 +439,26 @@ mod extension_ui_channel {
     #[test]
     fn request_ui_roundtrip() {
         let manager = ExtensionManager::new();
-        let runtime = tokio::runtime::Builder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime");
         let handle = runtime.handle();
 
         runtime.block_on(async move {
-            let (ui_tx, ui_rx) = mpsc::channel(16);
+            let (ui_tx, mut ui_rx) = mpsc::channel(16);
             manager.set_ui_sender(ui_tx);
 
             let responder = manager.clone();
             handle.spawn(async move {
-                let cx = Cx::for_request();
-                if let Ok(req) = ui_rx.recv(&cx).await {
+                if let Some(req) = ui_rx.recv().await {
                     responder.respond_ui(ExtensionUiResponse {
                         id: req.id,
                         value: Some(json!("user_chose_this")),
                         cancelled: false,
                     });
-                });
+                }
+            });
 
             let request = ExtensionUiRequest::new("test-1", "confirm", json!({"title": "Test"}));
             let response = manager.request_ui(request).await.unwrap();
@@ -469,25 +471,26 @@ mod extension_ui_channel {
     #[test]
     fn request_ui_cancelled_response() {
         let manager = ExtensionManager::new();
-        let runtime = tokio::runtime::Builder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime");
         let handle = runtime.handle();
 
         runtime.block_on(async move {
-            let (ui_tx, ui_rx) = mpsc::channel(16);
+            let (ui_tx, mut ui_rx) = mpsc::channel(16);
             manager.set_ui_sender(ui_tx);
 
             let responder = manager.clone();
             handle.spawn(async move {
-                let cx = Cx::for_request();
-                if let Ok(req) = ui_rx.recv(&cx).await {
+                if let Some(req) = ui_rx.recv().await {
                     responder.respond_ui(ExtensionUiResponse {
                         id: req.id,
                         value: Some(json!(false)),
                         cancelled: true,
                     });
-                });
+                }
+            });
 
             let request =
                 ExtensionUiRequest::new("test-cancel", "confirm", json!({"title": "Cancel me"}));
@@ -501,7 +504,8 @@ mod extension_ui_channel {
     #[test]
     fn clear_ui_sender_prevents_requests() {
         let manager = ExtensionManager::new();
-        let runtime = tokio::runtime::Builder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime");
 
@@ -1005,27 +1009,28 @@ mod full_flow {
 
     #[test]
     fn manager_request_response_with_allow() {
-        let runtime = tokio::runtime::Builder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime");
         let handle = runtime.handle();
 
         runtime.block_on(async move {
             let manager = ExtensionManager::new();
-            let (ui_tx, ui_rx) = mpsc::channel(16);
+            let (ui_tx, mut ui_rx) = mpsc::channel(16);
             manager.set_ui_sender(ui_tx);
 
             // Simulate UI thread auto-approving.
             let responder = manager.clone();
             handle.spawn(async move {
-                let cx = Cx::for_request();
-                while let Ok(req) = ui_rx.recv(&cx).await {
+                while let Some(req) = ui_rx.recv().await {
                     responder.respond_ui(ExtensionUiResponse {
                         id: req.id,
                         value: Some(json!(true)),
                         cancelled: false,
                     });
-                });
+                }
+            });
 
             // First capability prompt.
             let request = cap_prompt_request("flow-1", "ext-a", "exec", "Run shell");
@@ -1037,26 +1042,27 @@ mod full_flow {
 
     #[test]
     fn manager_request_response_with_deny() {
-        let runtime = tokio::runtime::Builder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime");
         let handle = runtime.handle();
 
         runtime.block_on(async move {
             let manager = ExtensionManager::new();
-            let (ui_tx, ui_rx) = mpsc::channel(16);
+            let (ui_tx, mut ui_rx) = mpsc::channel(16);
             manager.set_ui_sender(ui_tx);
 
             let responder = manager.clone();
             handle.spawn(async move {
-                let cx = Cx::for_request();
-                while let Ok(req) = ui_rx.recv(&cx).await {
+                while let Some(req) = ui_rx.recv().await {
                     responder.respond_ui(ExtensionUiResponse {
                         id: req.id,
                         value: Some(json!(false)),
                         cancelled: true,
                     });
-                });
+                }
+            });
 
             let request = cap_prompt_request("flow-2", "ext-a", "exec", "Run shell");
             let resp = manager.request_ui(request).await.unwrap().unwrap();
@@ -1067,7 +1073,8 @@ mod full_flow {
 
     #[test]
     fn notify_request_returns_none_response() {
-        let runtime = tokio::runtime::Builder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime");
 

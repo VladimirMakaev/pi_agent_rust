@@ -44,7 +44,8 @@ fn load_js_extension(harness: &common::TestHarness, source: &str) -> ExtensionMa
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start js runtime")
-        });
+        }
+    });
     manager.set_js_runtime(runtime);
 
     common::run_async({
@@ -54,7 +55,8 @@ fn load_js_extension(harness: &common::TestHarness, source: &str) -> ExtensionMa
                 .load_js_extensions(vec![spec])
                 .await
                 .expect("load extension");
-        });
+        }
+    });
 
     manager
 }
@@ -82,12 +84,14 @@ fn try_load_js_extension(
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start js runtime")
-        });
+        }
+    });
     manager.set_js_runtime(runtime);
 
     let loaded = common::run_async({
         let manager = manager.clone();
-        async move { manager.load_js_extensions(vec![spec]).await.is_ok() });
+        async move { manager.load_js_extensions(vec![spec]).await.is_ok() }
+    });
 
     (manager, loaded)
 }
@@ -95,7 +99,8 @@ fn try_load_js_extension(
 fn shutdown(manager: &ExtensionManager) {
     let _ = common::run_async({
         let manager = manager.clone();
-        async move { manager.shutdown(Duration::from_millis(500)).await });
+        async move { manager.shutdown(Duration::from_millis(500)).await }
+    });
 }
 
 // ─── Extension Sources ──────────────────────────────────────────────────────
@@ -239,7 +244,8 @@ fn event_dispatch_completes_within_timeout_for_good_extension() {
                     5_000,
                 )
                 .await
-        });
+        }
+    });
 
     let elapsed = start.elapsed();
     assert!(result.is_ok(), "dispatch should succeed: {result:?}");
@@ -268,7 +274,8 @@ fn slow_event_hook_is_bounded_by_timeout() {
                     1_000,
                 )
                 .await
-        });
+        }
+    });
 
     let elapsed = start.elapsed();
     // Should be bounded by the timeout, not the 10s busy wait.
@@ -336,7 +343,8 @@ fn throwing_event_hook_does_not_crash_runtime() {
                     5_000,
                 )
                 .await
-        });
+        }
+    });
     eprintln!("[throwing_event] result1: {result1:?}");
 
     // Second dispatch: runtime should still be functional.
@@ -350,7 +358,8 @@ fn throwing_event_hook_does_not_crash_runtime() {
                     5_000,
                 )
                 .await
-        });
+        }
+    });
     eprintln!("[throwing_event] result2: {result2:?}");
 
     // The runtime should still be alive — the second dispatch should not panic.
@@ -415,7 +424,8 @@ fn rejected_promise_event_hook_does_not_crash() {
                     5_000,
                 )
                 .await
-        });
+        }
+    });
     eprintln!("[rejected_promise] result: {result:?}");
 
     // Runtime should survive rejected promises.
@@ -437,7 +447,8 @@ fn graceful_shutdown_completes_within_budget() {
     let start = Instant::now();
     let ok = common::run_async({
         let manager = manager.clone();
-        async move { manager.shutdown(Duration::from_secs(2)).await });
+        async move { manager.shutdown(Duration::from_secs(2)).await }
+    });
 
     let elapsed = start.elapsed();
     eprintln!("[shutdown_budget] ok={ok}, elapsed={elapsed:?}");
@@ -456,13 +467,15 @@ fn double_shutdown_is_safe() {
     // First shutdown.
     let ok1 = common::run_async({
         let manager = manager.clone();
-        async move { manager.shutdown(Duration::from_secs(2)).await });
+        async move { manager.shutdown(Duration::from_secs(2)).await }
+    });
     assert!(ok1, "first shutdown should succeed");
 
     // Second shutdown should be a no-op (runtime already cleared).
     let ok2 = common::run_async({
         let manager = manager.clone();
-        async move { manager.shutdown(Duration::from_secs(2)).await });
+        async move { manager.shutdown(Duration::from_secs(2)).await }
+    });
     // Second shutdown returns true (no runtime to shut down = success).
     assert!(ok2, "second shutdown should also succeed (no-op)");
 }
@@ -475,7 +488,8 @@ fn dispatch_after_shutdown_returns_none() {
     // Shut down first.
     common::run_async({
         let manager = manager.clone();
-        async move { manager.shutdown(Duration::from_secs(2)).await });
+        async move { manager.shutdown(Duration::from_secs(2)).await }
+    });
 
     // Dispatch after shutdown — should not panic, should return None or error.
     let result = common::run_async({
@@ -488,7 +502,8 @@ fn dispatch_after_shutdown_returns_none() {
                     1_000,
                 )
                 .await
-        });
+        }
+    });
     eprintln!("[dispatch_after_shutdown] result: {result:?}");
 
     // Should NOT panic. The result should be Ok(None) or Err — both acceptable.
@@ -531,7 +546,8 @@ fn runtime_survives_failed_load_attempt() {
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start js runtime")
-        });
+        }
+    });
     manager.set_js_runtime(runtime);
 
     // First: try to load a broken extension.
@@ -539,7 +555,8 @@ fn runtime_survives_failed_load_attempt() {
     let bad_spec = JsExtensionLoadSpec::from_entry_path(&bad_path).expect("spec");
     let bad_result = common::run_async({
         let manager = manager.clone();
-        async move { manager.load_js_extensions(vec![bad_spec]).await });
+        async move { manager.load_js_extensions(vec![bad_spec]).await }
+    });
     assert!(bad_result.is_err(), "broken extension should fail to load");
 
     // Second: load a good extension — should succeed on the same runtime.
@@ -547,7 +564,8 @@ fn runtime_survives_failed_load_attempt() {
     let good_spec = JsExtensionLoadSpec::from_entry_path(&good_path).expect("spec");
     let good_result = common::run_async({
         let manager = manager.clone();
-        async move { manager.load_js_extensions(vec![good_spec]).await });
+        async move { manager.load_js_extensions(vec![good_spec]).await }
+    });
     assert!(
         good_result.is_ok(),
         "good extension should load after bad one: {good_result:?}"
@@ -564,7 +582,8 @@ fn runtime_survives_failed_load_attempt() {
                     5_000,
                 )
                 .await
-        });
+        }
+    });
     assert!(
         event_result.is_ok(),
         "event dispatch should work after recovery: {event_result:?}"
@@ -594,7 +613,8 @@ fn rapid_sequential_dispatches_do_not_deadlock() {
                         2_000,
                     )
                     .await
-            });
+            }
+        });
         if result.is_ok() {
             ok_count += 1;
         }
@@ -632,7 +652,8 @@ fn noop_event_dispatch_with_zero_timeout_returns_quickly() {
                     0, // Zero timeout
                 )
                 .await
-        });
+        }
+    });
 
     let elapsed = start.elapsed();
     eprintln!("[zero_timeout] elapsed={elapsed:?}, result={result:?}");
@@ -703,17 +724,20 @@ fn rapid_create_load_shutdown_cycle() {
                 JsExtensionRuntimeHandle::start(js_config, tools, manager)
                     .await
                     .expect("start runtime")
-            });
+            }
+        });
         manager.set_js_runtime(runtime);
 
         let load_ok = common::run_async({
             let manager = manager.clone();
-            async move { manager.load_js_extensions(vec![spec]).await.is_ok() });
+            async move { manager.load_js_extensions(vec![spec]).await.is_ok() }
+    });
         assert!(load_ok, "iteration {i}: load should succeed");
 
         let shutdown_ok = common::run_async({
             let manager = manager.clone();
-            async move { manager.shutdown(Duration::from_secs(2)).await });
+            async move { manager.shutdown(Duration::from_secs(2)).await }
+    });
         assert!(shutdown_ok, "iteration {i}: shutdown should succeed");
     }
 }
@@ -739,7 +763,8 @@ fn multiple_extensions_one_good_one_throwing() {
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start runtime")
-        });
+        }
+    });
     manager.set_js_runtime(runtime);
 
     // Load good extension first.
@@ -747,7 +772,8 @@ fn multiple_extensions_one_good_one_throwing() {
     let good_spec = JsExtensionLoadSpec::from_entry_path(&good_path).expect("good spec");
     let good_ok = common::run_async({
         let manager = manager.clone();
-        async move { manager.load_js_extensions(vec![good_spec]).await.is_ok() });
+        async move { manager.load_js_extensions(vec![good_spec]).await.is_ok() }
+    });
     assert!(good_ok, "good extension should load");
 
     // Load throwing extension.
@@ -755,7 +781,8 @@ fn multiple_extensions_one_good_one_throwing() {
     let throw_spec = JsExtensionLoadSpec::from_entry_path(&throw_path).expect("throw spec");
     let throw_ok = common::run_async({
         let manager = manager.clone();
-        async move { manager.load_js_extensions(vec![throw_spec]).await.is_ok() });
+        async move { manager.load_js_extensions(vec![throw_spec]).await.is_ok() }
+    });
     // Throwing at load time might or might not fail — the throw is in the handler, not activate.
     eprintln!("[mixed] throw_ext loaded: {throw_ok}");
 
@@ -770,7 +797,8 @@ fn multiple_extensions_one_good_one_throwing() {
                     5_000,
                 )
                 .await
-        });
+        }
+    });
     eprintln!("[mixed] dispatch result: {result:?}");
 
     // Runtime should still be alive.
@@ -799,7 +827,8 @@ fn dispatch_with_null_payload_does_not_panic() {
                     5_000,
                 )
                 .await
-        });
+        }
+    });
     // Should not panic.
     eprintln!("[null_payload] result: {result:?}");
 
@@ -821,7 +850,8 @@ fn dispatch_with_empty_object_payload() {
                     5_000,
                 )
                 .await
-        });
+        }
+    });
     eprintln!("[empty_payload] result: {result:?}");
     assert!(result.is_ok());
 
@@ -845,7 +875,8 @@ fn dispatch_with_large_payload_does_not_crash() {
                     5_000,
                 )
                 .await
-        });
+        }
+    });
     eprintln!("[large_payload] result_ok={}", result.is_ok());
     // Should not crash or hang.
 
@@ -870,7 +901,8 @@ fn dispatch_unregistered_event_returns_none() {
                     5_000,
                 )
                 .await
-        });
+        }
+    });
 
     match result {
         Ok(None) => eprintln!("[unregistered_event] Ok(None) — expected, no hooks"),
@@ -947,7 +979,8 @@ fn concurrent_event_dispatch_does_not_deadlock_or_crash() {
                                 Some(json!({"systemPrompt": "test", "model": "test"})),
                             )
                             .await
-                        });
+                        }
+                    });
                     if result.is_ok() {
                         successes += 1;
                     }
@@ -993,7 +1026,8 @@ fn high_volume_error_recovery() {
                         Some(json!({"systemPrompt": "test", "model": "test"})),
                     )
                     .await
-            });
+            }
+        });
         // Ensure we don't spend too long (deadlock detection).
         assert!(
             start.elapsed() < Duration::from_secs(30),
@@ -1041,7 +1075,8 @@ fn error_followed_by_success() {
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start")
-        });
+        }
+    });
     manager.set_js_runtime(runtime);
 
     common::run_async({
@@ -1051,7 +1086,8 @@ fn error_followed_by_success() {
                 .load_js_extensions(vec![throw_spec, good_spec])
                 .await
                 .expect("load");
-        });
+        }
+    });
 
     // Dispatch 5 events — throwing ext will fail, but counter ext should still work.
     for _ in 0..5 {
@@ -1064,7 +1100,8 @@ fn error_followed_by_success() {
                         Some(json!({"systemPrompt": "test", "model": "test"})),
                     )
                     .await
-            });
+            }
+        });
     }
 
     // Verify the runtime is still alive and responding.
@@ -1078,7 +1115,8 @@ fn error_followed_by_success() {
                     5_000,
                 )
                 .await
-        });
+        }
+    });
 
     match &result {
         Ok(Some(v)) => eprintln!("[error_then_success] Response: {v}"),
@@ -1108,7 +1146,8 @@ fn repeated_lifecycle_with_jittery_ext() {
                             Some(json!({"systemPrompt": "test", "model": "test"})),
                         )
                         .await
-                });
+                }
+            });
         }
 
         shutdown(&manager);
@@ -1141,7 +1180,8 @@ fn mixed_event_types_rapid_dispatch() {
                     manager
                         .dispatch_event(event, Some(json!({"systemPrompt": "x", "model": "y"})))
                         .await
-                });
+                }
+            });
             dispatched += 1;
         }
     }
@@ -1177,15 +1217,18 @@ fn shutdown_during_active_dispatch() {
                         Some(json!({"systemPrompt": "bg", "model": "test"})),
                     )
                     .await
-                });
-        });
+                }
+            });
+        }
+    });
 
     // Give dispatches a small head start, then initiate shutdown.
     std::thread::sleep(Duration::from_millis(10));
     let shutdown_start = Instant::now();
     let _ = common::run_async({
         let manager = manager.clone();
-        async move { manager.shutdown(Duration::from_secs(2)).await });
+        async move { manager.shutdown(Duration::from_secs(2)).await }
+    });
     let shutdown_elapsed = shutdown_start.elapsed();
 
     eprintln!("[shutdown_during_dispatch] Shutdown completed in {shutdown_elapsed:?}");
@@ -1226,13 +1269,15 @@ fn load_failure_then_good_load_succeeds() {
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start")
-        });
+        }
+    });
     manager.set_js_runtime(runtime);
 
     // Try to load bad extension — should fail.
     let bad_result = common::run_async({
         let manager = manager.clone();
-        async move { manager.load_js_extensions(vec![bad_spec]).await });
+        async move { manager.load_js_extensions(vec![bad_spec]).await }
+    });
     assert!(bad_result.is_err(), "Bad extension should fail to load");
     eprintln!(
         "[load_recovery] Bad load correctly failed: {}",
@@ -1242,7 +1287,8 @@ fn load_failure_then_good_load_succeeds() {
     // Now load good extension — should succeed.
     let good_result = common::run_async({
         let manager = manager.clone();
-        async move { manager.load_js_extensions(vec![good_spec]).await });
+        async move { manager.load_js_extensions(vec![good_spec]).await }
+    });
     assert!(
         good_result.is_ok(),
         "Good extension should load after bad one failed"
@@ -1259,7 +1305,8 @@ fn load_failure_then_good_load_succeeds() {
                     Some(json!({"systemPrompt": "test", "model": "test"})),
                 )
                 .await
-        });
+        }
+    });
     assert!(
         dispatch_result.is_ok(),
         "Dispatch should work after recovery"

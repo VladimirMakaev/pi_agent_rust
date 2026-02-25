@@ -1633,6 +1633,14 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
 
+    fn run_async<T>(future: impl std::future::Future<Output = T>) -> T {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build runtime")
+            .block_on(future)
+    }
+
     #[tokio::test]
     async fn create_agent_session_default_succeeds() {
         let tmp = tempdir().expect("tempdir");
@@ -1682,13 +1690,11 @@ mod tests {
         let handle = create_agent_session(options).await.expect("create session");
         assert!(!handle.session().save_enabled());
 
-        let cx = crate::agent_cx::AgentCx::for_request();
         let guard = handle
             .session()
             .session
-            .lock(cx.cx())
-            .await
-            .expect("lock session");
+            .lock()
+            .await;
         let path_is_none = guard.path.is_none();
         assert!(path_is_none);
     }

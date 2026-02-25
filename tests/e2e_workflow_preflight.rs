@@ -34,6 +34,7 @@ fn write_extension_package(root: &Path, name: &str, source: &str) {
         "private": true,
         "pi": {
             "extensions": [format!("extensions/{entry}")]
+            }
         });
     fs::write(
         root.join("package.json"),
@@ -47,6 +48,7 @@ fn write_policy_settings(root: &Path, profile: &str) {
     let settings = serde_json::json!({
         "extension_policy": {
             "profile": profile
+            }
         });
     let settings_dir = root.join(".pi");
     fs::create_dir_all(&settings_dir).expect("mkdir .pi/");
@@ -543,6 +545,7 @@ import dns from "node:dns";
             for f in &report.findings {
                 if let Some(rem) = &f.remediation {
                     ctx.push((f.message.clone(), rem.clone()));
+                }
                 }
             });
 }

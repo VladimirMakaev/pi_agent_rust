@@ -1494,6 +1494,12 @@ impl Tool for ReadTool {
         // Input offset is 1-based. Convert to 0-based index.
         let start_line_idx = match input.offset {
             Some(n) if n > 0 => n.saturating_sub(1).try_into().unwrap_or(usize::MAX),
+            Some(n) if n < 0 => {
+                return Err(Error::tool(
+                    "read",
+                    format!("Offset must be a positive integer, got {n}"),
+                ));
+            }
             _ => 0,
         };
         let limit_lines = input
@@ -1838,7 +1844,7 @@ pub(crate) async fn run_bash_command(
     let timeout = timeout_secs.map(Duration::from_secs);
     let mut terminate_deadline: Option<Instant> = None;
 
-    let tick = Duration::from_millis(10);
+    let tick = Duration::from_millis(1);
     loop {
         let mut updated = false;
         while let Ok(chunk) = rx.try_recv() {
@@ -2600,6 +2606,15 @@ impl Tool for EditTool {
             )
         })?;
 
+        // Capture content hash for TOCTOU detection.
+        let content_hash_before = {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut h = DefaultHasher::new();
+            raw_content.hash(&mut h);
+            h.finish()
+        };
+
         // Strip BOM before matching (LLM won't include invisible BOM in oldText).
         let (content_no_bom, had_bom) = strip_bom(&raw_content);
 
@@ -2717,6 +2732,27 @@ impl Tool for EditTool {
         let mut final_content = new_content;
         if had_bom {
             final_content = format!("\u{FEFF}{final_content}");
+        }
+
+        // Verify file was not modified by another process since we read it (TOCTOU check).
+        {
+            #[allow(clippy::collection_is_never_read)]
+            let current = tokio::fs::read(&absolute_path)
+                .await
+                .map_err(|e| Error::tool("edit", format!("Integrity check failed: {e}")))?;
+            let current_hash = {
+                use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
+                let mut h = DefaultHasher::new();
+                current.hash(&mut h);
+                h.finish()
+            };
+            if current_hash != content_hash_before {
+                return Err(Error::tool(
+                    "edit",
+                    "File was modified by another process during edit. Please retry.".to_string(),
+                ));
+            }
         }
 
         // Atomic write (safe improvement vs legacy, behavior-equivalent).
@@ -2845,6 +2881,16 @@ impl Tool for WriteTool {
         }
 
         let path = resolve_path(&input.path, &self.cwd);
+
+        // Reject writes through symlinks to prevent path traversal attacks.
+        if let Ok(sym_meta) = std::fs::symlink_metadata(&path) {
+            if sym_meta.file_type().is_symlink() {
+                return Err(Error::tool(
+                    "write",
+                    format!("Refusing to write through symlink: {}", path.display()),
+                ));
+            }
+        }
 
         // Read existing file content (if any) for diff generation
         let old_content = tokio::fs::read_to_string(&path).await.ok();
@@ -3123,6 +3169,13 @@ impl Tool for GrepTool {
     ) -> Result<ToolOutput> {
         let input: GrepInput =
             serde_json::from_value(input).map_err(|e| Error::validation(e.to_string()))?;
+
+        if input.pattern.is_empty() {
+            return Err(Error::tool(
+                "grep",
+                "Search pattern cannot be empty".to_string(),
+            ));
+        }
 
         if !rg_available() {
             return Err(Error::tool(

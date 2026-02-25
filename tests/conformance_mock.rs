@@ -396,7 +396,8 @@ fn load_with_mock(
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start js runtime")
-        });
+        }
+    });
     manager.set_js_runtime(runtime);
 
     common::run_async({
@@ -407,7 +408,8 @@ fn load_with_mock(
                 .load_js_extensions(vec![spec])
                 .await
                 .expect("load extension with mock");
-        });
+        }
+    });
 
     (manager, load_spec, capture)
 }
@@ -540,7 +542,8 @@ fn mock_session_compiles_and_default_spec() {
     // Verify default state
     let state = common::run_async({
         let session = Arc::new(session);
-        async move { session.get_state().await });
+        async move { session.get_state().await }
+    });
     assert_eq!(state, Value::Null, "default state should be Null");
 
     let log = capture.snapshot();
@@ -565,7 +568,8 @@ fn mock_session_returns_configured_state() {
 
     let state = common::run_async({
         let s = Arc::clone(&session);
-        async move { s.get_state().await });
+        async move { s.get_state().await }
+    });
     assert_eq!(
         state.get("sessionName").and_then(|v| v.as_str()),
         Some("test-session")
@@ -573,13 +577,15 @@ fn mock_session_returns_configured_state() {
 
     let model = common::run_async({
         let s = Arc::clone(&session);
-        async move { s.get_model().await });
+        async move { s.get_model().await }
+    });
     assert_eq!(model.0.as_deref(), Some("anthropic"));
     assert_eq!(model.1.as_deref(), Some("claude-sonnet-4-5"));
 
     let level = common::run_async({
         let s = Arc::clone(&session);
-        async move { s.get_thinking_level().await });
+        async move { s.get_thinking_level().await }
+    });
     assert_eq!(level.as_deref(), Some("medium"));
 
     let log = capture.snapshot();
@@ -607,7 +613,8 @@ fn mock_session_captures_mutations() {
             s.set_label("msg-123".to_string(), Some("important".to_string()))
                 .await
                 .unwrap();
-        });
+        }
+    });
 
     assert_eq!(session.name_history(), vec!["new-name"]);
     assert_eq!(
@@ -1043,7 +1050,8 @@ fn session_mutation_scenario() {
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start js runtime")
-        });
+        }
+    });
     manager.set_js_runtime(runtime);
 
     common::run_async({
@@ -1054,7 +1062,8 @@ fn session_mutation_scenario() {
                 .load_js_extensions(vec![load_spec])
                 .await
                 .expect("load extension");
-        });
+        }
+    });
 
     // Verify session mutations happened
     let name_history = session.name_history();
@@ -1145,7 +1154,8 @@ fn custom_entry_scenario() {
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start js runtime")
-        });
+        }
+    });
     manager.set_js_runtime(runtime);
 
     let spec = load_spec;
@@ -1156,7 +1166,8 @@ fn custom_entry_scenario() {
                 .load_js_extensions(vec![spec])
                 .await
                 .expect("load extension");
-        });
+        }
+    });
 
     // Verify custom entry was appended
     let entries = session.custom_entries();
@@ -1228,7 +1239,8 @@ fn model_control_scenario() {
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start js runtime")
-        });
+        }
+    });
     manager.set_js_runtime(runtime);
 
     common::run_async({
@@ -1239,7 +1251,8 @@ fn model_control_scenario() {
                 .load_js_extensions(vec![spec])
                 .await
                 .expect("load extension");
-        });
+        }
+    });
 
     // Verify hostcall sequence
     let log = capture.snapshot();
@@ -1259,14 +1272,16 @@ fn model_control_scenario() {
     // Verify model was changed
     let model = common::run_async({
         let s = Arc::clone(&session);
-        async move { s.get_model().await });
+        async move { s.get_model().await }
+    });
     assert_eq!(model.0.as_deref(), Some("openai"));
     assert_eq!(model.1.as_deref(), Some("gpt-4o"));
 
     // Verify thinking level was changed
     let level = common::run_async({
         let s = Arc::clone(&session);
-        async move { s.get_thinking_level().await });
+        async move { s.get_thinking_level().await }
+    });
     assert_eq!(level.as_deref(), Some("high"));
 
     assert!(manager.has_command("model-control"));

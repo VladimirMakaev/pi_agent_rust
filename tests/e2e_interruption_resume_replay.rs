@@ -335,7 +335,7 @@ fn abort_before_run_returns_immediately() {
     let capture = Arc::new(Mutex::new(EventCapture::default()));
     let capture_ref = Arc::clone(&capture);
 
-    let result = run_async(async move {
+    let result = common::run_async(async move {
         let provider: Arc<dyn Provider> = Arc::new(SimpleProvider::new("should not appear"));
         let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
@@ -386,7 +386,7 @@ fn abort_during_tool_execution() {
     let capture = Arc::new(Mutex::new(EventCapture::default()));
     let capture_ref = Arc::clone(&capture);
 
-    let result = run_async(async move {
+    let result = common::run_async(async move {
         let provider: Arc<dyn Provider> = Arc::new(ToolThenFinalizeProvider::new());
         let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
@@ -453,7 +453,7 @@ fn resume_after_abort_continues_from_persisted_state() {
     let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
         Some(cwd.clone()),
     )));
-    let session_path = run_async({
+    let session_path = common::run_async({
         let cwd = cwd.clone();
         let session = Arc::clone(&session);
         async move {
@@ -467,8 +467,9 @@ fn resume_after_abort_continues_from_persisted_state() {
             agent_session.persist_session().await.expect("persist");
 
             
-            let guard = session.lock().await.expect("lock session");
+            let guard = session.lock().await;
             guard.path.clone().expect("session has path")
+            }
         });
 
     assert!(session_path.exists(), "Session file should exist");
@@ -476,9 +477,10 @@ fn resume_after_abort_continues_from_persisted_state() {
 
     // Step 2: Reload session and verify messages survived
     let reload_start = Instant::now();
-    let (reloaded, diagnostics) = run_async({
+    let (reloaded, diagnostics) = common::run_async({
         let path = session_path.display().to_string();
-        async move { Session::open_with_diagnostics(&path).await.expect("reload") });
+        async move { Session::open_with_diagnostics(&path).await.expect("reload") }
+    });
     let resume_ready_ms = reload_start.elapsed().as_millis();
     assert!(diagnostics.skipped_entries.is_empty(), "No corruption");
     assert!(
@@ -520,7 +522,7 @@ fn resume_multi_turn_conversation_intact() {
     )));
 
     // Turn 1
-    run_async({
+    common::run_async({
         let cwd = cwd.clone();
         let session = Arc::clone(&session);
         async move {
@@ -531,10 +533,11 @@ fn resume_multi_turn_conversation_intact() {
                 .await
                 .expect("turn 1");
             agent_session.persist_session().await.expect("persist 1");
+            }
         });
 
     // Turn 2
-    run_async({
+    common::run_async({
         let cwd = cwd.clone();
         let session = Arc::clone(&session);
         async move {
@@ -545,18 +548,20 @@ fn resume_multi_turn_conversation_intact() {
                 .await
                 .expect("turn 2");
             agent_session.persist_session().await.expect("persist 2");
+            }
         });
 
     // Persisted session must exist and remain reloadable within resume UX budget.
-    let session_path = run_async({
+    let session_path = common::run_async({
         let session = Arc::clone(&session);
         async move {
             
-            let guard = session.lock().await.expect("lock");
+            let guard = session.lock().await;
             guard
                 .path
                 .clone()
                 .expect("session path after persisted turns")
+            }
         });
     assert!(
         session_path.exists(),
@@ -565,12 +570,13 @@ fn resume_multi_turn_conversation_intact() {
     harness.record_artifact("session_multiturn.jsonl", &session_path);
 
     let reload_start = Instant::now();
-    let (reloaded, diagnostics) = run_async({
+    let (reloaded, diagnostics) = common::run_async({
         let path = session_path.display().to_string();
         async move {
             Session::open_with_diagnostics(&path)
                 .await
                 .expect("reload multi-turn")
+            }
         });
     let resume_ready_ms = reload_start.elapsed().as_millis();
     assert!(
@@ -632,7 +638,7 @@ fn replay_same_input_produces_same_output() {
     let input = "what is 2+2";
 
     // Run 1
-    let (text_1, msg_count_1) = run_async({
+    let (text_1, msg_count_1) = common::run_async({
         let cwd = cwd.clone();
         let input = input.to_string();
         async move {
@@ -643,13 +649,14 @@ fn replay_same_input_produces_same_output() {
             let mut agent_session = make_agent_session(&cwd, provider, session.clone(), 4);
             let msg = agent_session.run_text(input, |_| {}).await.expect("run 1");
             
-            let guard = session.lock().await.expect("lock");
+            let guard = session.lock().await;
             let messages = guard.to_messages_for_current_path();
             (assistant_text(&msg), messages.len())
+            }
         });
 
     // Run 2 — same input, fresh provider with same deterministic behavior
-    let (text_2, msg_count_2) = run_async({
+    let (text_2, msg_count_2) = common::run_async({
         let cwd = cwd.clone();
         let input = input.to_string();
         async move {
@@ -660,9 +667,10 @@ fn replay_same_input_produces_same_output() {
             let mut agent_session = make_agent_session(&cwd, provider, session.clone(), 4);
             let msg = agent_session.run_text(input, |_| {}).await.expect("run 2");
             
-            let guard = session.lock().await.expect("lock");
+            let guard = session.lock().await;
             let messages = guard.to_messages_for_current_path();
             (assistant_text(&msg), messages.len())
+            }
         });
 
     // Replay parity assertions
@@ -691,7 +699,7 @@ fn replay_different_input_produces_different_output() {
 
     let cwd = harness.temp_dir().to_path_buf();
 
-    let text_a = run_async({
+    let text_a = common::run_async({
         let cwd = cwd.clone();
         async move {
             let provider: Arc<dyn Provider> = Arc::new(ReplayVerifyProvider::new("inputA"));
@@ -704,9 +712,10 @@ fn replay_different_input_produces_different_output() {
                 .await
                 .expect("run A");
             assistant_text(&msg)
+            }
         });
 
-    let text_b = run_async({
+    let text_b = common::run_async({
         let cwd = cwd.clone();
         async move {
             let provider: Arc<dyn Provider> = Arc::new(ReplayVerifyProvider::new("inputB"));
@@ -719,6 +728,7 @@ fn replay_different_input_produces_different_output() {
                 .await
                 .expect("run B");
             assistant_text(&msg)
+            }
         });
 
     assert_ne!(
@@ -753,7 +763,7 @@ fn cycle_run_abort_persist_reload_resume() {
         Some(cwd.clone()),
     )));
 
-    run_async({
+    common::run_async({
         let cwd = cwd.clone();
         let session = Arc::clone(&session);
         async move {
@@ -764,10 +774,11 @@ fn cycle_run_abort_persist_reload_resume() {
                 .await
                 .expect("turn 1");
             agent_session.persist_session().await.expect("persist 1");
+            }
         });
 
     // Phase 2: Second turn with abort
-    let result = run_async({
+    let result = common::run_async({
         let cwd = cwd.clone();
         let session = Arc::clone(&session);
         async move {
@@ -778,19 +789,21 @@ fn cycle_run_abort_persist_reload_resume() {
             agent_session
                 .run_text_with_abort("second".to_string(), Some(signal), |_| {})
                 .await
+            }
         });
 
     // Phase 3: Persist after abort
-    run_async({
+    common::run_async({
         let session = Arc::clone(&session);
         async move {
             
-            let mut guard = session.lock().await.expect("lock");
+            let mut guard = session.lock().await;
             guard.save().await.expect("save after abort");
+            }
         });
 
     // Phase 4: Third turn — should succeed normally
-    let turn3_msg = run_async({
+    let turn3_msg = common::run_async({
         let cwd = cwd.clone();
         let session = Arc::clone(&session);
         async move {
@@ -800,6 +813,7 @@ fn cycle_run_abort_persist_reload_resume() {
                 .run_text("third".to_string(), |_| {})
                 .await
                 .expect("turn 3")
+            }
         });
 
     let turn3_text = assistant_text(&turn3_msg);
@@ -809,12 +823,13 @@ fn cycle_run_abort_persist_reload_resume() {
     );
 
     // Verify session has messages from turn 1 and turn 3
-    let messages = run_async({
+    let messages = common::run_async({
         let session = Arc::clone(&session);
         async move {
             
-            let guard = session.lock().await.expect("lock");
+            let guard = session.lock().await;
             guard.to_messages_for_current_path()
+            }
         });
 
     let user_msgs: Vec<_> = messages
@@ -851,7 +866,7 @@ fn cycle_tool_abort_then_fresh_success() {
     )));
 
     // Phase 1: Abort during tool execution
-    let abort_result = run_async({
+    let abort_result = common::run_async({
         let cwd = cwd.clone();
         let session = Arc::clone(&session);
         async move {
@@ -867,6 +882,7 @@ fn cycle_tool_abort_then_fresh_success() {
                     }
                 })
                 .await
+            }
         });
 
     harness.log().info(
@@ -875,7 +891,7 @@ fn cycle_tool_abort_then_fresh_success() {
     );
 
     // Phase 2: Fresh run should succeed
-    let fresh_msg = run_async({
+    let fresh_msg = common::run_async({
         let cwd = cwd.clone();
         let session = Arc::clone(&session);
         async move {
@@ -885,6 +901,7 @@ fn cycle_tool_abort_then_fresh_success() {
                 .run_text("try again".to_string(), |_| {})
                 .await
                 .expect("fresh run")
+            }
         });
 
     let fresh_text = assistant_text(&fresh_msg);
@@ -916,7 +933,7 @@ fn events_balanced_start_end_normal_run() {
     let capture = Arc::new(Mutex::new(EventCapture::default()));
     let capture_ref = Arc::clone(&capture);
 
-    run_async(async move {
+    common::run_async(async move {
         let provider: Arc<dyn Provider> = Arc::new(SimpleProvider::new("balanced"));
         let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
@@ -965,7 +982,7 @@ fn events_balanced_tool_start_end() {
     let capture = Arc::new(Mutex::new(EventCapture::default()));
     let capture_ref = Arc::clone(&capture);
 
-    run_async(async move {
+    common::run_async(async move {
         let provider: Arc<dyn Provider> = Arc::new(ToolThenFinalizeProvider::new());
         let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),

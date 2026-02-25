@@ -1069,7 +1069,7 @@ mod tests {
 
     #[test]
     fn test_stream_parses_text_and_tool_call() {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
 
@@ -1211,7 +1211,7 @@ mod tests {
     }
 
     fn collect_events(events: &[Value]) -> Vec<StreamEvent> {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
 
@@ -1275,7 +1275,7 @@ mod tests {
             ..Default::default()
         };
 
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
         runtime.block_on(async {

@@ -213,7 +213,8 @@ macro_rules! simple_text_contract {
             };
             let provider = $provider_ctor(vcr);
 
-            tokio::runtime::Builder::current_thread()
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
                 .build()
                 .expect("runtime")
                 .block_on(async {
@@ -282,7 +283,8 @@ macro_rules! tool_call_contract {
             };
             let provider = $provider_ctor(vcr);
 
-            tokio::runtime::Builder::current_thread()
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
                 .build()
                 .expect("runtime")
                 .block_on(async {
@@ -356,7 +358,8 @@ macro_rules! error_auth_contract {
             };
             let provider = $provider_ctor(vcr);
 
-            tokio::runtime::Builder::current_thread()
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
                 .build()
                 .expect("runtime")
                 .block_on(async {
@@ -519,7 +522,8 @@ fn contract_cross_provider_event_ordering_simple_text() {
         ("cohere", "verify_cohere_simple_text", cohere_with_vcr),
     ];
 
-    tokio::runtime::Builder::current_thread()
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .expect("runtime")
         .block_on(async {
@@ -560,7 +564,8 @@ fn contract_cross_provider_event_ordering_simple_text() {
                     "{name}: unexpected stream error: {:?}",
                     summary.stream_error
                 );
-            });
+            }
+        });
 }
 
 /// Verify that `tool_call` timelines contain the expected subsequence:
@@ -578,7 +583,8 @@ fn contract_cross_provider_tool_call_subsequence() {
         ("cohere", "verify_cohere_tool_call_single", cohere_with_vcr),
     ];
 
-    tokio::runtime::Builder::current_thread()
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .expect("runtime")
         .block_on(async {
@@ -609,7 +615,8 @@ fn contract_cross_provider_tool_call_subsequence() {
                     end_pos < done_pos,
                     "{name}: tool_call_end (pos {end_pos}) must come before done (pos {done_pos})"
                 );
-            });
+            }
+        });
 }
 
 // ═══════════════════════════════════════════════════════════════════════

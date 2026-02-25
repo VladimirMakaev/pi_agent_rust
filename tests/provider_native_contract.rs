@@ -1259,6 +1259,7 @@ fn openai_error_json(status: u16, error_type: &str, message: &str) -> MockHttpRe
             "message": message,
             "type": error_type,
             "code": status.to_string()
+            }
         });
     MockHttpResponse {
         status,
@@ -1537,6 +1538,7 @@ mod gap_provider_helpers {
                         "{provider_id_owned} 401 error must not produce TextDelta events"
                     );
                 }
+                }
             });
 
         harness
@@ -1601,6 +1603,7 @@ mod gap_provider_helpers {
                         !has_text,
                         "{provider_id_owned} 429 error must not produce TextDelta events"
                     );
+                }
                 }
             });
 

@@ -268,7 +268,7 @@ fn start_extension_oauth_omits_redirect_when_none() {
 )]
 fn complete_extension_oauth_exchanges_code_for_tokens() {
     let harness = TestHarness::new("complete_extension_oauth_exchanges_code_for_tokens");
-    run_async(async move {
+    common::run_async(async move {
         let server = harness.start_mock_http_server();
         server.add_route(
             "POST",
@@ -323,7 +323,7 @@ fn complete_extension_oauth_exchanges_code_for_tokens() {
 )]
 fn complete_extension_oauth_includes_redirect_uri_in_body() {
     let harness = TestHarness::new("complete_extension_oauth_includes_redirect_uri_in_body");
-    run_async(async move {
+    common::run_async(async move {
         let server = harness.start_mock_http_server();
         server.add_route(
             "POST",
@@ -359,7 +359,7 @@ fn complete_extension_oauth_includes_redirect_uri_in_body() {
 )]
 fn complete_extension_oauth_error_on_server_400() {
     let harness = TestHarness::new("complete_extension_oauth_error_on_server_400");
-    run_async(async move {
+    common::run_async(async move {
         let server = harness.start_mock_http_server();
         server.add_route(
             "POST",
@@ -386,7 +386,7 @@ fn complete_extension_oauth_error_on_server_400() {
 #[test]
 fn complete_extension_oauth_error_on_missing_code() {
     let _harness = TestHarness::new("complete_extension_oauth_error_on_missing_code");
-    run_async(async move {
+    common::run_async(async move {
         let config = sample_config("http://unused:1234/token");
         let err = complete_extension_oauth(&config, "", "verifier")
             .await
@@ -407,7 +407,7 @@ fn complete_extension_oauth_error_on_missing_code() {
 )]
 fn complete_extension_oauth_parses_url_callback_input() {
     let harness = TestHarness::new("complete_extension_oauth_parses_url_callback_input");
-    run_async(async move {
+    common::run_async(async move {
         let server = harness.start_mock_http_server();
         server.add_route(
             "POST",
@@ -465,7 +465,7 @@ fn complete_extension_oauth_parses_url_callback_input() {
 )]
 fn refresh_expired_extension_oauth_token_succeeds() {
     let harness = TestHarness::new("refresh_expired_extension_oauth_token_succeeds");
-    run_async(async move {
+    common::run_async(async move {
         let server = harness.start_mock_http_server();
         server.add_route(
             "POST",
@@ -526,7 +526,7 @@ fn refresh_expired_extension_oauth_token_succeeds() {
 )]
 fn refresh_extension_oauth_skips_anthropic_provider() {
     let harness = TestHarness::new("refresh_extension_oauth_skips_anthropic_provider");
-    run_async(async move {
+    common::run_async(async move {
         let server = harness.start_mock_http_server();
         // This route should NOT be hit.
         server.add_route(
@@ -587,7 +587,7 @@ fn refresh_extension_oauth_skips_anthropic_provider() {
 )]
 fn refresh_extension_oauth_skips_unexpired_token() {
     let harness = TestHarness::new("refresh_extension_oauth_skips_unexpired_token");
-    run_async(async move {
+    common::run_async(async move {
         let server = harness.start_mock_http_server();
         server.add_route(
             "POST",
@@ -642,7 +642,7 @@ fn refresh_extension_oauth_skips_unexpired_token() {
 )]
 fn refresh_extension_oauth_error_propagated() {
     let harness = TestHarness::new("refresh_extension_oauth_error_propagated");
-    run_async(async move {
+    common::run_async(async move {
         let server = harness.start_mock_http_server();
         server.add_route(
             "POST",
@@ -872,7 +872,7 @@ fn oauth_configs_from_entries_extracts_providers_with_oauth() {
 )]
 fn full_wiring_refresh_expired_token_via_mock_server() {
     let harness = TestHarness::new("full_wiring_refresh_expired_token_via_mock_server");
-    run_async(async move {
+    common::run_async(async move {
         let server = harness.start_mock_http_server();
         server.add_route(
             "POST",
@@ -930,7 +930,7 @@ fn full_wiring_refresh_expired_token_via_mock_server() {
 #[test]
 fn full_wiring_no_refresh_when_token_valid() {
     let harness = TestHarness::new("full_wiring_no_refresh_when_token_valid");
-    run_async(async move {
+    common::run_async(async move {
         let auth_path = harness.temp_path("auth.json");
         let mut auth = AuthStorage::load(auth_path).expect("load");
 
@@ -967,7 +967,7 @@ fn full_wiring_no_refresh_when_token_valid() {
 #[test]
 fn full_wiring_refresh_skips_providers_without_config() {
     let harness = TestHarness::new("full_wiring_refresh_skips_providers_without_config");
-    run_async(async move {
+    common::run_async(async move {
         let auth_path = harness.temp_path("auth.json");
         let mut auth = AuthStorage::load(auth_path).expect("load");
 
@@ -997,7 +997,8 @@ fn full_wiring_refresh_skips_providers_without_config() {
                 assert_eq!(access_token, "old");
             }
             other => unreachable!("expected OAuth credential, got {other:?}"),
-        });
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------

@@ -3942,8 +3942,8 @@ mod tests {
             assert!(err.to_string().contains("State mismatch"));
     }
 
-    #[test]
-    fn test_refresh_expired_extension_oauth_tokens_skips_anthropic() {
+    #[tokio::test]
+    async fn test_refresh_expired_extension_oauth_tokens_skips_anthropic() {
         // Verify that the extension refresh method skips "anthropic" (handled separately).
         // Runtime not needed with tokio::test
         
@@ -4072,9 +4072,9 @@ mod tests {
             );
     }
 
-    #[test]
+    #[tokio::test]
     #[cfg(unix)]
-    fn test_refresh_expired_extension_oauth_tokens_updates_and_persists() {
+    async fn test_refresh_expired_extension_oauth_tokens_updates_and_persists() {
         // Runtime not needed with tokio::test
         
             let dir = tempfile::tempdir().expect("tmpdir");
@@ -4142,9 +4142,9 @@ mod tests {
             }
     }
 
-    #[test]
+    #[tokio::test]
     #[cfg(unix)]
-    fn test_refresh_extension_oauth_token_redacts_secret_in_error() {
+    async fn test_refresh_extension_oauth_token_redacts_secret_in_error() {
         // Runtime not needed with tokio::test
         
             let refresh_secret = "secret-refresh-token-123";
@@ -5926,8 +5926,8 @@ mod tests {
         assert!(token.is_none(), "expired Kimi token should be ignored");
     }
 
-    #[test]
-    fn test_start_kimi_code_device_flow_parses_response() {
+    #[tokio::test]
+    async fn test_start_kimi_code_device_flow_parses_response() {
         let host = spawn_oauth_host_server(
             200,
             r#"{
@@ -5955,8 +5955,8 @@ mod tests {
             );
     }
 
-    #[test]
-    fn test_poll_kimi_code_device_flow_success_returns_oauth_credential() {
+    #[tokio::test]
+    async fn test_poll_kimi_code_device_flow_success_returns_oauth_credential() {
         let host = spawn_oauth_host_server(
             200,
             r#"{"access_token":"kimi-at","refresh_token":"kimi-rt","expires_in":3600}"#,
@@ -5984,8 +5984,8 @@ mod tests {
             }
     }
 
-    #[test]
-    fn test_poll_kimi_code_device_flow_pending_state() {
+    #[tokio::test]
+    async fn test_poll_kimi_code_device_flow_pending_state() {
         let host = spawn_oauth_host_server(
             400,
             r#"{"error":"authorization_pending","error_description":"wait"}"#,

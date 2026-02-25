@@ -109,6 +109,7 @@ fn log_refresh_event(harness: &TestHarness, test: &str, event: &str, data: &[(&s
             ctx.push(("event".into(), event.to_string()));
             for (key, value) in &data_object {
                 ctx.push((key.clone(), value.as_str().unwrap_or_default().to_string()));
+                }
             });
 }
 
@@ -274,7 +275,7 @@ async fn run_refresh_scenario(
 #[test]
 fn auth_oauth_refresh_success_vcr() {
     let harness = TestHarness::new("auth_oauth_refresh_success_vcr");
-    run_async(async move {
+    common::run_async(async move {
         run_refresh_scenario(
             &harness,
             "oauth_refresh_success",
@@ -290,7 +291,7 @@ fn auth_oauth_refresh_success_vcr() {
 #[test]
 fn auth_oauth_refresh_expired_refresh_token_vcr() {
     let harness = TestHarness::new("auth_oauth_refresh_expired_refresh_token_vcr");
-    run_async(async move {
+    common::run_async(async move {
         run_refresh_scenario(
             &harness,
             "oauth_refresh_expired",
@@ -306,7 +307,7 @@ fn auth_oauth_refresh_expired_refresh_token_vcr() {
 #[test]
 fn auth_oauth_refresh_invalid_refresh_token_vcr() {
     let harness = TestHarness::new("auth_oauth_refresh_invalid_refresh_token_vcr");
-    run_async(async move {
+    common::run_async(async move {
         run_refresh_scenario(
             &harness,
             "oauth_refresh_invalid",
@@ -322,7 +323,7 @@ fn auth_oauth_refresh_invalid_refresh_token_vcr() {
 #[test]
 fn auth_oauth_refresh_network_failure_vcr() {
     let harness = TestHarness::new("auth_oauth_refresh_network_failure_vcr");
-    run_async(async move {
+    common::run_async(async move {
         run_refresh_scenario(
             &harness,
             "oauth_refresh_network_failure",
@@ -338,7 +339,7 @@ fn auth_oauth_refresh_network_failure_vcr() {
 #[test]
 fn auth_oauth_refresh_api_key_credentials_skip_refresh_vcr() {
     let harness = TestHarness::new("auth_oauth_refresh_api_key_credentials_skip_refresh_vcr");
-    run_async(async move {
+    common::run_async(async move {
         let cassette_dir = cassette_root();
         let cassette_path = cassette_dir.join("oauth_refresh_network_failure.json");
         harness.record_artifact("oauth_refresh_network_failure.json", &cassette_path);
@@ -421,7 +422,7 @@ fn auth_oauth_refresh_api_key_credentials_skip_refresh_vcr() {
 #[allow(clippy::too_many_lines)]
 fn auth_oauth_refresh_race_condition_vcr() {
     let harness = TestHarness::new("auth_oauth_refresh_race_condition_vcr");
-    run_async(async move {
+    common::run_async(async move {
         let cassette_dir = cassette_root();
         let cassette_name = "oauth_refresh_success";
         let cassette_path = cassette_dir.join(format!("{cassette_name}.json"));

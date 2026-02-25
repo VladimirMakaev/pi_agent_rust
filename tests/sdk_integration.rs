@@ -173,7 +173,7 @@ fn run_scripted(
 ) -> (AssistantMessage, Vec<AgentEvent>) {
     let cwd = harness.temp_dir().to_path_buf();
     let prompt = user_prompt.to_string();
-    run_async(async move {
+    common::run_async(async move {
         let provider: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(script));
         let tools = ToolRegistry::new(&["read"], &cwd, None);
         let config = AgentConfig {
@@ -214,7 +214,7 @@ fn sdk_basic_session_creation() {
     let harness = TestHarness::new("sdk_basic_session_creation");
     let options = default_session_options(&harness);
 
-    let handle = run_async(create_agent_session(options)).expect("create session");
+    let handle = common::run_async(create_agent_session(options)).expect("create session");
 
     let provider = handle.session().agent.provider();
     assert_eq!(
@@ -249,7 +249,7 @@ fn sdk_custom_model_selection() {
         ..SessionOptions::default()
     };
 
-    let handle = run_async(create_agent_session(options)).expect("create session");
+    let handle = common::run_async(create_agent_session(options)).expect("create session");
     let (prov, model) = handle.model();
     assert_eq!(prov, "openai");
     assert_eq!(model, "gpt-4o");
@@ -401,7 +401,7 @@ fn sdk_session_persistence() {
         ..SessionOptions::default()
     };
 
-    let handle = run_async(create_agent_session(options)).expect("create session");
+    let handle = common::run_async(create_agent_session(options)).expect("create session");
     assert!(handle.session().save_enabled(), "save should be enabled");
 
     harness
@@ -440,11 +440,11 @@ fn sdk_compact_empty_session() {
     let harness = TestHarness::new("sdk_compact_empty_session");
     let options = default_session_options(&harness);
 
-    let mut handle = run_async(create_agent_session(options)).expect("create session");
+    let mut handle = common::run_async(create_agent_session(options)).expect("create session");
 
     let events = Arc::new(Mutex::new(Vec::new()));
     let events_ref = Arc::clone(&events);
-    run_async(async move {
+    common::run_async(async move {
         handle
             .compact(move |event| {
                 events_ref.lock().expect("lock").push(event);
@@ -485,7 +485,7 @@ fn sdk_no_session_mode() {
         ..SessionOptions::default()
     };
 
-    let handle = run_async(create_agent_session(options)).expect("create session");
+    let handle = common::run_async(create_agent_session(options)).expect("create session");
     assert!(
         !handle.session().save_enabled(),
         "save should be disabled in no-session mode"
@@ -511,7 +511,7 @@ fn sdk_error_invalid_provider() {
         ..SessionOptions::default()
     };
 
-    let result = run_async(create_agent_session(options));
+    let result = common::run_async(create_agent_session(options));
     assert!(
         result.is_err(),
         "creating session with invalid provider should fail"
@@ -538,7 +538,7 @@ fn sdk_subscribe_unsubscribe_lifecycle() {
     let harness = TestHarness::new("sdk_subscribe_unsubscribe_lifecycle");
     let options = default_session_options(&harness);
 
-    let handle = run_async(create_agent_session(options)).expect("create session");
+    let handle = common::run_async(create_agent_session(options)).expect("create session");
 
     let count = Arc::new(AtomicUsize::new(0));
     let count_ref = Arc::clone(&count);
@@ -570,9 +570,9 @@ fn sdk_state_snapshot() {
     let harness = TestHarness::new("sdk_state_snapshot");
     let options = default_session_options(&harness);
 
-    let handle = run_async(create_agent_session(options)).expect("create session");
+    let handle = common::run_async(create_agent_session(options)).expect("create session");
     let state: AgentSessionState =
-        run_async(async move { handle.state().await }).expect("get state");
+        common::run_async(async move { handle.state().await }).expect("get state");
 
     assert!(state.session_id.is_some(), "session_id should be set");
     assert_eq!(state.provider, "anthropic");
@@ -602,10 +602,10 @@ fn sdk_model_switching() {
     let harness = TestHarness::new("sdk_model_switching");
     let options = default_session_options(&harness);
 
-    let mut handle = run_async(create_agent_session(options)).expect("create session");
+    let mut handle = common::run_async(create_agent_session(options)).expect("create session");
 
     // Switch to openai/gpt-4o
-    let (prov, model) = run_async(async move {
+    let (prov, model) = common::run_async(async move {
         handle.set_model("openai", "gpt-4o").await?;
         Ok::<(String, String), Error>(handle.model())
     })
@@ -633,7 +633,7 @@ fn sdk_thinking_level() {
         ..SessionOptions::default()
     };
 
-    let handle = run_async(create_agent_session(options)).expect("create session");
+    let handle = common::run_async(create_agent_session(options)).expect("create session");
     assert_eq!(
         handle.thinking_level(),
         Some(pi::model::ThinkingLevel::High),
@@ -675,7 +675,7 @@ fn sdk_extensions_load_and_expose_registration_surface() {
         ..SessionOptions::default()
     };
 
-    let handle = run_async(create_agent_session(options)).expect("create session");
+    let handle = common::run_async(create_agent_session(options)).expect("create session");
     assert!(
         handle.has_extensions(),
         "expected SDK session to load extensions"
@@ -702,7 +702,7 @@ fn sdk_extensions_load_and_expose_registration_surface() {
     assert!(has_flag, "registered SDK extension flag should be visible");
 
     let command_result =
-        run_async(async move { manager.execute_command("sdk-visible", "ok", 5000).await })
+        common::run_async(async move { manager.execute_command("sdk-visible", "ok", 5000).await })
             .expect("execute extension command");
     let display = command_result
         .get("display")
@@ -743,7 +743,7 @@ fn sdk_extension_policy_safe_denies_exec_and_records_hostcall_telemetry() {
         ..SessionOptions::default()
     };
 
-    let handle = run_async(create_agent_session(options)).expect("create session");
+    let handle = common::run_async(create_agent_session(options)).expect("create session");
     let manager = handle
         .extension_manager()
         .expect("extension manager should be present")
@@ -754,7 +754,7 @@ fn sdk_extension_policy_safe_denies_exec_and_records_hostcall_telemetry() {
     manager.set_runtime_risk_config(risk_config);
 
     let command_result =
-        run_async(async move { manager.execute_command("sdk-exec", "", 5000).await });
+        common::run_async(async move { manager.execute_command("sdk-exec", "", 5000).await });
     let denied = match &command_result {
         Ok(value) => {
             let text = serde_json::to_string(value).unwrap_or_default();
@@ -1029,7 +1029,7 @@ fn sdk_conformance_session_tool_hooks() {
     let start_names_ref = Arc::clone(&start_names);
     let end_names_ref = Arc::clone(&end_names);
 
-    run_async(async move {
+    common::run_async(async move {
         let provider: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(Script::ToolRoundTrip {
             tool_name: "read".to_string(),
             tool_args: json!({ "path": target_path }),
@@ -1113,7 +1113,7 @@ fn sdk_conformance_combined_callback_ordering() {
     let order_session = Arc::clone(&order);
     let order_prompt = Arc::clone(&order);
 
-    run_async(async move {
+    common::run_async(async move {
         let provider: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(Script::SingleText(
             "combined test".to_string(),
         )));

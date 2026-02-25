@@ -48,7 +48,8 @@ fn selected_line(view: &str) -> Option<&str> {
 }
 
 fn run_async<T>(future: impl Future<Output = T>) -> T {
-    let runtime = RuntimeBuilder::current_thread()
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
         .build()
         .expect("runtime build");
     runtime.block_on(future)
@@ -163,6 +164,7 @@ fn list_sessions_for_project_orders_by_mtime() {
         ctx.push(("count".to_string(), sessions.len().to_string()));
         if let Some(first) = sessions.first() {
             ctx.push(("first".to_string(), first.path.clone()));
+            }
         });
     assert!(sessions.len() >= 2);
     assert_eq!(sessions[0].path, second_path);

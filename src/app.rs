@@ -80,7 +80,21 @@ pub fn apply_piped_stdin(cli: &mut cli::Cli, stdin_content: Option<String>) {
 }
 
 #[allow(clippy::missing_const_for_fn)]
-pub fn normalize_cli(cli: &mut cli::Cli) {
+pub fn normalize_cli(cli: &mut cli::Cli) -> Result<()> {
+    // Validate conflicting flag combinations before normalization.
+    if cli.print && cli.resume {
+        bail!("--print and --resume are incompatible (print mode is non-interactive)");
+    }
+    if cli.print && cli.r#continue {
+        bail!("--print and --continue are incompatible (print mode is single-shot)");
+    }
+    if cli.no_session && cli.r#continue {
+        bail!("--no-session and --continue are incompatible");
+    }
+    if cli.no_session && cli.resume {
+        bail!("--no-session and --resume are incompatible");
+    }
+
     if cli.print {
         cli.no_session = true;
     }
@@ -88,6 +102,8 @@ pub fn normalize_cli(cli: &mut cli::Cli) {
     if let Some(provider) = &mut cli.provider {
         *provider = provider.to_ascii_lowercase();
     }
+
+    Ok(())
 }
 
 pub fn validate_rpc_args(cli: &cli::Cli) -> Result<()> {
@@ -1195,7 +1211,7 @@ mod tests {
         assert!(!cli.no_session);
         assert_eq!(cli.provider.as_deref(), Some("OpenAI"));
 
-        normalize_cli(&mut cli);
+        normalize_cli(&mut cli).unwrap();
 
         assert!(cli.no_session);
         assert_eq!(cli.provider.as_deref(), Some("openai"));
@@ -1595,7 +1611,7 @@ mod tests {
                 cli.print = print;
                 cli.no_session = initial_no_session;
 
-                normalize_cli(&mut cli);
+                normalize_cli(&mut cli).unwrap();
 
                 let expected_provider = provider.map(|value: String| value.to_ascii_lowercase());
                 let expected_no_session = if print { true } else { initial_no_session };
@@ -1615,12 +1631,12 @@ mod tests {
                 cli.print = print;
                 cli.no_session = initial_no_session;
 
-                normalize_cli(&mut cli);
+                normalize_cli(&mut cli).unwrap();
                 let provider_once = cli.provider.clone();
                 let no_session_once = cli.no_session;
                 let print_once = cli.print;
 
-                normalize_cli(&mut cli);
+                normalize_cli(&mut cli).unwrap();
 
                 prop_assert_eq!(cli.provider, provider_once);
                 prop_assert_eq!(cli.no_session, no_session_once);

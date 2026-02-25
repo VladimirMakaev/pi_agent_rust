@@ -104,7 +104,6 @@ fn build_options(
         available_models,
         scoped_models,
         auth,
-        runtime_handle: handle.clone(),
     }
 }
 
@@ -1670,7 +1669,8 @@ fn rpc_extension_ui_confirm_roundtrip() {
 
         // Verify the request_ui future resolved with the correct value.
         let ui_result = ui_task.await;
-        let response = ui_result.expect("request_ui should succeed");
+        let response = ui_result.expect("join error");
+        let response = response.expect("request_ui should succeed");
         let response = response.expect("should have a response");
         assert!(!response.cancelled);
         assert_eq!(response.value, Some(json!(true)));
@@ -1733,7 +1733,8 @@ fn rpc_extension_ui_confirm_denied() {
         assert_ok(&resp, "extension_ui_response");
 
         let ui_result = ui_task.await;
-        let response = ui_result.expect("request_ui should succeed");
+        let response = ui_result.expect("join error");
+        let response = response.expect("request_ui should succeed");
         let response = response.expect("should have a response");
         assert!(!response.cancelled);
         assert_eq!(response.value, Some(json!(false)));
@@ -1806,7 +1807,8 @@ fn rpc_extension_ui_select_roundtrip() {
         assert_ok(&resp, "extension_ui_response");
 
         let ui_result = ui_task.await;
-        let response = ui_result.expect("request_ui should succeed");
+        let response = ui_result.expect("join error");
+        let response = response.expect("request_ui should succeed");
         let response = response.expect("should have a response");
         assert!(!response.cancelled);
         assert_eq!(response.value, Some(json!("gpt-4o")));
@@ -1877,7 +1879,8 @@ fn rpc_extension_ui_input_roundtrip() {
         assert_ok(&resp, "extension_ui_response");
 
         let ui_result = ui_task.await;
-        let response = ui_result.expect("request_ui should succeed");
+        let response = ui_result.expect("join error");
+        let response = response.expect("request_ui should succeed");
         let response = response.expect("should have a response");
         assert!(!response.cancelled);
         assert_eq!(response.value, Some(json!("sk-test-12345")));
@@ -1948,7 +1951,8 @@ fn rpc_extension_ui_editor_roundtrip() {
         assert_ok(&resp, "extension_ui_response");
 
         let ui_result = ui_task.await;
-        let response = ui_result.expect("request_ui should succeed");
+        let response = ui_result.expect("join error");
+        let response = response.expect("request_ui should succeed");
         let response = response.expect("should have a response");
         assert!(!response.cancelled);
         assert_eq!(response.value, Some(json!("key: new_value")));
@@ -2014,7 +2018,8 @@ fn rpc_extension_ui_cancel_response() {
         assert_ok(&resp, "extension_ui_response");
 
         let ui_result = ui_task.await;
-        let response = ui_result.expect("request_ui should succeed");
+        let response = ui_result.expect("join error");
+        let response = response.expect("request_ui should succeed");
         let response = response.expect("should have a response");
         assert!(response.cancelled);
 
@@ -2255,7 +2260,8 @@ fn rpc_extension_ui_id_alias_roundtrip() {
         assert_eq!(resp["data"]["resolved"], true);
 
         let ui_result = ui_task.await;
-        let response = ui_result.expect("request_ui should succeed");
+        let response = ui_result.expect("join error");
+        let response = response.expect("request_ui should succeed");
         let response = response.expect("should have a response");
         assert_eq!(response.value, Some(json!(true)));
         assert!(!response.cancelled);
@@ -2339,7 +2345,8 @@ fn rpc_extension_ui_sequential_ordering() {
 
         let r1 = ui_task_1
             .await
-            .expect("first request_ui")
+            .expect("first request_ui join")
+            .expect("first request_ui result")
             .expect("has response");
         assert_eq!(r1.value, Some(json!(true)));
 
@@ -2360,7 +2367,8 @@ fn rpc_extension_ui_sequential_ordering() {
 
         let r2 = ui_task_2
             .await
-            .expect("second request_ui")
+            .expect("second request_ui join")
+            .expect("second request_ui result")
             .expect("has response");
         assert_eq!(r2.value, Some(json!("hello")));
 
@@ -2472,7 +2480,8 @@ fn rpc_extension_ui_notify_fire_and_forget() {
 
         // request_ui should return Ok(None) for fire-and-forget.
         let ui_result = ui_task.await;
-        let response = ui_result.expect("request_ui should succeed");
+        let response = ui_result.expect("join error");
+        let response = response.expect("request_ui should succeed");
         assert!(response.is_none(), "notify should not return a response");
 
         drop(in_tx);

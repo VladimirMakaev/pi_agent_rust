@@ -486,6 +486,7 @@ fn deep_json_redaction_handles_nested_objects() {
                     "api_key": "sk-secret-key"
                 }
             }
+            }
         });
 
     redact_json_value(&mut value);
@@ -516,6 +517,7 @@ fn find_unredacted_keys_detects_all_leaks() {
         "body": {
             "password": "p@ssw0rd",
             "username": "safe-value"
+            }
         });
 
     let unredacted = find_unredacted_keys(&value);
@@ -535,6 +537,7 @@ fn find_unredacted_keys_passes_when_all_redacted() {
         "body": {
             "password": "[REDACTED]",
             "data": "safe"
+            }
         });
 
     let unredacted = find_unredacted_keys(&value);
@@ -1344,6 +1347,7 @@ fn synthetic_evidence_contract_validates_against_schema() {
             "summary": "artifacts/summary.json",
             "environment": "artifacts/environment.json",
             "replay_bundle": "artifacts/replay_bundle.json"
+            }
         });
 
     // Verify all top-level required fields present

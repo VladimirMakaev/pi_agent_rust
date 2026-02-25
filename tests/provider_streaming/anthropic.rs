@@ -1,8 +1,8 @@
 use super::{
     ScenarioExpectation, StreamExpectations, assert_error_translation, assert_stream_expectations,
     assert_tool_schema_fidelity, assistant_tool_call_message, cassette_root, collect_events,
-    log_summary, record_stream_contract_artifact, sha256_hex, tool_result_message, user_text,
-    vcr_mode, vcr_strict,
+    log_summary, record_stream_contract_artifact, run_async, sha256_hex, tool_result_message,
+    user_text, vcr_mode, vcr_strict,
 };
 use crate::common::TestHarness;
 use chrono::{SecondsFormat, Utc};
@@ -300,7 +300,8 @@ async fn run_scenario(scenario: Scenario) {
             ctx.push(("max_tokens".into(), scenario.options.max_tokens.to_string()));
             if let Some(level) = scenario.options.thinking_level {
                 ctx.push(("thinking_level".into(), format!("{level:?}")));
-            });
+            }
+        });
 
     match scenario.expectation.clone() {
         ScenarioExpectation::Stream(expectations) => {

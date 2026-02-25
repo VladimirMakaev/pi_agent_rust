@@ -1,3 +1,5 @@
+mod common;
+
 #[cfg(test)]
 mod tests {
     use pi::tools::{EditTool, Tool};
@@ -7,7 +9,7 @@ mod tests {
 
     #[test]
     fn test_edit_trailing_whitespace_fuzzy() {
-        run_async( async {
+        super::common::run_async( async {
             let tmp = tempdir().unwrap();
             let file_path = tmp.path().join("fuzzy.txt");
 

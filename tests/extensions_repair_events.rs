@@ -64,6 +64,7 @@ fn start_runtime(harness: &common::TestHarness) -> (ExtensionManager, JsExtensio
             JsExtensionRuntimeHandle::start(config, tools, manager)
                 .await
                 .expect("start js runtime")
+        }
         });
     manager.set_js_runtime(handle.clone());
     (manager, handle)
@@ -90,6 +91,7 @@ fn start_runtime_with_ext(
             JsExtensionRuntimeHandle::start(config, tools, manager)
                 .await
                 .expect("start js runtime")
+        }
         });
     manager.set_js_runtime(handle.clone());
 
@@ -100,7 +102,8 @@ fn start_runtime_with_ext(
                 .load_js_extensions(vec![spec])
                 .await
                 .expect("load extension");
-        });
+        }
+    });
 
     (manager, handle)
 }
@@ -108,7 +111,8 @@ fn start_runtime_with_ext(
 fn shutdown(handle: &JsExtensionRuntimeHandle) {
     let _ = common::run_async({
         let h = handle.clone();
-        async move { h.shutdown(Duration::from_millis(500)).await });
+        async move { h.shutdown(Duration::from_millis(500)).await }
+    });
 }
 
 // ─── RepairPattern display ──────────────────────────────────────────────────
@@ -223,7 +227,8 @@ fn handle_drain_repair_events_empty_on_fresh_runtime() {
 
     let events = common::run_async({
         let h = handle.clone();
-        async move { h.drain_repair_events().await });
+        async move { h.drain_repair_events().await }
+    });
     assert!(events.is_empty());
 
     shutdown(&handle);
@@ -249,7 +254,8 @@ fn handle_drain_repair_events_after_clean_extension_load() {
     // A well-behaved extension should produce zero repair events.
     let events = common::run_async({
         let h = handle.clone();
-        async move { h.drain_repair_events().await });
+        async move { h.drain_repair_events().await }
+    });
     assert!(
         events.is_empty(),
         "expected no repairs, got {}",
@@ -335,7 +341,8 @@ fn dist_to_src_fallback_resolves_when_src_exists() {
     // Verify the extension loaded (it uses a direct src import, no repair needed).
     let tools = common::run_async({
         let h = handle.clone();
-        async move { h.get_registered_tools().await.unwrap() });
+        async move { h.get_registered_tools().await.unwrap() }
+    });
     assert!(tools.iter().any(|t| t.name == "hello"));
 
     shutdown(&handle);
@@ -375,7 +382,8 @@ fn dist_to_src_fallback_loads_extension_with_dist_import() {
     // Verify the extension loaded successfully via the fallback.
     let tools = common::run_async({
         let h = handle.clone();
-        async move { h.get_registered_tools().await.unwrap() });
+        async move { h.get_registered_tools().await.unwrap() }
+    });
     assert!(
         tools.iter().any(|t| t.name == "greet"),
         "extension should have loaded via dist→src fallback"
@@ -423,7 +431,8 @@ fn dist_to_src_fallback_no_effect_when_dist_exists() {
     // Should load from dist/ (no fallback needed).
     let tools = common::run_async({
         let h = handle.clone();
-        async move { h.get_registered_tools().await.unwrap() });
+        async move { h.get_registered_tools().await.unwrap() }
+    });
     assert!(tools.iter().any(|t| t.name == "greet"));
 
     shutdown(&handle);
@@ -460,6 +469,7 @@ fn try_start_runtime_with_mode(
             JsExtensionRuntimeHandle::start(config, tools, manager)
                 .await
                 .expect("start js runtime")
+        }
         });
     manager.set_js_runtime(handle.clone());
 
@@ -470,6 +480,7 @@ fn try_start_runtime_with_mode(
                 .load_js_extensions(vec![spec])
                 .await
                 .map_err(|e| e.to_string())
+            }
         });
 
     (manager, handle, load_result)
@@ -506,7 +517,8 @@ fn repair_off_prevents_dist_to_src_fallback() {
     // With Off mode the fallback should NOT fire → no "greet" tool registered.
     let tools = common::run_async({
         let h = handle.clone();
-        async move { h.get_registered_tools().await.unwrap() });
+        async move { h.get_registered_tools().await.unwrap() }
+    });
     assert!(
         !tools.iter().any(|t| t.name == "greet"),
         "Off mode should not apply dist→src fallback"
@@ -531,7 +543,8 @@ fn repair_suggest_does_not_apply_fallback() {
     // Suggest mode should log but NOT apply → no "greet" tool registered.
     let tools = common::run_async({
         let h = handle.clone();
-        async move { h.get_registered_tools().await.unwrap() });
+        async move { h.get_registered_tools().await.unwrap() }
+    });
     assert!(
         !tools.iter().any(|t| t.name == "greet"),
         "Suggest mode should not apply dist→src fallback"
@@ -556,7 +569,8 @@ fn repair_auto_safe_applies_dist_to_src_fallback() {
     // AutoSafe should apply the fallback → "greet" tool registered.
     let tools = common::run_async({
         let h = handle.clone();
-        async move { h.get_registered_tools().await.unwrap() });
+        async move { h.get_registered_tools().await.unwrap() }
+    });
     assert!(
         tools.iter().any(|t| t.name == "greet"),
         "AutoSafe mode should apply dist→src fallback"
@@ -581,7 +595,8 @@ fn repair_auto_strict_applies_dist_to_src_fallback() {
     // AutoStrict should also apply the fallback → "greet" tool registered.
     let tools = common::run_async({
         let h = handle.clone();
-        async move { h.get_registered_tools().await.unwrap() });
+        async move { h.get_registered_tools().await.unwrap() }
+    });
     assert!(
         tools.iter().any(|t| t.name == "greet"),
         "AutoStrict mode should apply dist→src fallback"
@@ -1074,7 +1089,8 @@ fn repair_blocked_when_src_has_broken_syntax() {
     // The structural validation gate should block the repair → no "greet" tool.
     let tools = common::run_async({
         let h = handle.clone();
-        async move { h.get_registered_tools().await.unwrap() });
+        async move { h.get_registered_tools().await.unwrap() }
+    });
     assert!(
         !tools.iter().any(|t| t.name == "greet"),
         "AutoSafe should block fallback when src file has broken syntax"
@@ -1099,7 +1115,8 @@ fn repair_succeeds_when_src_has_valid_syntax() {
     // Valid file passes structural validation → "greet" tool registered.
     let tools = common::run_async({
         let h = handle.clone();
-        async move { h.get_registered_tools().await.unwrap() });
+        async move { h.get_registered_tools().await.unwrap() }
+    });
     assert!(
         tools.iter().any(|t| t.name == "greet"),
         "AutoSafe should allow fallback when src file is structurally valid"
@@ -3657,6 +3674,7 @@ fn start_runtime_with_repair_mode(
             JsExtensionRuntimeHandle::start(config, tools, manager)
                 .await
                 .expect("start js runtime")
+        }
         });
 
     (manager, runtime)
@@ -3698,7 +3716,8 @@ export default function activate(pi) {
             mgr.load_js_extensions(vec![spec])
                 .await
                 .expect("load extension with monorepo escape stub");
-        });
+        }
+    });
 
     // Dispatch event to verify the stub exports work
     let response = common::run_async(async move {
@@ -3780,7 +3799,8 @@ fn load_ext_with_source(harness: &common::TestHarness, source: &str) -> Extensio
             mgr.load_js_extensions(vec![spec])
                 .await
                 .expect("load extension");
-        });
+        }
+    });
 
     manager
 }

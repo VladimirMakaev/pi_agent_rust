@@ -16,6 +16,8 @@
 //! - Cross-durability-mode fault behavior
 //! - Trace log correlation for debugging persistence failures
 
+mod common;
+
 use tokio::runtime::Builder as RuntimeBuilder;
 use pi::model::UserContent;
 use pi::session::{AutosaveDurabilityMode, AutosaveFlushTrigger, Session, SessionMessage};
@@ -32,7 +34,8 @@ use std::path::PathBuf;
 // ---------------------------------------------------------------------------
 
 fn run_async<T>(future: impl Future<Output = T>) -> T {
-    let runtime = RuntimeBuilder::current_thread()
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
         .build()
         .expect("build runtime");
     runtime.block_on(future)

@@ -493,6 +493,7 @@ fn calibration_determinism_identical_reports() {
         }
         for idx in 0..5 {
             let _ = dispatch_host_call_shared(&ctx, adversarial_call(idx)).await;
+            }
         });
 
     let artifact = manager.runtime_risk_ledger_artifact();
@@ -559,6 +560,7 @@ fn calibration_objectives_differ() {
         }
         for idx in 0..8 {
             let _ = dispatch_host_call_shared(&ctx, adversarial_call(idx)).await;
+            }
         });
 
     let artifact = manager.runtime_risk_ledger_artifact();
@@ -645,6 +647,7 @@ fn calibration_all_benign_trace() {
     futures::executor::block_on(async {
         for idx in 0..10 {
             let _ = dispatch_host_call_shared(&ctx, benign_call(idx)).await;
+            }
         });
 
     let artifact = manager.runtime_risk_ledger_artifact();
@@ -803,6 +806,7 @@ fn e2e_full_pipeline_verify_replay_calibrate() {
         }
         for idx in 0..3 {
             let _ = dispatch_host_call_shared(&ctx, benign_call(10 + idx)).await;
+            }
         });
 
     // Step 1: Export ledger
@@ -906,6 +910,7 @@ fn calibration_weight_sensitivity() {
         }
         for idx in 0..6 {
             let _ = dispatch_host_call_shared(&ctx, adversarial_call(idx)).await;
+            }
         });
 
     let artifact = manager.runtime_risk_ledger_artifact();

@@ -8,6 +8,31 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
+/// Parse a string value as a boolean, supporting common truthy/falsy representations.
+pub(crate) fn parse_bool_value(s: &str) -> Option<bool> {
+    let t = s.trim();
+    if t.eq_ignore_ascii_case("1")
+        || t.eq_ignore_ascii_case("true")
+        || t.eq_ignore_ascii_case("yes")
+        || t.eq_ignore_ascii_case("on")
+    {
+        Some(true)
+    } else if t.eq_ignore_ascii_case("0")
+        || t.eq_ignore_ascii_case("false")
+        || t.eq_ignore_ascii_case("no")
+        || t.eq_ignore_ascii_case("off")
+    {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Read an environment variable and parse it as a boolean.
+pub(crate) fn parse_env_bool(name: &str) -> Option<bool> {
+    std::env::var(name).ok().and_then(|v| parse_bool_value(&v))
+}
+
 /// Main configuration structure.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -605,7 +630,9 @@ impl Config {
         if let Some(value) = self.terminal.as_ref().and_then(|t| t.clear_on_shrink) {
             return value;
         }
-        get_env("PI_CLEAR_ON_SHRINK").is_some_and(|value| value == "1")
+        get_env("PI_CLEAR_ON_SHRINK")
+            .and_then(|v| parse_bool_value(&v))
+            .unwrap_or(false)
     }
 
     pub fn thinking_budget(&self, level: &str) -> u32 {
@@ -685,8 +712,7 @@ impl Config {
             .as_ref()
             .and_then(|p| p.allow_dangerous)
             .unwrap_or(false);
-        let env_allows = std::env::var("PI_EXTENSION_ALLOW_DANGEROUS")
-            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+        let env_allows = parse_env_bool("PI_EXTENSION_ALLOW_DANGEROUS").unwrap_or(false);
         let allow_dangerous = config_allows || env_allows;
 
         // Build audit trail before mutating deny_caps.
@@ -800,26 +826,6 @@ impl Config {
     /// 2. `extensionRisk` config
     /// 3. deterministic defaults
     pub fn resolve_extension_risk_with_metadata(&self) -> ResolvedExtensionRisk {
-        fn parse_env_bool(name: &str) -> Option<bool> {
-            std::env::var(name).ok().and_then(|v| {
-                let t = v.trim();
-                if t.eq_ignore_ascii_case("1")
-                    || t.eq_ignore_ascii_case("true")
-                    || t.eq_ignore_ascii_case("yes")
-                    || t.eq_ignore_ascii_case("on")
-                {
-                    Some(true)
-                } else if t.eq_ignore_ascii_case("0")
-                    || t.eq_ignore_ascii_case("false")
-                    || t.eq_ignore_ascii_case("no")
-                    || t.eq_ignore_ascii_case("off")
-                {
-                    Some(false)
-                } else {
-                    None
-                }
-            })
-        }
 
         fn parse_env_f64(name: &str) -> Option<f64> {
             std::env::var(name).ok().and_then(|v| v.trim().parse().ok())

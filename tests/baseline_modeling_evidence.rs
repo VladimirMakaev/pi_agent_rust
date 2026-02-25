@@ -100,6 +100,7 @@ fn e2e_baseline_deterministic_from_benign_traces() {
                 context: None,
             };
             let _ = dispatch_host_call_shared(&ctx, call).await;
+            }
         });
 
     let artifact = manager.runtime_risk_ledger_artifact();
@@ -206,6 +207,7 @@ fn e2e_baseline_multi_capability_profiles() {
                 context: None,
             };
             let _ = dispatch_host_call_shared(&ctx, call).await;
+            }
         });
 
     let artifact = manager.runtime_risk_ledger_artifact();
@@ -326,6 +328,7 @@ fn e2e_drift_detection_adversarial_shift() {
                 context: None,
             };
             let _ = dispatch_host_call_shared(&ctx, call).await;
+            }
         });
 
     let artifact = manager.runtime_risk_ledger_artifact();
@@ -471,6 +474,7 @@ fn e2e_markov_transition_anomaly() {
                 context: None,
             };
             let _ = dispatch_host_call_shared(&ctx, call).await;
+            }
         });
 
     let artifact = manager.runtime_risk_ledger_artifact();
@@ -584,6 +588,7 @@ fn e2e_baseline_artifact_roundtrip() {
                 context: None,
             };
             let _ = dispatch_host_call_shared(&ctx, call).await;
+            }
         });
 
     let artifact = manager.runtime_risk_ledger_artifact();
@@ -663,6 +668,7 @@ fn e2e_baseline_jsonl_schema_compliance() {
                 context: None,
             };
             let _ = dispatch_host_call_shared(&ctx, call).await;
+            }
         });
 
     let artifact = manager.runtime_risk_ledger_artifact();

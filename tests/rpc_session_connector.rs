@@ -111,7 +111,6 @@ fn setup_rpc(
         available_models: Vec::new(),
         scoped_models: Vec::new(),
         auth,
-        runtime_handle: runtime_handle.clone(),
     };
 
     let (in_tx, in_rx) = tokio::sync::mpsc::channel::<String>(16);
@@ -768,7 +767,7 @@ async fn rpc_get_session_stats_stays_responsive_with_backlog() {
             session.append_message(SessionMessage::User {
                 content: UserContent::Text(format!("queued-{index}")),
                 timestamp: Some(chrono::Utc::now().timestamp_millis()),
-            
+            });
 
         }
         let expected_pending = session.autosave_metrics().pending_mutations as u64;
@@ -803,10 +802,7 @@ async fn rpc_get_session_stats_stays_responsive_with_backlog() {
             );
         }
 
-        logger.info_ctx("rpc", "backlog responsiveness probe", |ctx| {
-            ctx.push(("max_roundtrip_ms".into(), max_roundtrip_ms.to_string()));
-            ctx.push(("pending_messages".into(), expected_pending.to_string()));
-        });
+        // Diagnostics logged (logger removed).
 
         assert!(
             max_roundtrip_ms <= MAX_BACKLOG_STATS_ROUNDTRIP_MS,
@@ -815,7 +811,6 @@ async fn rpc_get_session_stats_stays_responsive_with_backlog() {
 
         drop(in_tx);
         let _ = server.await;
-    });
 }
 
 #[tokio::test]
@@ -1144,9 +1139,7 @@ async fn rpc_session_lifecycle_multi_command() {
         .await;
         assert_eq!(state["success"], true);
         let initial_count = state["data"]["messageCount"].as_u64().unwrap_or(0);
-        logger.info_ctx("rpc", "Initial state", |ctx| {
-            ctx.push(("messageCount".into(), initial_count.to_string()));
-        });
+        // Diagnostics: initial state message count = {initial_count}.
 
         // 2. Set session name.
         let resp = send_recv(
@@ -1169,9 +1162,7 @@ async fn rpc_session_lifecycle_multi_command() {
         assert_eq!(msgs["success"], true);
         let msg_array = msgs["data"]["messages"].as_array().expect("messages");
         assert_eq!(msg_array.len(), 2);
-        logger.info_ctx("rpc", "Messages retrieved", |ctx| {
-            ctx.push(("count".into(), msg_array.len().to_string()));
-        });
+        // Diagnostics: messages retrieved count.
 
         // 4. Get stats.
         let stats = send_recv(
@@ -1205,7 +1196,7 @@ async fn rpc_session_lifecycle_multi_command() {
         .await;
         assert_eq!(final_state["data"]["sessionName"], "Lifecycle Test");
 
-        logger.info("rpc", "Session lifecycle test complete");
+        // Session lifecycle test complete.
 
         drop(in_tx);
         let result = server.await;

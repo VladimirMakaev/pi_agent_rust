@@ -90,7 +90,6 @@ fn make_rpc_options(
         available_models: Vec::new(),
         scoped_models: Vec::new(),
         auth,
-        runtime_handle: handle.clone(),
     }
 }
 
@@ -233,11 +232,10 @@ fn rpc_get_available_models_returns_list() {
         let out_rx = Arc::new(Mutex::new(out_rx));
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
-        
+
 
         in_tx
             .send(
-                &cx,
                 r#"{"id":"1","type":"get_available_models"}"#.to_string(),
             )
             .await
@@ -280,11 +278,10 @@ fn rpc_set_session_name_success() {
         let out_rx = Arc::new(Mutex::new(out_rx));
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
-        
+
 
         in_tx
             .send(
-                &cx,
                 r#"{"id":"1","type":"set_session_name","name":"my-test-session"}"#.to_string(),
             )
             .await
@@ -341,11 +338,10 @@ fn rpc_get_last_assistant_text_with_messages() {
         let out_rx = Arc::new(Mutex::new(out_rx));
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
-        
+
 
         in_tx
             .send(
-                &cx,
                 r#"{"id":"1","type":"get_last_assistant_text"}"#.to_string(),
             )
             .await
@@ -385,11 +381,10 @@ fn rpc_get_last_assistant_text_empty_session() {
         let out_rx = Arc::new(Mutex::new(out_rx));
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
-        
+
 
         in_tx
             .send(
-                &cx,
                 r#"{"id":"1","type":"get_last_assistant_text"}"#.to_string(),
             )
             .await
@@ -514,11 +509,10 @@ fn rpc_set_steering_mode_accepts_valid_mode() {
         let out_rx = Arc::new(Mutex::new(out_rx));
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
-        
+
 
         in_tx
             .send(
-                &cx,
                 r#"{"id":"1","type":"set_steering_mode","mode":"all"}"#.to_string(),
             )
             .await
@@ -555,11 +549,10 @@ fn rpc_set_auto_compaction_toggle() {
         let out_rx = Arc::new(Mutex::new(out_rx));
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
-        
+
 
         in_tx
             .send(
-                &cx,
                 r#"{"id":"1","type":"set_auto_compaction","enabled":false}"#.to_string(),
             )
             .await
@@ -596,11 +589,10 @@ fn rpc_set_auto_retry_toggle() {
         let out_rx = Arc::new(Mutex::new(out_rx));
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
-        
+
 
         in_tx
             .send(
-                &cx,
                 r#"{"id":"1","type":"set_auto_retry","enabled":true}"#.to_string(),
             )
             .await
@@ -637,7 +629,7 @@ fn rpc_multiple_commands_preserve_id_ordering() {
         let out_rx = Arc::new(Mutex::new(out_rx));
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
-        
+
 
         // Send 3 quick commands
         in_tx
@@ -646,7 +638,6 @@ fn rpc_multiple_commands_preserve_id_ordering() {
             .expect("send a");
         in_tx
             .send(
-                &cx,
                 r#"{"id":"b","type":"get_available_models"}"#.to_string(),
             )
             .await
@@ -778,7 +769,7 @@ fn rpc_follow_up_aliases_missing_message_return_error() {
         let out_rx = Arc::new(Mutex::new(out_rx));
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
-        
+
 
         let aliases = [
             ("a", r#"{"id":"a","type":"follow-up"}"#),
@@ -837,7 +828,6 @@ fn rpc_kebab_and_camel_aliases_dispatch_to_canonical_commands() {
 
         in_tx
             .send(
-                &cx,
                 r#"{"id":"2","type":"set-steering-mode","mode":"all"}"#.to_string(),
             )
             .await
@@ -849,7 +839,6 @@ fn rpc_kebab_and_camel_aliases_dispatch_to_canonical_commands() {
 
         in_tx
             .send(
-                &cx,
                 r#"{"id":"3","type":"setFollowUpMode","mode":"one-at-a-time"}"#.to_string(),
             )
             .await
@@ -861,7 +850,6 @@ fn rpc_kebab_and_camel_aliases_dispatch_to_canonical_commands() {
 
         in_tx
             .send(
-                &cx,
                 r#"{"id":"4","type":"set-auto-compaction","enabled":false}"#.to_string(),
             )
             .await
@@ -873,7 +861,6 @@ fn rpc_kebab_and_camel_aliases_dispatch_to_canonical_commands() {
 
         in_tx
             .send(
-                &cx,
                 r#"{"id":"5","type":"setAutoRetry","enabled":false}"#.to_string(),
             )
             .await
@@ -925,7 +912,7 @@ fn rpc_empty_line_is_skipped_gracefully() {
         let out_rx = Arc::new(Mutex::new(out_rx));
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
-        
+
 
         // Send empty string, then a valid command
         let _ = in_tx.send(String::new()).await;

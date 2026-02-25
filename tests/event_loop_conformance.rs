@@ -143,6 +143,7 @@ fn run_case(case: &Case) {
                             unreachable!("{}: step {idx}: unknown timer {timer}", case.name)
                         });
                         ObservedTask::TimerFired { timer_id }
+                        }
                     });
 
                 assert_eq!(

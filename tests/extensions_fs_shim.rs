@@ -170,6 +170,7 @@ fn fs_readdir_with_filetypes() {
                 assert_eq!(entry["isDir"], false);
                 assert_eq!(entry["isFile"], true);
             }
+            }
         });
 }
 

@@ -718,7 +718,7 @@ fn e2e_anthropic_streaming_all_scenarios() {
 
     let scenarios = all_anthropic_scenarios();
 
-    run_async(async move {
+    common::run_async(async move {
             let model = model.clone();
             let harness_ref = &harness;
             let scenarios_ref = &scenarios;
@@ -809,7 +809,7 @@ fn e2e_anthropic_streaming_determinism() {
         expect_stop_reasons: vec![StopReason::Stop],
     };
 
-    run_async(async move {
+    common::run_async(async move {
             let model = model.clone();
             let harness_ref = &harness;
             let scenario_ref = &scenario;
@@ -876,7 +876,7 @@ fn e2e_anthropic_error_scenarios_comprehensive() {
         ),
     ];
 
-    for (cassette, expected_status, msg) in &error_scenarios {
+    for (cassette, expected_status, msg) in error_scenarios {
         harness.section(&format!("Error: HTTP {expected_status}"));
 
         let cassette_path = cassette_root().join(format!("{cassette}.json"));
@@ -887,11 +887,11 @@ fn e2e_anthropic_error_scenarios_comprehensive() {
             continue;
         }
 
-        run_async(async move {
-                let model = model.clone();
-                let cassette_name = *cassette;
-                let expected = *expected_status;
-                let message_text = *msg;
+        let model = model.clone();
+        common::run_async(async move {
+                let cassette_name = cassette;
+                let expected = expected_status;
+                let message_text = msg;
 
                 let cassette_dir = cassette_root();
                 let recorder =

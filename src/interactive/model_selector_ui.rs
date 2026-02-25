@@ -385,6 +385,7 @@ mod tests {
                 .expect("build runtime")
         })
         .handle()
+        .clone()
     }
 
     fn model_entry(provider: &str, id: &str, api_key: Option<&str>) -> ModelEntry {
@@ -447,7 +448,6 @@ mod tests {
             available,
             Vec::new(),
             event_tx,
-            runtime_handle(),
             true,
             None,
             Some(KeyBindings::new()),

@@ -115,7 +115,8 @@ impl OpenAIProvider {
     /// Create with a custom base URL (for Azure, Groq, etc.).
     #[must_use]
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
-        self.base_url = base_url.into();
+        let url = base_url.into();
+        self.base_url = url.trim_end_matches('/').to_string();
         self
     }
 
@@ -1630,7 +1631,7 @@ mod tests {
             tools: Vec::new().into(),
         };
 
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
         runtime.block_on(async {
@@ -1756,7 +1757,7 @@ mod tests {
     }
 
     fn collect_events(events: &[Value]) -> Vec<StreamEvent> {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
         runtime.block_on(async move {
@@ -2060,7 +2061,7 @@ mod tests {
             ..Default::default()
         };
 
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
         runtime.block_on(async {

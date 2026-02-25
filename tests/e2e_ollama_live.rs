@@ -85,7 +85,7 @@ fn live_ollama_simple_text_streaming() {
         return;
     }
 
-    let rt = RuntimeBuilder::current_thread().build().expect("runtime");
+    let rt = RuntimeBuilder::new_current_thread().enable_all().build().expect("runtime");
 
     rt.block_on(async {
         let entry = ollama_entry();
@@ -142,7 +142,7 @@ fn live_ollama_event_ordering() {
         return;
     }
 
-    let rt = RuntimeBuilder::current_thread().build().expect("runtime");
+    let rt = RuntimeBuilder::new_current_thread().enable_all().build().expect("runtime");
 
     rt.block_on(async {
         let entry = ollama_entry();

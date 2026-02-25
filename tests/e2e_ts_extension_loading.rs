@@ -191,7 +191,8 @@ fn load_ts_extension(harness: &common::TestHarness, source: &str) -> ExtensionMa
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start js runtime")
-        });
+        }
+    });
     manager.set_js_runtime(runtime);
 
     common::run_async({
@@ -201,7 +202,8 @@ fn load_ts_extension(harness: &common::TestHarness, source: &str) -> ExtensionMa
                 .load_js_extensions(vec![spec])
                 .await
                 .expect("load .ts extension");
-        });
+        }
+    });
 
     manager
 }
@@ -427,7 +429,8 @@ fn ts_rich_command_executes_with_args() {
     // Execute ts-greet
     let result = common::run_async({
         let manager = manager.clone();
-        async move { manager.execute_command("ts-greet", "world", 5000).await });
+        async move { manager.execute_command("ts-greet", "world", 5000).await }
+    });
     assert!(
         result.is_ok(),
         "ts-greet execution should succeed: {result:?}"
@@ -712,7 +715,8 @@ export default function init(pi: any): void {
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start js runtime")
-        });
+        }
+    });
     manager.set_js_runtime(runtime);
 
     common::run_async({
@@ -722,7 +726,8 @@ export default function init(pi: any): void {
                 .load_js_extensions(vec![spec_a, spec_b])
                 .await
                 .expect("load multiple .ts extensions");
-        });
+        }
+    });
 
     harness
         .log()

@@ -74,7 +74,8 @@ fn basic_options() -> StreamOptions {
 }
 
 fn make_runtime() -> tokio::runtime::Runtime {
-    tokio::runtime::Builder::current_thread()
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .expect("runtime build")
 }
@@ -592,6 +593,7 @@ fn stream_simple_empty_stream_emits_done() {
                 assert_eq!(text.text, "");
             }
             other => panic!("expected Done event, got {other:?}"),
+            }
         });
 }
 

@@ -163,6 +163,7 @@ impl CliTestHarness {
         self.harness.log().info_ctx("action", "CLI env", |ctx| {
             for (key, value) in &self.env {
                 ctx.push((key.clone(), value.clone()));
+                }
             });
         if let Some(bytes) = stdin {
             self.harness.log().info_ctx("action", "CLI stdin", |ctx| {
@@ -306,7 +307,8 @@ fn read_json_value(path: &Path) -> serde_json::Value {
 
 #[cfg(unix)]
 fn run_async<T>(future: impl std::future::Future<Output = T>) -> T {
-    let runtime = RuntimeBuilder::current_thread()
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
         .build()
         .expect("build tokio runtime");
     runtime.block_on(future)
@@ -365,6 +367,7 @@ fn write_minimal_session(path: &Path, cwd: &Path) -> (String, String, String, St
         "message": {
             "role": "user",
             "content": message
+            }
         });
 
     let content = format!("{header}\n{entry}\n");
@@ -1587,6 +1590,7 @@ fn e2e_cli_extensions_install_update_manifest_resolution_offline() {
             "private": true,
             "pi": {
                 "extensions": [format!("extensions/{extension_file}")]
+                }
             });
         fs::write(
             root.join("package.json"),
@@ -1727,13 +1731,14 @@ fn e2e_cli_extensions_install_update_manifest_resolution_offline() {
         ..Default::default()
     };
 
-    let js_runtime = run_async({
+    let js_runtime = common::run_async({
         let extension_manager = extension_manager.clone();
         let tools = Arc::clone(&tools);
         async move {
             JsExtensionRuntimeHandle::start(js_config, tools, extension_manager)
                 .await
                 .expect("start js runtime")
+        }
         });
     extension_manager.set_js_runtime(js_runtime);
 
@@ -1741,14 +1746,15 @@ fn e2e_cli_extensions_install_update_manifest_resolution_offline() {
         JsExtensionLoadSpec::from_entry_path(&local_extension_path).expect("local spec");
     let remote_spec =
         JsExtensionLoadSpec::from_entry_path(&remote_extension_path).expect("remote spec");
-    run_async({
+    common::run_async({
         let extension_manager = extension_manager.clone();
         async move {
             extension_manager
                 .load_js_extensions(vec![local_spec, remote_spec])
                 .await
                 .expect("load extension packages");
-        });
+        }
+    });
 
     harness.harness.log().info_ctx(
         "extension_workflow",
@@ -1761,7 +1767,7 @@ fn e2e_cli_extensions_install_update_manifest_resolution_offline() {
         },
     );
 
-    let local_exec_result = run_async({
+    let local_exec_result = common::run_async({
         let extension_manager = extension_manager.clone();
         async move {
             extension_manager
@@ -1788,7 +1794,7 @@ fn e2e_cli_extensions_install_update_manifest_resolution_offline() {
         },
     );
 
-    let remote_exec_result = run_async(async move {
+    let remote_exec_result = common::run_async(async move {
         extension_manager
             .execute_command("remote-ext-status", "", 5000)
             .await
@@ -2070,6 +2076,7 @@ fn e2e_cli_theme_flag_valid_file() {
             "border": "#666666",
             "selection": "#777777",
             "cursor": "#888888"
+            }
         });
     fs::write(&theme_path, serde_json::to_string(&theme_json).unwrap()).expect("write theme");
 
@@ -2107,6 +2114,7 @@ fn e2e_cli_theme_path_discovery() {
             "border": "#666666",
             "selection": "#777777",
             "cursor": "#888888"
+            }
         });
     fs::write(&theme_path, serde_json::to_string(&theme_json).unwrap()).expect("write theme");
 
@@ -2149,15 +2157,18 @@ fn build_anthropic_response_chunks(text: &str) -> Vec<String> {
                 "output_tokens": 1,
                 "service_tier": "standard"
             }
+            }
         });
     let content_start = json!({
         "type": "content_block_start",
         "index": 0,
-        "content_block": {"type": "text", "text": ""});
+        "content_block": {"type": "text", "text": ""}
+    });
     let content_delta = json!({
         "type": "content_block_delta",
         "index": 0,
-        "delta": {"type": "text_delta", "text": text});
+        "delta": {"type": "text_delta", "text": text}
+    });
     let content_stop = json!({
         "type": "content_block_stop",
         "index": 0
@@ -2170,6 +2181,7 @@ fn build_anthropic_response_chunks(text: &str) -> Vec<String> {
             "cache_creation_input_tokens": 0,
             "cache_read_input_tokens": 0,
             "output_tokens": 5
+            }
         });
 
     vec![
@@ -3183,6 +3195,7 @@ fn e2e_cli_auth_failure_error() {
         "error": {
             "type": "authentication_error",
             "message": "invalid x-api-key"
+            }
         });
 
     let cassette = json!({
@@ -3367,6 +3380,7 @@ fn write_rich_session(path: &Path, cwd: &Path) -> String {
         "message": {
             "role": "user",
             "content": "What is the meaning of life?"
+            }
         });
     let assistant_msg = json!({
         "type": "message",
@@ -3387,6 +3401,7 @@ fn write_rich_session(path: &Path, cwd: &Path) -> String {
             },
             "stopReason": "stop",
             "timestamp": 1_738_663_202_000_i64
+            }
         });
     let model_change = json!({
         "type": "model_change",
@@ -3800,6 +3815,7 @@ fn e2e_interactive_session_continue_loads_previous_tmux() {
         "message": {
             "role": "user",
             "content": "Previous session user message."
+            }
         });
     fs::write(&session_file, format!("{header}\n{user_entry}\n"))
         .expect("write pre-existing session");
@@ -3997,6 +4013,7 @@ fn e2e_cli_session_explicit_path_loads_session() {
         "message": {
             "role": "user",
             "content": "Alpha session content unique."
+            }
         });
     fs::write(&session_a_path, format!("{header_a}\n{entry_a}\n")).expect("write session a");
 
@@ -4015,6 +4032,7 @@ fn e2e_cli_session_explicit_path_loads_session() {
         "message": {
             "role": "user",
             "content": "Beta session content unique."
+            }
         });
     fs::write(&session_b_path, format!("{header_b}\n{entry_b}\n")).expect("write session b");
 
@@ -4116,6 +4134,7 @@ fn e2e_cli_startup_migrations_run_by_default() {
         "message": {
             "type": "user",
             "content": "migration smoke"
+            }
         });
     fs::write(&export_source, format!("{export_header}\n{export_entry}\n"))
         .expect("write export source");
@@ -4214,6 +4233,7 @@ fn e2e_cli_no_migrations_skips_startup_migrations() {
         "message": {
             "type": "user",
             "content": "migration skip smoke"
+            }
         });
     fs::write(&export_source, format!("{export_header}\n{export_entry}\n"))
         .expect("write export source");

@@ -638,7 +638,7 @@ fn compact_non_split_turn_calls_provider_once() {
     let provider = Arc::new(ScriptedProvider::new(["SUMMARY"]));
     let provider_dyn: Arc<dyn Provider> = provider.clone();
 
-    let result = run_async(async move { compact(prep, provider_dyn, "test-key", None).await })
+    let result = common::run_async(async move { compact(prep, provider_dyn, "test-key", None).await })
         .expect("compact");
     log_result(&harness, &result);
 
@@ -675,7 +675,7 @@ fn compact_split_turn_calls_provider_twice_and_formats_sections() {
     ]));
     let provider_dyn: Arc<dyn Provider> = provider.clone();
 
-    let result = run_async(async move { compact(prep, provider_dyn, "test-key", None).await })
+    let result = common::run_async(async move { compact(prep, provider_dyn, "test-key", None).await })
         .expect("compact");
     log_result(&harness, &result);
 
@@ -712,7 +712,7 @@ fn compact_appends_file_operations_and_sorts_lists() {
     log_preparation(&harness, &entries, &prep);
 
     let provider_dyn: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(["S"]));
-    let result = run_async(async move { compact(prep, provider_dyn, "test-key", None).await })
+    let result = common::run_async(async move { compact(prep, provider_dyn, "test-key", None).await })
         .expect("compact");
     log_result(&harness, &result);
 
@@ -758,7 +758,7 @@ fn compact_seeds_file_ops_from_previous_compaction_details() {
     log_preparation(&harness, &entries, &prep);
 
     let provider_dyn: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(["S"]));
-    let result = run_async(async move { compact(prep, provider_dyn, "test-key", None).await })
+    let result = common::run_async(async move { compact(prep, provider_dyn, "test-key", None).await })
         .expect("compact");
     log_result(&harness, &result);
 
@@ -803,7 +803,7 @@ fn compact_does_not_seed_file_ops_when_previous_compaction_from_hook() {
     log_preparation(&harness, &entries, &prep);
 
     let provider_dyn: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(["S"]));
-    let result = run_async(async move { compact(prep, provider_dyn, "test-key", None).await })
+    let result = common::run_async(async move { compact(prep, provider_dyn, "test-key", None).await })
         .expect("compact");
     log_result(&harness, &result);
 
@@ -829,7 +829,7 @@ fn compact_includes_previous_summary_in_prompt_for_incremental_update() {
 
     let provider = Arc::new(ScriptedProvider::new(["UPDATED"]));
     let provider_dyn: Arc<dyn Provider> = provider.clone();
-    let result = run_async(async move { compact(prep, provider_dyn, "test-key", None).await })
+    let result = common::run_async(async move { compact(prep, provider_dyn, "test-key", None).await })
         .expect("compact");
     log_result(&harness, &result);
 
@@ -972,7 +972,7 @@ fn compact_prompt_includes_thinking_and_tool_calls_in_serialized_conversation() 
 
     let provider = Arc::new(ScriptedProvider::new(["S"]));
     let provider_dyn: Arc<dyn Provider> = provider.clone();
-    let _result = run_async(async move { compact(prep, provider_dyn, "test-key", None).await })
+    let _result = common::run_async(async move { compact(prep, provider_dyn, "test-key", None).await })
         .expect("compact");
 
     let prompts = provider.prompts();
@@ -1068,7 +1068,7 @@ fn compaction_pipeline_save_and_open_round_trip_rehydrates_compaction_context() 
     let before_path = harness.temp_path("session-before-compaction.jsonl");
     let mut before = session.clone();
     before.path = Some(before_path.clone());
-    run_async(async move { before.save().await }).expect("save before-compaction session");
+    common::run_async(async move { before.save().await }).expect("save before-compaction session");
     harness.record_artifact("session-before-compaction.jsonl", &before_path);
 
     // "keep" = 4 chars → ceil(4/3) = 2 tokens. u1(1) + a1(2) + u2(1) = 4.
@@ -1077,7 +1077,7 @@ fn compaction_pipeline_save_and_open_round_trip_rehydrates_compaction_context() 
     assert_eq!(prep.first_kept_entry_id, "u1");
 
     let provider_dyn: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(["SUM1"]));
-    let result = run_async(async move { compact(prep, provider_dyn, "test-key", None).await })
+    let result = common::run_async(async move { compact(prep, provider_dyn, "test-key", None).await })
         .expect("compact");
     log_result(&harness, &result);
 
@@ -1117,11 +1117,11 @@ fn compaction_pipeline_save_and_open_round_trip_rehydrates_compaction_context() 
     let after_path = harness.temp_path("session-after-compaction.jsonl");
     let mut after = session.clone();
     after.path = Some(after_path.clone());
-    run_async(async move { after.save().await }).expect("save after-compaction session");
+    common::run_async(async move { after.save().await }).expect("save after-compaction session");
     harness.record_artifact("session-after-compaction.jsonl", &after_path);
 
     let reopened_path = after_path.to_string_lossy().to_string();
-    let reopened = run_async(async move { Session::open(&reopened_path).await })
+    let reopened = common::run_async(async move { Session::open(&reopened_path).await })
         .expect("reopen after-compaction session");
 
     let reopened_messages = reopened.to_messages_for_current_path();
@@ -1169,7 +1169,7 @@ fn compaction_pipeline_second_pass_seeds_previous_details_and_updates_summary() 
     let prep1 = prepare_compaction(&entries, make_settings(4)).expect("prep1");
     assert_eq!(prep1.first_kept_entry_id, "u1");
     let provider1_dyn: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(["S1"]));
-    let result1 = run_async(async move { compact(prep1, provider1_dyn, "test-key", None).await })
+    let result1 = common::run_async(async move { compact(prep1, provider1_dyn, "test-key", None).await })
         .expect("compact1");
 
     let details1 = pi::compaction::compaction_details_to_value(&result1.details).expect("details1");
@@ -1228,7 +1228,7 @@ fn compaction_pipeline_second_pass_seeds_previous_details_and_updates_summary() 
             .is_some_and(|s| s.contains("S1"))
     );
 
-    let result2 = run_async(async move { compact(prep2, provider2_dyn, "test-key", None).await })
+    let result2 = common::run_async(async move { compact(prep2, provider2_dyn, "test-key", None).await })
         .expect("compact2");
     log_result(&harness, &result2);
 
@@ -1320,7 +1320,7 @@ fn prepare_compaction_ignores_malformed_previous_compaction_details() {
     log_preparation(&harness, &entries, &prep);
 
     let provider_dyn: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(["S"]));
-    let result = run_async(async move { compact(prep, provider_dyn, "test-key", None).await })
+    let result = common::run_async(async move { compact(prep, provider_dyn, "test-key", None).await })
         .expect("compact");
     log_result(&harness, &result);
 
@@ -1388,7 +1388,7 @@ fn compact_returns_error_when_provider_stops_with_error() {
     log_preparation(&harness, &entries, &prep);
 
     let provider_dyn: Arc<dyn Provider> = Arc::new(ErrorProvider);
-    let err = run_async(async move { compact(prep, provider_dyn, "test-key", None).await })
+    let err = common::run_async(async move { compact(prep, provider_dyn, "test-key", None).await })
         .expect_err("compact should error");
 
     assert!(err.to_string().contains("provider failed"));
@@ -1419,7 +1419,7 @@ fn prepare_compaction_turn_prefix_tool_calls_contribute_to_file_ops() {
     assert_eq!(prep.turn_prefix_messages.len(), 3);
 
     let provider_dyn: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(["TURN"]));
-    let result = run_async(async move { compact(prep, provider_dyn, "test-key", None).await })
+    let result = common::run_async(async move { compact(prep, provider_dyn, "test-key", None).await })
         .expect("compact");
     log_result(&harness, &result);
 

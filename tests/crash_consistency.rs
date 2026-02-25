@@ -5,6 +5,8 @@
 //! for file recovery and the autosave queue state machine for flush failure
 //! semantics.
 
+mod common;
+
 use tokio::runtime::Builder as RuntimeBuilder;
 use pi::model::UserContent;
 use pi::session::{Session, SessionMessage};
@@ -13,7 +15,8 @@ use std::future::Future;
 use std::io::Write as _;
 
 fn run_async<T>(future: impl Future<Output = T>) -> T {
-    let runtime = RuntimeBuilder::current_thread()
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
         .build()
         .expect("build runtime");
     runtime.block_on(future)
@@ -42,7 +45,8 @@ fn build_session_file(num_entries: usize) -> String {
             "type": "message",
             "id": format!("entry-{i}"),
             "timestamp": "2024-06-01T00:00:00.000Z",
-            "message": {"role": "user", "content": format!("message {i}")});
+            "message": {"role": "user", "content": format!("message {i}")}
+        });
         lines.push(serde_json::to_string(&entry).unwrap());
     }
     lines.join("\n")

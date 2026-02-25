@@ -551,7 +551,7 @@ fn soak_multi_turn_sustained_conversation() {
     let mut all_metrics: Vec<TurnMetrics> = Vec::new();
     let mut all_timeline: Vec<serde_json::Value> = Vec::new();
 
-    run_async(async move {
+    common::run_async(async move {
         let provider: Arc<dyn Provider> = Arc::new(MultiTurnTextProvider::new(15));
         let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
@@ -583,7 +583,7 @@ fn soak_multi_turn_sustained_conversation() {
 
             let msg_count = {
                 
-                let g = session.lock().await.expect("session lock");
+                let g = session.lock().await;
                 g.to_messages_for_current_path().len()
             };
 
@@ -615,7 +615,7 @@ fn soak_multi_turn_sustained_conversation() {
         // Verify final session state
         let final_messages = {
             
-            let g = session.lock().await.expect("session lock");
+            let g = session.lock().await;
             g.to_messages_for_current_path()
         };
         let final_tokens = total_assistant_tokens(&final_messages);
@@ -660,7 +660,7 @@ fn soak_multi_turn_metrics_and_token_accumulation() {
     let ms = Arc::clone(&metrics_store);
     let ts = Arc::clone(&timeline_store);
 
-    run_async(async move {
+    common::run_async(async move {
         let provider: Arc<dyn Provider> = Arc::new(MultiTurnTextProvider::new(20));
         let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
@@ -693,7 +693,7 @@ fn soak_multi_turn_metrics_and_token_accumulation() {
 
             let msg_count = {
                 
-                let g = session.lock().await.expect("session lock");
+                let g = session.lock().await;
                 g.to_messages_for_current_path().len()
             };
 
@@ -793,7 +793,7 @@ fn soak_repeated_tool_execution() {
     let metrics_store = Arc::new(Mutex::new(Vec::<TurnMetrics>::new()));
     let ms = Arc::clone(&metrics_store);
 
-    run_async(async move {
+    common::run_async(async move {
         let provider: Arc<dyn Provider> = Arc::new(RepeatedToolProvider::new(fixture_path, 18));
         let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
@@ -828,7 +828,7 @@ fn soak_repeated_tool_execution() {
 
             let msg_count = {
                 
-                let g = session.lock().await.expect("session lock");
+                let g = session.lock().await;
                 g.to_messages_for_current_path().len()
             };
 
@@ -908,7 +908,7 @@ fn soak_latency_stability_bounded_drift() {
     let metrics_store = Arc::new(Mutex::new(Vec::<TurnMetrics>::new()));
     let ms = Arc::clone(&metrics_store);
 
-    run_async(async move {
+    common::run_async(async move {
         let provider: Arc<dyn Provider> = Arc::new(MultiTurnTextProvider::new(10));
         let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
@@ -937,6 +937,7 @@ fn soak_latency_stability_bounded_drift() {
                 error,
                 ..TurnMetrics::default()
             });
+            }
         });
 
     let metrics = metrics_store.lock().expect("final metrics");
@@ -998,7 +999,7 @@ fn soak_error_recovery_sustainability() {
     let metrics_store = Arc::new(Mutex::new(Vec::<TurnMetrics>::new()));
     let ms = Arc::clone(&metrics_store);
 
-    run_async(async move {
+    common::run_async(async move {
         // Fails every 3rd call (calls 3, 6, 9, ...)
         let provider: Arc<dyn Provider> = Arc::new(IntermittentErrorProvider::new(3, 12));
         let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
@@ -1097,7 +1098,7 @@ fn soak_session_persist_reload_cycle() {
     let metrics_store = Arc::new(Mutex::new(Vec::<TurnMetrics>::new()));
     let ms = Arc::clone(&metrics_store);
 
-    run_async(async move {
+    common::run_async(async move {
         let provider: Arc<dyn Provider> = Arc::new(MultiTurnTextProvider::new(15));
         let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
@@ -1123,7 +1124,7 @@ fn soak_session_persist_reload_cycle() {
 
             let msg_count = {
                 
-                let g = session.lock().await.expect("session lock");
+                let g = session.lock().await;
                 g.to_messages_for_current_path().len()
             };
 
@@ -1143,13 +1144,13 @@ fn soak_session_persist_reload_cycle() {
         // Get session path
         let session_path = {
             
-            let guard = session.lock().await.expect("lock");
+            let guard = session.lock().await;
             guard.path.clone().expect("session has path")
         };
 
         let pre_reload_msg_count = {
             
-            let guard = session.lock().await.expect("lock");
+            let guard = session.lock().await;
             guard.to_messages_for_current_path().len()
         };
 
@@ -1194,7 +1195,7 @@ fn soak_session_persist_reload_cycle() {
 
             let msg_count = {
                 
-                let g = reloaded_session.lock().await.expect("session lock");
+                let g = reloaded_session.lock().await;
                 g.to_messages_for_current_path().len()
             };
 
@@ -1213,7 +1214,7 @@ fn soak_session_persist_reload_cycle() {
         // Final message count should be full history
         let final_count = {
             
-            let g = reloaded_session.lock().await.expect("lock");
+            let g = reloaded_session.lock().await;
             g.to_messages_for_current_path().len()
         };
         assert!(
@@ -1268,7 +1269,7 @@ fn soak_mixed_workload() {
     let metrics_store = Arc::new(Mutex::new(Vec::<TurnMetrics>::new()));
     let ms = Arc::clone(&metrics_store);
 
-    run_async(async move {
+    common::run_async(async move {
         let provider: Arc<dyn Provider> = Arc::new(MixedWorkloadProvider::new(fixture_path, 14));
         let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
@@ -1306,7 +1307,7 @@ fn soak_mixed_workload() {
 
             let msg_count = {
                 
-                let g = session.lock().await.expect("session lock");
+                let g = session.lock().await;
                 g.to_messages_for_current_path().len()
             };
 
@@ -1363,7 +1364,7 @@ fn soak_session_message_growth_linear() {
     let metrics_store = Arc::new(Mutex::new(Vec::<TurnMetrics>::new()));
     let ms = Arc::clone(&metrics_store);
 
-    run_async(async move {
+    common::run_async(async move {
         let provider: Arc<dyn Provider> = Arc::new(MultiTurnTextProvider::new(10));
         let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
@@ -1387,7 +1388,7 @@ fn soak_session_message_growth_linear() {
 
             let msg_count = {
                 
-                let g = session.lock().await.expect("session lock");
+                let g = session.lock().await;
                 g.to_messages_for_current_path().len()
             };
 
@@ -1399,6 +1400,7 @@ fn soak_session_message_growth_linear() {
                 error,
                 ..TurnMetrics::default()
             });
+            }
         });
 
     let metrics = metrics_store.lock().expect("final metrics");
@@ -1470,7 +1472,7 @@ fn soak_token_budget_monotonic() {
     let metrics_store = Arc::new(Mutex::new(Vec::<TurnMetrics>::new()));
     let ms = Arc::clone(&metrics_store);
 
-    run_async(async move {
+    common::run_async(async move {
         let tokens_per = 25;
         let provider: Arc<dyn Provider> = Arc::new(MultiTurnTextProvider::new(tokens_per));
         let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
@@ -1510,7 +1512,7 @@ fn soak_token_budget_monotonic() {
         // Verify from session
         let session_tokens = {
             
-            let g = session.lock().await.expect("lock");
+            let g = session.lock().await;
             total_assistant_tokens(&g.to_messages_for_current_path())
         };
 
@@ -1587,7 +1589,7 @@ fn soak_stability_report_generation() {
     let metrics_store = Arc::new(Mutex::new(Vec::<TurnMetrics>::new()));
     let ms = Arc::clone(&metrics_store);
 
-    run_async(async move {
+    common::run_async(async move {
         let provider: Arc<dyn Provider> = Arc::new(MultiTurnTextProvider::new(15));
         let session = Arc::new(tokio::sync::Mutex::new(Session::create_with_dir(
             Some(cwd.clone()),
@@ -1613,7 +1615,7 @@ fn soak_stability_report_generation() {
 
             let msg_count = {
                 
-                let g = session.lock().await.expect("session lock");
+                let g = session.lock().await;
                 g.to_messages_for_current_path().len()
             };
 
@@ -1626,6 +1628,7 @@ fn soak_stability_report_generation() {
                 error,
                 ..TurnMetrics::default()
             });
+            }
         });
 
     let metrics = metrics_store.lock().expect("final metrics");

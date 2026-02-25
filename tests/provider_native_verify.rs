@@ -637,7 +637,8 @@ fn generate_vertex_text_fixture(cassette_path: &Path, cassette_name: &str, url: 
             "promptTokenCount": 15,
             "candidatesTokenCount": 10,
             "totalTokenCount": 25
-        });
+        }
+    });
 
     let sse_chunk = format!("data: {}\n\n", serde_json::to_string(&chunk1).unwrap());
 
@@ -694,7 +695,8 @@ fn generate_vertex_tool_fixture(
             "promptTokenCount": 25,
             "candidatesTokenCount": 15,
             "totalTokenCount": 40
-        });
+        }
+    });
 
     let sse_chunk = format!("data: {}\n\n", serde_json::to_string(&chunk).unwrap());
 
@@ -824,6 +826,7 @@ fn openai_text_response(model: &str, text: &str) -> RecordedResponse {
             "prompt_tokens": 20,
             "completion_tokens": 10,
             "total_tokens": 30
+            }
         });
     RecordedResponse {
         status: 200,
@@ -890,6 +893,7 @@ fn openai_tool_response(model: &str, tool_name: &str, tool_args: &Value) -> Reco
             "prompt_tokens": 30,
             "completion_tokens": 12,
             "total_tokens": 42
+            }
         });
     RecordedResponse {
         status: 200,
@@ -978,6 +982,7 @@ fn openai_tool_response_multiple(model: &str, tools: &[ToolDef]) -> RecordedResp
             "prompt_tokens": 36,
             "completion_tokens": 18,
             "total_tokens": 54
+            }
         });
 
     RecordedResponse {
@@ -1067,6 +1072,7 @@ fn generate_bedrock_text_fixture(cassette_path: &Path, cassette_name: &str, url:
             "inputTokens": 15,
             "outputTokens": 10,
             "totalTokens": 25
+            }
         });
 
     let cassette = Cassette {
@@ -1122,6 +1128,7 @@ fn generate_bedrock_tool_fixture(
             "inputTokens": 25,
             "outputTokens": 15,
             "totalTokens": 40
+            }
         });
 
     let cassette = Cassette {
@@ -1216,6 +1223,7 @@ async fn run_canonical_scenario(
                 ctx.push(("tool_calls".into(), summary.tool_calls.len().to_string()));
                 if let Some(r) = summary.stop_reason {
                     ctx.push(("stop_reason".into(), format!("{r:?}")));
+                    }
                 });
 
             assert_stream_ok(
@@ -1328,7 +1336,8 @@ mod vertex_smoke {
         ensure_fixture("simple_text", scenario);
         let provider = build_provider("simple_text");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -1344,7 +1353,8 @@ mod vertex_smoke {
         ensure_fixture("unicode_text", scenario);
         let provider = build_provider("unicode_text");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -1363,7 +1373,8 @@ mod vertex_smoke {
         ensure_fixture("tool_call_single", scenario);
         let provider = build_provider("tool_call_single");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -1382,7 +1393,8 @@ mod vertex_smoke {
         ensure_fixture("error_auth_401", scenario);
         let provider = build_provider("error_auth_401");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -1401,7 +1413,8 @@ mod vertex_smoke {
         ensure_fixture("error_bad_request_400", scenario);
         let provider = build_provider("error_bad_request_400");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -1420,7 +1433,8 @@ mod vertex_smoke {
         ensure_fixture("error_rate_limit_429", scenario);
         let provider = build_provider("error_rate_limit_429");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -1503,6 +1517,7 @@ mod bedrock_smoke {
                     "amazon-bedrock": {
                         "token": "vcr-playback-token"
                     }
+                    }
                 });
             std::fs::write(&tmp, serde_json::to_string_pretty(&auth).unwrap()).ok();
         }
@@ -1521,7 +1536,8 @@ mod bedrock_smoke {
         ensure_fixture("simple_text", scenario);
         let provider = build_provider("simple_text");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -1537,7 +1553,8 @@ mod bedrock_smoke {
         ensure_fixture("unicode_text", scenario);
         let provider = build_provider("unicode_text");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -1556,7 +1573,8 @@ mod bedrock_smoke {
         ensure_fixture("tool_call_single", scenario);
         let provider = build_provider("tool_call_single");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -1575,7 +1593,8 @@ mod bedrock_smoke {
         ensure_fixture("error_auth_401", scenario);
         let provider = build_provider("error_auth_401");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -1609,6 +1628,7 @@ mod copilot_smoke {
             "expires_at": chrono::Utc::now().timestamp() + 3600,
             "endpoints": {
                 "api": CHAT_BASE_URL
+                }
             });
         Interaction {
             request: RecordedRequest {
@@ -1730,7 +1750,8 @@ mod copilot_smoke {
         ensure_fixture("simple_text", scenario);
         let provider = build_provider("simple_text");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -1746,7 +1767,8 @@ mod copilot_smoke {
         ensure_fixture("unicode_text", scenario);
         let provider = build_provider("unicode_text");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -1765,7 +1787,8 @@ mod copilot_smoke {
         ensure_fixture("tool_call_single", scenario);
         let provider = build_provider("tool_call_single");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -1784,7 +1807,8 @@ mod copilot_smoke {
         ensure_fixture("error_auth_401", scenario);
         let provider = build_provider("error_auth_401");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -1803,7 +1827,8 @@ mod copilot_smoke {
         ensure_fixture("error_bad_request_400", scenario);
         let provider = build_provider("error_bad_request_400");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -1822,7 +1847,8 @@ mod copilot_smoke {
         ensure_fixture("error_rate_limit_429", scenario);
         let provider = build_provider("error_rate_limit_429");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -1929,7 +1955,8 @@ mod gitlab_smoke {
         ensure_fixture("simple_text", scenario);
         let provider = build_provider("simple_text");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -1945,7 +1972,8 @@ mod gitlab_smoke {
         ensure_fixture("unicode_text", scenario);
         let provider = build_provider("unicode_text");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -1964,7 +1992,8 @@ mod gitlab_smoke {
         ensure_fixture("error_auth_401", scenario);
         let provider = build_provider("error_auth_401");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -1983,7 +2012,8 @@ mod gitlab_smoke {
         ensure_fixture("error_bad_request_400", scenario);
         let provider = build_provider("error_bad_request_400");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -2002,7 +2032,8 @@ mod gitlab_smoke {
         ensure_fixture("error_rate_limit_429", scenario);
         let provider = build_provider("error_rate_limit_429");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -2174,7 +2205,8 @@ mod openai_smoke {
         ensure_fixture("simple_text", scenario);
         let provider = build_provider("simple_text");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -2190,7 +2222,8 @@ mod openai_smoke {
         ensure_fixture("unicode_text", scenario);
         let provider = build_provider("unicode_text");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -2209,7 +2242,8 @@ mod openai_smoke {
         ensure_fixture("tool_call_single", scenario);
         let provider = build_provider("tool_call_single");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -2228,7 +2262,8 @@ mod openai_smoke {
         ensure_fixture("tool_call_multiple", scenario);
         let provider = build_provider("tool_call_multiple");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -2247,7 +2282,8 @@ mod openai_smoke {
         ensure_fixture("error_auth_401", scenario);
         let provider = build_provider("error_auth_401");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -2266,7 +2302,8 @@ mod openai_smoke {
         ensure_fixture("error_bad_request_400", scenario);
         let provider = build_provider("error_bad_request_400");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -2285,7 +2322,8 @@ mod openai_smoke {
         ensure_fixture("error_rate_limit_429", scenario);
         let provider = build_provider("error_rate_limit_429");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -2386,7 +2424,8 @@ mod sap_ai_core_smoke {
         ensure_fixture("simple_text", scenario);
         let provider = build_provider("simple_text");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -2402,7 +2441,8 @@ mod sap_ai_core_smoke {
         ensure_fixture("unicode_text", scenario);
         let provider = build_provider("unicode_text");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -2421,7 +2461,8 @@ mod sap_ai_core_smoke {
         ensure_fixture("tool_call_single", scenario);
         let provider = build_provider("tool_call_single");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -2440,7 +2481,8 @@ mod sap_ai_core_smoke {
         ensure_fixture("tool_call_multiple", scenario);
         let provider = build_provider("tool_call_multiple");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -2459,7 +2501,8 @@ mod sap_ai_core_smoke {
         ensure_fixture("error_auth_401", scenario);
         let provider = build_provider("error_auth_401");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -2478,7 +2521,8 @@ mod sap_ai_core_smoke {
         ensure_fixture("error_bad_request_400", scenario);
         let provider = build_provider("error_bad_request_400");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -2497,7 +2541,8 @@ mod sap_ai_core_smoke {
         ensure_fixture("error_rate_limit_429", scenario);
         let provider = build_provider("error_rate_limit_429");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -2975,7 +3020,8 @@ mod wave_b1_smoke {
         ensure_openai_fixture(provider_id, model, url, &scenario);
         let provider = build_openai_provider(provider_id, model, url, tag);
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -2989,7 +3035,8 @@ mod wave_b1_smoke {
         ensure_anthropic_fixture(provider_id, model, url, &scenario);
         let provider = build_anthropic_provider(provider_id, model, url, tag);
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -3858,7 +3905,8 @@ mod azure_smoke {
         ensure_fixture("simple_text", scenario);
         let provider = build_provider("simple_text");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -3874,7 +3922,8 @@ mod azure_smoke {
         ensure_fixture("unicode_text", scenario);
         let provider = build_provider("unicode_text");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -3893,7 +3942,8 @@ mod azure_smoke {
         ensure_fixture("tool_call_single", scenario);
         let provider = build_provider("tool_call_single");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -3912,7 +3962,8 @@ mod azure_smoke {
         ensure_fixture("tool_call_multiple", scenario);
         let provider = build_provider("tool_call_multiple");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -3931,7 +3982,8 @@ mod azure_smoke {
         ensure_fixture("error_auth_401", scenario);
         let provider = build_provider("error_auth_401");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -3950,7 +4002,8 @@ mod azure_smoke {
         ensure_fixture("error_bad_request_400", scenario);
         let provider = build_provider("error_bad_request_400");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -3969,7 +4022,8 @@ mod azure_smoke {
         ensure_fixture("error_rate_limit_429", scenario);
         let provider = build_provider("error_rate_limit_429");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -4000,17 +4054,20 @@ mod cohere_smoke {
         let content_start = json!({
             "type": "content-start",
             "index": 0,
-            "delta": {"message": {"content": {"type": "text", "text": ""}}});
+            "delta": {"message": {"content": {"type": "text", "text": ""}}}
+        });
         let content_delta = json!({
             "type": "content-delta",
             "index": 0,
-            "delta": {"message": {"content": {"text": text}}});
+            "delta": {"message": {"content": {"text": text}}}
+        });
         let content_end = json!({"type": "content-end", "index": 0});
         let msg_end = json!({
             "type": "message-end",
             "delta": {
                 "finish_reason": "COMPLETE",
                 "usage": {"tokens": {"input_tokens": 15, "output_tokens": 10}}
+                }
             });
 
         RecordedResponse {
@@ -4048,6 +4105,7 @@ mod cohere_smoke {
                         "function": {"name": tool_name, "arguments": args_str}
                     }
                 }
+                }
             });
         let tool_end = json!({"type": "tool-call-end"});
         let msg_end = json!({
@@ -4055,6 +4113,7 @@ mod cohere_smoke {
             "delta": {
                 "finish_reason": "TOOL_CALL",
                 "usage": {"tokens": {"input_tokens": 20, "output_tokens": 8}}
+                }
             });
 
         RecordedResponse {
@@ -4141,7 +4200,8 @@ mod cohere_smoke {
         ensure_fixture("simple_text", scenario);
         let provider = build_provider("simple_text");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -4157,7 +4217,8 @@ mod cohere_smoke {
         ensure_fixture("unicode_text", scenario);
         let provider = build_provider("unicode_text");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -4176,7 +4237,8 @@ mod cohere_smoke {
         ensure_fixture("tool_call_single", scenario);
         let provider = build_provider("tool_call_single");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -4195,7 +4257,8 @@ mod cohere_smoke {
         ensure_fixture("error_auth_401", scenario);
         let provider = build_provider("error_auth_401");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -4214,7 +4277,8 @@ mod cohere_smoke {
         ensure_fixture("error_bad_request_400", scenario);
         let provider = build_provider("error_bad_request_400");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -4233,7 +4297,8 @@ mod cohere_smoke {
         ensure_fixture("error_rate_limit_429", scenario);
         let provider = build_provider("error_rate_limit_429");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -4487,7 +4552,8 @@ mod anthropic_smoke {
         ensure_fixture("simple_text", scenario);
         let provider = build_provider("simple_text");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -4503,7 +4569,8 @@ mod anthropic_smoke {
         ensure_fixture("unicode_text", scenario);
         let provider = build_provider("unicode_text");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -4522,7 +4589,8 @@ mod anthropic_smoke {
         ensure_fixture("tool_call_single", scenario);
         let provider = build_provider("tool_call_single");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -4541,7 +4609,8 @@ mod anthropic_smoke {
         ensure_fixture("error_auth_401", scenario);
         let provider = build_provider("error_auth_401");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -4560,7 +4629,8 @@ mod anthropic_smoke {
         ensure_fixture("error_bad_request_400", scenario);
         let provider = build_provider("error_bad_request_400");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -4579,7 +4649,8 @@ mod anthropic_smoke {
         ensure_fixture("error_rate_limit_429", scenario);
         let provider = build_provider("error_rate_limit_429");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -4622,6 +4693,7 @@ mod gemini_smoke {
                 "promptTokenCount": 15,
                 "candidatesTokenCount": 10,
                 "totalTokenCount": 25
+                }
             });
 
         RecordedResponse {
@@ -4649,6 +4721,7 @@ mod gemini_smoke {
                 "promptTokenCount": 20,
                 "candidatesTokenCount": 8,
                 "totalTokenCount": 28
+                }
             });
 
         RecordedResponse {
@@ -4736,7 +4809,8 @@ mod gemini_smoke {
         ensure_fixture("simple_text", scenario);
         let provider = build_provider("simple_text");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -4752,7 +4826,8 @@ mod gemini_smoke {
         ensure_fixture("unicode_text", scenario);
         let provider = build_provider("unicode_text");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -4771,7 +4846,8 @@ mod gemini_smoke {
         ensure_fixture("tool_call_single", scenario);
         let provider = build_provider("tool_call_single");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -4790,7 +4866,8 @@ mod gemini_smoke {
         ensure_fixture("error_auth_401", scenario);
         let provider = build_provider("error_auth_401");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -4809,7 +4886,8 @@ mod gemini_smoke {
         ensure_fixture("error_bad_request_400", scenario);
         let provider = build_provider("error_bad_request_400");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {
@@ -4828,7 +4906,8 @@ mod gemini_smoke {
         ensure_fixture("error_rate_limit_429", scenario);
         let provider = build_provider("error_rate_limit_429");
 
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(async {

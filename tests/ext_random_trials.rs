@@ -449,7 +449,8 @@ fn run_trial(ext_id: &str) -> TrialResult {
     let runtime_result = common::run_async({
         let manager = manager.clone();
         let tools = Arc::clone(&tools);
-        async move { JsExtensionRuntimeHandle::start(js_config, tools, manager).await });
+        async move { JsExtensionRuntimeHandle::start(js_config, tools, manager).await }
+    });
     let runtime = match runtime_result {
         Ok(rt) => rt,
         Err(e) => {
@@ -474,7 +475,8 @@ fn run_trial(ext_id: &str) -> TrialResult {
 
     let load_err = common::run_async({
         let manager = manager.clone();
-        async move { manager.load_js_extensions(vec![spec]).await });
+        async move { manager.load_js_extensions(vec![spec]).await }
+    });
     if let Err(e) = load_err {
         let reason = format!("Load error: {e}");
         return TrialResult {

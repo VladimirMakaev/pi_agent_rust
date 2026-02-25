@@ -11,6 +11,8 @@
 //!   - Dispatch edge cases (validation, error codes)
 #![allow(clippy::needless_raw_string_hashes)]
 
+mod common;
+
 use std::future::Future;
 
 use tokio::runtime::Builder as RuntimeBuilder;
@@ -31,7 +33,8 @@ fn run_async<T, Fut>(future: Fut) -> T
 where
     Fut: Future<Output = T>,
 {
-    let runtime = RuntimeBuilder::current_thread()
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
         .build()
         .expect("build tokio runtime");
     runtime.block_on(future)
@@ -1306,6 +1309,7 @@ mod scoped_dispatch {
                     HostCallErrorCode::Denied,
                     "read should pass policy"
                 );
+                }
             });
     }
 
@@ -1406,6 +1410,7 @@ mod scoped_dispatch {
                         HostCallErrorCode::Denied,
                         "read should pass for {ext_id}"
                     );
+                    }
                 });
         }
     }

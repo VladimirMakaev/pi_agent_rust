@@ -22,7 +22,8 @@ fn write_json(path: &Path, value: &serde_json::Value) {
 }
 
 fn run_async<T>(future: impl std::future::Future<Output = T>) -> T {
-    let runtime = RuntimeBuilder::current_thread()
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
         .build()
         .expect("build tokio runtime");
     runtime.block_on(future)
@@ -45,6 +46,7 @@ fn log_resolved(harness: &TestHarness, label: &str, items: &[ResolvedResource]) 
                         item.metadata.source
                     ),
                 ));
+                }
             });
 }
 

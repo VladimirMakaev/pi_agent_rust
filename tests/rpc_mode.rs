@@ -145,7 +145,8 @@ fn rpc_get_state_and_prompt() {
         return;
     }
 
-    let runtime = tokio::runtime::Builder::current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .expect("build test runtime");
     let handle = runtime.handle();
@@ -187,7 +188,6 @@ fn rpc_get_state_and_prompt() {
             available_models: Vec::new(),
             scoped_models: Vec::new(),
             auth,
-            runtime_handle: handle.clone(),
         };
 
         let (in_tx, in_rx) = tokio::sync::mpsc::channel::<String>(16);
@@ -246,7 +246,6 @@ fn rpc_get_state_and_prompt() {
         // prompt
         in_tx
             .send(
-                &cx,
                 r#"{"id":"2","type":"prompt","message":"hi"}"#.to_string(),
             )
             .await
@@ -416,7 +415,8 @@ fn rpc_session_stats_counts_tool_calls_and_results() {
         logger.warn("vcr", message);
         return;
     }
-    let runtime = tokio::runtime::Builder::current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .expect("build test runtime");
     let handle = runtime.handle();
@@ -493,7 +493,6 @@ fn rpc_session_stats_counts_tool_calls_and_results() {
             available_models: Vec::new(),
             scoped_models: Vec::new(),
             auth,
-            runtime_handle: handle.clone(),
         };
 
         let (in_tx, in_rx) = tokio::sync::mpsc::channel::<String>(16);
@@ -502,7 +501,7 @@ fn rpc_session_stats_counts_tool_calls_and_results() {
 
         let server = handle.spawn(async move { run(agent_session, options, in_rx, out_tx).await });
 
-        
+
         in_tx
             .send(r#"{"id":"1","type":"get_session_stats"}"#.to_string())
             .await

@@ -186,7 +186,8 @@ fn normalizes_dynamic_fields_paths_and_ansi() {
         "data": {
             "path": cwd.join("dir").join("sub").join("file.rs").display().to_string(),
             "note": "\u{1b}[1mBold\u{1b}[0m"
-        });
+        }
+    });
 
     let normalized = normalize_ext_log_line(original, &ctx);
 
@@ -243,7 +244,8 @@ fn diff_key_prefers_most_specific_correlation_id() {
         "correlation": {
             "scenario_id": "scn-001",
             "tool_call_id": "tool-42"
-        });
+        }
+    });
 
     assert_eq!(diff_key(&value), "tool_call.start::tool_call_id:tool-42");
 }
@@ -461,7 +463,8 @@ fn regression_non_ui_method_untouched() {
     let input = json!({
         "type": "json_rpc",
         "method": "setStatus",
-        "params": {});
+        "params": {}
+    });
     let normalized = contract.normalize_and_canonicalize(input, &ctx);
     assert_eq!(
         normalized["method"], "setStatus",
@@ -487,7 +490,8 @@ fn regression_git_checkpoint_ui_notify_pattern() {
         "has_ui": true,
         "ui_responses": {
             "select": "Yes, restore code to that point"
-        });
+        }
+    });
     assert!(ctx_json["ui_responses"]["select"].is_string());
     assert_eq!(
         ctx_json["ui_responses"]["select"],
@@ -517,7 +521,8 @@ fn regression_dynamic_resources_full_normalization_pipeline() {
             "session_id": "sess-abc",
             "run_id": "run-xyz"
         },
-        "source": { "host": "build-host", "pid": 42 });
+        "source": { "host": "build-host", "pid": 42 }
+    });
 
     let normalized = contract.normalize_and_canonicalize(input, &ctx);
 

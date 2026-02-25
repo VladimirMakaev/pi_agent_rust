@@ -2518,11 +2518,9 @@ mod extensions_integration_tests {
                 .await
                 .expect("execute tool");
 
-            let cx = crate::agent_cx::AgentCx::for_request();
             let session_guard = session
-                .lock(cx.cx())
-                .await
-                .expect("lock session");
+                .lock()
+                .await;
             let messages = session_guard.to_messages_for_current_path();
 
             assert!(
@@ -2596,11 +2594,9 @@ mod extensions_integration_tests {
                 .await
                 .expect("execute tool");
 
-            let cx = crate::agent_cx::AgentCx::for_request();
             let session_guard = session
-                .lock(cx.cx())
-                .await
-                .expect("lock session");
+                .lock()
+                .await;
             let messages = session_guard.to_messages_for_current_path();
 
             assert!(
@@ -3218,6 +3214,7 @@ mod abort_tests {
     use std::sync::Mutex as StdMutex;
     use std::sync::atomic::AtomicUsize;
     use std::task::{Context as TaskContext, Poll};
+    use tokio::runtime::Builder as RuntimeBuilder;
 
     struct StartThenPending {
         start: Option<StreamEvent>,
@@ -3550,7 +3547,7 @@ mod abort_tests {
 
     #[test]
     fn abort_interrupts_in_flight_stream() {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = RuntimeBuilder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
         let handle = runtime.handle();
@@ -3587,7 +3584,7 @@ mod abort_tests {
             started_wait.await;
             abort_handle.abort();
 
-            let message = join.await.expect("run_text_with_abort");
+            let message = join.await.expect("join").expect("run_text_with_abort");
             assert_eq!(message.stop_reason, StopReason::Aborted);
             assert_eq!(message.error_message.as_deref(), Some("Aborted"));
         });
@@ -3595,7 +3592,7 @@ mod abort_tests {
 
     #[test]
     fn abort_before_run_skips_provider_stream_call() {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = RuntimeBuilder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
 
@@ -3672,11 +3669,9 @@ mod abort_tests {
             assert_eq!(resumed.stop_reason, StopReason::Stop);
             assert!(resumed.error_message.is_none());
 
-            let cx = crate::agent_cx::AgentCx::for_request();
             let persisted = session
-                .lock(cx.cx())
+                .lock()
                 .await
-                .expect("lock session")
                 .to_messages_for_current_path();
 
             assert_eq!(
@@ -3763,11 +3758,9 @@ mod abort_tests {
             assert_eq!(resumed.stop_reason, StopReason::Stop);
             assert!(resumed.error_message.is_none());
 
-            let cx = crate::agent_cx::AgentCx::for_request();
             let persisted = session
-                .lock(cx.cx())
+                .lock()
                 .await
-                .expect("lock session")
                 .to_messages_for_current_path();
 
             assert_abort_resume_message_sequence(&persisted);
@@ -3812,11 +3805,9 @@ mod abort_tests {
             abort_join.await;
             assert_eq!(result.stop_reason, StopReason::Aborted);
 
-            let cx = crate::agent_cx::AgentCx::for_request();
             let persisted = session
-                .lock(cx.cx())
+                .lock()
                 .await
-                .expect("lock session")
                 .to_messages_for_current_path();
 
             let tool_result = persisted
@@ -3853,6 +3844,7 @@ mod turn_event_tests {
     use std::sync::atomic::AtomicUsize;
     // Note: Mutex from super::* is tokio::sync::Mutex (for Session)
     // Use std::sync::Mutex directly for synchronous event capture
+    use tokio::runtime::Builder as RuntimeBuilder;
 
     fn assistant_message(text: &str) -> AssistantMessage {
         AssistantMessage {
@@ -4023,7 +4015,7 @@ mod turn_event_tests {
 
     #[test]
     fn turn_events_wrap_assistant_response() {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = RuntimeBuilder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
         let handle = runtime.handle();
@@ -4049,7 +4041,7 @@ mod turn_event_tests {
         });
 
         runtime.block_on(async move {
-            let message = join.await;
+            let message = join.await.expect("join");
             assert_eq!(message.stop_reason, StopReason::Stop);
 
             let events = events.lock().unwrap();
@@ -4111,7 +4103,7 @@ mod turn_event_tests {
 
     #[test]
     fn turn_events_include_tool_execution_and_tool_result_messages() {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = RuntimeBuilder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
         let handle = runtime.handle();
@@ -4137,7 +4129,7 @@ mod turn_event_tests {
         });
 
         runtime.block_on(async move {
-            let message = join.await;
+            let message = join.await.expect("join");
             assert_eq!(message.stop_reason, StopReason::Stop);
 
             let events = events.lock().expect("events lock");

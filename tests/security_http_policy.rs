@@ -33,11 +33,12 @@ where
     Fut: Future<Output = T> + Send + 'static,
     T: Send + 'static,
 {
-    let runtime = tokio::runtime::Builder::current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .expect("build runtime");
     let join = runtime.handle().spawn(future);
-    runtime.block_on(join)
+    runtime.block_on(join).expect("task join")
 }
 
 fn http_call(url: &str, method: &str) -> HostCallPayload {
@@ -551,7 +552,8 @@ fn unsupported_scheme_rejected() {
                 require_tls: false,
                 ..Default::default()
             });
-            async move { connector_ref.dispatch(&call).await.unwrap() });
+            async move { connector_ref.dispatch(&call).await.unwrap() }
+        });
 
         assert!(result.is_error, "scheme '{scheme}' should be rejected");
         let error = result.error.as_ref().unwrap();
@@ -621,7 +623,8 @@ fn unsupported_method_rejected() {
                 require_tls: false,
                 ..Default::default()
             });
-            async move { connector.dispatch(&call).await.unwrap() });
+            async move { connector.dispatch(&call).await.unwrap() }
+        });
 
         assert!(result.is_error, "method '{method}' should be rejected");
         assert_eq!(
@@ -735,7 +738,8 @@ fn denied_host_never_opens_connection() {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
-        });
+        }
+    });
 
     // 127.0.0.1 is NOT in allowlist
     let connector = HttpConnector::new(HttpConnectorConfig {

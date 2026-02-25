@@ -14,7 +14,8 @@ use std::io::Write;
 use std::time::Duration;
 
 fn run_async_test<F: std::future::Future<Output = ()>>(future: F) {
-    let runtime = RuntimeBuilder::current_thread()
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
         .build()
         .expect("runtime build");
     runtime.block_on(future);
@@ -68,6 +69,7 @@ fn create_session_jsonl(
             "role": "user",
             "content": "Hello",
             "timestamp": 1_706_918_401_000_i64
+            }
         });
     writeln!(file, "{}", serde_json::to_string(&entry).unwrap()).unwrap();
 
@@ -288,6 +290,7 @@ fn list_sessions_returns_newest_first() {
                         format!("session_{i}_last_modified_ms"),
                         meta.last_modified_ms.to_string(),
                     ));
+                    }
                 });
 
         // Verify timestamps are in descending order
@@ -747,7 +750,8 @@ fn lock_prevents_concurrent_corruption() {
 
     // Spawn two threads that both try to write to the index
     let handle1 = std::thread::spawn(move || {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = RuntimeBuilder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime build");
         runtime.block_on(async {
@@ -758,11 +762,13 @@ fn lock_prevents_concurrent_corruption() {
                 session.path = Some(sessions_root1.join(format!("t1_session_{i}.jsonl")));
                 session.save().await.expect("save session");
                 index.index_session(&session).expect("index session");
+                }
             });
     });
 
     let handle2 = std::thread::spawn(move || {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = RuntimeBuilder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime build");
         runtime.block_on(async {
@@ -773,6 +779,7 @@ fn lock_prevents_concurrent_corruption() {
                 session.path = Some(sessions_root2.join(format!("t2_session_{i}.jsonl")));
                 session.save().await.expect("save session");
                 index.index_session(&session).expect("index session");
+                }
             });
     });
 

@@ -24,6 +24,14 @@
 
 mod common;
 
+fn run_async_local<T, Fut: std::future::Future<Output = T>>(future: Fut) -> T {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build tokio runtime")
+        .block_on(future)
+}
+
 use common::TestHarness;
 use pi::connectors::http::HttpConnector;
 use pi::extensions::{
@@ -705,7 +713,7 @@ fn shadow_phase_allows_all_calls() {
         context: None,
     };
 
-    run_async( async {
+    run_async_local( async {
         let result = dispatch_host_call_shared(&ctx, call).await;
         // In shadow mode, all calls should proceed (not denied by risk).
         // The specific result depends on whether the call type has a handler,
@@ -735,7 +743,7 @@ fn enforce_all_phase_respects_risk_decisions() {
 
     let ctx = make_ctx(&tools, &http, &manager, &policy, "ext-enforce");
 
-    run_async( async {
+    run_async_local( async {
         // Dispatch a benign call first to establish baseline.
         let benign = benign_call(0);
         let _ = dispatch_host_call_shared(&ctx, benign).await;

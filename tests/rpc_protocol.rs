@@ -93,7 +93,6 @@ async fn rpc_rejects_invalid_json_and_missing_type() {
             available_models: Vec::new(),
             scoped_models: Vec::new(),
             auth,
-            runtime_handle: handle.clone(),
         };
 
         let (in_tx, in_rx) = tokio::sync::mpsc::channel::<String>(16);
@@ -162,7 +161,6 @@ async fn rpc_errors_on_unknown_command_and_missing_params() {
             available_models: Vec::new(),
             scoped_models: Vec::new(),
             auth,
-            runtime_handle: handle.clone(),
         };
 
         let (in_tx, in_rx) = tokio::sync::mpsc::channel::<String>(16);
@@ -280,7 +278,6 @@ async fn rpc_get_messages_preserves_tool_call_identity_and_args() {
             available_models: Vec::new(),
             scoped_models: Vec::new(),
             auth,
-            runtime_handle: handle.clone(),
         };
 
         let (in_tx, in_rx) = tokio::sync::mpsc::channel::<String>(16);

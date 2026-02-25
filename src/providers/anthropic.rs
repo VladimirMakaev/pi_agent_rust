@@ -255,7 +255,8 @@ impl AnthropicProvider {
     /// Create with a custom base URL.
     #[must_use]
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
-        self.base_url = base_url.into();
+        let url = base_url.into();
+        self.base_url = url.trim_end_matches('/').to_string();
         self
     }
 
@@ -655,8 +656,14 @@ where
                 StreamEvent::ThinkingStart { content_index }
             }
             AnthropicContentBlock::ToolUse { id, name } => {
-                let tool_id = id.unwrap_or_default();
-                let tool_name = name.unwrap_or_default();
+                let tool_id = id.unwrap_or_else(|| {
+                    tracing::warn!("ToolUse content block missing 'id' field; defaulting to empty string");
+                    String::new()
+                });
+                let tool_name = name.unwrap_or_else(|| {
+                    tracing::warn!("ToolUse content block missing 'name' field; defaulting to empty string");
+                    String::new()
+                });
                 self.tool_json_buffers.insert(content_index, String::new());
                 self.tool_ids.insert(content_index, tool_id.clone());
                 self.tool_names.insert(content_index, tool_name.clone());
@@ -1764,7 +1771,7 @@ mod tests {
             ..Default::default()
         };
 
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
         let result = runtime.block_on(async { provider.stream(&context, &options).await });
@@ -1827,7 +1834,7 @@ mod tests {
             ..Default::default()
         };
 
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
         runtime.block_on(async {
@@ -1859,7 +1866,7 @@ mod tests {
             ..Default::default()
         };
 
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
         runtime.block_on(async {
@@ -1991,7 +1998,7 @@ mod tests {
     }
 
     fn collect_events(events: &[Value]) -> Vec<StreamEvent> {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
         runtime.block_on(async move {
@@ -2135,7 +2142,7 @@ mod tests {
             ..Default::default()
         };
 
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
         runtime.block_on(async {
@@ -2189,7 +2196,7 @@ mod tests {
             ..Default::default()
         };
 
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
         runtime.block_on(async {

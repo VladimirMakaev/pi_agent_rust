@@ -480,6 +480,7 @@ fn load_extensions_with_policy(
             )
             .await
             .expect("start JS runtime for stress test")
+            }
         });
     manager.set_js_runtime(runtime);
     maybe_enable_reactor(&manager);
@@ -500,7 +501,8 @@ fn load_extensions_with_policy(
                 .load_js_extensions(specs)
                 .await
                 .expect("load extensions for stress test");
-        });
+        }
+    });
 
     (manager, count)
 }
@@ -553,7 +555,8 @@ fn run_stress_loop(
         let result = common::run_async({
             let manager = manager.clone();
             let payload = payload.cloned();
-            async move { manager.dispatch_event(event, payload).await });
+            async move { manager.dispatch_event(event, payload).await }
+    });
         let elapsed_us = u64::try_from(dispatch_start.elapsed().as_micros()).unwrap_or(u64::MAX);
 
         if let Err(err) = result {
@@ -1114,6 +1117,7 @@ fn stress_short_10_extensions() {
         let manager = manager;
         async move {
             let _ = manager.shutdown(Duration::from_millis(500)).await;
+            }
         });
 }
 
@@ -1208,6 +1212,7 @@ fn stress_policy_profile_rotation() {
             let manager = manager;
             async move {
                 let _ = manager.shutdown(Duration::from_millis(750)).await;
+                }
             });
     }
 
@@ -1272,6 +1277,7 @@ fn stress_verify_no_panic_rapid_dispatch() {
                         Some(json!({"systemPrompt": "test"})),
                     )
                     .await
+                }
             });
         if result.is_err() {
             errors += 1;
@@ -1295,6 +1301,7 @@ fn stress_verify_no_panic_rapid_dispatch() {
         let manager = manager;
         async move {
             let _ = manager.shutdown(Duration::from_millis(500)).await;
+            }
         });
 }
 
@@ -1330,7 +1337,8 @@ fn stress_concurrent_event_types() {
                 let manager = manager.clone();
                 let payload = Some(payload.clone());
                 let event = *event;
-                async move { manager.dispatch_event(event, payload).await });
+                async move { manager.dispatch_event(event, payload).await }
+    });
             if result.is_err() {
                 errors += 1;
             }
@@ -1353,6 +1361,7 @@ fn stress_concurrent_event_types() {
         let manager = manager;
         async move {
             let _ = manager.shutdown(Duration::from_millis(500)).await;
+            }
         });
 }
 
@@ -1388,6 +1397,7 @@ fn stress_extension_load_unload_cycle() {
                             Some(json!({"systemPrompt": "test"})),
                         )
                         .await
+                    }
                 });
         }
 
@@ -1396,6 +1406,7 @@ fn stress_extension_load_unload_cycle() {
             let manager = manager.clone();
             async move {
                 let _ = manager.shutdown(Duration::from_secs(1)).await;
+                }
             });
     }
 

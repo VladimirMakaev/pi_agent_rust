@@ -143,6 +143,7 @@ fn replay_parity_identical_explanation_payloads() {
             }
             for idx in 0..3 {
                 let _ = dispatch_host_call_shared(&ctx, recovery_call(idx)).await;
+                }
             });
 
         let artifact = manager.runtime_risk_ledger_artifact();
@@ -264,6 +265,7 @@ fn explanation_payload_schema_and_contributors() {
         // Adversarial phase
         for idx in 0..6 {
             let _ = dispatch_host_call_shared(&ctx, adversarial_call(idx)).await;
+            }
         });
 
     let artifact = manager.runtime_risk_ledger_artifact();
@@ -364,6 +366,7 @@ fn eprocess_conformal_signals_accumulate() {
         // Shift to adversarial to push e-process up
         for idx in 0..15 {
             let _ = dispatch_host_call_shared(&ctx, adversarial_call(idx)).await;
+            }
         });
 
     let artifact = manager.runtime_risk_ledger_artifact();
@@ -462,6 +465,7 @@ fn explanation_level_matches_enforcement_severity() {
         // Phase 2: adversarial calls → expect Standard or Full level
         for idx in 0..10 {
             let _ = dispatch_host_call_shared(&ctx, adversarial_call(idx)).await;
+            }
         });
 
     let artifact = manager.runtime_risk_ledger_artifact();
@@ -536,6 +540,7 @@ fn replay_reconstructs_decision_path() {
         }
         for idx in 0..4 {
             let _ = dispatch_host_call_shared(&ctx, recovery_call(idx)).await;
+            }
         });
 
     let artifact = manager.runtime_risk_ledger_artifact();
@@ -623,6 +628,7 @@ fn contribution_ranking_stable_under_perturbation() {
             }
             for idx in 0..5 {
                 let _ = dispatch_host_call_shared(&ctx, adversarial_call(idx)).await;
+                }
             });
 
         let artifact = manager.runtime_risk_ledger_artifact();
@@ -675,6 +681,7 @@ fn artifact_bundle_postmortem_defensibility() {
         }
         for idx in 0..3 {
             let _ = dispatch_host_call_shared(&ctx, recovery_call(idx)).await;
+            }
         });
 
     let ledger = manager.runtime_risk_ledger_artifact();
@@ -801,6 +808,7 @@ fn action_progression_through_phases() {
         // Phase 3: 5 recovery calls
         for idx in 0..5 {
             let _ = dispatch_host_call_shared(&ctx, recovery_call(idx)).await;
+            }
         });
 
     let artifact = manager.runtime_risk_ledger_artifact();
@@ -879,6 +887,7 @@ fn jsonl_logging_contract_explanation_fields() {
         }
         for idx in 0..5 {
             let _ = dispatch_host_call_shared(&ctx, adversarial_call(idx)).await;
+            }
         });
 
     let telemetry = manager.runtime_hostcall_telemetry_artifact();
@@ -984,6 +993,7 @@ fn budget_bounded_replay_runtime() {
     futures::executor::block_on(async {
         for idx in 0..20 {
             let _ = dispatch_host_call_shared(&ctx, adversarial_call(idx)).await;
+            }
         });
 
     let artifact = manager.runtime_risk_ledger_artifact();

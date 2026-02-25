@@ -1285,6 +1285,7 @@ fn session_clean_after_provider_failure() {
             agent_session
                 .run_text("this will fail".to_string(), |_| {})
                 .await
+            }
         });
     assert!(result.is_err(), "First attempt should fail");
 
@@ -1293,8 +1294,9 @@ fn session_clean_after_provider_failure() {
         let session = Arc::clone(&session_ref);
         async move {
             
-            let guard = session.lock().await.expect("lock session");
+            let guard = session.lock().await;
             guard.to_messages_for_current_path()
+            }
         });
 
     harness
@@ -1344,6 +1346,7 @@ fn session_reflects_tool_errors_accurately() {
                 .expect("should complete");
             agent_session.persist_session().await.expect("persist");
             msg
+            }
         });
 
     // Verify session has correct message sequence
@@ -1351,8 +1354,9 @@ fn session_reflects_tool_errors_accurately() {
         let session = Arc::clone(&session_ref);
         async move {
             
-            let guard = session.lock().await.expect("lock session");
+            let guard = session.lock().await;
             guard.to_messages_for_current_path()
+            }
         });
 
     // Should have: user -> assistant(tool_call) -> tool_result(error) -> assistant(final)

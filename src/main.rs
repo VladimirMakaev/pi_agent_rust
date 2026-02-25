@@ -934,7 +934,7 @@ async fn run(
         cli.print = true;
     }
 
-    pi::app::normalize_cli(&mut cli);
+    pi::app::normalize_cli(&mut cli)?;
 
     if let Some(export_path) = cli.export.clone() {
         let output = cli.message_args().first().map(ToString::to_string);

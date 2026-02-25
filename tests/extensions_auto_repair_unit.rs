@@ -38,6 +38,7 @@ fn create_repair_runtime(
             JsExtensionRuntimeHandle::start(config, tools, manager)
                 .await
                 .expect("start js runtime")
+        }
         });
 
     (manager, runtime)
@@ -55,7 +56,8 @@ fn load_ext(
             mgr.load_js_extensions(vec![spec])
                 .await
                 .expect("load extension");
-        });
+        }
+    });
 }
 
 fn dispatch_and_get_result(manager: ExtensionManager) -> String {

@@ -108,7 +108,7 @@ async fn run_debug(mut cli: cli::Cli) -> Result<()> {
         if data.is_empty() { None } else { Some(data) }
     };
     pi::app::apply_piped_stdin(&mut cli, stdin_content);
-    pi::app::normalize_cli(&mut cli);
+    pi::app::normalize_cli(&mut cli)?;
     step!("   CLI normalized");
 
     step!("7. Preparing initial message...");

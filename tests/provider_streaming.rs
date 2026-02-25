@@ -27,6 +27,14 @@ use std::env;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
+fn run_async<T>(future: impl std::future::Future<Output = T>) -> T {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build tokio runtime")
+        .block_on(future)
+}
+
 #[path = "provider_streaming/anthropic.rs"]
 mod anthropic;
 #[path = "provider_streaming/azure.rs"]
@@ -199,7 +207,8 @@ pub(crate) fn log_summary(harness: &TestHarness, scenario: &str, summary: &Strea
         }
         if let Some(error) = &summary.stream_error {
             ctx.push(("stream_error".into(), error.clone()));
-        });
+        }
+    });
     if !summary.timeline.is_empty() {
         harness.log().info(
             "timeline",

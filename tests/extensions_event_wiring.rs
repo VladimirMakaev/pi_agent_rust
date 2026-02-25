@@ -46,6 +46,7 @@ fn load_js_extension(harness: &common::TestHarness, source: &str) -> ExtensionMa
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start js runtime")
+        }
         });
     manager.set_js_runtime(runtime);
 
@@ -56,7 +57,8 @@ fn load_js_extension(harness: &common::TestHarness, source: &str) -> ExtensionMa
                 .load_js_extensions(vec![spec])
                 .await
                 .expect("load extension");
-        });
+        }
+    });
 
     manager
 }
@@ -245,6 +247,7 @@ fn dispatch_event_invokes_matching_hook() {
                 .dispatch_event(ExtensionEventName::Startup, Some(json!({"version": "1.0"})))
                 .await
                 .expect("dispatch startup");
+            }
         });
 
     // Verify event was recorded by retrieving via command
@@ -255,6 +258,7 @@ fn dispatch_event_invokes_matching_hook() {
                 .execute_command("get-events", "", 5000)
                 .await
                 .expect("get events")
+            }
         });
     let events: Vec<String> = serde_json::from_str(result.as_str().unwrap()).expect("parse events");
     assert!(
@@ -276,6 +280,7 @@ fn dispatch_event_no_hook_returns_ok() {
                 .dispatch_event(ExtensionEventName::AgentStart, None)
                 .await
                 .expect("dispatch without hooks should succeed");
+            }
         });
 }
 
@@ -299,6 +304,7 @@ fn dispatch_event_with_response_returns_value() {
                 )
                 .await
                 .expect("dispatch agent_start event")
+            }
         });
 
     let response = response.expect("should have a response");
@@ -324,6 +330,7 @@ fn dispatch_event_with_response_none_when_no_hooks() {
                 .dispatch_event_with_response(ExtensionEventName::Input, None, 5000)
                 .await
                 .expect("dispatch without hooks")
+            }
         });
 
     assert!(response.is_none(), "Expected None when no hooks registered");
@@ -346,6 +353,7 @@ fn dispatch_cancellable_event_detects_false() {
                 .dispatch_cancellable_event(ExtensionEventName::TurnStart, None, 5000)
                 .await
                 .expect("dispatch cancellable")
+            }
         });
 
     assert!(
@@ -367,6 +375,7 @@ fn dispatch_cancellable_event_not_cancelled_when_no_hooks() {
                 .dispatch_cancellable_event(ExtensionEventName::BeforeAgentStart, None, 5000)
                 .await
                 .expect("dispatch cancellable without hooks")
+            }
         });
 
     assert!(
@@ -392,6 +401,7 @@ fn dispatch_tool_call_without_hooks_returns_none() {
                 .dispatch_tool_call(&tool_call, 5000)
                 .await
                 .expect("dispatch tool call")
+            }
         });
 
     assert!(result.is_none(), "Expected None when no tool_call hooks");
@@ -410,6 +420,7 @@ fn dispatch_tool_call_non_blocking_returns_result() {
                 .dispatch_tool_call(&tool_call, 5000)
                 .await
                 .expect("dispatch tool call")
+            }
         });
 
     // Non-blocking response should be returned but not block
@@ -434,6 +445,7 @@ fn dispatch_tool_call_blocking_returns_block_with_reason() {
                 .dispatch_tool_call(&tool_call, 5000)
                 .await
                 .expect("dispatch tool call")
+            }
         });
 
     let event_result = result.expect("Expected blocking response");
@@ -458,6 +470,7 @@ fn dispatch_tool_call_non_dangerous_passes_through() {
                 .dispatch_tool_call(&tool_call, 5000)
                 .await
                 .expect("dispatch tool call")
+            }
         });
 
     // Handler returns null for non-dangerous tools → no result
@@ -485,6 +498,7 @@ fn dispatch_tool_result_without_hooks_returns_none() {
                 .dispatch_tool_result(&tool_call, &output, false, 5000)
                 .await
                 .expect("dispatch tool result")
+            }
         });
 
     assert!(result.is_none(), "Expected None when no tool_result hooks");
@@ -504,6 +518,7 @@ fn dispatch_tool_result_with_hook_invoked() {
                 .dispatch_tool_result(&tool_call, &output, false, 5000)
                 .await
                 .expect("dispatch tool result");
+            }
         });
 
     // Verify the hook was invoked by checking the event log
@@ -514,6 +529,7 @@ fn dispatch_tool_result_with_hook_invoked() {
                 .execute_command("get-events", "", 5000)
                 .await
                 .expect("get events")
+            }
         });
     let events: Vec<String> = serde_json::from_str(result.as_str().unwrap()).expect("parse events");
     assert!(
@@ -551,6 +567,7 @@ fn event_hooks_only_matching_hooks_invoked() {
                 )
                 .await
                 .expect("dispatch turn_start");
+            }
         });
 
     let result = common::run_async({
@@ -560,6 +577,7 @@ fn event_hooks_only_matching_hooks_invoked() {
                 .execute_command("get-events", "", 5000)
                 .await
                 .expect("get events")
+            }
         });
     let events: Vec<String> = serde_json::from_str(result.as_str().unwrap()).expect("parse events");
 
@@ -631,6 +649,7 @@ fn event_ordering_startup_then_tool_call_then_agent_end() {
                 )
                 .await
                 .expect("dispatch agent_end");
+            }
         });
 
     // Verify ordering
@@ -641,6 +660,7 @@ fn event_ordering_startup_then_tool_call_then_agent_end() {
                 .execute_command("get-events", "", 5000)
                 .await
                 .expect("get events")
+            }
         });
     let events: Vec<String> = serde_json::from_str(result.as_str().unwrap()).expect("parse events");
 
@@ -699,6 +719,7 @@ fn extension_tool_execution_returns_result() {
                 )
                 .await
                 .expect("execute tool")
+            }
         });
 
     let text = result.as_str().unwrap_or_default();
@@ -740,6 +761,7 @@ fn dispatch_event_without_runtime_succeeds() {
                 result.is_ok(),
                 "dispatch_event without runtime should not error"
             );
+            }
         });
 }
 
@@ -769,5 +791,6 @@ fn dispatch_tool_call_without_runtime_returns_none() {
                 result.is_ok(),
                 "dispatch_tool_call without runtime should not error: {result:?}"
             );
+            }
         });
 }

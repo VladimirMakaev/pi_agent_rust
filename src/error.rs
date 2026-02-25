@@ -884,6 +884,15 @@ impl From<sqlmodel_core::Error> for Error {
     }
 }
 
+impl From<asupersync::sync::LockError> for Error {
+    fn from(value: asupersync::sync::LockError) -> Self {
+        match value {
+            asupersync::sync::LockError::Cancelled => Self::Aborted,
+            asupersync::sync::LockError::Poisoned => Self::Session("mutex poisoned".to_string()),
+        }
+    }
+}
+
 // ─── Context overflow detection ─────────────────────────────────────────
 
 /// All 15 pi-mono overflow substring patterns (case-insensitive).

@@ -236,7 +236,8 @@ impl TestHarness {
         self.logger.info_ctx("test", message, |ctx| {
             for (key, value) in fields {
                 ctx.push(((*key).to_string(), (*value).to_string()));
-            });
+            }
+        });
     }
 
     /// Record an artifact for this test.
@@ -513,7 +514,8 @@ impl TestEnv {
         logger.info_ctx(category, message, |ctx| {
             for (key, value) in &self.vars {
                 ctx.push((key.clone(), value.clone()));
-            });
+            }
+        });
     }
 
     pub fn apply_to(&self, command: &mut std::process::Command) {
@@ -636,7 +638,8 @@ impl MockHttpServer {
                         break;
                     }
                 }
-            });
+            }
+        });
 
         let _ = ready_rx.recv();
 
@@ -816,7 +819,8 @@ fn handle_connection(
                 format!("header.{}", name.to_ascii_lowercase()),
                 value.clone(),
             ));
-        });
+        }
+    });
 
     let route_key = RouteKey { method, path };
     let response = route_queues
@@ -1613,7 +1617,8 @@ pub async fn run_live_provider_target(
                         "redaction_policy".into(),
                         diagnostic.redaction_policy.to_string(),
                     ));
-                });
+                }
+            });
 
         final_trace = trace;
         final_summary = summary;
@@ -1705,7 +1710,8 @@ pub async fn run_live_provider_target(
                     "redaction_policy".into(),
                     diagnostic.redaction_policy.to_string(),
                 ));
-            });
+            }
+        });
 
     LiveProviderRun {
         provider: entry.model.provider.clone(),

@@ -150,7 +150,8 @@ fn run_scenario(
                 },
             )
             .await;
-        });
+        }
+    });
     started.elapsed()
 }
 
@@ -458,7 +459,8 @@ fn decision_throughput_under_load() {
                 benign_call(idx)
             };
             let _ = dispatch_host_call_shared(&ctx, call).await;
-        });
+        }
+    });
 
     let elapsed = started.elapsed();
     let per_call_us = elapsed.as_micros() / u128::try_from(call_count).expect("fits");
@@ -600,7 +602,8 @@ fn overhead_scales_with_trace_length() {
                     adversarial_call(idx)
                 };
                 let _ = dispatch_host_call_shared(&ctx, call).await;
-            });
+            }
+        });
         let elapsed = started.elapsed();
 
         let artifact = manager.runtime_risk_ledger_artifact();
@@ -690,7 +693,8 @@ fn multi_capability_accuracy() {
         }
         for idx in 0..5 {
             let _ = dispatch_host_call_shared(&ctx, adversarial_call(idx)).await;
-        });
+        }
+    });
 
     let artifact = manager.runtime_risk_ledger_artifact();
 

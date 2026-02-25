@@ -268,6 +268,7 @@ mod tests {
     use crate::agent::{Agent, AgentConfig, AgentEvent, AgentSession};
     use crate::extensions::{ExtensionManager, JsExtensionLoadSpec};
     use crate::extensions_js::PiJsRuntimeConfig;
+    use tokio::runtime::Builder as RuntimeBuilder;
     use crate::model::{
         AssistantMessage, ContentBlock, Message, StopReason, StreamEvent, TextContent, ToolCall,
         Usage,
@@ -328,7 +329,7 @@ mod tests {
 
     #[test]
     fn extension_tool_wrapper_executes_registered_tool() {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = RuntimeBuilder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
 
@@ -422,7 +423,7 @@ mod tests {
 
     #[test]
     fn extension_tool_wrapper_metadata_and_timeout_clamp() {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = RuntimeBuilder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
 
@@ -465,7 +466,7 @@ mod tests {
 
     #[test]
     fn extension_tool_wrapper_maps_invalid_output_to_tool_error() {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = RuntimeBuilder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
 
@@ -592,7 +593,7 @@ mod tests {
 
     #[test]
     fn agent_executes_extension_tool_registered_via_js() {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = RuntimeBuilder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
 
@@ -678,7 +679,7 @@ mod tests {
 
     #[test]
     fn extension_tool_wrapper_default_timeout() {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = RuntimeBuilder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
 
@@ -702,7 +703,7 @@ mod tests {
 
     #[test]
     fn extension_tool_wrapper_timeout_clamp_boundary() {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = RuntimeBuilder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
 
@@ -735,7 +736,7 @@ mod tests {
 
     #[test]
     fn extension_tool_wrapper_ctx_payload_default_empty() {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = RuntimeBuilder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
 
@@ -758,7 +759,7 @@ mod tests {
 
     #[test]
     fn extension_tool_wrapper_ctx_payload_override() {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = RuntimeBuilder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
 
@@ -785,7 +786,7 @@ mod tests {
 
     #[test]
     fn collect_wrappers_no_js_runtime_returns_empty() {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = RuntimeBuilder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
 
@@ -800,7 +801,7 @@ mod tests {
 
     #[test]
     fn collect_wrappers_multiple_tools_from_one_extension() {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = RuntimeBuilder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
 
@@ -861,7 +862,7 @@ mod tests {
 
     #[test]
     fn collect_wrappers_respects_active_tools_filter() {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = RuntimeBuilder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
 
@@ -922,7 +923,7 @@ mod tests {
 
     #[test]
     fn extension_tool_wrapper_js_error_maps_to_tool_error() {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = RuntimeBuilder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
 
@@ -961,7 +962,7 @@ mod tests {
 
     #[test]
     fn extension_tool_wrapper_empty_content_result() {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = RuntimeBuilder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
 
@@ -994,7 +995,7 @@ mod tests {
 
     #[test]
     fn extension_tool_wrapper_is_error_flag() {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = RuntimeBuilder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
 
@@ -1032,7 +1033,7 @@ mod tests {
 
     #[test]
     fn extension_tool_wrapper_passes_input_to_handler() {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = RuntimeBuilder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
 

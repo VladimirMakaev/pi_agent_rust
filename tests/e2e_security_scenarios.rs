@@ -30,8 +30,17 @@ use pi::extensions::{
 use pi::tools::ToolRegistry;
 use serde_json::json;
 use std::fs;
+use std::future::Future;
 use std::path::Path;
 use std::time::Instant;
+
+fn run_async<T>(future: impl Future<Output = T>) -> T {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build runtime")
+        .block_on(future)
+}
 
 // ============================================================================
 // JSONL artifact contract constants
@@ -175,7 +184,8 @@ fn write_extension_package(root: &Path, name: &str, source: &str) {
         "private": true,
         "pi": {
             "extensions": [format!("extensions/{entry}")]
-        });
+        }
+    });
     fs::write(
         root.join("package.json"),
         serde_json::to_string_pretty(&pkg).unwrap(),
@@ -197,7 +207,8 @@ fn log_scenario_event(
         ctx.push(("extension_id".to_string(), ext_id.to_string()));
         for (k, v) in extra {
             ctx.push(((*k).to_string(), v.clone()));
-        });
+        }
+    });
 }
 
 // ============================================================================
@@ -262,7 +273,7 @@ export default function init(pi) {
 
     let t2 = Instant::now();
     for i in 0..10 {
-        run_async(async move {
+        run_async(async {
                 let ctx = &ctx;
                 let call = benign_call(i);
 
@@ -429,7 +440,7 @@ fn scenario_runtime_anomaly_escalation() {
     // Phase 1: Benign warmup (establish baseline)
     log_scenario_event(&harness, "execution", "Starting benign warmup", ext_id, &[]);
     for i in 0..20 {
-        run_async(async move {
+        run_async(async {
                 let ctx = &ctx;
                 let call = benign_call(i);
 
@@ -466,7 +477,7 @@ fn scenario_runtime_anomaly_escalation() {
     );
     let mut adversarial_actions = Vec::new();
     for i in 0..15 {
-        run_async(async move {
+        run_async(async {
                 let ctx = &ctx;
                 let call = adversarial_call(i);
 
@@ -588,7 +599,7 @@ fn scenario_quota_breach_enforcement() {
 
     // Burst past quota
     for i in 0..10 {
-        run_async(async move {
+        run_async(async {
                 let ctx = &ctx;
                 let call = benign_call(i);
 
@@ -719,7 +730,7 @@ fn scenario_incident_evidence_bundle_e2e() {
 
     // Generate mixed activity
     for i in 0..10 {
-        run_async(async move {
+        run_async(async {
                 let ctx = &ctx;
                 let call = benign_call(i);
 
@@ -727,7 +738,7 @@ fn scenario_incident_evidence_bundle_e2e() {
             });
     }
     for i in 0..5 {
-        run_async(async move {
+        run_async(async {
                 let ctx = &ctx;
                 let call = adversarial_call(i);
 
@@ -818,7 +829,7 @@ fn scenario_recovery_after_adversarial_burst() {
 
     // Phase 1: Benign warmup
     for i in 0..15 {
-        run_async(async move {
+        run_async(async {
                 let ctx = &ctx;
                 let call = benign_call(i);
 
@@ -828,7 +839,7 @@ fn scenario_recovery_after_adversarial_burst() {
 
     // Phase 2: Adversarial burst
     for i in 0..10 {
-        run_async(async move {
+        run_async(async {
                 let ctx = &ctx;
                 let call = adversarial_call(i);
 
@@ -838,7 +849,7 @@ fn scenario_recovery_after_adversarial_burst() {
 
     // Phase 3: Recovery with benign calls
     for i in 0..30 {
-        run_async(async move {
+        run_async(async {
                 let ctx = &ctx;
                 let call = recovery_call(i);
 
@@ -892,7 +903,7 @@ fn scenario_multi_extension_isolation() {
 
     // ext-alpha: benign only
     for i in 0..10 {
-        run_async(async move {
+        run_async(async {
                 let ctx = &ctx_a;
                 let call = benign_call(i);
 
@@ -902,7 +913,7 @@ fn scenario_multi_extension_isolation() {
 
     // ext-beta: adversarial
     for i in 0..10 {
-        run_async(async move {
+        run_async(async {
                 let ctx = &ctx_b;
                 let call = adversarial_call(i);
 
@@ -981,7 +992,7 @@ fn scenario_secret_broker_detection() {
 
     // Probe for secrets
     for i in 0..5 {
-        run_async(async move {
+        run_async(async {
                 let ctx = &ctx;
                 let call = secret_probe_call(i);
 
@@ -1049,7 +1060,7 @@ fn scenario_exec_mediation_strict() {
             context: None,
         };
 
-        run_async(async move {
+        run_async(async {
                 let ctx = &ctx;
 
                 let _ = dispatch_host_call_shared(ctx, call).await;
@@ -1172,7 +1183,7 @@ fn scenario_deterministic_artifacts() {
         let ctx = make_ctx(&tools, &http, &manager, &policy, ext_id);
 
         for i in 0..5 {
-            run_async(async move {
+            run_async(async {
                     let ctx = &ctx;
                     let call = benign_call(i);
 
@@ -1180,7 +1191,7 @@ fn scenario_deterministic_artifacts() {
                 });
         }
         for i in 0..3 {
-            run_async(async move {
+            run_async(async {
                     let ctx = &ctx;
                     let call = adversarial_call(i);
 
@@ -1263,7 +1274,7 @@ fn scenario_shadow_mode_telemetry() {
 
     // Even adversarial calls should be allowed in shadow mode
     for i in 0..10 {
-        run_async(async move {
+        run_async(async {
                 let ctx = &ctx;
                 let call = adversarial_call(i);
 
@@ -1313,13 +1324,13 @@ fn scenario_filtered_incident_bundle() {
     let ctx_b = make_ctx(&tools, &http, &manager, &policy, "ext-b");
 
     for i in 0..5 {
-        run_async(async move {
+        run_async(async {
                 let ctx = &ctx_a;
                 let call = benign_call(i);
 
                 let _ = dispatch_host_call_shared(ctx, call).await;
             });
-        run_async(async move {
+        run_async(async {
                 let ctx = &ctx_b;
                 let call = adversarial_call(i);
 
@@ -1387,7 +1398,7 @@ fn scenario_full_attack_lifecycle() {
 
     // Phase 1: Benign warmup (20 calls)
     for i in 0..20 {
-        run_async(async move {
+        run_async(async {
                 let ctx = &ctx;
                 let call = benign_call(i);
 
@@ -1400,14 +1411,14 @@ fn scenario_full_attack_lifecycle() {
     for i in 0..10 {
         // Alternate benign and adversarial
         if i % 3 == 0 {
-            run_async(async move {
+            run_async(async {
                     let ctx = &ctx;
                     let call = adversarial_call(i);
 
                     let _ = dispatch_host_call_shared(ctx, call).await;
                 });
         } else {
-            run_async(async move {
+            run_async(async {
                     let ctx = &ctx;
                     let call = benign_call(100 + i);
 
@@ -1425,7 +1436,7 @@ fn scenario_full_attack_lifecycle() {
 
     // Phase 3: Full adversarial burst
     for i in 0..15 {
-        run_async(async move {
+        run_async(async {
                 let ctx = &ctx;
                 let call = adversarial_call(100 + i);
 

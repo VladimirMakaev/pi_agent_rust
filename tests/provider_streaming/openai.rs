@@ -3,8 +3,8 @@
 use super::{
     ScenarioExpectation, StreamExpectations, assert_error_translation, assert_stream_expectations,
     assert_tool_schema_fidelity, assistant_tool_call_message, cassette_root, collect_events,
-    log_summary, record_stream_contract_artifact, tool_result_message, user_text, vcr_mode,
-    vcr_strict,
+    log_summary, record_stream_contract_artifact, run_async, tool_result_message, user_text,
+    vcr_mode, vcr_strict,
 };
 use crate::common::TestHarness;
 use pi::http::client::Client;

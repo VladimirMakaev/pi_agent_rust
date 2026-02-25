@@ -38,12 +38,13 @@ use std::sync::{Arc, OnceLock};
 fn test_runtime_handle() -> tokio::runtime::Handle {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RT.get_or_init(|| {
-        tokio::runtime::Builder::multi_thread()
-            .blocking_threads(1, 8)
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
             .build()
             .expect("build tokio runtime")
     })
     .handle()
+    .clone()
 }
 
 struct DummyProvider;
@@ -149,7 +150,6 @@ fn build_app_with_models_and_config(
         available,
         Vec::new(),
         event_tx,
-        test_runtime_handle(),
         true,
         None,
         Some(KeyBindings::new()),

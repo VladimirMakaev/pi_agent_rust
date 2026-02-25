@@ -218,6 +218,7 @@ fn run_conformance_test(ext_id: &str) {
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start JS runtime")
+            }
         });
     manager.set_js_runtime(runtime);
 
@@ -229,6 +230,7 @@ fn run_conformance_test(ext_id: &str) {
                 .load_js_extensions(vec![spec])
                 .await
                 .unwrap_or_else(|e| unreachable!("Failed to load extension '{ext_id_owned}': {e}"));
+            }
         });
 
     harness
@@ -460,7 +462,8 @@ fn try_conformance(ext_id: &str) -> ExtensionConformanceResult {
     let runtime_result = common::run_async({
         let manager = manager.clone();
         let tools = Arc::clone(&tools);
-        async move { JsExtensionRuntimeHandle::start(js_config, tools, manager).await });
+        async move { JsExtensionRuntimeHandle::start(js_config, tools, manager).await }
+    });
     let runtime = match runtime_result {
         Ok(rt) => rt,
         Err(e) => {
@@ -482,7 +485,8 @@ fn try_conformance(ext_id: &str) -> ExtensionConformanceResult {
 
     let load_err = common::run_async({
         let manager = manager.clone();
-        async move { manager.load_js_extensions(vec![spec]).await });
+        async move { manager.load_js_extensions(vec![spec]).await }
+    });
     if let Err(e) = load_err {
         return ExtensionConformanceResult {
             id: ext_id.to_string(),
@@ -1596,7 +1600,8 @@ fn try_conformance_detailed(
     let runtime_result = common::run_async({
         let manager = manager.clone();
         let tools = Arc::clone(&tools);
-        async move { JsExtensionRuntimeHandle::start(js_config, tools, manager).await });
+        async move { JsExtensionRuntimeHandle::start(js_config, tools, manager).await }
+    });
     let runtime = match runtime_result {
         Ok(rt) => rt,
         Err(e) => {
@@ -1621,7 +1626,8 @@ fn try_conformance_detailed(
 
     let load_err = common::run_async({
         let manager = manager.clone();
-        async move { manager.load_js_extensions(vec![spec]).await });
+        async move { manager.load_js_extensions(vec![spec]).await }
+    });
     if let Err(e) = load_err {
         return (
             ExtensionConformanceResult {
@@ -2718,7 +2724,8 @@ fn try_conformance_with_env(
     let runtime_result = common::run_async({
         let manager = manager.clone();
         let tools = Arc::clone(&tools);
-        async move { JsExtensionRuntimeHandle::start(js_config, tools, manager).await });
+        async move { JsExtensionRuntimeHandle::start(js_config, tools, manager).await }
+    });
     let runtime = match runtime_result {
         Ok(rt) => rt,
         Err(e) => {
@@ -2740,7 +2747,8 @@ fn try_conformance_with_env(
 
     let load_err = common::run_async({
         let manager = manager.clone();
-        async move { manager.load_js_extensions(vec![spec]).await });
+        async move { manager.load_js_extensions(vec![spec]).await }
+    });
     if let Err(e) = load_err {
         return ExtensionConformanceResult {
             id: ext_id.to_string(),
@@ -3392,7 +3400,8 @@ fn run_category_journey(
     let runtime_result = common::run_async({
         let manager = manager.clone();
         let tools = Arc::clone(&tools);
-        async move { JsExtensionRuntimeHandle::start(js_config, tools, manager).await });
+        async move { JsExtensionRuntimeHandle::start(js_config, tools, manager).await }
+    });
     let runtime = match runtime_result {
         Ok(rt) => rt,
         Err(e) => {

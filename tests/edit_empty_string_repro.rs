@@ -1,11 +1,14 @@
+mod common;
+
 #[cfg(test)]
 mod tests {
+    use crate::common;
     use pi::tools::{EditTool, Tool};
     use serde_json::json;
 
     #[test]
     fn test_edit_empty_old_text_is_rejected() {
-        run_async( async {
+        common::run_async( async {
             let tmp = tempfile::tempdir().unwrap();
             let file_path = tmp.path().join("test.txt");
             std::fs::write(&file_path, "content").unwrap();

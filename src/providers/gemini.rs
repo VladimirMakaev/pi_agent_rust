@@ -1058,7 +1058,7 @@ mod tests {
     }
 
     fn collect_events(events: &[Value]) -> Vec<StreamEvent> {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
         runtime.block_on(async move {
@@ -1515,7 +1515,7 @@ mod tests {
                 finish_reason: Some(reason_str.to_string()),
             };
 
-            let runtime = RuntimeBuilder::current_thread().build().unwrap();
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
             runtime.block_on(async {
                 let byte_stream = stream::empty::<std::result::Result<Vec<u8>, std::io::Error>>();
                 let event_source = crate::sse::SseStream::new(Box::pin(byte_stream));
@@ -1544,7 +1544,7 @@ mod tests {
             }
         }"#;
 
-        let runtime = RuntimeBuilder::current_thread().build().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
             let byte_stream = stream::empty::<std::result::Result<Vec<u8>, std::io::Error>>();
             let event_source = crate::sse::SseStream::new(Box::pin(byte_stream));

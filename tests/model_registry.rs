@@ -299,6 +299,7 @@ fn test_custom_models_json_replaces_provider_models() {
             ctx.push(("count".into(), openai_models.len().to_string()));
             for m in &openai_models {
                 ctx.push(("model".into(), m.model.id.clone()));
+                }
             });
 
     assert_eq!(openai_models.len(), 1, "Should only have the custom model");
@@ -455,6 +456,7 @@ fn test_model_with_headers() {
     harness.log().info_ctx("verify", "Model headers", |ctx| {
         for (k, v) in &model.headers {
             ctx.push((k.clone(), v.clone()));
+            }
         });
 
     // Headers should be merged (provider + model)
@@ -659,6 +661,7 @@ fn test_get_available_filters_by_api_key() {
                 "model".into(),
                 format!("{}/{}", m.model.provider, m.model.id),
             ));
+            }
         });
 
     // Only OpenAI models should be available
@@ -867,6 +870,7 @@ fn test_multiple_providers_with_keys() {
         .info_ctx("verify", "Available providers", |ctx| {
             for p in &providers {
                 ctx.push(("provider".to_string(), (*p).to_string()));
+                }
             });
 
     assert!(

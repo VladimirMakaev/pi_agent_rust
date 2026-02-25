@@ -591,6 +591,7 @@ fn load_negative_extension() -> (ExtensionManager, JsExtensionRuntimeHandle) {
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start JS runtime for negative test")
+            }
         });
     manager.set_js_runtime(runtime.clone());
 
@@ -601,6 +602,7 @@ fn load_negative_extension() -> (ExtensionManager, JsExtensionRuntimeHandle) {
                 .load_js_extensions(vec![spec])
                 .await
                 .expect("load negative extension");
+            }
         });
 
     (manager, runtime)

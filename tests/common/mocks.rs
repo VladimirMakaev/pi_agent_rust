@@ -945,7 +945,8 @@ mod tests {
                 s.set_label("entry-1".to_string(), Some("important".to_string()))
                     .await
                     .unwrap();
-            });
+            }
+        });
 
         // Verify call recording
         let calls = session.calls();
@@ -969,7 +970,8 @@ mod tests {
 
         let result: (Option<String>, Option<String>) = run_async({
             let s = Arc::clone(&session);
-            async move { s.get_model().await });
+            async move { s.get_model().await }
+        });
         assert_eq!(result.0.as_deref(), Some("openai"));
         assert_eq!(result.1.as_deref(), Some("gpt-4"));
     }
@@ -1108,7 +1110,8 @@ mod tests {
                 ))
                 .await
                 .unwrap();
-            });
+            }
+        });
 
         log.assert_count(HostcallKind::Ui, 1);
         let entry = &log.entries()[0];
@@ -1125,7 +1128,8 @@ mod tests {
             let s = Arc::clone(&session);
             async move {
                 s.set_name("tracked".to_string()).await.unwrap();
-            });
+            }
+        });
 
         log.assert_count(HostcallKind::Session, 1);
         let entry = &log.entries()[0];

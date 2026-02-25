@@ -1205,7 +1205,7 @@ export default function init(pi) {
 
     #[test]
     fn extension_stream_simple_provider_emits_assistant_events() {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
 
@@ -1257,7 +1257,7 @@ export default function init(pi) {
 
     #[test]
     fn extension_stream_simple_provider_drop_cancels_js_stream() {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
 
@@ -1286,7 +1286,7 @@ export default function init(pi) {
                     assert_eq!(contents, "ok");
                     return;
                 }
-                sleep(wall_now(), Duration::from_millis(5)).await;
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
 
             assert!(
@@ -1398,7 +1398,7 @@ export default function init(pi) {
 
     #[test]
     fn extension_stream_simple_multiple_chunks_in_order() {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
 
@@ -1442,7 +1442,7 @@ export default function init(pi) {
 
     #[test]
     fn extension_stream_simple_js_error_propagates() {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
 
@@ -1491,7 +1491,7 @@ export default function init(pi) {
 
     #[test]
     fn extension_stream_simple_unicode_content() {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
 
@@ -1527,7 +1527,7 @@ export default function init(pi) {
 
     #[test]
     fn extension_stream_simple_provider_name_and_model() {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
 
@@ -1548,7 +1548,7 @@ export default function init(pi) {
 
     #[test]
     fn create_provider_returns_extension_provider_for_stream_simple() {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
             .build()
             .expect("runtime build");
 

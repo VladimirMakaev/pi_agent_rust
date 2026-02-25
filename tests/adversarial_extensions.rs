@@ -48,6 +48,7 @@ fn load_ext(harness: &common::TestHarness, source: &str) -> ExtensionManager {
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start js runtime")
+        }
         });
     manager.set_js_runtime(runtime);
 
@@ -58,6 +59,7 @@ fn load_ext(harness: &common::TestHarness, source: &str) -> ExtensionManager {
                 .load_js_extensions(vec![spec])
                 .await
                 .expect("load adversarial extension");
+            }
         });
 
     manager
@@ -86,16 +88,19 @@ fn try_load_ext(source: &str) -> Result<(), String> {
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start js runtime")
+        }
         });
     manager.set_js_runtime(runtime);
 
     let load_result = common::run_async({
         let manager2 = manager.clone();
-        async move { manager2.load_js_extensions(vec![spec]).await });
+        async move { manager2.load_js_extensions(vec![spec]).await }
+    });
 
     common::run_async({
         async move {
             let _ = manager.shutdown(Duration::from_secs(3)).await;
+            }
         });
 
     load_result.map_err(|e| e.to_string())
@@ -126,6 +131,7 @@ fn eval_adversarial_with_memory_limit(source: &str, memory_limit_bytes: usize) -
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start js runtime")
+        }
         });
     manager.set_js_runtime(runtime);
 
@@ -136,7 +142,8 @@ fn eval_adversarial_with_memory_limit(source: &str, memory_limit_bytes: usize) -
                 .load_js_extensions(vec![spec])
                 .await
                 .expect("load extension");
-        });
+        }
+    });
 
     let response = common::run_async({
         let mgr2 = manager.clone();
@@ -144,11 +151,13 @@ fn eval_adversarial_with_memory_limit(source: &str, memory_limit_bytes: usize) -
             mgr2.dispatch_event_with_response(ExtensionEventName::AgentStart, None, 10_000)
                 .await
                 .expect("dispatch agent_start")
+            }
         });
 
     common::run_async({
         async move {
             let _ = manager.shutdown(Duration::from_secs(3)).await;
+            }
         });
 
     response
@@ -168,11 +177,13 @@ fn eval_adversarial(source: &str) -> String {
             mgr2.dispatch_event_with_response(ExtensionEventName::AgentStart, None, 10_000)
                 .await
                 .expect("dispatch agent_start")
+            }
         });
 
     common::run_async({
         async move {
             let _ = mgr.shutdown(Duration::from_secs(3)).await;
+            }
         });
 
     response

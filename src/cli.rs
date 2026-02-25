@@ -55,7 +55,8 @@ fn known_long_option(name: &str) -> Option<LongOptionSpec> {
         | "no-skills"
         | "no-prompt-templates"
         | "no-themes"
-        | "list-providers" => (false, false),
+        | "list-providers"
+        | "list-models" => (false, false),
         "provider"
         | "model"
         | "api-key"
@@ -76,7 +77,6 @@ fn known_long_option(name: &str) -> Option<LongOptionSpec> {
         | "theme"
         | "theme-path"
         | "export" => (true, false),
-        "list-models" => (true, true),
         _ => return None,
     };
     Some(LongOptionSpec {
@@ -826,11 +826,19 @@ mod tests {
 
     #[test]
     fn list_models_with_pattern() {
-        let cli = Cli::parse_from(["pi", "--list-models", "claude*"]);
+        let cli = Cli::parse_from(["pi", "--list-models=claude*"]);
         match cli.list_models {
             Some(Some(ref pat)) => assert_eq!(pat, "claude*"),
             other => panic!("expected Some(Some(\"claude*\")), got {other:?}"),
         }
+    }
+
+    #[test]
+    fn list_models_does_not_consume_positional_arg() {
+        let cli = Cli::parse_from(["pi", "--list-models", "hello"]);
+        assert!(cli.list_models.is_some());
+        assert!(cli.list_models.unwrap().is_none());
+        assert_eq!(cli.args, vec!["hello"]);
     }
 
     // ── 5b. --list-providers (bool) ────────────────────────────────────

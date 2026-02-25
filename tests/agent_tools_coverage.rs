@@ -394,7 +394,7 @@ fn agent_mixed_tool_batch_success_and_not_found() {
     let harness = TestHarness::new(test_name);
     let target = harness.create_file("test.txt", b"coverage content\n");
 
-    run_async(async move {
+    common::run_async(async move {
         let provider = Arc::new(MixedToolCallProvider {
             stream_calls: AtomicUsize::new(0),
             good_tool_name: "read".to_string(),
@@ -459,7 +459,7 @@ fn agent_mixed_tool_batch_success_and_not_found() {
 /// Exercises bash tool error path for nonexistent CWD.
 #[test]
 fn tool_bash_nonexistent_working_directory() {
-    run_async( async {
+    common::run_async( async {
         let _h = TestHarness::new("bash_nonexistent_cwd");
         let tool = pi::tools::BashTool::new(std::path::Path::new(
             "/nonexistent/path/that/does/not/exist",
@@ -484,7 +484,7 @@ fn tool_bash_nonexistent_working_directory() {
 /// Exercises timeout path and process cleanup.
 #[test]
 fn tool_bash_timeout_kills_process() {
-    run_async( async {
+    common::run_async( async {
         let _h = TestHarness::new("bash_timeout_kills");
         let tool = pi::tools::BashTool::new(std::path::Path::new("/tmp"));
         let input = json!({
@@ -506,7 +506,7 @@ fn tool_bash_timeout_kills_process() {
 /// Edit tool with empty old_text should error gracefully.
 #[test]
 fn tool_edit_empty_old_text() {
-    run_async( async {
+    common::run_async( async {
         let h = TestHarness::new("edit_empty_old");
         let target = h.create_file("target.txt", b"some content here\n");
         let tool = pi::tools::EditTool::new(h.temp_dir());
@@ -534,7 +534,7 @@ fn tool_edit_empty_old_text() {
 /// Write tool creates deeply nested parent directories.
 #[test]
 fn tool_write_deeply_nested_dirs() {
-    run_async( async {
+    common::run_async( async {
         let h = TestHarness::new("write_deep_dirs");
         let deep_path = h.temp_dir().join("a/b/c/d/e/deep.txt");
         let tool = pi::tools::WriteTool::new(h.temp_dir());
@@ -560,7 +560,7 @@ fn tool_write_deeply_nested_dirs() {
 fn tool_read_permission_denied() {
     use std::os::unix::fs::PermissionsExt;
 
-    run_async( async {
+    common::run_async( async {
         let h = TestHarness::new("read_perm_denied");
         let target = h.create_file("noperm.txt", b"secret\n");
         std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o000)).unwrap();
@@ -590,7 +590,7 @@ fn tool_read_permission_denied() {
 fn tool_edit_permission_denied() {
     use std::os::unix::fs::PermissionsExt;
 
-    run_async( async {
+    common::run_async( async {
         let h = TestHarness::new("edit_perm_denied");
         let target = h.create_file("readonly.txt", b"old content\n");
         std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o444)).unwrap();
@@ -761,7 +761,7 @@ fn truncate_tail_trailing_newline() {
 /// fuzzy_find_text: curly quotes normalize to straight quotes.
 #[test]
 fn fuzzy_find_normalized_curly_quotes() {
-    run_async( async {
+    common::run_async( async {
         let h = TestHarness::new("fuzzy_curly_quotes");
         // File contains curly quotes
         let target = h.create_file("curly.txt", "\u{201C}hello world\u{201D}\n".as_bytes());
@@ -790,7 +790,7 @@ fn fuzzy_find_normalized_curly_quotes() {
 /// fuzzy_find_text: em dash normalizes to hyphen.
 #[test]
 fn fuzzy_find_normalized_em_dash() {
-    run_async( async {
+    common::run_async( async {
         let h = TestHarness::new("fuzzy_em_dash");
         // File contains em dash
         let target = h.create_file("dash.txt", "foo\u{2014}bar\n".as_bytes());
@@ -811,7 +811,8 @@ fn fuzzy_find_normalized_em_dash() {
                 content.contains("foo_bar"),
                 "should have replaced: got {content}"
             );
-        });
+        }
+    });
 }
 
 // ===========================================================================
@@ -821,7 +822,7 @@ fn fuzzy_find_normalized_em_dash() {
 /// Read tool with wrong type for path parameter.
 #[test]
 fn tool_read_invalid_json_type() {
-    run_async( async {
+    common::run_async( async {
         let h = TestHarness::new("read_invalid_json");
         let tool = pi::tools::ReadTool::new(h.temp_dir());
         // Pass a number instead of string for path
@@ -834,7 +835,7 @@ fn tool_read_invalid_json_type() {
 /// Write tool with missing required content field.
 #[test]
 fn tool_write_missing_content() {
-    run_async( async {
+    common::run_async( async {
         let h = TestHarness::new("write_missing_content");
         let tool = pi::tools::WriteTool::new(h.temp_dir());
         // Missing content field
@@ -847,7 +848,7 @@ fn tool_write_missing_content() {
 /// Bash tool with missing command field.
 #[test]
 fn tool_bash_missing_command() {
-    run_async( async {
+    common::run_async( async {
         let _h = TestHarness::new("bash_missing_command");
         let tool = pi::tools::BashTool::new(std::path::Path::new("/tmp"));
         // Missing command field
@@ -860,7 +861,7 @@ fn tool_bash_missing_command() {
 /// Edit tool with missing path field.
 #[test]
 fn tool_edit_missing_path() {
-    run_async( async {
+    common::run_async( async {
         let h = TestHarness::new("edit_missing_path");
         let tool = pi::tools::EditTool::new(h.temp_dir());
         let input = json!({ "old": "x", "new": "y" });
@@ -872,7 +873,7 @@ fn tool_edit_missing_path() {
 /// Grep tool with invalid regex pattern.
 #[test]
 fn tool_grep_invalid_regex() {
-    run_async( async {
+    common::run_async( async {
         let h = TestHarness::new("grep_invalid_regex");
         h.create_file("sample.txt", b"hello\n");
 
@@ -898,7 +899,7 @@ fn tool_grep_invalid_regex() {
 /// Ls tool on a nonexistent path.
 #[test]
 fn tool_ls_nonexistent_path() {
-    run_async( async {
+    common::run_async( async {
         let h = TestHarness::new("ls_nonexistent");
         let tool = pi::tools::LsTool::new(h.temp_dir());
         let input = json!({ "path": "/nonexistent/path/that/does/not/exist" });
@@ -910,7 +911,7 @@ fn tool_ls_nonexistent_path() {
 /// Find tool on a nonexistent path.
 #[test]
 fn tool_find_nonexistent_path() {
-    run_async( async {
+    common::run_async( async {
         let h = TestHarness::new("find_nonexistent");
         let tool = pi::tools::FindTool::new(h.temp_dir());
         let input = json!({
@@ -1110,7 +1111,7 @@ fn agent_tool_execution_error_wraps_in_output() {
     let test_name = "agent_tool_exec_error";
     let harness = TestHarness::new(test_name);
 
-    run_async(async move {
+    common::run_async(async move {
         let provider = Arc::new(FailingToolProvider {
             stream_calls: AtomicUsize::new(0),
         });
@@ -1180,7 +1181,7 @@ fn agent_queue_follow_up_only_at_idle() {
     let test_name = "agent_queue_follow_up_idle";
     let harness = TestHarness::new(test_name);
 
-    run_async(async move {
+    common::run_async(async move {
         // Simple provider that responds once and stops
         let provider = Arc::new(SimpleStopProvider {
             stream_calls: AtomicUsize::new(0),
@@ -1329,7 +1330,7 @@ fn agent_event_lifecycle_simple() {
     let test_name = "agent_event_lifecycle";
     let harness = TestHarness::new(test_name);
 
-    run_async(async move {
+    common::run_async(async move {
         let provider = Arc::new(SimpleStopProvider {
             stream_calls: AtomicUsize::new(0),
         });
@@ -1393,7 +1394,7 @@ fn agent_event_lifecycle_with_tools() {
     let harness = TestHarness::new(test_name);
     harness.create_file("target.txt", b"tool content\n");
 
-    run_async(async move {
+    common::run_async(async move {
         // Provider that issues a read tool call
         let provider = Arc::new(MixedToolCallProvider {
             stream_calls: AtomicUsize::new(0),
@@ -1465,7 +1466,7 @@ fn agent_event_lifecycle_with_tools() {
 /// Bash tool properly captures exit code from failed commands.
 #[test]
 fn tool_bash_exit_code_capture() {
-    run_async( async {
+    common::run_async( async {
         let _h = TestHarness::new("bash_exit_code");
         let tool = pi::tools::BashTool::new(std::path::Path::new("/tmp"));
         let input = json!({ "command": "exit 42" });
@@ -1484,7 +1485,7 @@ fn tool_bash_exit_code_capture() {
 /// Bash tool captures both stdout and stderr.
 #[test]
 fn tool_bash_stdout_stderr_capture() {
-    run_async( async {
+    common::run_async( async {
         let _h = TestHarness::new("bash_stderr");
         let tool = pi::tools::BashTool::new(std::path::Path::new("/tmp"));
         let input = json!({ "command": "echo 'out_msg' && echo 'err_msg' >&2" });

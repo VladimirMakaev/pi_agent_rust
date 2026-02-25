@@ -1347,7 +1347,7 @@ mod stream_delta_batcher_tests {
 
     #[test]
     fn coalesces_adjacent_deltas_of_same_kind() {
-        let (tx, rx) = mpsc::channel(8);
+        let (tx, mut rx) = mpsc::channel(8);
         let mut batcher = UiStreamDeltaBatcher::new(tx);
         batcher.flush_interval = std::time::Duration::from_secs(60);
         batcher.last_flush = std::time::Instant::now();
@@ -1364,7 +1364,7 @@ mod stream_delta_batcher_tests {
 
     #[test]
     fn send_immediate_flushes_pending_before_tool_event() {
-        let (tx, rx) = mpsc::channel(8);
+        let (tx, mut rx) = mpsc::channel(8);
         let mut batcher = UiStreamDeltaBatcher::new(tx);
         batcher.flush_interval = std::time::Duration::from_secs(60);
         batcher.last_flush = std::time::Instant::now();
@@ -1385,7 +1385,7 @@ mod stream_delta_batcher_tests {
 
     #[test]
     fn retains_unsent_chunk_when_channel_is_full() {
-        let (tx, rx) = mpsc::channel(1);
+        let (tx, mut rx) = mpsc::channel(1);
         let mut batcher = UiStreamDeltaBatcher::new(tx);
         batcher.flush_interval = std::time::Duration::from_secs(60);
         batcher.last_flush = std::time::Instant::now();
@@ -1405,7 +1405,7 @@ mod stream_delta_batcher_tests {
 
     #[test]
     fn retains_immediate_events_when_channel_is_full() {
-        let (tx, rx) = mpsc::channel(1);
+        let (tx, mut rx) = mpsc::channel(1);
         let mut batcher = UiStreamDeltaBatcher::new(tx);
         batcher.flush_interval = std::time::Duration::from_secs(60);
         batcher.last_flush = std::time::Instant::now();

@@ -142,6 +142,7 @@ fn action_selection_deterministic_across_runs() {
             }
             for idx in 0..3 {
                 let _ = dispatch_host_call_shared(&ctx, recovery_call(idx)).await;
+                }
             });
 
         let artifact = manager.runtime_risk_ledger_artifact();
@@ -191,6 +192,7 @@ fn benign_calls_produce_allow_safe_fast() {
     futures::executor::block_on(async {
         for idx in 0..10 {
             let _ = dispatch_host_call_shared(&ctx, benign_call(idx)).await;
+            }
         });
 
     let artifact = manager.runtime_risk_ledger_artifact();
@@ -231,6 +233,7 @@ fn adversarial_burst_escalates_action() {
         // Build up posterior with adversarial calls
         for idx in 0..15 {
             let _ = dispatch_host_call_shared(&ctx, adversarial_call(idx)).await;
+            }
         });
 
     let artifact = manager.runtime_risk_ledger_artifact();
@@ -292,6 +295,7 @@ fn quarantine_locks_to_terminate() {
     futures::executor::block_on(async {
         for idx in 0..40 {
             let _ = dispatch_host_call_shared(&ctx, adversarial_call(idx)).await;
+            }
         });
 
     let artifact = manager.runtime_risk_ledger_artifact();
@@ -348,6 +352,7 @@ fn trigger_override_forces_harden() {
         }
         for idx in 0..15 {
             let _ = dispatch_host_call_shared(&ctx, adversarial_call(idx)).await;
+            }
         });
 
     let artifact = manager.runtime_risk_ledger_artifact();
@@ -392,6 +397,7 @@ fn state_transitions_follow_posterior() {
         }
         for idx in 0..5 {
             let _ = dispatch_host_call_shared(&ctx, recovery_call(idx)).await;
+            }
         });
 
     let artifact = manager.runtime_risk_ledger_artifact();
@@ -446,6 +452,7 @@ fn sliding_window_prevents_action_flapping() {
             let _ = dispatch_host_call_shared(&ctx, benign_call(base)).await;
             let _ = dispatch_host_call_shared(&ctx, adversarial_call(base + 1)).await;
             let _ = dispatch_host_call_shared(&ctx, benign_call(base + 2)).await;
+            }
         });
 
     let artifact = manager.runtime_risk_ledger_artifact();
@@ -500,6 +507,7 @@ fn recovery_phase_deescalates() {
         // Recovery — sustained benign calls should push posterior back
         for idx in 0..25 {
             let _ = dispatch_host_call_shared(&ctx, recovery_call(idx)).await;
+            }
         });
 
     let artifact = manager.runtime_risk_ledger_artifact();
@@ -569,6 +577,7 @@ fn expected_loss_action_ordering() {
         }
         for idx in 0..10 {
             let _ = dispatch_host_call_shared(&ctx, adversarial_call(idx)).await;
+            }
         });
 
     let artifact = manager.runtime_risk_ledger_artifact();
@@ -633,6 +642,7 @@ fn hash_chain_valid_through_transitions() {
         }
         for idx in 0..5 {
             let _ = dispatch_host_call_shared(&ctx, recovery_call(idx)).await;
+            }
         });
 
     let artifact = manager.runtime_risk_ledger_artifact();
@@ -669,6 +679,7 @@ fn disabled_scorer_allows_all() {
     futures::executor::block_on(async {
         for idx in 0..5 {
             let _ = dispatch_host_call_shared(&ctx, adversarial_call(idx)).await;
+            }
         });
 
     let artifact = manager.runtime_risk_ledger_artifact();
@@ -699,6 +710,7 @@ fn independent_state_per_extension() {
         // Extension B: all adversarial
         for idx in 0..8 {
             let _ = dispatch_host_call_shared(&ctx_b, adversarial_call(idx)).await;
+            }
         });
 
     let artifact = manager.runtime_risk_ledger_artifact();
@@ -743,6 +755,7 @@ fn posterior_evolves_with_call_patterns() {
     futures::executor::block_on(async {
         for idx in 0..2 {
             let _ = dispatch_host_call_shared(&ctx, adversarial_call(idx)).await;
+            }
         });
 
     let artifact_pre = manager.runtime_risk_ledger_artifact();
@@ -753,6 +766,7 @@ fn posterior_evolves_with_call_patterns() {
     futures::executor::block_on(async {
         for idx in 0..25 {
             let _ = dispatch_host_call_shared(&ctx, recovery_call(idx)).await;
+            }
         });
 
     let artifact_post = manager.runtime_risk_ledger_artifact();
@@ -829,6 +843,7 @@ fn shadow_mode_allows_all_calls_but_records_telemetry() {
                 !result.is_error,
                 "shadow mode should not deny call {idx}, got: {result:?}"
             );
+            }
         });
 
     // Telemetry should still be recorded
@@ -933,6 +948,7 @@ fn shadow_mode_vs_enforced_mode_telemetry_comparison() {
 
             let _ = dispatch_host_call_shared(&ctx_enforced, call_enforced).await;
             let _ = dispatch_host_call_shared(&ctx_shadow, call_shadow).await;
+            }
         });
 
     // Both should record the same number of telemetry entries

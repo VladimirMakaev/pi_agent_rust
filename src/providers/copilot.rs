@@ -440,8 +440,8 @@ mod tests {
         assert_eq!(second.token, "ghu_cached");
     }
 
-    #[test]
-    fn test_token_exchange_error_returns_auth_error() {
+    #[tokio::test]
+    async fn test_token_exchange_error_returns_auth_error() {
         let temp = tempfile::tempdir().expect("tempdir");
         let test_name = "copilot_token_error";
         let cassette = Cassette {

@@ -41,6 +41,7 @@ fn load_js_extension(harness: &common::TestHarness, source: &str) -> ExtensionMa
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start js runtime")
+        }
         });
     manager.set_js_runtime(runtime);
 
@@ -51,7 +52,8 @@ fn load_js_extension(harness: &common::TestHarness, source: &str) -> ExtensionMa
                 .load_js_extensions(vec![spec])
                 .await
                 .expect("load extension");
-        });
+        }
+    });
 
     manager
 }
@@ -140,6 +142,7 @@ fn session_before_switch_cancelled_via_cancelled_object() {
                 )
                 .await
                 .expect("dispatch cancellable")
+            }
         });
 
     assert!(
@@ -171,6 +174,7 @@ fn session_before_fork_cancelled_via_cancel_object() {
                 )
                 .await
                 .expect("dispatch cancellable")
+            }
         });
 
     assert!(
@@ -199,6 +203,7 @@ fn session_before_compact_cancelled_via_false() {
                 )
                 .await
                 .expect("dispatch cancellable")
+            }
         });
 
     assert!(
@@ -227,6 +232,7 @@ fn session_before_switch_not_cancelled_when_allowed() {
                 )
                 .await
                 .expect("dispatch")
+            }
         });
 
     assert!(
@@ -251,6 +257,7 @@ fn session_before_fork_not_cancelled_when_null() {
                 )
                 .await
                 .expect("dispatch")
+            }
         });
 
     assert!(!cancelled, "Should not cancel when handler returns null");
@@ -272,6 +279,7 @@ fn session_before_compact_not_cancelled_when_true() {
                 )
                 .await
                 .expect("dispatch")
+            }
         });
 
     assert!(!cancelled, "Should not cancel when handler returns true");
@@ -323,6 +331,7 @@ fn session_after_events_dispatch_successfully() {
                 )
                 .await
                 .expect("session_compact after-event");
+            }
         });
 }
 
@@ -357,6 +366,7 @@ export default function init(pi) {
                 )
                 .await
                 .expect("dispatch with response")
+            }
         });
 
     let response = response.expect("should get a response");
@@ -394,6 +404,7 @@ fn no_cancellation_when_no_hooks_registered() {
                     .dispatch_cancellable_event(event_name, None, 5000)
                     .await
                     .expect("dispatch cancellable")
+                }
             });
 
         assert!(

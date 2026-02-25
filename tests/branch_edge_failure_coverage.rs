@@ -431,7 +431,8 @@ fn redact_cassette_sensitive_json_body_fields() {
             "access_token": "tok123",
             "password": "pass",
             "max_tokens": 1024
-        });
+        }
+    });
     let mut cassette = make_cassette(vec![make_interaction(
         "POST",
         "https://api.example.com/v1/chat",
@@ -484,7 +485,8 @@ fn redact_cassette_deeply_nested_json() {
                     "secret": "deep-secret"
                 }
             }
-        });
+        }
+    });
     let mut cassette = make_cassette(vec![make_interaction(
         "POST",
         "https://api.example.com",
@@ -722,7 +724,7 @@ fn apply_piped_stdin_prepends_to_existing_args() {
 fn normalize_cli_print_sets_no_session() {
     let mut cli = Cli::parse_from(["pi", "-p", "hello"]);
     assert!(cli.print);
-    app::normalize_cli(&mut cli);
+    app::normalize_cli(&mut cli).unwrap();
     assert!(cli.no_session);
 }
 
@@ -730,21 +732,21 @@ fn normalize_cli_print_sets_no_session() {
 fn normalize_cli_no_print_keeps_session() {
     let mut cli = Cli::parse_from(["pi", "hello"]);
     assert!(!cli.print);
-    app::normalize_cli(&mut cli);
+    app::normalize_cli(&mut cli).unwrap();
     assert!(!cli.no_session);
 }
 
 #[test]
 fn normalize_cli_lowercases_provider() {
     let mut cli = Cli::parse_from(["pi", "--provider", "OpenAI"]);
-    app::normalize_cli(&mut cli);
+    app::normalize_cli(&mut cli).unwrap();
     assert_eq!(cli.provider.as_deref(), Some("openai"));
 }
 
 #[test]
 fn normalize_cli_no_provider_is_fine() {
     let mut cli = Cli::parse_from(["pi"]);
-    app::normalize_cli(&mut cli); // Should not panic
+    app::normalize_cli(&mut cli).unwrap(); // Should not panic
     assert!(cli.provider.is_none());
 }
 

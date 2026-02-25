@@ -119,6 +119,7 @@ fn populate_manager(ctx: &HostCallContext<'_>, benign: usize, adversarial: usize
         }
         for idx in 0..adversarial {
             let _ = dispatch_host_call_shared(ctx, adversarial_call(idx)).await;
+            }
         });
 }
 
@@ -1062,6 +1063,7 @@ fn filter_narrows_to_single_extension() {
         }
         for idx in 0..3 {
             let _ = dispatch_host_call_shared(&ctx_beta, adversarial_call(idx)).await;
+            }
         });
 
     manager.record_security_alert(SecurityAlert::from_quarantine("ext.alpha", "test", 0.8));

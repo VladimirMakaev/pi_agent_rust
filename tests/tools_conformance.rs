@@ -1636,13 +1636,13 @@ mod e2e_bash {
 mod e2e_grep {
     use super::*;
 
-    #[test]
-    fn e2e_grep_success_with_artifacts() {
+    #[tokio::test]
+    async fn e2e_grep_success_with_artifacts() {
         if !binary_available("rg") {
             eprintln!("SKIP: rg (ripgrep) not available on PATH");
             return;
         }
-        {
+
             let harness = TestHarness::new("e2e_grep_success_with_artifacts");
             harness.create_file("src/main.rs", b"fn main() {\n    println!(\"hello\");\n}\n");
             harness.create_file(
@@ -1668,13 +1668,13 @@ mod e2e_grep {
             assert!(text.contains("hello"));
     }
 
-    #[test]
-    fn e2e_grep_invalid_regex() {
+    #[tokio::test]
+    async fn e2e_grep_invalid_regex() {
         if !binary_available("rg") {
             eprintln!("SKIP: rg (ripgrep) not available on PATH");
             return;
         }
-        {
+
             let harness = TestHarness::new("e2e_grep_invalid_regex");
             harness.create_file("data.txt", b"some text");
             let tool = pi::tools::GrepTool::new(harness.temp_dir());
@@ -1689,13 +1689,13 @@ mod e2e_grep {
             assert!(result.is_err(), "invalid regex should fail");
     }
 
-    #[test]
-    fn e2e_grep_with_context_lines() {
+    #[tokio::test]
+    async fn e2e_grep_with_context_lines() {
         if !binary_available("rg") {
             eprintln!("SKIP: rg (ripgrep) not available on PATH");
             return;
         }
-        {
+
             let harness = TestHarness::new("e2e_grep_with_context_lines");
             harness.create_file("data.txt", b"line1\nline2\nTARGET\nline4\nline5");
 
@@ -1723,13 +1723,13 @@ mod e2e_grep {
 mod e2e_find {
     use super::*;
 
-    #[test]
-    fn e2e_find_success_with_artifacts() {
+    #[tokio::test]
+    async fn e2e_find_success_with_artifacts() {
         if !binary_available("fd") {
             eprintln!("SKIP: fd not available on PATH");
             return;
         }
-        {
+
             let harness = TestHarness::new("e2e_find_success_with_artifacts");
             harness.create_file("src/main.rs", b"");
             harness.create_file("src/lib.rs", b"");
@@ -1753,13 +1753,13 @@ mod e2e_find {
             assert!(!text.contains("readme.md"));
     }
 
-    #[test]
-    fn e2e_find_invalid_path_with_artifacts() {
+    #[tokio::test]
+    async fn e2e_find_invalid_path_with_artifacts() {
         if !binary_available("fd") {
             eprintln!("SKIP: fd not available on PATH");
             return;
         }
-        {
+
             let harness = TestHarness::new("e2e_find_invalid_path_with_artifacts");
             let tool = pi::tools::FindTool::new(harness.temp_dir());
             let input = serde_json::json!({
@@ -1859,10 +1859,9 @@ mod e2e_ls {
 }
 
 /// Comprehensive E2E: exercise all 7 tools in a single test workspace with full artifact logging.
-#[test]
+#[tokio::test]
 #[allow(clippy::too_many_lines)]
-fn e2e_all_tools_roundtrip() {
-    {
+async fn e2e_all_tools_roundtrip() {
         let harness = TestHarness::new("e2e_all_tools_roundtrip");
         harness.section("Setup workspace");
 
@@ -2011,7 +2010,6 @@ fn e2e_all_tools_roundtrip() {
         harness
             .log()
             .info("summary", "All tool roundtrip steps passed");
-    });
 }
 
 // ============================================================================
@@ -2109,10 +2107,9 @@ mod security_path_traversal {
     }
 
     /// Read tool follows symlinks that point outside CWD – by design.
-    #[test]
+    #[tokio::test]
     #[cfg(unix)]
-    fn read_symlink_escape() {
-        {
+    async fn read_symlink_escape() {
             let outside = tempfile::tempdir().unwrap();
             let secret = outside.path().join("secret.txt");
             std::fs::write(&secret, "SYMLINK_SECRET").unwrap();
@@ -2133,10 +2130,9 @@ mod security_path_traversal {
 
     /// Write tool replaces symlinks with regular files (atomic rename).
     /// This prevents symlink-following attacks: the original target is untouched.
-    #[test]
+    #[tokio::test]
     #[cfg(unix)]
-    fn write_replaces_symlink_with_regular_file() {
-        {
+    async fn write_replaces_symlink_with_regular_file() {
             let outside = tempfile::tempdir().unwrap();
             let target = outside.path().join("target.txt");
             std::fs::write(&target, "ORIGINAL").unwrap();

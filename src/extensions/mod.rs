@@ -23972,9 +23972,10 @@ impl ExtensionManager {
         let budget = self.budget();
         // Convert our local Budget to asupersync::Budget
         let asupersync_budget = asupersync::Budget {
-            deadline: budget.deadline,
+            deadline: budget.deadline.map(|d| asupersync::Time::from_nanos(d.as_nanos() as u64)),
             poll_quota: budget.poll_quota,
             cost_quota: budget.cost_quota,
+            priority: 0,
         };
         if budget.deadline.is_some() || budget.poll_quota < u32::MAX || budget.cost_quota.is_some()
         {
@@ -28215,7 +28216,7 @@ mod tests {
     use tempfile::tempdir;
 
     /// Helper to get current wall time (for test budget construction).
-    fn wall_now() -> Duration {
+    fn wall_now() -> asupersync::Time {
         asupersync::time::wall_now()
     }
 
@@ -29102,13 +29103,13 @@ mod tests {
         let handle = runtime.handle();
 
         runtime.block_on(async move {
-            let (ui_tx, ui_rx) = mpsc::channel(16);
+            let (ui_tx, mut ui_rx) = mpsc::channel(16);
             manager.set_ui_sender(ui_tx);
 
             let responder = manager.clone();
             handle.spawn(async move {
-                let cx = Cx::for_request();
-                if let Ok(req) = ui_rx.recv().await {
+                let _cx = asupersync::Cx::for_request();
+                if let Some(req) = ui_rx.recv().await {
                     responder.respond_ui(ExtensionUiResponse {
                         id: req.id,
                         value: Some(json!(true)),
@@ -29134,7 +29135,7 @@ mod tests {
         runtime.block_on(async move {
             use std::sync::atomic::{AtomicUsize, Ordering};
 
-            let (ui_tx, ui_rx) = mpsc::channel(16);
+            let (ui_tx, mut ui_rx) = mpsc::channel(16);
             manager.set_ui_sender(ui_tx);
 
             let prompt_count = Arc::new(AtomicUsize::new(0));
@@ -29142,7 +29143,7 @@ mod tests {
 
             let responder = manager.clone();
             handle.spawn(async move {
-                let cx = Cx::for_request();
+                let _cx = asupersync::Cx::for_request();
                 while let Some(req) = ui_rx.recv().await {
                     prompt_count_clone.fetch_add(1, Ordering::SeqCst);
                     responder.respond_ui(ExtensionUiResponse {
@@ -30504,7 +30505,7 @@ mod tests {
                 manager.set_ui_sender(ui_tx);
 
                 let ui_task = async {
-                    let ui_request = timeout(Duration::from_secs(2), ui_rx.recv(&cx))
+                    let ui_request = timeout(Duration::from_secs(2), ui_rx.recv())
                         .await
                         .expect("timed out waiting for ui request")
                         .expect("ui request");
@@ -30520,8 +30521,8 @@ mod tests {
                     );
 
                     // Ensure the allow decision is cached (second hostcall should not prompt again).
-                    if let Ok(Ok(_)) =
-                        timeout(Duration::from_millis(200), ui_rx.recv(&cx)).await
+                    if let Ok(Some(_)) =
+                        timeout(Duration::from_millis(200), ui_rx.recv()).await
                     {
                         panic!("unexpected second ui prompt");
                     }
@@ -31021,7 +31022,7 @@ mod tests {
                 let ui_task = async {
                     for _ in 0..prompt_count {
                         let ui_request =
-                            timeout(Duration::from_secs(2), ui_rx.recv(&cx))
+                            timeout(Duration::from_secs(2), ui_rx.recv())
                                 .await
                                 .expect("timed out waiting for ui request")
                                 .expect("ui request");
@@ -31038,8 +31039,8 @@ mod tests {
                     }
 
                     // Ensure we don't leak an extra prompt that would hang on future runs.
-                    if let Ok(Ok(_)) =
-                        timeout(Duration::from_millis(200), ui_rx.recv(&cx)).await
+                    if let Ok(Some(_)) =
+                        timeout(Duration::from_millis(200), ui_rx.recv()).await
                     {
                         panic!("unexpected extra ui prompt");
                     }
@@ -33732,8 +33733,11 @@ mod tests {
     #[test]
     fn effective_timeout_with_tight_budget_caps_timeout() {
         // Set a budget that expires 2 seconds from now.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
         let budget = Budget {
-            deadline: Some(wall_now() + Duration::from_secs(2)),
+            deadline: Some(now + Duration::from_secs(2)),
             ..Budget::INFINITE
         };
         let manager = ExtensionManager::with_budget(budget);
@@ -33746,8 +33750,11 @@ mod tests {
     #[test]
     fn effective_timeout_with_expired_budget_returns_zero() {
         // Set a budget with a deadline in the past.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
         let budget = Budget {
-            deadline: Some(wall_now()),
+            deadline: Some(now),
             ..Budget::INFINITE
         };
         let manager = ExtensionManager::with_budget(budget);
@@ -33759,8 +33766,11 @@ mod tests {
     #[test]
     fn effective_timeout_takes_min_of_budget_and_operation() {
         // Budget with a far-off deadline (60s) — operation timeout (5s) wins.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
         let budget = Budget {
-            deadline: Some(wall_now() + Duration::from_secs(60)),
+            deadline: Some(now + Duration::from_secs(60)),
             ..Budget::INFINITE
         };
         let manager = ExtensionManager::with_budget(budget);
@@ -33794,7 +33804,7 @@ mod tests {
         #[test]
         fn lab_oneshot_recv_completes_under_virtual_time() {
             let mut runtime = ext_lab(42);
-            let root = runtime.state.create_root_region(Budget::INFINITE);
+            let root = runtime.state.create_root_region(asupersync::Budget::INFINITE);
 
             let (tx, rx) = oneshot::channel::<String>();
             let received = Arc::new(std::sync::Mutex::new(None));
@@ -33803,8 +33813,8 @@ mod tests {
             // Sender task: send a value immediately.
             let (send_task, _) = runtime
                 .state
-                .create_task(root, Budget::INFINITE, async move {
-                    let cx = Cx::current().expect("cx");
+                .create_task(root, asupersync::Budget::INFINITE, async move {
+                    let _cx = asupersync::Cx::current().expect("cx");
                     tx.send("hello".to_string()).expect("send");
                 })
                 .expect("create send task");
@@ -33813,9 +33823,9 @@ mod tests {
             // Receiver task: receive with infinite budget.
             let (recv_task, _) = runtime
                 .state
-                .create_task(root, Budget::INFINITE, async move {
-                    let cx = Cx::current().expect("cx");
-                    if let Ok(val) = rx.recv().await {
+                .create_task(root, asupersync::Budget::INFINITE, async move {
+                    let _cx = asupersync::Cx::current().expect("cx");
+                    if let Ok(val) = rx.await {
                         *received_clone.lock().unwrap() = Some(val);
                     }
                 })
@@ -33834,7 +33844,7 @@ mod tests {
             // thread exits, it drops the reply sender. The ExtensionManager
             // method (receiver) should see an error, not hang.
             let mut runtime = ext_lab(0xDEAD);
-            let root = runtime.state.create_root_region(Budget::INFINITE);
+            let root = runtime.state.create_root_region(asupersync::Budget::INFINITE);
 
             let (tx, rx) = oneshot::channel::<String>();
             let got_error = Arc::new(AtomicBool::new(false));
@@ -33843,7 +33853,7 @@ mod tests {
             // Task 1: drop the sender (simulates runtime exit).
             let (drop_task, _) = runtime
                 .state
-                .create_task(root, Budget::INFINITE, async move {
+                .create_task(root, asupersync::Budget::INFINITE, async move {
                     drop(tx);
                 })
                 .expect("create drop task");
@@ -33852,9 +33862,9 @@ mod tests {
             // Task 2: try to recv (should fail because sender was dropped).
             let (recv_task, _) = runtime
                 .state
-                .create_task(root, Budget::INFINITE, async move {
-                    let cx = Cx::current().expect("cx");
-                    if rx.recv().await.is_err() {
+                .create_task(root, asupersync::Budget::INFINITE, async move {
+                    let _cx = asupersync::Cx::current().expect("cx");
+                    if rx.await.is_err() {
                         got_error_clone.store(true, Ordering::SeqCst);
                     }
                 })
@@ -33875,7 +33885,7 @@ mod tests {
             // identical results — verifying deterministic scheduling.
             fn run_once(seed: u64) -> Vec<String> {
                 let mut runtime = ext_lab(seed);
-                let root = runtime.state.create_root_region(Budget::INFINITE);
+                let root = runtime.state.create_root_region(asupersync::Budget::INFINITE);
 
                 let log = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
 
@@ -33883,12 +33893,12 @@ mod tests {
                     let log = Arc::clone(&log);
                     let (task_id, _) = runtime
                         .state
-                        .create_task(root, Budget::INFINITE, async move {
-                            let cx = Cx::current().expect("cx");
+                        .create_task(root, asupersync::Budget::INFINITE, async move {
+                            let _cx = asupersync::Cx::current().expect("cx");
                             // Simulate extension dispatch: send/recv on a channel.
                             let (tx, rx) = oneshot::channel::<u32>();
                             tx.send(i).expect("send");
-                            let val = rx.recv().await.expect("recv");
+                            let val = rx.await.expect("recv");
                             log.lock().unwrap().push(format!("task-{val}"));
                         })
                         .expect("create task");
@@ -33911,7 +33921,7 @@ mod tests {
             fn run_multi(seed: u64) -> Vec<String> {
                 let config = LabConfig::new(seed).worker_count(4).trace_capacity(4096);
                 let mut runtime = LabRuntime::new(config);
-                let root = runtime.state.create_root_region(Budget::INFINITE);
+                let root = runtime.state.create_root_region(asupersync::Budget::INFINITE);
 
                 let log = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
 
@@ -33919,7 +33929,7 @@ mod tests {
                     let log = Arc::clone(&log);
                     let (task_id, _) = runtime
                         .state
-                        .create_task(root, Budget::INFINITE, async move {
+                        .create_task(root, asupersync::Budget::INFINITE, async move {
                             // Yield to interleave with other tasks.
                             tokio::task::yield_now().await;
                             log.lock().unwrap().push(format!("w-{i}"));
@@ -34216,7 +34226,7 @@ mod tests {
                     expected.duration_since(deadline)
                 };
                 assert!(
-                    u128::from(delta_ns) <= Duration::from_millis(100).as_nanos(),
+                    delta_ns <= Duration::from_millis(100).as_nanos() as u64,
                     "deadline {deadline:?} should be ~500ms after {before:?}"
                 );
             });
@@ -34244,10 +34254,11 @@ mod tests {
             tokio::runtime::Runtime::new().unwrap().block_on(async {
                 // Create a oneshot where nobody will send.
                 let (_tx, rx) = oneshot::channel::<()>();
-                let cx = cx_with_deadline(50); // 50ms deadline
+                let _cx = cx_with_deadline(50); // 50ms deadline
                 let start = wall_now();
-                let result = timeout(Duration::from_millis(50), rx.recv(&cx)).await;
-                let elapsed = Duration::from_nanos(wall_now().duration_since(start));
+                let result = timeout(Duration::from_millis(50), rx).await;
+                let elapsed_ns = wall_now().duration_since(start);
+                let elapsed = Duration::from_nanos(elapsed_ns);
                 assert!(
                     result.is_err() || matches!(result, Ok(Err(_))),
                     "recv should fail when the deadline is exceeded; got: {result:?}"
@@ -37183,7 +37194,7 @@ mod tests {
         let policy = permissive_policy();
 
         let manager = extension_manager_no_persisted_permissions();
-        let (ui_tx, ui_rx) = mpsc::channel(8);
+        let (ui_tx, mut ui_rx) = mpsc::channel(8);
         manager.set_ui_sender(ui_tx);
 
         let ctx = HostCallContext {
@@ -37316,7 +37327,7 @@ mod tests {
         let policy = permissive_policy();
 
         let manager = extension_manager_no_persisted_permissions();
-        let (ui_tx, ui_rx) = mpsc::channel(8);
+        let (ui_tx, mut ui_rx) = mpsc::channel(8);
         manager.set_ui_sender(ui_tx);
 
         let ctx = HostCallContext {

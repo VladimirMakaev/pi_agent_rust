@@ -128,7 +128,7 @@ fn agent_loop_openai_vcr_basic() {
     let test_name = "agent_loop_openai_basic";
     let harness = TestHarness::new(test_name);
 
-    run_async(async move {
+    common::run_async(async move {
         let cassette_dir = cassette_root();
         let cassette_name = "rpc_prompt";
         let cassette_path = cassette_dir.join(format!("{cassette_name}.json"));
@@ -206,7 +206,7 @@ fn agent_loop_openai_vcr_basic() {
 
         let session_path = {
             
-            let guard = agent_session.session.lock().await.expect("lock session");
+            let guard = agent_session.session.lock().await;
             guard.path.clone()
         };
         if let Some(path) = session_path {
@@ -313,7 +313,7 @@ fn agent_loop_anthropic_simple_text() {
     let test_name = "agent_loop_anthropic_simple_text";
     let harness = TestHarness::new(test_name);
 
-    run_async(async move {
+    common::run_async(async move {
         let cassette_dir = cassette_root();
         let cassette_name = "anthropic_simple_text";
         let cassette_path = cassette_dir.join(format!("{cassette_name}.json"));
@@ -411,7 +411,7 @@ fn agent_loop_anthropic_error_stream() {
     let test_name = "agent_loop_anthropic_error_stream";
     let harness = TestHarness::new(test_name);
 
-    run_async(async move {
+    common::run_async(async move {
         let cassette_dir = cassette_root();
         let cassette_name = "anthropic_server_error_500";
         let cassette_path = cassette_dir.join(format!("{cassette_name}.json"));
@@ -492,7 +492,7 @@ fn agent_loop_anthropic_tool_call_stop() {
     let test_name = "agent_loop_anthropic_tool_call_stop";
     let harness = TestHarness::new(test_name);
 
-    run_async(async move {
+    common::run_async(async move {
         let cassette_dir = cassette_root();
         let cassette_name = "anthropic_tool_call_single";
         let cassette_path = cassette_dir.join(format!("{cassette_name}.json"));
@@ -571,6 +571,7 @@ fn agent_loop_anthropic_tool_call_stop() {
                 match &result {
                     Ok(msg) => ctx.push(("stop_reason".into(), format!("{:?}", msg.stop_reason))),
                     Err(e) => ctx.push(("error".into(), e.to_string())),
+                    }
                 });
 
         write_jsonl_artifacts(&harness, test_name, &["test-key", "vcr-playback"]);

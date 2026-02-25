@@ -18,6 +18,7 @@ fn register_message_json(overrides: serde_json::Value) -> String {
             "tools": [],
             "slash_commands": [],
             "event_hooks": []
+            }
         });
 
     if let serde_json::Value::Object(dst) = &mut base {

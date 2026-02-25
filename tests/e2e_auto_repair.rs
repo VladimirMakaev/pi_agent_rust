@@ -163,7 +163,8 @@ fn load_one(entry: &ManifestEntry, mode: RepairMode) -> ExtResult {
     let runtime_result = common::run_async({
         let manager = manager.clone();
         let tools = Arc::clone(&tools);
-        async move { JsExtensionRuntimeHandle::start(config, tools, manager).await });
+        async move { JsExtensionRuntimeHandle::start(config, tools, manager).await }
+    });
 
     let runtime = match runtime_result {
         Ok(rt) => rt,
@@ -184,7 +185,8 @@ fn load_one(entry: &ManifestEntry, mode: RepairMode) -> ExtResult {
     // Load extension
     let load_result = common::run_async({
         let manager = manager.clone();
-        async move { manager.load_js_extensions(vec![spec]).await });
+        async move { manager.load_js_extensions(vec![spec]).await }
+    });
 
     let loaded = load_result.is_ok();
     let error = load_result.err().map(|e| format!("{e}"));

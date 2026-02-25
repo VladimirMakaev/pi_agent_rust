@@ -292,8 +292,8 @@ fn select_model_and_thinking_uses_scoped_thinking_level_when_cli_unset() {
                     .thinking_level
                     .map_or_else(|| "(none)".to_string(), |t| t.to_string()),
             ));
-        });
-
+        }
+    });
     let selection = select_model_and_thinking(
         &cli,
         &Config::default(),
@@ -614,7 +614,7 @@ fn apply_piped_stdin_none_keeps_args() {
 fn normalize_cli_sets_no_session_for_print_mode() {
     let mut cli = cli::Cli::parse_from(["pi", "-p", "hello"]);
     assert!(!cli.no_session);
-    normalize_cli(&mut cli);
+    normalize_cli(&mut cli).unwrap();
     assert!(cli.no_session);
 }
 
@@ -630,9 +630,9 @@ fn validate_rpc_args_rejects_file_args() {
 
 #[test]
 fn session_no_session_flag_creates_in_memory_session() {
-    run_async( async {
+    common::run_async( async {
         let mut cli = cli::Cli::parse_from(["pi", "-p", "hello"]);
-        normalize_cli(&mut cli);
+        normalize_cli(&mut cli).unwrap();
         let session = Box::pin(Session::new(&cli, &Config::default()))
             .await
             .expect("session");
@@ -850,7 +850,7 @@ fn normalize_cli_no_session_flag_directly() {
     assert!(cli.no_session);
     assert!(!cli.print);
     // normalize_cli doesn't change no_session when print is false
-    normalize_cli(&mut cli);
+    normalize_cli(&mut cli).unwrap();
     assert!(cli.no_session);
     assert!(!cli.print);
 }

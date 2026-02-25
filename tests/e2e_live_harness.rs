@@ -474,7 +474,7 @@ fn e2e_live_provider_harness_smoke() {
     let registry = LiveE2eRegistry::load(harness.log())
         .unwrap_or_else(|err| panic!("failed to load live E2E registry: {err}"));
 
-    run_async(async move {
+    common::run_async(async move {
             let harness_ref = &harness;
             let registry = registry.clone();
 
@@ -585,7 +585,8 @@ fn e2e_live_provider_harness_smoke() {
 
                 let estimated_cost = model_cost.and_then(|rates| {
                     let estimate = estimate_from_model_rates(usage, rates);
-                    if estimate > 0.0 { Some(estimate) } else { None });
+                    if estimate > 0.0 { Some(estimate) } else { None }
+                });
 
                 let (total_cost, usage_fallback, cost_source) = if run.status == "skipped" {
                     (0.0, "skipped".to_string(), "not_applicable".to_string())

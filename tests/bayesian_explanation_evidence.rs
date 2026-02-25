@@ -174,7 +174,8 @@ fn e2e_explanation_fields_in_telemetry_artifact() {
                 json!({ "cmd": "echo", "args": ["test"] }),
             )
             .await;
-        });
+        }
+    });
 
     let telemetry = manager.runtime_hostcall_telemetry_artifact();
     assert!(
@@ -258,7 +259,8 @@ fn e2e_explanation_in_ledger_with_schema() {
                 json!({ "cmd": "ls", "args": ["-la"] }),
             )
             .await;
-        });
+        }
+    });
 
     let ledger = manager.runtime_risk_ledger_artifact();
     assert!(
@@ -363,7 +365,8 @@ fn e2e_explanation_replay_parity() {
                     json!({ "cmd": "echo", "args": [format!("arg-{idx}")] }),
                 )
                 .await;
-            });
+            }
+        });
 
         manager.runtime_risk_ledger_artifact()
     };
@@ -487,7 +490,8 @@ fn e2e_explanation_contributor_ordering_stable() {
                 json!({ "cmd": "test", "args": [idx.to_string()] }),
             )
             .await;
-        });
+        }
+    });
 
     let ledger = manager.runtime_risk_ledger_artifact();
     for entry in &ledger.entries {
@@ -555,7 +559,8 @@ fn e2e_explanation_calibration_includes_metrics() {
                 json!({ "cmd": "echo", "args": [idx.to_string()] }),
             )
             .await;
-        });
+        }
+    });
 
     let ledger = manager.runtime_risk_ledger_artifact();
     let verification = verify_runtime_risk_ledger_artifact(&ledger);
@@ -643,7 +648,8 @@ fn e2e_explanation_level_escalation_adversarial() {
                 json!({ "cmd": "echo", "args": [idx.to_string()] }),
             )
             .await;
-        });
+        }
+    });
 
     let telemetry = manager.runtime_hostcall_telemetry_artifact();
     let ledger = manager.runtime_risk_ledger_artifact();
@@ -731,7 +737,8 @@ fn e2e_explanation_replay_steps_carry_fields() {
                 json!({ "cmd": "test", "args": [idx.to_string()] }),
             )
             .await;
-        });
+        }
+    });
 
     let ledger = manager.runtime_risk_ledger_artifact();
     let verification = verify_runtime_risk_ledger_artifact(&ledger);
@@ -802,7 +809,8 @@ fn e2e_explanation_conformal_coexistence() {
                 json!({ "cmd": "echo", "args": [idx.to_string()] }),
             )
             .await;
-        });
+        }
+    });
 
     let ledger = manager.runtime_risk_ledger_artifact();
     for entry in &ledger.entries {

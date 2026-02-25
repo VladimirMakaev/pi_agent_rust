@@ -1948,6 +1948,7 @@ fn write_stratification_artifact_with_claim_guard(
         "layers": layers,
         "claim_integrity": {
             "cherry_pick_guard": Value::Object(cherry_pick_guard)
+            }
         });
     std::fs::write(
         path,
@@ -2097,7 +2098,8 @@ fn required_e2e_ratio_contract_fails_when_full_e2e_values_non_positive() {
     let invalid_full_e2e = json!({
         "layer_id": "full_e2e_long_session",
         "absolute_metrics": {"value": 0.0},
-        "relative_metrics": {"rust_vs_node_ratio": -1.0, "rust_vs_bun_ratio": 1.5});
+        "relative_metrics": {"rust_vs_node_ratio": -1.0, "rust_vs_bun_ratio": 1.5}
+    });
     write_stratification_artifact_with_full_e2e_layer(&artifact, &[], Some(invalid_full_e2e));
 
     let failures = evaluate_required_e2e_ratio_contract(tmp.path(), 24.0);
@@ -2118,7 +2120,8 @@ fn required_e2e_ratio_contract_fails_when_full_e2e_values_non_numeric() {
     let invalid_full_e2e = json!({
         "layer_id": "full_e2e_long_session",
         "absolute_metrics": {"value": "n/a"},
-        "relative_metrics": {"rust_vs_node_ratio": 1.8, "rust_vs_bun_ratio": null});
+        "relative_metrics": {"rust_vs_node_ratio": 1.8, "rust_vs_bun_ratio": null}
+    });
     write_stratification_artifact_with_full_e2e_layer(&artifact, &[], Some(invalid_full_e2e));
 
     let failures = evaluate_required_e2e_ratio_contract(tmp.path(), 24.0);
@@ -2231,7 +2234,8 @@ fn required_e2e_ratio_contract_fails_when_bun_killer_ratio_exceeds_threshold() {
     let full_e2e_layer = json!({
         "layer_id": "full_e2e_long_session",
         "absolute_metrics": {"value": 120.0},
-        "relative_metrics": {"rust_vs_node_ratio": 0.40, "rust_vs_bun_ratio": 0.34});
+        "relative_metrics": {"rust_vs_node_ratio": 0.40, "rust_vs_bun_ratio": 0.34}
+    });
     write_stratification_artifact_with_full_e2e_layer(&artifact, &[], Some(full_e2e_layer));
 
     let failures = evaluate_required_e2e_ratio_contract(tmp.path(), 24.0);
@@ -2252,7 +2256,8 @@ fn required_e2e_ratio_contract_accepts_bun_killer_ratio_at_threshold() {
     let full_e2e_layer = json!({
         "layer_id": "full_e2e_long_session",
         "absolute_metrics": {"value": 120.0},
-        "relative_metrics": {"rust_vs_node_ratio": 0.30, "rust_vs_bun_ratio": 0.33});
+        "relative_metrics": {"rust_vs_node_ratio": 0.30, "rust_vs_bun_ratio": 0.33}
+    });
     write_stratification_artifact_with_full_e2e_layer(&artifact, &[], Some(full_e2e_layer));
 
     let failures = evaluate_required_e2e_ratio_contract(tmp.path(), 24.0);

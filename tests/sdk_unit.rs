@@ -609,7 +609,8 @@ fn rpc_compaction_result_serde() {
         "summary": "Compacted 10 messages into 2",
         "firstKeptEntryId": "entry-5",
         "tokensBefore": 12000,
-        "details": {"removed": 8});
+        "details": {"removed": 8}
+    });
     let result: RpcCompactionResult = serde_json::from_value(value.clone()).expect("deserialize");
     assert_eq!(result.summary, "Compacted 10 messages into 2");
     assert_eq!(result.first_kept_entry_id, "entry-5");
@@ -938,6 +939,7 @@ fn rpc_model_info_serde_with_cost() {
             "output": 15.0,
             "cacheRead": 2.5,
             "cacheWrite": 5.0
+            }
         });
     let result: RpcModelInfo = serde_json::from_value(value.clone()).expect("deserialize");
     assert_eq!(result.id, "gpt-4o");

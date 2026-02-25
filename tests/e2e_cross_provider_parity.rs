@@ -575,7 +575,7 @@ fn e2e_cross_provider_parity() {
     let registry = LiveE2eRegistry::load(harness.log())
         .unwrap_or_else(|err| panic!("failed to load live E2E registry: {err}"));
 
-    run_async(async move {
+    common::run_async(async move {
         let harness_ref = &harness;
         let registry = registry.clone();
 

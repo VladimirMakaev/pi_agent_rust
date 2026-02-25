@@ -20,7 +20,8 @@ fn write_session_file(harness: &TestHarness, contents: &str) -> std::path::PathB
 }
 
 fn run_async_test<F: Future<Output = ()>>(future: F) {
-    let runtime = RuntimeBuilder::current_thread()
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
         .build()
         .expect("runtime build");
     runtime.block_on(future);
@@ -797,7 +798,8 @@ fn concurrent_saves_do_not_corrupt_session_file() {
     let path2 = path.clone();
 
     let t1 = std::thread::spawn(move || {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = RuntimeBuilder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime build");
         runtime.block_on(async move {
@@ -810,7 +812,8 @@ fn concurrent_saves_do_not_corrupt_session_file() {
     });
 
     let t2 = std::thread::spawn(move || {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = RuntimeBuilder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime build");
         runtime.block_on(async move {
@@ -994,7 +997,8 @@ fn save_round_trips_tool_result_message() {
             }
         } else {
             panic!("Expected Message entry, got {tool_result_entry:?}");
-        });
+        }
+    });
 }
 
 #[test]
@@ -1024,7 +1028,8 @@ fn save_round_trips_tool_error_result() {
             }
         } else {
             panic!("Expected Message entry");
-        });
+        }
+    });
 }
 
 // ============================================================================
@@ -1059,7 +1064,8 @@ fn save_preserves_unicode_message_content() {
             }
         } else {
             panic!("Expected Message entry");
-        });
+        }
+    });
 }
 
 #[test]
@@ -1091,7 +1097,8 @@ fn save_preserves_emoji_in_assistant_response() {
             }
         } else {
             panic!("Expected Message entry");
-        });
+        }
+    });
 }
 
 // ============================================================================
@@ -1129,7 +1136,8 @@ fn save_preserves_message_timestamps() {
             }
         } else {
             panic!("Expected Message entry");
-        });
+        }
+    });
 }
 
 #[test]

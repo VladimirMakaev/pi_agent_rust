@@ -2425,8 +2425,6 @@ mod retry_tests {
 
     #[tokio::test]
     async fn rpc_auto_retry_retries_then_succeeds() {
-        let runtime_handle = tokio::runtime::Handle::current();
-
         let provider = Arc::new(FlakyProvider::new());
         let tools = ToolRegistry::new(&[], Path::new("."), None);
         let agent = Agent::new(provider, tools, AgentConfig::default());
@@ -2470,7 +2468,6 @@ mod retry_tests {
             available_models: Vec::new(),
             scoped_models: Vec::new(),
             auth,
-            runtime_handle,
         };
 
         run_prompt_with_retry(
@@ -2484,7 +2481,6 @@ mod retry_tests {
             options,
             "hello".to_string(),
             Vec::new(),
-            AgentCx::for_request(),
         )
         .await;
 
@@ -2520,8 +2516,6 @@ mod retry_tests {
 
     #[tokio::test]
     async fn rpc_abort_retry_emits_ordered_retry_timeline() {
-        let runtime_handle = tokio::runtime::Handle::current();
-
         let provider = Arc::new(AlwaysErrorProvider);
         let tools = ToolRegistry::new(&[], Path::new("."), None);
         let agent = Agent::new(provider, tools, AgentConfig::default());
@@ -2565,7 +2559,6 @@ mod retry_tests {
             available_models: Vec::new(),
             scoped_models: Vec::new(),
             auth,
-            runtime_handle,
         };
 
         let retry_abort_for_thread = Arc::clone(&retry_abort);
@@ -2585,7 +2578,6 @@ mod retry_tests {
             options,
             "hello".to_string(),
             Vec::new(),
-            AgentCx::for_request(),
         )
         .await;
         abort_thread.join().expect("abort thread join");
@@ -3770,15 +3762,6 @@ mod tests {
     }
 
     fn rpc_options_with_models(available_models: Vec<ModelEntry>) -> RpcOptions {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
-            .enable_all()
-            .build()
-            .expect("runtime build");
-        let runtime_handle = runtime.handle().clone();
-        // Keep runtime alive by leaking it (test helper)
-        std::mem::forget(runtime);
-
         let auth_path = tempfile::tempdir()
             .expect("tempdir")
             .path()
@@ -3791,7 +3774,6 @@ mod tests {
             available_models,
             scoped_models: Vec::new(),
             auth,
-            runtime_handle,
         }
     }
 
@@ -4095,7 +4077,7 @@ mod tests {
 
     #[test]
     fn try_send_line_with_backpressure_waits_until_capacity_is_available() {
-        let (tx, rx) = mpsc::channel::<String>(1);
+        let (tx, mut rx) = mpsc::channel::<String>(1);
         tx.try_send("occupied".to_string())
             .expect("seed initial occupied slot");
 
@@ -4126,7 +4108,7 @@ mod tests {
 
     #[test]
     fn try_send_line_with_backpressure_preserves_large_payload() {
-        let (tx, rx) = mpsc::channel::<String>(1);
+        let (tx, mut rx) = mpsc::channel::<String>(1);
         tx.try_send("busy".to_string())
             .expect("seed initial busy slot");
 
@@ -4156,7 +4138,7 @@ mod tests {
 
     #[test]
     fn try_send_line_with_backpressure_detects_disconnect_while_waiting() {
-        let (tx, rx) = mpsc::channel::<String>(1);
+        let (tx, mut rx) = mpsc::channel::<String>(1);
         tx.try_send("busy".to_string())
             .expect("seed initial busy slot");
 
@@ -4174,7 +4156,7 @@ mod tests {
 
     #[test]
     fn try_send_line_with_backpressure_high_volume_preserves_order_and_count() {
-        let (tx, rx) = mpsc::channel::<String>(4);
+        let (tx, mut rx) = mpsc::channel::<String>(4);
         let lines: Vec<String> = (0..256)
             .map(|idx| format!("line-{idx:03}: {}", "x".repeat(64)))
             .collect();
@@ -4206,7 +4188,7 @@ mod tests {
 
     #[test]
     fn try_send_line_with_backpressure_preserves_partial_line_without_newline() {
-        let (tx, rx) = mpsc::channel::<String>(1);
+        let (tx, mut rx) = mpsc::channel::<String>(1);
         tx.try_send("busy".to_string())
             .expect("seed initial busy slot");
 

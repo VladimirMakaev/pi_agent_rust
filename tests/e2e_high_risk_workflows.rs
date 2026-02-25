@@ -572,7 +572,7 @@ fn provider_error_on_stream_surfaces_to_caller() {
     let harness = TestHarness::new(test_name);
 
     let cwd = harness.temp_dir().to_path_buf();
-    let result = run_async({
+    let result = common::run_async({
         let cwd = cwd.clone();
         async move {
             let provider: Arc<dyn Provider> =
@@ -582,6 +582,7 @@ fn provider_error_on_stream_surfaces_to_caller() {
             )));
             let mut agent_session = make_agent_session(&cwd, provider, session, 4);
             agent_session.run_text("hello".to_string(), |_| {}).await
+            }
         });
 
     assert!(result.is_err(), "Expected error from provider");
@@ -604,7 +605,7 @@ fn provider_mid_stream_error_handled_gracefully() {
     let harness = TestHarness::new(test_name);
 
     let cwd = harness.temp_dir().to_path_buf();
-    let result = run_async({
+    let result = common::run_async({
         let cwd = cwd.clone();
         async move {
             let provider: Arc<dyn Provider> = Arc::new(MidStreamErrorProvider::new());
@@ -615,6 +616,7 @@ fn provider_mid_stream_error_handled_gracefully() {
             agent_session
                 .run_text("tell me something".to_string(), |_| {})
                 .await
+            }
         });
 
     assert!(result.is_err(), "Expected error from mid-stream failure");
@@ -637,7 +639,7 @@ fn provider_empty_response_does_not_crash() {
     let harness = TestHarness::new(test_name);
 
     let cwd = harness.temp_dir().to_path_buf();
-    let result = run_async({
+    let result = common::run_async({
         let cwd = cwd.clone();
         async move {
             let provider: Arc<dyn Provider> = Arc::new(EmptyResponseProvider);
@@ -646,6 +648,7 @@ fn provider_empty_response_does_not_crash() {
             )));
             let mut agent_session = make_agent_session(&cwd, provider, session, 4);
             agent_session.run_text("hello".to_string(), |_| {}).await
+            }
         });
 
     // Empty response should still succeed (just no text content)
@@ -667,7 +670,7 @@ fn provider_max_tokens_stop_reason_surfaced() {
     let harness = TestHarness::new(test_name);
 
     let cwd = harness.temp_dir().to_path_buf();
-    let message = run_async({
+    let message = common::run_async({
         let cwd = cwd.clone();
         async move {
             let provider: Arc<dyn Provider> = Arc::new(MaxTokensProvider);
@@ -679,6 +682,7 @@ fn provider_max_tokens_stop_reason_surfaced() {
                 .run_text("write a long essay".to_string(), |_| {})
                 .await
                 .expect("max tokens should not error")
+            }
         });
 
     assert_eq!(
@@ -709,7 +713,7 @@ fn agent_loop_max_tool_iterations_enforced() {
     let capture = Arc::new(Mutex::new(EventCapture::default()));
     let capture_ref = Arc::clone(&capture);
 
-    let result = run_async({
+    let result = common::run_async({
         let cwd = cwd.clone();
         async move {
             let provider: Arc<dyn Provider> = Arc::new(InfiniteToolProvider::new());
@@ -732,6 +736,7 @@ fn agent_loop_max_tool_iterations_enforced() {
                     }));
                 })
                 .await
+            }
         });
 
     // The agent should eventually terminate (either with error or a forced stop)
@@ -766,7 +771,7 @@ fn agent_loop_mixed_tool_success_and_error() {
     let capture = Arc::new(Mutex::new(EventCapture::default()));
     let capture_ref = Arc::clone(&capture);
 
-    let message = run_async({
+    let message = common::run_async({
         let cwd = cwd.clone();
         async move {
             let provider: Arc<dyn Provider> = Arc::new(MixedToolErrorProvider::new());
@@ -785,6 +790,7 @@ fn agent_loop_mixed_tool_success_and_error() {
                 })
                 .await
                 .expect("mixed tools should complete")
+            }
         });
 
     let cap = capture.lock().expect("lock capture");
@@ -814,7 +820,7 @@ fn agent_event_lifecycle_ordering() {
     let events = Arc::new(Mutex::new(Vec::<String>::new()));
     let events_ref = Arc::clone(&events);
 
-    run_async({
+    common::run_async({
         let cwd = cwd.clone();
         async move {
             let provider: Arc<dyn Provider> = Arc::new(EmptyResponseProvider);
@@ -829,6 +835,7 @@ fn agent_event_lifecycle_ordering() {
                 })
                 .await
                 .expect("should complete")
+            }
         });
 
     let event_list = events.lock().expect("lock events");
@@ -892,6 +899,7 @@ fn session_corrupted_jsonl_skips_bad_entries() {
         "message": {
             "role": "user",
             "content": "first message"
+            }
         });
     let corrupted_line = "this is not valid json {{{";
     let valid_entry_2 = json!({
@@ -902,6 +910,7 @@ fn session_corrupted_jsonl_skips_bad_entries() {
         "message": {
             "role": "user",
             "content": "second message"
+            }
         });
 
     let content = format!(
@@ -913,9 +922,10 @@ fn session_corrupted_jsonl_skips_bad_entries() {
     );
     std::fs::write(&session_path, content).expect("write corrupted session");
 
-    let result = run_async({
+    let result = common::run_async({
         let path = session_path.display().to_string();
-        async move { Session::open_with_diagnostics(&path).await });
+        async move { Session::open_with_diagnostics(&path).await }
+    });
 
     let (session, diagnostics) = result.expect("session should open despite corruption");
     assert_eq!(
@@ -973,9 +983,10 @@ fn session_header_only_opens_as_empty() {
     )
     .expect("write header-only session");
 
-    let result = run_async({
+    let result = common::run_async({
         let path = session_path.display().to_string();
-        async move { Session::open_with_diagnostics(&path).await });
+        async move { Session::open_with_diagnostics(&path).await }
+    });
 
     let (session, diagnostics) = result.expect("header-only session should open");
     assert!(diagnostics.skipped_entries.is_empty());
@@ -993,7 +1004,7 @@ fn session_nonexistent_file_returns_error() {
     let test_name = "e2e_hr_session_nonexistent";
     let harness = TestHarness::new(test_name);
 
-    let result = run_async(async {
+    let result = common::run_async(async {
         Session::open_with_diagnostics("/tmp/nonexistent_session_a7b3c9d2.jsonl").await
     });
 
@@ -1023,9 +1034,10 @@ fn session_empty_file_returns_error() {
     }
     std::fs::write(&session_path, "").expect("write empty session");
 
-    let result = run_async({
+    let result = common::run_async({
         let path = session_path.display().to_string();
-        async move { Session::open_with_diagnostics(&path).await });
+        async move { Session::open_with_diagnostics(&path).await }
+    });
 
     assert!(result.is_err(), "Empty session file should error");
     let err_msg = result.unwrap_err().to_string();
@@ -1067,6 +1079,7 @@ fn session_orphaned_parent_links_reported() {
         "message": {
             "role": "user",
             "content": "orphaned message"
+            }
         });
 
     let content = format!(
@@ -1076,9 +1089,10 @@ fn session_orphaned_parent_links_reported() {
     );
     std::fs::write(&session_path, content).expect("write orphaned session");
 
-    let result = run_async({
+    let result = common::run_async({
         let path = session_path.display().to_string();
-        async move { Session::open_with_diagnostics(&path).await });
+        async move { Session::open_with_diagnostics(&path).await }
+    });
 
     let (_, diagnostics) = result.expect("session should open despite orphans");
     assert!(
@@ -1113,9 +1127,10 @@ fn session_invalid_header_returns_descriptive_error() {
     }
     std::fs::write(&session_path, "not a json header\n").expect("write bad header session");
 
-    let result = run_async({
+    let result = common::run_async({
         let path = session_path.display().to_string();
-        async move { Session::open_with_diagnostics(&path).await });
+        async move { Session::open_with_diagnostics(&path).await }
+    });
 
     assert!(result.is_err(), "Invalid header should error");
     let err_msg = result.unwrap_err().to_string();
@@ -1141,7 +1156,7 @@ fn session_persist_reload_messages_survive() {
     let cwd = harness.temp_dir().to_path_buf();
 
     // Step 1: Create session, run agent, persist
-    let session_path = run_async({
+    let session_path = common::run_async({
         let cwd = cwd.clone();
         async move {
             let provider: Arc<dyn Provider> = Arc::new(EmptyResponseProvider);
@@ -1159,19 +1174,21 @@ fn session_persist_reload_messages_survive() {
                 .expect("persist session");
 
             
-            let guard = session.lock().await.expect("lock session");
+            let guard = session.lock().await;
             guard.path.clone().expect("session has path")
+            }
         });
 
     assert!(session_path.exists(), "Session file should exist");
 
     // Step 2: Reload and verify
-    let (reloaded, diagnostics) = run_async({
+    let (reloaded, diagnostics) = common::run_async({
         let path_str = session_path.display().to_string();
         async move {
             Session::open_with_diagnostics(&path_str)
                 .await
                 .expect("reload session")
+            }
         });
 
     assert!(
@@ -1491,7 +1508,7 @@ fn agent_tool_invalid_arguments_handled() {
     let harness = TestHarness::new(test_name);
 
     let cwd = harness.temp_dir().to_path_buf();
-    let message = run_async({
+    let message = common::run_async({
         let cwd = cwd.clone();
         async move {
             let provider: Arc<dyn Provider> = Arc::new(InvalidToolArgsProvider::new());
@@ -1503,6 +1520,7 @@ fn agent_tool_invalid_arguments_handled() {
                 .run_text("read with bad args".to_string(), |_| {})
                 .await
                 .expect("should complete despite bad args")
+            }
         });
 
     assert_eq!(message.stop_reason, StopReason::Stop);
@@ -1592,7 +1610,7 @@ fn agent_tool_read_nonexistent_file_surfaces_error() {
         .display()
         .to_string();
 
-    let message = run_async({
+    let message = common::run_async({
         let cwd = cwd.clone();
         let missing_path = missing_path.clone();
         async move {
@@ -1615,6 +1633,7 @@ fn agent_tool_read_nonexistent_file_surfaces_error() {
                 })
                 .await
                 .expect("should complete")
+            }
         });
 
     let cap = capture.lock().expect("lock capture");
@@ -1659,6 +1678,7 @@ fn session_unicode_messages_round_trip() {
         "message": {
             "role": "user",
             "content": unicode_text
+            }
         });
 
     let content = format!(
@@ -1668,9 +1688,10 @@ fn session_unicode_messages_round_trip() {
     );
     std::fs::write(&session_path, content).expect("write unicode session");
 
-    let result = run_async({
+    let result = common::run_async({
         let path = session_path.display().to_string();
-        async move { Session::open_with_diagnostics(&path).await });
+        async move { Session::open_with_diagnostics(&path).await }
+    });
 
     let (session, diagnostics) = result.expect("unicode session should open");
     assert!(diagnostics.skipped_entries.is_empty());

@@ -842,7 +842,7 @@ fn abort_mid_stream_preserves_partial_content() {
     let test_name = "reliability_abort_mid_stream";
     let harness = TestHarness::new(test_name);
 
-    run_async(async move {
+    common::run_async(async move {
         let provider: Arc<dyn Provider> = Arc::new(SlowStreamProvider::new(3, "hello "));
         let cwd = harness.temp_dir().to_path_buf();
         let agent = make_agent(Arc::clone(&provider), &cwd, 4);
@@ -917,7 +917,7 @@ fn abort_mid_stream_preserves_partial_content() {
         // Verify message history is consistent
         let messages = {
             
-            let guard = session.lock().await.expect("lock session");
+            let guard = session.lock().await;
             guard.to_messages_for_current_path()
         };
 
@@ -956,7 +956,7 @@ fn abort_during_tool_execution_preserves_completed_tools() {
     // Create a file that the read tool can access
     harness.create_file("testfile.txt", "test content here");
 
-    run_async(async move {
+    common::run_async(async move {
         let tool_calls = vec![
             ToolCall {
                 id: "read-1".to_string(),
@@ -1086,7 +1086,7 @@ fn stream_truncation_preserves_partial_and_reports_error() {
     let test_name = "reliability_stream_truncation";
     let harness = TestHarness::new(test_name);
 
-    run_async(async move {
+    common::run_async(async move {
         let provider: Arc<dyn Provider> = Arc::new(TruncatingProvider {
             chunks: vec![
                 "This is ".to_string(),
@@ -1161,7 +1161,7 @@ fn provider_error_mid_stream_returns_clean_error() {
     let test_name = "reliability_provider_error_mid_stream";
     let harness = TestHarness::new(test_name);
 
-    run_async(async move {
+    common::run_async(async move {
         let provider: Arc<dyn Provider> = Arc::new(ErrorMidStreamProvider { good_chunks: 2 });
         let mut agent_session = make_agent_session(provider, &harness, 4);
         let (tl, cb) = capture_timeline();
@@ -1200,7 +1200,7 @@ fn max_tool_iterations_exceeded_returns_clean_stop() {
 
     harness.create_file("data.txt", "test data");
 
-    run_async(async move {
+    common::run_async(async move {
         // Provider always returns a tool call → forces iteration limit
         let data_path = harness.temp_path("data.txt").display().to_string();
         let tool_call = ToolCall {
@@ -1301,7 +1301,7 @@ fn pre_abort_skips_provider_entirely() {
     let test_name = "reliability_pre_abort";
     let harness = TestHarness::new(test_name);
 
-    run_async(async move {
+    common::run_async(async move {
         struct TrackingProvider {
             calls: Arc<AtomicUsize>,
         }
@@ -1374,7 +1374,7 @@ fn repeated_interruption_cycles_no_corruption() {
     let test_name = "reliability_repeated_interruption";
     let harness = TestHarness::new(test_name);
 
-    run_async(async move {
+    common::run_async(async move {
         let cwd = harness.temp_dir().to_path_buf();
         let session = make_session(&harness);
 
@@ -1461,7 +1461,7 @@ fn repeated_interruption_cycles_no_corruption() {
         // Verify session state is intact after 3 cycles
         let messages = {
             
-            let guard = session.lock().await.expect("lock session");
+            let guard = session.lock().await;
             guard.to_messages_for_current_path()
         };
 
@@ -1486,7 +1486,7 @@ fn session_resume_after_interruption() {
     let test_name = "reliability_session_resume";
     let harness = TestHarness::new(test_name);
 
-    run_async(async move {
+    common::run_async(async move {
         let cwd = harness.temp_dir().to_path_buf();
 
         // Phase 1: Normal completion
@@ -1659,7 +1659,7 @@ fn tool_call_followed_by_normal_completion() {
 
     harness.create_file("sample.txt", "sample file content");
 
-    run_async(async move {
+    common::run_async(async move {
         let sample_path = harness.temp_path("sample.txt").display().to_string();
         let tool_calls = vec![ToolCall {
             id: "read-1".to_string(),
@@ -1721,7 +1721,7 @@ fn transient_timeout_retry_backoff_is_recoverable() {
     let test_name = "reliability_fault_timeout_retry";
     let harness = TestHarness::new(test_name);
 
-    run_async(async move {
+    common::run_async(async move {
         let provider = Arc::new(FlakyTimeoutThenSuccessProvider::new(
             2,
             "Recovered after transient timeout retry.",
@@ -1870,7 +1870,7 @@ fn partial_write_tool_failure_recovers_without_state_corruption() {
     let baseline_content = "stable baseline\n";
     harness.create_file("target.txt", baseline_content);
 
-    run_async(async move {
+    common::run_async(async move {
         let target_path = harness.temp_path("target.txt").display().to_string();
         let first_turn = make_tool_call_message(
             vec![
@@ -2052,7 +2052,7 @@ fn stream_contract_violation_after_retries_is_fatal() {
     let test_name = "reliability_fault_stream_contract_fatal";
     let harness = TestHarness::new(test_name);
 
-    run_async(async move {
+    common::run_async(async move {
         let provider = Arc::new(StreamContractViolationProvider::new());
         let provider_dyn: Arc<dyn Provider> = provider.clone();
         let mut agent_session = make_agent_session(provider_dyn, &harness, 4);
@@ -2193,7 +2193,7 @@ fn empty_stream_returns_error() {
     let test_name = "reliability_empty_stream";
     let harness = TestHarness::new(test_name);
 
-    run_async(async move {
+    common::run_async(async move {
         struct EmptyStreamProvider;
 
         impl std::fmt::Debug for EmptyStreamProvider {

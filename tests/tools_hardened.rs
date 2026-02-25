@@ -755,13 +755,12 @@ mod bash_hardened {
 mod grep_hardened {
     use super::*;
 
-    #[test]
-    fn grep_regex_metacharacters() {
+    #[tokio::test]
+    async fn grep_regex_metacharacters() {
         if !rg_available() {
             eprintln!("SKIP: rg not available");
             return;
         }
-        {
             let h = TestHarness::new("grep_regex_metacharacters");
             h.create_file(
                 "code.rs",
@@ -780,13 +779,13 @@ mod grep_hardened {
             );
     }
 
-    #[test]
-    fn grep_unicode_pattern() {
+    #[tokio::test]
+    async fn grep_unicode_pattern() {
         if !rg_available() {
             eprintln!("SKIP: rg not available");
             return;
         }
-        {
+
             let h = TestHarness::new("grep_unicode_pattern");
             h.create_file(
                 "text.txt",
@@ -809,13 +808,13 @@ mod grep_hardened {
             );
     }
 
-    #[test]
-    fn grep_with_path_parameter() {
+    #[tokio::test]
+    async fn grep_with_path_parameter() {
         if !rg_available() {
             eprintln!("SKIP: rg not available");
             return;
         }
-        {
+
             let h = TestHarness::new("grep_with_path_parameter");
             h.create_file("src/main.rs", b"fn main() { target_match }\n");
             h.create_file("tests/test.rs", b"fn test() { target_match }\n");
@@ -832,13 +831,13 @@ mod grep_hardened {
             // Should NOT include tests/ match when path is scoped to src/
     }
 
-    #[test]
-    fn grep_empty_file() {
+    #[tokio::test]
+    async fn grep_empty_file() {
         if !rg_available() {
             eprintln!("SKIP: rg not available");
             return;
         }
-        {
+
             let h = TestHarness::new("grep_empty_file");
             h.create_file("empty.txt", b"");
 
@@ -852,13 +851,13 @@ mod grep_hardened {
             );
     }
 
-    #[test]
-    fn grep_context_lines_correct() {
+    #[tokio::test]
+    async fn grep_context_lines_correct() {
         if !rg_available() {
             eprintln!("SKIP: rg not available");
             return;
         }
-        {
+
             use std::fmt::Write as _;
             let h = TestHarness::new("grep_context_lines_correct");
             let mut content = String::new();
@@ -880,13 +879,13 @@ mod grep_hardened {
             assert!(text.contains("line12"), "should contain context after");
     }
 
-    #[test]
-    fn grep_multiple_files_results() {
+    #[tokio::test]
+    async fn grep_multiple_files_results() {
         if !rg_available() {
             eprintln!("SKIP: rg not available");
             return;
         }
-        {
+
             let h = TestHarness::new("grep_multiple_files_results");
             h.create_file("a.txt", b"needle in a");
             h.create_file("b.txt", b"needle in b");
@@ -908,13 +907,13 @@ mod grep_hardened {
 mod find_hardened {
     use super::*;
 
-    #[test]
-    fn find_nested_glob() {
+    #[tokio::test]
+    async fn find_nested_glob() {
         if !fd_available() {
             eprintln!("SKIP: fd not available");
             return;
         }
-        {
+
             let h = TestHarness::new("find_nested_glob");
             h.create_file("src/main.rs", b"");
             h.create_file("src/lib.rs", b"");
@@ -932,13 +931,13 @@ mod find_hardened {
             assert!(!text.contains("readme.md"), "should not find .md files");
     }
 
-    #[test]
-    fn find_with_path_scoping() {
+    #[tokio::test]
+    async fn find_with_path_scoping() {
         if !fd_available() {
             eprintln!("SKIP: fd not available");
             return;
         }
-        {
+
             let h = TestHarness::new("find_with_path_scoping");
             h.create_file("src/main.rs", b"");
             h.create_file("tests/test.rs", b"");
@@ -954,13 +953,13 @@ mod find_hardened {
             assert!(text.contains("main.rs"), "should find main.rs in src/");
     }
 
-    #[test]
-    fn find_empty_directory_tree() {
+    #[tokio::test]
+    async fn find_empty_directory_tree() {
         if !fd_available() {
             eprintln!("SKIP: fd not available");
             return;
         }
-        {
+
             let h = TestHarness::new("find_empty_directory_tree");
             h.create_dir("empty_tree/sub1/sub2");
 
@@ -974,13 +973,13 @@ mod find_hardened {
             );
     }
 
-    #[test]
-    fn find_unicode_filename() {
+    #[tokio::test]
+    async fn find_unicode_filename() {
         if !fd_available() {
             eprintln!("SKIP: fd not available");
             return;
         }
-        {
+
             let h = TestHarness::new("find_unicode_filename");
             h.create_file("café.txt", b"");
             h.create_file("normal.txt", b"");
@@ -994,13 +993,13 @@ mod find_hardened {
             assert!(text.contains("normal.txt"), "should find normal filename");
     }
 
-    #[test]
-    fn find_limit_respects_cap() {
+    #[tokio::test]
+    async fn find_limit_respects_cap() {
         if !fd_available() {
             eprintln!("SKIP: fd not available");
             return;
         }
-        {
+
             let h = TestHarness::new("find_limit_respects_cap");
             for i in 0..20 {
                 h.create_file(format!("file_{i:02}.txt"), b"");
@@ -1173,13 +1172,13 @@ mod ls_hardened {
 mod cross_tool_hardened {
     use super::*;
 
-    #[test]
-    fn write_then_grep_finds_content() {
+    #[tokio::test]
+    async fn write_then_grep_finds_content() {
         if !rg_available() {
             eprintln!("SKIP: rg not available");
             return;
         }
-        {
+
             let h = TestHarness::new("write_then_grep_finds_content");
             let path = h.temp_path("searchable.txt");
 
@@ -1206,13 +1205,13 @@ mod cross_tool_hardened {
             );
     }
 
-    #[test]
-    fn write_then_find_discovers_file() {
+    #[tokio::test]
+    async fn write_then_find_discovers_file() {
         if !fd_available() {
             eprintln!("SKIP: fd not available");
             return;
         }
-        {
+
             let h = TestHarness::new("write_then_find_discovers_file");
             let path = h.temp_path("discoverable.rs");
 

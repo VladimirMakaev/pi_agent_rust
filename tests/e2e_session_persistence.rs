@@ -130,7 +130,8 @@ fn run_async_test<F>(future: F)
 where
     F: std::future::Future<Output = ()>,
 {
-    let runtime = RuntimeBuilder::current_thread()
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
         .build()
         .expect("runtime build");
     runtime.block_on(future);
@@ -210,6 +211,7 @@ fn run_cli(
     harness.log().info_ctx("action", "CLI env", |ctx| {
         for (key, value) in env {
             ctx.push((key.clone(), value.clone()));
+            }
         });
 
     let mut command = Command::new(cli_binary_path());
@@ -320,6 +322,7 @@ fn write_minimal_session(path: &Path, cwd: &Path, session_id: &str, message: &st
         "message": {
             "role": "user",
             "content": message
+            }
         });
     std::fs::write(path, format!("{header}\n{user_entry}\n")).expect("write minimal session");
 }
@@ -379,13 +382,13 @@ fn write_jsonl_artifacts(harness: &TestHarness, test_name: &str) {
 
 async fn current_session_path(session: &Arc<tokio::sync::Mutex<Session>>) -> PathBuf {
     
-    let guard = session.lock().await.expect("lock session");
+    let guard = session.lock().await;
     guard.path.clone().expect("session path")
 }
 
 async fn current_messages(session: &Arc<tokio::sync::Mutex<Session>>) -> Vec<Message> {
     
-    let guard = session.lock().await.expect("lock session");
+    let guard = session.lock().await;
     guard.to_messages_for_current_path()
 }
 
@@ -560,7 +563,7 @@ fn session_branching() {
 
         let branched_from = {
             
-            let mut guard = session.lock().await.expect("lock session");
+            let mut guard = session.lock().await;
             let user_ids = guard
                 .entries
                 .iter()

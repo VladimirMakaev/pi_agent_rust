@@ -88,7 +88,8 @@ fn load_inline_extension(
 fn shutdown(manager: &ExtensionManager) {
     let _ = common::run_async({
         let manager = manager.clone();
-        async move { manager.shutdown(Duration::from_millis(500)).await });
+        async move { manager.shutdown(Duration::from_millis(500)).await }
+    });
 }
 
 /// Collect real extensions from conformance artifacts.
@@ -424,7 +425,8 @@ fn multi_thread_dispatch_completes_without_deadlock() {
                                 Some(json!({"systemPrompt": format!("thread-{t}-{i}")})),
                             )
                             .await
-                        });
+                        }
+                    });
                     if result.is_ok() {
                         ok += 1;
                     }
@@ -486,7 +488,8 @@ fn load_10_plus_real_extensions_simultaneously() {
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start runtime")
-        });
+        }
+    });
     manager.set_js_runtime(runtime);
 
     // Load all extensions.
@@ -501,7 +504,8 @@ fn load_10_plus_real_extensions_simultaneously() {
 
     let loaded = common::run_async({
         let manager = manager.clone();
-        async move { manager.load_js_extensions(specs).await });
+        async move { manager.load_js_extensions(specs).await }
+    });
 
     match &loaded {
         Ok(()) => eprintln!(
@@ -534,7 +538,8 @@ fn load_10_plus_real_extensions_simultaneously() {
                     5_000,
                 )
                 .await
-        });
+        }
+    });
     eprintln!("[real_concurrent] event dispatch result: {event_result:?}");
 
     shutdown(&manager);
@@ -565,7 +570,8 @@ fn interleaved_events_to_real_extensions_do_not_hang() {
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start runtime")
-        });
+        }
+    });
     manager.set_js_runtime(runtime);
 
     let specs: Vec<_> = real_exts
@@ -575,7 +581,8 @@ fn interleaved_events_to_real_extensions_do_not_hang() {
 
     let _ = common::run_async({
         let manager = manager.clone();
-        async move { manager.load_js_extensions(specs).await });
+        async move { manager.load_js_extensions(specs).await }
+    });
 
     // Interleave different event types rapidly.
     let events = [
@@ -598,7 +605,8 @@ fn interleaved_events_to_real_extensions_do_not_hang() {
                     manager
                         .dispatch_event(event, Some(json!({"round": round})))
                         .await
-                });
+                }
+            });
             total += 1;
             if result.is_err() {
                 errors += 1;
@@ -656,7 +664,8 @@ fn event_dispatch_ordering_is_deterministic() {
                             5_000,
                         )
                         .await
-                });
+                }
+            });
             results.push(format!("{result:?}"));
         }
 
@@ -732,7 +741,8 @@ export default function activate(pi) {
                     500, // 500ms timeout vs 5s handler
                 )
                 .await
-        });
+        }
+    });
     let timeout_elapsed = start.elapsed();
 
     eprintln!("[timeout_load] Slow dispatch completed in {timeout_elapsed:?}");

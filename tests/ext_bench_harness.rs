@@ -514,7 +514,8 @@ fn bench_cold_load(entry: &ManifestEntry, n: usize, env: &EnvFingerprint) -> Sce
             let manager = manager.clone();
             let tools = Arc::clone(&tools);
             let js_config = js_config.clone();
-            async move { JsExtensionRuntimeHandle::start(js_config, tools, manager).await });
+            async move { JsExtensionRuntimeHandle::start(js_config, tools, manager).await }
+    });
         let runtime = match runtime_result {
             Ok(rt) => rt,
             Err(e) => {
@@ -527,7 +528,8 @@ fn bench_cold_load(entry: &ManifestEntry, n: usize, env: &EnvFingerprint) -> Sce
         let load_result = common::run_async({
             let manager = manager.clone();
             let spec = spec.clone();
-            async move { manager.load_js_extensions(vec![spec]).await });
+            async move { manager.load_js_extensions(vec![spec]).await }
+    });
 
         match load_result {
             Ok(()) => {
@@ -542,7 +544,8 @@ fn bench_cold_load(entry: &ManifestEntry, n: usize, env: &EnvFingerprint) -> Sce
         common::run_async({
             async move {
                 let _ = manager.shutdown(Duration::from_millis(250)).await;
-            });
+            }
+        });
     }
 
     let success = samples_us.len() == n;
@@ -596,7 +599,8 @@ fn bench_warm_load(entry: &ManifestEntry, n: usize, env: &EnvFingerprint) -> Sce
     let runtime_result = common::run_async({
         let manager = manager.clone();
         let tools = Arc::clone(&tools);
-        async move { JsExtensionRuntimeHandle::start(js_config, tools, manager).await });
+        async move { JsExtensionRuntimeHandle::start(js_config, tools, manager).await }
+    });
     let runtime = match runtime_result {
         Ok(rt) => rt,
         Err(e) => {
@@ -620,12 +624,14 @@ fn bench_warm_load(entry: &ManifestEntry, n: usize, env: &EnvFingerprint) -> Sce
     let warmup_result = common::run_async({
         let manager = manager.clone();
         let spec = spec.clone();
-        async move { manager.load_js_extensions(vec![spec]).await });
+        async move { manager.load_js_extensions(vec![spec]).await }
+    });
     if let Err(e) = warmup_result {
         common::run_async({
             async move {
                 let _ = manager.shutdown(Duration::from_millis(250)).await;
-            });
+            }
+        });
         return ScenarioResult {
             schema: "pi.ext.rust_bench.v1".to_string(),
             runtime: "pi_agent_rust".to_string(),
@@ -652,7 +658,8 @@ fn bench_warm_load(entry: &ManifestEntry, n: usize, env: &EnvFingerprint) -> Sce
         let load_result = common::run_async({
             let manager = manager.clone();
             let spec = spec.clone();
-            async move { manager.load_js_extensions(vec![spec]).await });
+            async move { manager.load_js_extensions(vec![spec]).await }
+    });
         if load_result.is_ok() {
             let elapsed_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
             samples_us.push(elapsed_us);
@@ -662,7 +669,8 @@ fn bench_warm_load(entry: &ManifestEntry, n: usize, env: &EnvFingerprint) -> Sce
     common::run_async({
         async move {
             let _ = manager.shutdown(Duration::from_millis(250)).await;
-        });
+        }
+    });
 
     let success = samples_us.len() == n;
     ScenarioResult {
@@ -698,7 +706,8 @@ fn bench_event_dispatch(
     let runtime_result = common::run_async({
         let manager = manager.clone();
         let tools = Arc::clone(&tools);
-        async move { JsExtensionRuntimeHandle::start(js_config, tools, manager).await });
+        async move { JsExtensionRuntimeHandle::start(js_config, tools, manager).await }
+    });
     let runtime = match runtime_result {
         Ok(rt) => rt,
         Err(e) => {
@@ -730,12 +739,14 @@ fn bench_event_dispatch(
     let loaded_count = specs.len();
     let load_result = common::run_async({
         let manager = manager.clone();
-        async move { manager.load_js_extensions(specs).await });
+        async move { manager.load_js_extensions(specs).await }
+    });
     if let Err(e) = load_result {
         common::run_async({
             async move {
                 let _ = manager.shutdown(Duration::from_millis(500)).await;
-            });
+            }
+        });
         return ScenarioResult {
             schema: "pi.ext.rust_bench.v1".to_string(),
             runtime: "pi_agent_rust".to_string(),
@@ -766,7 +777,8 @@ fn bench_event_dispatch(
                 manager
                     .dispatch_event(ExtensionEventName::AgentStart, payload)
                     .await
-            });
+            }
+        });
         let elapsed_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
         samples_us.push(elapsed_us);
     }
@@ -774,7 +786,8 @@ fn bench_event_dispatch(
     common::run_async({
         async move {
             let _ = manager.shutdown(Duration::from_millis(500)).await;
-        });
+        }
+    });
 
     ScenarioResult {
         schema: "pi.ext.rust_bench.v1".to_string(),

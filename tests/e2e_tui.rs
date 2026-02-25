@@ -414,7 +414,7 @@ fn write_vcr_scroll_finalize_cassette(dir: &Path, system_prompt: &str) -> PathBu
 fn read_output_for_sample(cwd: &Path, path: &str) -> String {
     let tool = ReadTool::new(cwd);
     let path = path.to_string();
-    let output = run_async(async move {
+    let output = common::run_async(async move {
         tool.execute("tool-call", json!({ "path": path }), None)
             .await
             .expect("read tool output")
@@ -838,7 +838,8 @@ fn write_minimal_session_jsonl(path: &Path, cwd: &Path, session_id: &str, marker
         "message": {
             "role": "user",
             "content": marker
-        });
+        }
+    });
 
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).expect("create restore session dir");

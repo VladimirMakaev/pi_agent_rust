@@ -3,7 +3,7 @@
 use super::{
     ScenarioExpectation, StreamExpectations, assert_error_translation, assert_stream_expectations,
     assert_tool_schema_fidelity, cassette_root, collect_events, log_summary,
-    record_stream_contract_artifact, user_text, vcr_mode, vcr_strict,
+    record_stream_contract_artifact, run_async, user_text, vcr_mode, vcr_strict,
 };
 use crate::common::TestHarness;
 use pi::http::client::Client;

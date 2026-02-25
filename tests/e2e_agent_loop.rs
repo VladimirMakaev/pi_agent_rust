@@ -473,7 +473,7 @@ fn run_scenario(
 ) -> RunOutcome {
     let cwd = harness.temp_dir().to_path_buf();
     let user_prompt = user_prompt.to_string();
-    run_async(async move {
+    common::run_async(async move {
         let provider: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(scenario));
         let tools = ToolRegistry::new(&tool_names(), &cwd, None);
         let config = AgentConfig {
@@ -538,7 +538,7 @@ fn run_scenario(
 
         let messages = {
             
-            let guard = session.lock().await.expect("lock session");
+            let guard = session.lock().await;
             guard.to_messages_for_current_path()
         };
         let capture = Arc::try_unwrap(capture)

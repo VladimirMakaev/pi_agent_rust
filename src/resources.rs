@@ -1630,7 +1630,7 @@ mod tests {
     use std::future::Future;
 
     fn run_async<T>(future: impl Future<Output = T>) -> T {
-        let runtime = RuntimeBuilder::current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all()
             .build()
             .expect("build runtime");
         runtime.block_on(future)

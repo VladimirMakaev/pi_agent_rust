@@ -27,12 +27,13 @@ fn test_runtime_handle() -> tokio::runtime::Handle {
     RT.get_or_init(|| {
         // These tests run in parallel by default. Use a multi-thread runtime so
         // async tasks aren't starved under suite load.
-        tokio::runtime::Builder::multi_thread()
-            .blocking_threads(1, 8)
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
             .build()
             .expect("build tokio runtime")
     })
     .handle()
+    .clone()
 }
 
 struct DummyProvider;
@@ -130,7 +131,6 @@ fn build_app_with_config(harness: &TestHarness, config: Config) -> PiApp {
         available_models,
         Vec::new(),
         event_tx,
-        test_runtime_handle(),
         true,
         None,
         Some(KeyBindings::new()),
@@ -205,7 +205,8 @@ fn snapshot(harness: &TestHarness, name: &str, app: &PiApp, context: &[(String, 
             ctx.push(("name".to_string(), name.to_string()));
             for (key, value) in context {
                 ctx.push((key.clone(), value.clone()));
-            });
+            }
+        });
     let view = normalize_snapshot(&BubbleteaModel::view(app));
     let path = harness.temp_path(format!("snapshot-{name}.txt"));
     fs::write(&path, &view).expect("write snapshot artifact");
@@ -437,6 +438,8 @@ fn tui_snapshot_tool_output_message() {
             name: "read".to_string(),
             tool_id: "tool-2".to_string(),
             is_error: false,
+            content: Vec::new(),
+            details: None,
         },
     );
     send_pi(

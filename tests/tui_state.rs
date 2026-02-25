@@ -47,11 +47,12 @@ fn make_executable(path: &std::path::Path) {
 fn test_runtime_handle() -> tokio::runtime::Handle {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RT.get_or_init(|| {
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
             .build()
             .expect("build tokio runtime")
     })
     .handle()
+    .clone()
 }
 
 /// JSONL logging helper for test events.
@@ -180,7 +181,6 @@ fn build_app_with_session_and_config(
         available_models,
         pending_inputs,
         event_tx,
-        test_runtime_handle(),
         false,
         None,
         Some(KeyBindings::new()),
@@ -235,6 +235,7 @@ fn build_app_with_session_and_events_and_extension(
             JsExtensionRuntimeHandle::start(js_config, tools, manager)
                 .await
                 .expect("start js runtime")
+        }
         });
     manager.set_js_runtime(runtime);
     let spec = JsExtensionLoadSpec::from_entry_path(&ext_entry_path).expect("load spec");
@@ -245,7 +246,8 @@ fn build_app_with_session_and_events_and_extension(
                 .load_js_extensions(vec![spec])
                 .await
                 .expect("load extension");
-        });
+        }
+    });
 
     let mut app = PiApp::new(
         agent,
@@ -259,7 +261,6 @@ fn build_app_with_session_and_events_and_extension(
         available_models,
         pending_inputs,
         event_tx,
-        test_runtime_handle(),
         false,
         Some(manager),
         Some(KeyBindings::new()),
@@ -310,7 +311,6 @@ fn build_app_with_models(
         available_models,
         Vec::new(),
         event_tx,
-        test_runtime_handle(),
         false,
         None,
         Some(keybindings),
@@ -382,7 +382,6 @@ fn build_app_with_session_and_events_and_config(
         available_models,
         pending_inputs,
         event_tx,
-        test_runtime_handle(),
         false,
         None,
         Some(KeyBindings::new()),
@@ -616,7 +615,7 @@ fn create_session_on_disk_with_id(
 
 #[allow(dead_code)]
 fn wait_for_pi_msgs(
-    event_rx: &mpsc::Receiver<PiMsg>,
+    event_rx: &mut mpsc::Receiver<PiMsg>,
     timeout: Duration,
     predicate: impl Fn(&[PiMsg]) -> bool,
 ) -> Vec<PiMsg> {
@@ -630,7 +629,7 @@ fn wait_for_pi_msgs(
                     break;
                 }
             }
-            Err(mpsc::RecvError::Empty) => {
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
                 if start.elapsed() >= timeout {
                     break;
                 }
@@ -809,6 +808,7 @@ fn apply_msg(harness: &TestHarness, app: &mut PiApp, label: &str, msg: Message) 
         if !delta.before_excerpt.is_empty() || !delta.after_excerpt.is_empty() {
             ctx.push(("before_excerpt".to_string(), delta.before_excerpt.clone()));
             ctx.push(("after_excerpt".to_string(), delta.after_excerpt.clone()));
+            }
         });
 
     StepOutcome {
@@ -1639,6 +1639,8 @@ fn tui_state_tool_end_appends_tool_output_message() {
             name: "read".to_string(),
             tool_id: "tool-1".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
     assert_after_contains(&harness, &step, "Tool read output:");
@@ -1683,6 +1685,8 @@ fn tui_state_tool_update_with_diff_details_appends_diff_block() {
             name: "edit".to_string(),
             tool_id: "tool-1".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
 
@@ -1737,6 +1741,8 @@ fn tui_state_tool_update_with_large_diff_shows_truncation_indicator() {
             name: "edit".to_string(),
             tool_id: "tool-1".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
     assert_after_contains(&harness, &step, "collapsed");
@@ -1800,6 +1806,8 @@ fn tui_state_tool_update_with_diff_without_replace_message_uses_generic_header()
             name: "edit".to_string(),
             tool_id: "tool-1".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
 
@@ -1847,6 +1855,8 @@ fn tui_state_tool_update_with_details_and_no_content_renders_pretty_json() {
             name: "read".to_string(),
             tool_id: "tool-1".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
 
@@ -1890,6 +1900,8 @@ fn tui_state_tool_output_over_threshold_auto_collapses_with_preview() {
             name: "read".to_string(),
             tool_id: "tool-1".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
 
@@ -1935,6 +1947,8 @@ fn tui_state_tool_output_at_threshold_stays_expanded() {
             name: "read".to_string(),
             tool_id: "tool-1".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
 
@@ -1976,6 +1990,8 @@ fn tui_state_expand_tools_reexpands_auto_collapsed_blocks() {
             name: "read".to_string(),
             tool_id: "tool-1".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
     assert_after_contains(&harness, &step, "collapsed");
@@ -2040,6 +2056,8 @@ fn tui_state_expand_tools_toggles_tool_output_visibility() {
             name: "read".to_string(),
             tool_id: "tool-1".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
     assert_after_contains(&harness, &step, "Tool read output:");
@@ -2105,6 +2123,8 @@ fn tui_state_terminal_show_images_false_hides_images_in_tool_output() {
             name: "read".to_string(),
             tool_id: "tool-1".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
 
@@ -2163,6 +2183,8 @@ fn tui_state_terminal_show_images_true_shows_image_placeholders_in_tool_output()
             name: "read".to_string(),
             tool_id: "tool-1".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
 
@@ -2233,6 +2255,8 @@ fn tui_state_terminal_show_images_false_reports_multiple_hidden_images() {
             name: "read".to_string(),
             tool_id: "tool-1".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
 
@@ -2287,6 +2311,8 @@ fn tui_state_terminal_show_images_false_still_renders_tool_output_when_only_imag
             name: "read".to_string(),
             tool_id: "tool-1".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
 
@@ -3291,7 +3317,7 @@ fn tui_state_slash_share_reports_error_when_gh_missing() {
         gh_path: Some(missing.display().to_string()),
         ..Default::default()
     };
-    let (mut app, event_rx) = build_app_with_session_and_events_and_config(
+    let (mut app, mut event_rx) = build_app_with_session_and_events_and_config(
         &harness,
         Vec::new(),
         Session::in_memory(),
@@ -3305,7 +3331,7 @@ fn tui_state_slash_share_reports_error_when_gh_missing() {
 
     // Under load, async command execution plus shell startup for fake `gh`
     // can exceed 1s before AgentError is emitted.
-    let events = wait_for_pi_msgs(&event_rx, Duration::from_secs(3), |msgs| {
+    let events = wait_for_pi_msgs(&mut event_rx, Duration::from_secs(3), |msgs| {
         msgs.iter().any(|msg| matches!(msg, PiMsg::AgentError(_)))
     });
     let error = events
@@ -3331,7 +3357,7 @@ fn tui_state_slash_share_reports_error_when_gh_not_authenticated() {
         gh_path: Some(gh_path.display().to_string()),
         ..Default::default()
     };
-    let (mut app, event_rx) = build_app_with_session_and_events_and_config(
+    let (mut app, mut event_rx) = build_app_with_session_and_events_and_config(
         &harness,
         Vec::new(),
         Session::in_memory(),
@@ -3343,7 +3369,7 @@ fn tui_state_slash_share_reports_error_when_gh_not_authenticated() {
     let step = press_enter(&harness, &mut app);
     assert_after_contains(&harness, &step, "Sharing session...");
 
-    let events = wait_for_pi_msgs(&event_rx, Duration::from_secs(1), |msgs| {
+    let events = wait_for_pi_msgs(&mut event_rx, Duration::from_secs(1), |msgs| {
         msgs.iter().any(|msg| matches!(msg, PiMsg::AgentError(_)))
     });
     let error = events
@@ -3374,7 +3400,7 @@ fn tui_state_slash_share_reports_parse_error_and_cleans_temp_file() {
         gh_path: Some(gh_path.display().to_string()),
         ..Default::default()
     };
-    let (mut app, event_rx) = build_app_with_session_and_events_and_config(
+    let (mut app, mut event_rx) = build_app_with_session_and_events_and_config(
         &harness,
         Vec::new(),
         Session::in_memory(),
@@ -3386,7 +3412,7 @@ fn tui_state_slash_share_reports_parse_error_and_cleans_temp_file() {
     let step = press_enter(&harness, &mut app);
     assert_after_contains(&harness, &step, "Sharing session...");
 
-    let events = wait_for_pi_msgs(&event_rx, Duration::from_secs(1), |msgs| {
+    let events = wait_for_pi_msgs(&mut event_rx, Duration::from_secs(1), |msgs| {
         msgs.iter().any(|msg| matches!(msg, PiMsg::AgentError(_)))
     });
     let error = events
@@ -3433,7 +3459,7 @@ fn tui_state_slash_share_creates_gist_and_reports_urls_and_cleans_temp_file() {
         gh_path: Some(gh_path.display().to_string()),
         ..Default::default()
     };
-    let (mut app, event_rx) = build_app_with_session_and_events_and_config(
+    let (mut app, mut event_rx) = build_app_with_session_and_events_and_config(
         &harness,
         Vec::new(),
         Session::in_memory(),
@@ -3446,7 +3472,7 @@ fn tui_state_slash_share_creates_gist_and_reports_urls_and_cleans_temp_file() {
     assert_after_contains(&harness, &step, "Sharing session...");
 
     // Full-suite parallel load can delay command completion past 1s.
-    let events = wait_for_pi_msgs(&event_rx, Duration::from_secs(3), |msgs| {
+    let events = wait_for_pi_msgs(&mut event_rx, Duration::from_secs(3), |msgs| {
         msgs.iter()
             .any(|msg| matches!(msg, PiMsg::System(_)) || matches!(msg, PiMsg::AgentError(_)))
     });
@@ -3500,7 +3526,7 @@ fn tui_state_slash_share_is_cancellable_and_cleans_temp_file() {
         gh_path: Some(gh_path.display().to_string()),
         ..Default::default()
     };
-    let (mut app, event_rx) = build_app_with_session_and_events_and_config(
+    let (mut app, mut event_rx) = build_app_with_session_and_events_and_config(
         &harness,
         Vec::new(),
         Session::in_memory(),
@@ -3521,7 +3547,7 @@ fn tui_state_slash_share_is_cancellable_and_cleans_temp_file() {
     let step = press_esc(&harness, &mut app);
     assert_after_contains(&harness, &step, "Aborting request...");
 
-    let events = wait_for_pi_msgs(&event_rx, Duration::from_secs(1), |msgs| {
+    let events = wait_for_pi_msgs(&mut event_rx, Duration::from_secs(1), |msgs| {
         msgs.iter()
             .any(|msg| matches!(msg, PiMsg::System(message) if message.contains("Share cancelled")))
     });
@@ -3563,7 +3589,7 @@ fn tui_state_slash_share_public_flag_creates_public_gist() {
         gh_path: Some(gh_path.display().to_string()),
         ..Default::default()
     };
-    let (mut app, event_rx) = build_app_with_session_and_events_and_config(
+    let (mut app, mut event_rx) = build_app_with_session_and_events_and_config(
         &harness,
         Vec::new(),
         Session::in_memory(),
@@ -3581,7 +3607,7 @@ fn tui_state_slash_share_public_flag_creates_public_gist() {
     let step = press_enter(&harness, &mut app);
     assert_after_contains(&harness, &step, "Sharing session...");
 
-    let events = wait_for_pi_msgs(&event_rx, Duration::from_secs(3), |msgs| {
+    let events = wait_for_pi_msgs(&mut event_rx, Duration::from_secs(3), |msgs| {
         msgs.iter()
             .any(|msg| matches!(msg, PiMsg::System(_)) || matches!(msg, PiMsg::AgentError(_)))
     });
@@ -3629,7 +3655,7 @@ fn tui_state_slash_share_includes_gist_description() {
     let mut session = Session::in_memory();
     session.set_name("my-debug-session");
 
-    let (mut app, event_rx) =
+    let (mut app, mut event_rx) =
         build_app_with_session_and_events_and_config(&harness, Vec::new(), session, config);
     log_initial_state(&harness, &app);
 
@@ -3637,7 +3663,7 @@ fn tui_state_slash_share_includes_gist_description() {
     let step = press_enter(&harness, &mut app);
     assert_after_contains(&harness, &step, "Sharing session...");
 
-    let events = wait_for_pi_msgs(&event_rx, Duration::from_secs(3), |msgs| {
+    let events = wait_for_pi_msgs(&mut event_rx, Duration::from_secs(3), |msgs| {
         msgs.iter()
             .any(|msg| matches!(msg, PiMsg::System(_)) || matches!(msg, PiMsg::AgentError(_)))
     });
@@ -3712,7 +3738,7 @@ fn tui_state_slash_resume_selects_latest_session_and_loads_messages() {
 
     let mut session = Session::create_with_dir(Some(base_dir));
     session.header.cwd = cwd.display().to_string();
-    let (mut app, event_rx) = build_app_with_session_and_events(&harness, Vec::new(), session);
+    let (mut app, mut event_rx) = build_app_with_session_and_events(&harness, Vec::new(), session);
     log_initial_state(&harness, &app);
 
     type_text(&harness, &mut app, "/resume");
@@ -3724,7 +3750,7 @@ fn tui_state_slash_resume_selects_latest_session_and_loads_messages() {
     let step = press_enter(&harness, &mut app);
     assert_after_contains(&harness, &step, "Loading session...");
 
-    let events = wait_for_pi_msgs(&event_rx, Duration::from_secs(2), |msgs| {
+    let events = wait_for_pi_msgs(&mut event_rx, Duration::from_secs(2), |msgs| {
         msgs.iter()
             .any(|msg| matches!(msg, PiMsg::ConversationReset { .. }))
     });
@@ -3749,7 +3775,7 @@ fn tui_state_slash_resume_filters_sessions_from_typed_query() {
 
     let mut session = Session::create_with_dir(Some(base_dir));
     session.header.cwd = cwd.display().to_string();
-    let (mut app, event_rx) = build_app_with_session_and_events(&harness, Vec::new(), session);
+    let (mut app, mut event_rx) = build_app_with_session_and_events(&harness, Vec::new(), session);
     log_initial_state(&harness, &app);
 
     type_text(&harness, &mut app, "/resume");
@@ -3767,7 +3793,7 @@ fn tui_state_slash_resume_filters_sessions_from_typed_query() {
     let step = press_enter(&harness, &mut app);
     assert_after_contains(&harness, &step, "Loading session...");
 
-    let events = wait_for_pi_msgs(&event_rx, Duration::from_secs(2), |msgs| {
+    let events = wait_for_pi_msgs(&mut event_rx, Duration::from_secs(2), |msgs| {
         msgs.iter()
             .any(|msg| matches!(msg, PiMsg::ConversationReset { .. }))
     });
@@ -3817,7 +3843,7 @@ export default function init(pi) {
   pi.on("session_before_switch", async () => false);
 }
 "#;
-    let (mut app, event_rx) = build_app_with_session_and_events_and_extension(
+    let (mut app, mut event_rx) = build_app_with_session_and_events_and_extension(
         &harness,
         Vec::new(),
         session,
@@ -3833,7 +3859,7 @@ export default function init(pi) {
     let step = press_enter(&harness, &mut app);
     assert_after_contains(&harness, &step, "Loading session...");
 
-    let events = wait_for_pi_msgs(&event_rx, Duration::from_secs(1), |msgs| {
+    let events = wait_for_pi_msgs(&mut event_rx, Duration::from_secs(1), |msgs| {
         msgs.iter().any(|msg| matches!(msg, PiMsg::System(_)))
     });
     let system = events
@@ -3864,7 +3890,7 @@ export default function init(pi) {
   pi.on("session_before_switch", async () => { throw new Error("boom"); });
 }
 "#;
-    let (mut app, event_rx) = build_app_with_session_and_events_and_extension(
+    let (mut app, mut event_rx) = build_app_with_session_and_events_and_extension(
         &harness,
         Vec::new(),
         session,
@@ -3877,7 +3903,7 @@ export default function init(pi) {
     press_enter(&harness, &mut app);
     press_enter(&harness, &mut app);
 
-    let events = wait_for_pi_msgs(&event_rx, Duration::from_secs(1), |msgs| {
+    let events = wait_for_pi_msgs(&mut event_rx, Duration::from_secs(1), |msgs| {
         msgs.iter()
             .any(|msg| matches!(msg, PiMsg::ConversationReset { .. }))
     });
@@ -4029,7 +4055,7 @@ export default function init(pi) {
   pi.on("session_before_switch", async () => false);
 }
 "#;
-    let (mut app, event_rx) = build_app_with_session_and_events_and_extension(
+    let (mut app, mut event_rx) = build_app_with_session_and_events_and_extension(
         &harness,
         Vec::new(),
         session,
@@ -4052,7 +4078,7 @@ export default function init(pi) {
     type_text(&harness, &mut app, "/new");
     press_enter(&harness, &mut app);
 
-    let events = wait_for_pi_msgs(&event_rx, Duration::from_secs(1), |msgs| {
+    let events = wait_for_pi_msgs(&mut event_rx, Duration::from_secs(1), |msgs| {
         msgs.iter().any(|msg| matches!(msg, PiMsg::System(_)))
     });
     let system = events
@@ -4076,7 +4102,7 @@ export default function init(pi) {
   pi.on("session_before_switch", async () => { throw new Error("boom"); });
 }
 "#;
-    let (mut app, event_rx) = build_app_with_session_and_events_and_extension(
+    let (mut app, mut event_rx) = build_app_with_session_and_events_and_extension(
         &harness,
         Vec::new(),
         session,
@@ -4099,7 +4125,7 @@ export default function init(pi) {
     type_text(&harness, &mut app, "/new");
     press_enter(&harness, &mut app);
 
-    let events = wait_for_pi_msgs(&event_rx, Duration::from_secs(1), |msgs| {
+    let events = wait_for_pi_msgs(&mut event_rx, Duration::from_secs(1), |msgs| {
         msgs.iter()
             .any(|msg| matches!(msg, PiMsg::ConversationReset { .. }))
     });
@@ -4169,7 +4195,7 @@ fn tui_state_slash_fork_creates_session_and_prefills_editor() {
         timestamp: Some(0),
     });
 
-    let (mut app, event_rx) = build_app_with_session_and_events(&harness, Vec::new(), session);
+    let (mut app, mut event_rx) = build_app_with_session_and_events(&harness, Vec::new(), session);
     log_initial_state(&harness, &app);
 
     type_text(&harness, &mut app, "/fork");
@@ -4178,7 +4204,7 @@ fn tui_state_slash_fork_creates_session_and_prefills_editor() {
 
     // /fork first runs a cancellable extension hook (timeout is 5s), so a
     // sub-second wait is flaky and can miss ConversationReset on busy hosts.
-    let events = wait_for_pi_msgs(&event_rx, Duration::from_secs(6), |msgs| {
+    let events = wait_for_pi_msgs(&mut event_rx, Duration::from_secs(6), |msgs| {
         let has_reset = msgs
             .iter()
             .any(|msg| matches!(msg, PiMsg::ConversationReset { .. }));
@@ -4485,6 +4511,8 @@ fn tui_state_tool_progress_reset_on_new_tool_start() {
             name: "bash".to_string(),
             tool_id: "tool-1".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
     let step = apply_pi(
@@ -5319,6 +5347,8 @@ fn tui_grad_diff_pure_addition_renders_only_plus_lines() {
             name: "edit".to_string(),
             tool_id: "tool-1".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
 
@@ -5365,6 +5395,8 @@ fn tui_grad_diff_pure_removal_renders_only_minus_lines() {
             name: "edit".to_string(),
             tool_id: "tool-1".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
 
@@ -5411,6 +5443,8 @@ fn tui_grad_diff_multiline_replacement_preserves_context() {
             name: "edit".to_string(),
             tool_id: "tool-1".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
 
@@ -5456,6 +5490,8 @@ fn tui_grad_diff_tool_error_omits_diff() {
             name: "edit".to_string(),
             tool_id: "tool-1".to_string(),
             is_error: true,
+            content: vec![],
+            details: None,
         },
     );
 
@@ -5501,6 +5537,8 @@ fn tui_grad_diff_no_diff_key_shows_plain_output() {
             name: "bash".to_string(),
             tool_id: "tool-1".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
 
@@ -5626,6 +5664,8 @@ fn tui_grad_collapse_multiple_tools_mixed_sizes() {
             name: "read".to_string(),
             tool_id: "tool-1".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
     apply_pi(
@@ -5668,6 +5708,8 @@ fn tui_grad_collapse_multiple_tools_mixed_sizes() {
             name: "bash".to_string(),
             tool_id: "tool-2".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
 
@@ -5713,7 +5755,9 @@ fn tui_grad_collapse_global_toggle_affects_all_tool_blocks() {
             PiMsg::ToolEnd {
                 name: "read".to_string(),
                 tool_id: format!("tool-{i}"),
-                is_error: false,
+            is_error: false,
+                content: vec![],
+                details: None,
             },
         );
     }
@@ -5775,6 +5819,8 @@ fn tui_grad_collapse_auto_collapsed_shows_preview_line_count() {
             name: "bash".to_string(),
             tool_id: "tool-1".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
 
@@ -5827,6 +5873,8 @@ fn tui_grad_image_default_config_shows_images() {
             name: "read".to_string(),
             tool_id: "tool-1".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
 
@@ -5888,6 +5936,8 @@ fn tui_grad_image_mixed_content_with_show_images_false_preserves_text() {
             name: "bash".to_string(),
             tool_id: "tool-1".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
 
@@ -5934,6 +5984,8 @@ fn tui_grad_integration_multiple_tools_in_sequence() {
             name: "read".to_string(),
             tool_id: "tool-1".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
 
@@ -5970,6 +6022,8 @@ fn tui_grad_integration_multiple_tools_in_sequence() {
             name: "edit".to_string(),
             tool_id: "tool-2".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
 
@@ -6002,6 +6056,8 @@ fn tui_grad_integration_multiple_tools_in_sequence() {
             name: "bash".to_string(),
             tool_id: "tool-3".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
 
@@ -6057,6 +6113,8 @@ fn tui_grad_integration_branching_with_tool_diffs() {
             name: "edit".to_string(),
             tool_id: "tool-1".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
 
@@ -6101,6 +6159,8 @@ fn tui_grad_integration_tool_error_then_success_sequence() {
             name: "edit".to_string(),
             tool_id: "tool-1".to_string(),
             is_error: true,
+            content: vec![],
+            details: None,
         },
     );
 
@@ -6137,6 +6197,8 @@ fn tui_grad_integration_tool_error_then_success_sequence() {
             name: "edit".to_string(),
             tool_id: "tool-2".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
 
@@ -6189,6 +6251,8 @@ fn tui_grad_integration_diff_with_collapse_toggle() {
             name: "edit".to_string(),
             tool_id: "tool-1".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
 
@@ -6741,6 +6805,8 @@ fn tui_state_tool_error_output_collapse_toggle() {
             name: "bash".to_string(),
             tool_id: "tool-err-1".to_string(),
             is_error: true,
+            content: vec![],
+            details: None,
         },
     );
     // Error tool output is shown.
@@ -6792,6 +6858,8 @@ fn tui_state_multiple_tool_blocks_collapse_together() {
             name: "read".to_string(),
             tool_id: "tool-1".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
 
@@ -6826,6 +6894,8 @@ fn tui_state_multiple_tool_blocks_collapse_together() {
             name: "grep".to_string(),
             tool_id: "tool-2".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
 
@@ -6888,6 +6958,8 @@ fn tui_state_thinking_and_tool_toggles_independent() {
             name: "read".to_string(),
             tool_id: "tool-1".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
 
@@ -7148,6 +7220,8 @@ fn tui_perf_memory_pressure_forces_degraded() {
             name: "read".to_string(),
             tool_id: "perf-tool-1".to_string(),
             is_error: false,
+            content: vec![],
+            details: None,
         },
     );
 
@@ -8554,7 +8628,9 @@ fn tui_perf_e2e_degradation_under_load() {
             PiMsg::ToolEnd {
                 name: format!("read-{idx}"),
                 tool_id: format!("e2e-tool-{idx}"),
-                is_error: false,
+            is_error: false,
+                content: vec![],
+                details: None,
             },
         );
     }

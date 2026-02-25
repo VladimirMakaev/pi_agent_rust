@@ -1,3 +1,5 @@
+mod common;
+
 #[cfg(test)]
 mod tests {
     use pi::tools::{EditTool, Tool};
@@ -5,7 +7,7 @@ mod tests {
 
     #[test]
     fn repro_edit_off_by_one_on_subsequent_lines() {
-        run_async( async {
+        super::common::run_async( async {
             let dir = tempfile::tempdir().unwrap();
             let file_path = dir.path().join("test.txt");
 

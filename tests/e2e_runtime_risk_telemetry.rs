@@ -109,6 +109,7 @@ fn e2e_runtime_hostcall_telemetry_logs_required_fields() {
                 context: None,
             };
             let _ = dispatch_host_call_shared(&ctx, call).await;
+            }
         });
 
     let telemetry = manager.runtime_hostcall_telemetry_artifact();

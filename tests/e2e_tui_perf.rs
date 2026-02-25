@@ -50,11 +50,13 @@ use std::time::Instant;
 fn test_runtime_handle() -> tokio::runtime::Handle {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RT.get_or_init(|| {
-        tokio::runtime::Builder::current_thread()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("build tokio runtime")
     })
     .handle()
+    .clone()
 }
 
 struct DummyProvider;
@@ -142,7 +144,6 @@ fn build_perf_app(harness: &TestHarness, messages: Vec<ConversationMessage>) -> 
         vec![model_entry],
         Vec::new(),
         event_tx,
-        test_runtime_handle(),
         false,
         None,
         Some(KeyBindings::new()),
@@ -192,6 +193,7 @@ fn emit_perf_event(
     harness.log().info_ctx(event_type, test_name, |ctx| {
         for (k, v) in data.as_object().into_iter().flat_map(|m| m.iter()) {
             ctx.push((k.clone(), v.to_string()));
+            }
         });
 }
 
