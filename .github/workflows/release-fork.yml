@@ -63,6 +63,7 @@ jobs:
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             asset: pi-linux-arm64-musl
+            cargo_flags: "--no-default-features --features image-resize,clipboard,wasm-host,sqlite-sessions"
 
           # macOS
           - os: macos-15
@@ -127,7 +128,7 @@ jobs:
           key: release-${{ matrix.target }}
 
       - name: Build release binary
-        run: cargo build --release --bin pi --target "${{ matrix.target }}"
+        run: cargo build --release --bin pi --target "${{ matrix.target }}" ${{ matrix.cargo_flags }}
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
