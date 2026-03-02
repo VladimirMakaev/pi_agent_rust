@@ -18,6 +18,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::pin::Pin;
 
@@ -546,15 +547,21 @@ impl Provider for AnthropicProvider {
 // Stream State
 // ============================================================================
 
+/// Per-content-index state for a tool call being streamed.
+struct PendingToolCall {
+    id: Option<String>,
+    name: Option<String>,
+    json: String,
+}
+
 struct StreamState<S>
 where
     S: Stream<Item = std::result::Result<Vec<u8>, std::io::Error>> + Unpin,
 {
     event_source: SseStream<S>,
     partial: AssistantMessage,
-    current_tool_json: String,
-    current_tool_id: Option<String>,
-    current_tool_name: Option<String>,
+    /// Per-content-index state for tool calls being streamed.
+    tool_call_state: HashMap<usize, PendingToolCall>,
     done: bool,
     /// Consecutive WriteZero errors seen without a successful event in between.
     write_zero_count: usize,
@@ -587,9 +594,7 @@ where
                 error_message: None,
                 timestamp: chrono::Utc::now().timestamp_millis(),
             },
-            current_tool_json: String::new(),
-            current_tool_id: None,
-            current_tool_name: None,
+            tool_call_state: HashMap::new(),
             done: false,
             write_zero_count: 0,
         }
@@ -673,13 +678,18 @@ where
                 StreamEvent::ThinkingStart { content_index }
             }
             AnthropicContentBlock::ToolUse { id, name } => {
-                self.current_tool_json.clear();
-                self.current_tool_id = id;
-                self.current_tool_name = name;
+                self.tool_call_state.insert(
+                    content_index,
+                    PendingToolCall {
+                        id: id.clone(),
+                        name: name.clone(),
+                        json: String::new(),
+                    },
+                );
                 self.partial.content.push(ContentBlock::ToolCall(ToolCall {
-                    id: self.current_tool_id.clone().unwrap_or_default(),
-                    name: self.current_tool_name.clone().unwrap_or_default(),
-                    arguments: serde_json::Value::Null,
+                    id: id.unwrap_or_default(),
+                    name: name.unwrap_or_default(),
+                    arguments: serde_json::Value::Object(Default::default()),
                     thought_signature: None,
                 }));
                 StreamEvent::ToolCallStart { content_index }
@@ -723,7 +733,9 @@ where
             }
             AnthropicDelta::InputJsonDelta { partial_json } => {
                 if let Some(partial_json) = partial_json {
-                    self.current_tool_json.push_str(&partial_json);
+                    if let Some(pending) = self.tool_call_state.get_mut(&idx) {
+                        pending.json.push_str(&partial_json);
+                    }
                     Some(StreamEvent::ToolCallDelta {
                         content_index: idx,
                         delta: partial_json,
@@ -769,26 +781,38 @@ where
                 })
             }
             Some(ContentBlock::ToolCall(tc)) => {
+                let pending = self.tool_call_state.remove(&idx);
+                let (pending_id, pending_name, pending_json) = match pending {
+                    Some(p) => (
+                        p.id.unwrap_or_default(),
+                        p.name.unwrap_or_default(),
+                        p.json,
+                    ),
+                    None => (
+                        tc.id.clone(),
+                        tc.name.clone(),
+                        String::new(),
+                    ),
+                };
                 let arguments: serde_json::Value =
-                    match serde_json::from_str(&self.current_tool_json) {
+                    match serde_json::from_str(&pending_json) {
                         Ok(args) => args,
                         Err(e) => {
                             tracing::warn!(
                                 error = %e,
-                                raw = %self.current_tool_json,
+                                raw = %pending_json,
                                 "Failed to parse tool arguments as JSON"
                             );
-                            serde_json::Value::Null
+                            serde_json::Value::Object(Default::default())
                         }
                     };
                 let tool_call = ToolCall {
-                    id: self.current_tool_id.take().unwrap_or_default(),
-                    name: self.current_tool_name.take().unwrap_or_default(),
+                    id: pending_id,
+                    name: pending_name,
                     arguments: arguments.clone(),
                     thought_signature: None,
                 };
                 tc.arguments = arguments;
-                self.current_tool_json.clear();
 
                 Some(StreamEvent::ToolCallEnd {
                     content_index: idx,
@@ -1098,11 +1122,20 @@ fn convert_user_content(content: &UserContent) -> Vec<AnthropicContent<'_>> {
 fn convert_content_block_to_anthropic(block: &ContentBlock) -> Option<AnthropicContent<'_>> {
     match block {
         ContentBlock::Text(t) => Some(AnthropicContent::Text { text: &t.text }),
-        ContentBlock::ToolCall(tc) => Some(AnthropicContent::ToolUse {
-            id: &tc.id,
-            name: &tc.name,
-            input: &tc.arguments,
-        }),
+        ContentBlock::ToolCall(tc) => {
+            static EMPTY_OBJ: std::sync::LazyLock<serde_json::Value> =
+                std::sync::LazyLock::new(|| serde_json::Value::Object(Default::default()));
+            let input = if tc.arguments.is_null() {
+                &*EMPTY_OBJ
+            } else {
+                &tc.arguments
+            };
+            Some(AnthropicContent::ToolUse {
+                id: &tc.id,
+                name: &tc.name,
+                input,
+            })
+        }
         // Thinking blocks must be echoed back with their signature for
         // multi-turn extended thinking.  Skip blocks without a signature
         // (the API would reject them).
@@ -2222,6 +2255,198 @@ mod tests {
             !captured.headers.contains_key("x-custom-tag"),
             "No custom headers should be present with compat=None"
         );
+    }
+
+    // ========================================================================
+    // Regression: parallel tool calls produce correct per-call state
+    // ========================================================================
+
+    #[test]
+    fn test_parallel_tool_calls_produce_correct_id_name_arguments() {
+        // Simulate two tool_use blocks streamed in parallel (interleaved deltas).
+        // The per-index HashMap must keep them separate.
+        let events = vec![
+            json!({
+                "type": "message_start",
+                "message": { "usage": { "input_tokens": 10 } }
+            }),
+            // Tool A at index 0
+            json!({
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": { "type": "tool_use", "id": "call_A", "name": "read" }
+            }),
+            // Tool B at index 1
+            json!({
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": { "type": "tool_use", "id": "call_B", "name": "write" }
+            }),
+            // Interleaved deltas — A, B, A, B
+            json!({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": { "type": "input_json_delta", "partial_json": "{\"path\":" }
+            }),
+            json!({
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": { "type": "input_json_delta", "partial_json": "{\"file\":" }
+            }),
+            json!({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": { "type": "input_json_delta", "partial_json": "\"a.txt\"}" }
+            }),
+            json!({
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": { "type": "input_json_delta", "partial_json": "\"b.txt\"}" }
+            }),
+            // Stop in order
+            json!({ "type": "content_block_stop", "index": 0 }),
+            json!({ "type": "content_block_stop", "index": 1 }),
+            json!({
+                "type": "message_delta",
+                "delta": { "stop_reason": "tool_use" },
+                "usage": { "output_tokens": 4 }
+            }),
+            json!({ "type": "message_stop" }),
+        ];
+
+        let out = collect_events(&events);
+
+        // Extract the two ToolCallEnd events
+        let tool_ends: Vec<&ToolCall> = out
+            .iter()
+            .filter_map(|ev| match ev {
+                StreamEvent::ToolCallEnd { tool_call, .. } => Some(tool_call),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(tool_ends.len(), 2, "expected two ToolCallEnd events");
+
+        // Tool A
+        assert_eq!(tool_ends[0].id, "call_A");
+        assert_eq!(tool_ends[0].name, "read");
+        assert_eq!(tool_ends[0].arguments, json!({"path": "a.txt"}));
+
+        // Tool B
+        assert_eq!(tool_ends[1].id, "call_B");
+        assert_eq!(tool_ends[1].name, "write");
+        assert_eq!(tool_ends[1].arguments, json!({"file": "b.txt"}));
+
+        // Also verify the Done message carries both tool calls with correct arguments
+        if let Some(StreamEvent::Done { message, .. }) = out.last() {
+            let tool_calls: Vec<&ToolCall> = message
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::ToolCall(tc) => Some(tc),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(tool_calls.len(), 2);
+            assert_eq!(tool_calls[0].arguments, json!({"path": "a.txt"}));
+            assert_eq!(tool_calls[1].arguments, json!({"file": "b.txt"}));
+        } else {
+            panic!("expected Done as last event");
+        }
+    }
+
+    // ========================================================================
+    // Regression: null arguments are normalised to empty object
+    // ========================================================================
+
+    #[test]
+    fn test_convert_content_block_to_anthropic_null_arguments_becomes_empty_object() {
+        let block = ContentBlock::ToolCall(ToolCall {
+            id: "call_1".to_string(),
+            name: "bash".to_string(),
+            arguments: serde_json::Value::Null,
+            thought_signature: None,
+        });
+
+        let converted = convert_content_block_to_anthropic(&block);
+        match converted {
+            Some(AnthropicContent::ToolUse { input, .. }) => {
+                assert!(
+                    input.is_object(),
+                    "expected null arguments to be normalised to empty object, got {input}"
+                );
+                assert_eq!(*input, json!({}));
+            }
+            other => panic!(
+                "expected Some(AnthropicContent::ToolUse), got {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn test_convert_content_block_to_anthropic_valid_arguments_passed_through() {
+        let args = json!({"command": "ls"});
+        let block = ContentBlock::ToolCall(ToolCall {
+            id: "call_2".to_string(),
+            name: "bash".to_string(),
+            arguments: args.clone(),
+            thought_signature: None,
+        });
+
+        let converted = convert_content_block_to_anthropic(&block);
+        match converted {
+            Some(AnthropicContent::ToolUse { input, .. }) => {
+                assert_eq!(*input, args);
+            }
+            other => panic!(
+                "expected Some(AnthropicContent::ToolUse), got {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn test_tool_call_with_unparseable_json_uses_empty_object_fallback() {
+        // When the streamed JSON is malformed, handle_content_block_stop should
+        // fall back to an empty object, not Value::Null.
+        let events = vec![
+            json!({
+                "type": "message_start",
+                "message": { "usage": { "input_tokens": 1 } }
+            }),
+            json!({
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": { "type": "tool_use", "id": "call_bad", "name": "broken" }
+            }),
+            json!({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": { "type": "input_json_delta", "partial_json": "{not valid json" }
+            }),
+            json!({ "type": "content_block_stop", "index": 0 }),
+            json!({
+                "type": "message_delta",
+                "delta": { "stop_reason": "tool_use" },
+                "usage": { "output_tokens": 1 }
+            }),
+            json!({ "type": "message_stop" }),
+        ];
+
+        let out = collect_events(&events);
+
+        let tool_end = out.iter().find_map(|ev| match ev {
+            StreamEvent::ToolCallEnd { tool_call, .. } => Some(tool_call),
+            _ => None,
+        });
+        let tc = tool_end.expect("expected ToolCallEnd event");
+        assert_eq!(tc.id, "call_bad");
+        assert_eq!(tc.name, "broken");
+        assert!(
+            tc.arguments.is_object(),
+            "malformed JSON should fall back to empty object, got {}",
+            tc.arguments
+        );
+        assert_eq!(tc.arguments, json!({}));
     }
 
     // ========================================================================
