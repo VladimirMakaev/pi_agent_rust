@@ -128,7 +128,9 @@ jobs:
           key: release-${{ matrix.target }}
 
       - name: Build release binary
-        run: cargo build --release --bin pi --target "${{ matrix.target }}" ${{ matrix.cargo_flags }}
+        env:
+          CARGO_FLAGS: ${{ matrix.cargo_flags }}
+        run: cargo build --release --bin pi --target "${{ matrix.target }}" $CARGO_FLAGS
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
@@ -161,6 +163,7 @@ jobs:
   release:
     name: Create Release
     needs: [plan, build]
+    if: always() && needs.plan.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
