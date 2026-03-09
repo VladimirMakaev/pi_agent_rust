@@ -449,15 +449,13 @@ fn conversation_from_session(session: &Session) -> (Vec<ConversationMessage>, Us
             }
             SessionMessage::Custom {
                 content, display, ..
-            } => {
-                if *display {
-                    messages.push(ConversationMessage {
-                        role: MessageRole::System,
-                        content: content.clone(),
-                        thinking: None,
-                        collapsed: false,
-                    });
-                }
+            } if *display => {
+                messages.push(ConversationMessage {
+                    role: MessageRole::System,
+                    content: content.clone(),
+                    thinking: None,
+                    collapsed: false,
+                });
             }
             _ => {}
         }
