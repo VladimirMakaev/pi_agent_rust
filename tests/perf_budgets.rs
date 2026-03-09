@@ -786,9 +786,10 @@ fn evaluate_phase1_weighted_attribution_contract(
     let per_scale_len = per_scale.map_or(0, Vec::len);
     let global_ranking_len = global_ranking.map_or(0, Vec::len);
     match weighted_status {
-        Some("missing") => {
-            if valid_cell_count != 0 || per_scale_len != 0 || global_ranking_len != 0 {
-                failures.push(DataContractFailure {
+        Some("missing")
+            if (valid_cell_count != 0 || per_scale_len != 0 || global_ranking_len != 0) =>
+        {
+            failures.push(DataContractFailure {
                     contract_id: "invalid_weighted_bottleneck_attribution_contract".to_string(),
                     budget_name: None,
                     detail: format!(
@@ -799,11 +800,11 @@ fn evaluate_phase1_weighted_attribution_contract(
                         "When status=missing, set lineage.valid_cell_count=0 and emit empty per_scale/global_ranking arrays."
                             .to_string(),
                 });
-            }
         }
-        Some("computed") => {
-            if valid_cell_count == 0 || per_scale_len == 0 || global_ranking_len == 0 {
-                failures.push(DataContractFailure {
+        Some("computed")
+            if (valid_cell_count == 0 || per_scale_len == 0 || global_ranking_len == 0) =>
+        {
+            failures.push(DataContractFailure {
                     contract_id: "invalid_weighted_bottleneck_attribution_contract".to_string(),
                     budget_name: None,
                     detail: format!(
@@ -814,7 +815,6 @@ fn evaluate_phase1_weighted_attribution_contract(
                         "When status=computed, ensure lineage.valid_cell_count>0 with populated per_scale/global_ranking outputs."
                             .to_string(),
                 });
-            }
         }
         _ => {}
     }
