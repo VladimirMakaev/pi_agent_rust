@@ -18,7 +18,16 @@
 //! - [`sdk`] module
 
 #![forbid(unsafe_code)]
-#![allow(dead_code, clippy::unused_async, unused_attributes)]
+#![allow(unknown_lints)]
+#![allow(
+    dead_code,
+    clippy::unused_async,
+    unused_attributes,
+    clippy::collapsible_match,
+    clippy::suboptimal_flops,
+    clippy::useless_conversion,
+    clippy::unnecessary_trailing_comma
+)]
 #![cfg_attr(
     test,
     allow(
