@@ -14310,7 +14310,6 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
                         let configured_repair_mode = repair_mode;
                         let _repair_events = Arc::clone(&repair_events);
                         move |path: String| -> rquickjs::Result<String> {
-                            use std::io::Read;
                             const MAX_SYNC_READ_SIZE: u64 = 64 * 1024 * 1024; // 64MB hard limit
 
                             let workspace_root =
