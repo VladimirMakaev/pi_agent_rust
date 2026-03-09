@@ -27,7 +27,9 @@
         clippy::match_same_arms,
         clippy::uninlined_format_args,
         clippy::missing_const_for_fn,
-        clippy::collapsible_if
+        clippy::collapsible_if,
+        clippy::large_stack_frames,
+        clippy::large_stack_arrays
     )
 )]
 // Allow pedantic lints during early development - can tighten later

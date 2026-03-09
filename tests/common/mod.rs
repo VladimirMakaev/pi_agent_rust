@@ -22,6 +22,7 @@ pub mod mocks;
 #[allow(dead_code)]
 pub mod scenario_runner;
 #[cfg(unix)]
+#[allow(dead_code)]
 pub mod tmux;
 #[allow(dead_code)]
 pub mod transcript_diff;
