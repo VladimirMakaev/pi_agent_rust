@@ -14602,6 +14602,7 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
                                     }
                                 })?;
 
+                                #[allow(clippy::items_after_statements)]
                                 use std::io::Read as _;
                                 let mut reader = file.take(MAX_SYNC_READ_SIZE + 1);
                                 let mut buffer = Vec::new();
