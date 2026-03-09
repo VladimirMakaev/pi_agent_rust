@@ -14308,8 +14308,9 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
                         let process_cwd = process_cwd.clone();
                         let allowed_read_roots = Arc::clone(&allowed_read_roots);
                         let configured_repair_mode = repair_mode;
-                        let repair_events = Arc::clone(&repair_events);
+                        let _repair_events = Arc::clone(&repair_events);
                         move |path: String| -> rquickjs::Result<String> {
+                            use std::io::Read;
                             const MAX_SYNC_READ_SIZE: u64 = 64 * 1024 * 1024; // 64MB hard limit
 
                             let workspace_root =
@@ -14324,7 +14325,7 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
 
                             #[cfg(target_os = "linux")]
                             {
-                                use std::io::Read;
+                            use std::io::Read;
                                 use std::os::fd::AsRawFd;
 
                                 // Open first to get a handle, then verify the handle's path.
@@ -14580,7 +14581,6 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
                                     ));
                                 }
 
-                                use std::io::Read;
                                 let file = std::fs::File::open(&checked_path).map_err(|err| {
                                     // Handle missing asset logic for non-Linux if needed, but for now
                                     // standard error mapping is fine as the Linux block above handles
@@ -14615,7 +14615,7 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
                                 if buffer.len() as u64 > MAX_SYNC_READ_SIZE {
                                     return Err(rquickjs::Error::new_loading_message(
                                         &path,
-                                        format!("host read failed: file exceeds {} bytes", MAX_SYNC_READ_SIZE),
+                                        format!("host read failed: file exceeds {MAX_SYNC_READ_SIZE} bytes"),
                                     ));
                                 }
 
