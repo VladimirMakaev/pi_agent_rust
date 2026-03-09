@@ -595,7 +595,7 @@ fn test_scan_all_ts_entry_points() {
 
     eprintln!("=== Entry Point Scan Summary ===");
     eprintln!("Total TS files:  {}", results.len());
-    eprintln!("Entry points:    {entry_count} ({entry_high} high, {entry_medium} medium)",);
+    eprintln!("Entry points:    {entry_count} ({entry_high} high, {entry_medium} medium)");
     eprintln!("Sub-modules:     {sub_count}");
     eprintln!("Non-extensions:  {non_ext_count}");
     eprintln!("Unknown:         {unknown_count}");
