@@ -18,6 +18,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
+use serde_json::Map;
 use std::collections::HashMap;
 use std::fs;
 use std::pin::Pin;
@@ -689,7 +690,7 @@ where
                 self.partial.content.push(ContentBlock::ToolCall(ToolCall {
                     id: id.unwrap_or_default(),
                     name: name.unwrap_or_default(),
-                    arguments: serde_json::Value::Object(Default::default()),
+                    arguments: serde_json::Value::Object(Map::default()),
                     thought_signature: None,
                 }));
                 StreamEvent::ToolCallStart { content_index }
@@ -803,7 +804,7 @@ where
                                 raw = %pending_json,
                                 "Failed to parse tool arguments as JSON"
                             );
-                            serde_json::Value::Object(Default::default())
+                            serde_json::Value::Object(Map::default())
                         }
                     };
                 let tool_call = ToolCall {
@@ -1124,7 +1125,7 @@ fn convert_content_block_to_anthropic(block: &ContentBlock) -> Option<AnthropicC
         ContentBlock::Text(t) => Some(AnthropicContent::Text { text: &t.text }),
         ContentBlock::ToolCall(tc) => {
             static EMPTY_OBJ: std::sync::LazyLock<serde_json::Value> =
-                std::sync::LazyLock::new(|| serde_json::Value::Object(Default::default()));
+                std::sync::LazyLock::new(|| serde_json::Value::Object(Map::default()));
             let input = if tc.arguments.is_null() {
                 &*EMPTY_OBJ
             } else {

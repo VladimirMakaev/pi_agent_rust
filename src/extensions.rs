@@ -10045,6 +10045,7 @@ fn hash_path(path: &Path) -> String {
 }
 
 fn fs_op_read(params: &Value, path: &Path) -> std::result::Result<Value, HostCallError> {
+    use std::io::Read;
     let encoding = params
         .get("encoding")
         .and_then(Value::as_str)
@@ -10072,7 +10073,6 @@ fn fs_op_read(params: &Value, path: &Path) -> std::result::Result<Value, HostCal
         retryable: None,
     })?;
 
-    use std::io::Read;
     let mut bytes = Vec::new();
     file.take(crate::tools::READ_TOOL_MAX_BYTES.saturating_add(1))
         .read_to_end(&mut bytes)
