@@ -784,29 +784,20 @@ where
             Some(ContentBlock::ToolCall(tc)) => {
                 let pending = self.tool_call_state.remove(&idx);
                 let (pending_id, pending_name, pending_json) = match pending {
-                    Some(p) => (
-                        p.id.unwrap_or_default(),
-                        p.name.unwrap_or_default(),
-                        p.json,
-                    ),
-                    None => (
-                        tc.id.clone(),
-                        tc.name.clone(),
-                        String::new(),
-                    ),
+                    Some(p) => (p.id.unwrap_or_default(), p.name.unwrap_or_default(), p.json),
+                    None => (tc.id.clone(), tc.name.clone(), String::new()),
                 };
-                let arguments: serde_json::Value =
-                    match serde_json::from_str(&pending_json) {
-                        Ok(args) => args,
-                        Err(e) => {
-                            tracing::warn!(
-                                error = %e,
-                                raw = %pending_json,
-                                "Failed to parse tool arguments as JSON"
-                            );
-                            serde_json::Value::Object(Map::default())
-                        }
-                    };
+                let arguments: serde_json::Value = match serde_json::from_str(&pending_json) {
+                    Ok(args) => args,
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            raw = %pending_json,
+                            "Failed to parse tool arguments as JSON"
+                        );
+                        serde_json::Value::Object(Map::default())
+                    }
+                };
                 let tool_call = ToolCall {
                     id: pending_id,
                     name: pending_name,
@@ -2378,9 +2369,7 @@ mod tests {
                 );
                 assert_eq!(*input, json!({}));
             }
-            other => panic!(
-                "expected Some(AnthropicContent::ToolUse), got {other:?}"
-            ),
+            other => panic!("expected Some(AnthropicContent::ToolUse), got {other:?}"),
         }
     }
 
@@ -2399,9 +2388,7 @@ mod tests {
             Some(AnthropicContent::ToolUse { input, .. }) => {
                 assert_eq!(*input, args);
             }
-            other => panic!(
-                "expected Some(AnthropicContent::ToolUse), got {other:?}"
-            ),
+            other => panic!("expected Some(AnthropicContent::ToolUse), got {other:?}"),
         }
     }
 

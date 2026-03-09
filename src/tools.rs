@@ -5053,7 +5053,11 @@ impl Tool for HashlineEditTool {
                         idx
                     };
                     resolved.push(ResolvedEdit {
-                        op: if file_lines == [""] && edit.pos.is_none() { "replace" } else { "prepend" },
+                        op: if file_lines == [""] && edit.pos.is_none() {
+                            "replace"
+                        } else {
+                            "prepend"
+                        },
                         start: idx,
                         end: end_idx,
                         lines: replacement_lines,
@@ -5077,7 +5081,11 @@ impl Tool for HashlineEditTool {
                         idx
                     };
                     resolved.push(ResolvedEdit {
-                        op: if file_lines == [""] && edit.pos.is_none() { "replace" } else { "append" },
+                        op: if file_lines == [""] && edit.pos.is_none() {
+                            "replace"
+                        } else {
+                            "append"
+                        },
                         start: idx,
                         end: end_idx,
                         lines: replacement_lines,

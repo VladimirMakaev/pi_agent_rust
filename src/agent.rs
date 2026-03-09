@@ -5252,11 +5252,11 @@ impl AgentSession {
             })
             .await;
         self.extensions_is_streaming.store(false, Ordering::SeqCst);
-        
+
         // Persist any NEW messages (assistant/tools) generated before the agent stopped,
         // even if it stopped due to an error, skipping the user message we already saved.
         let persist_result = self.persist_new_messages(start_len + 1).await;
-        
+
         let result = result?;
         persist_result?;
         Ok(result)
@@ -5328,11 +5328,11 @@ impl AgentSession {
             })
             .await;
         self.extensions_is_streaming.store(false, Ordering::SeqCst);
-        
+
         // Persist any NEW messages (assistant/tools) generated before the agent stopped,
         // even if it stopped due to an error, skipping the user message we already saved.
         let persist_result = self.persist_new_messages(start_len + 1).await;
-        
+
         let result = result?;
         persist_result?;
         Ok(result)

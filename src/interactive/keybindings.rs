@@ -272,7 +272,10 @@ impl PiApp {
         // Resume terminal UI
         let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen);
         let _ = crossterm::terminal::enable_raw_mode();
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::Clear(crossterm::terminal::ClearType::All));
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::terminal::Clear(crossterm::terminal::ClearType::All)
+        );
 
         let status = status?;
 
