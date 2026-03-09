@@ -109,29 +109,23 @@ fn validate_fixture(path: &Path, value: &Value) -> Result<(), String> {
         let provider_id = value.pointer(&ptr("provider_id")).and_then(Value::as_str);
 
         match kind {
-            "event" => {
-                if event_name.is_none() {
-                    return Err(format!(
-                        "{}/event_name must be string for kind=event",
-                        ptr("")
-                    ));
-                }
+            "event" if event_name.is_none() => {
+                return Err(format!(
+                    "{}/event_name must be string for kind=event",
+                    ptr("")
+                ));
             }
-            "command" => {
-                if command_name.is_none() {
-                    return Err(format!(
-                        "{}/command_name must be string for kind=command",
-                        ptr("")
-                    ));
-                }
+            "command" if command_name.is_none() => {
+                return Err(format!(
+                    "{}/command_name must be string for kind=command",
+                    ptr("")
+                ));
             }
-            "provider" => {
-                if provider_id.is_none() {
-                    return Err(format!(
-                        "{}/provider_id must be string for kind=provider",
-                        ptr("")
-                    ));
-                }
+            "provider" if provider_id.is_none() => {
+                return Err(format!(
+                    "{}/provider_id must be string for kind=provider",
+                    ptr("")
+                ));
             }
             _ => {}
         }

@@ -1929,36 +1929,30 @@ fn validate_phase1_matrix_validation_record(record: &Value) -> Result<(), String
         let has_fail_reason = reason_set.contains(&fail_reason);
         let has_unverified_reason = reason_set.contains(&unverified_reason);
         match status {
-            "pass" => {
-                if has_fail_reason || has_unverified_reason {
-                    return Err(format!(
-                        "regression_guards.{guard_name} is pass but failure_or_gap_reasons includes {fail_reason} or {unverified_reason}"
-                    ));
-                }
+            "pass" if has_fail_reason || has_unverified_reason => {
+                return Err(format!(
+                    "regression_guards.{guard_name} is pass but failure_or_gap_reasons includes {fail_reason} or {unverified_reason}"
+                ));
             }
-            "fail" => {
-                if !has_fail_reason {
-                    return Err(format!(
-                        "regression_guards.{guard_name} is fail and failure_or_gap_reasons must include {fail_reason}"
-                    ));
-                }
-                if has_unverified_reason {
-                    return Err(format!(
-                        "regression_guards.{guard_name} is fail and failure_or_gap_reasons must not include {unverified_reason}"
-                    ));
-                }
+            "fail" if !has_fail_reason => {
+                return Err(format!(
+                    "regression_guards.{guard_name} is fail and failure_or_gap_reasons must include {fail_reason}"
+                ));
             }
-            "missing" => {
-                if !has_unverified_reason {
-                    return Err(format!(
-                        "regression_guards.{guard_name} is missing and failure_or_gap_reasons must include {unverified_reason}"
-                    ));
-                }
-                if has_fail_reason {
-                    return Err(format!(
-                        "regression_guards.{guard_name} is missing and failure_or_gap_reasons must not include {fail_reason}"
-                    ));
-                }
+            "fail" if has_fail_reason && has_unverified_reason => {
+                return Err(format!(
+                    "regression_guards.{guard_name} is fail and failure_or_gap_reasons must not include {unverified_reason}"
+                ));
+            }
+            "missing" if !has_unverified_reason => {
+                return Err(format!(
+                    "regression_guards.{guard_name} is missing and failure_or_gap_reasons must include {unverified_reason}"
+                ));
+            }
+            "missing" if has_fail_reason => {
+                return Err(format!(
+                    "regression_guards.{guard_name} is missing and failure_or_gap_reasons must not include {fail_reason}"
+                ));
             }
             _ => {}
         }

@@ -2663,7 +2663,7 @@ mod docs_runtime_consistency {
     ];
 
     fn load_doc(path: &str) -> serde_json::Value {
-        let full = format!("{}/{}", env!("CARGO_MANIFEST_DIR"), path,);
+        let full = format!("{}/{}", env!("CARGO_MANIFEST_DIR"), path);
         let content =
             std::fs::read_to_string(&full).unwrap_or_else(|e| panic!("Failed to read {full}: {e}"));
         serde_json::from_str(&content).unwrap_or_else(|e| panic!("Failed to parse {full}: {e}"))
