@@ -789,13 +789,13 @@ fn binary_size_check() {
         match binary_size_missing_release_outcome(strict_mode, &checked) {
             Ok(()) => {
                 harness.log().info("skip", "release binary not found");
-                eprintln!("[perf_regression] SKIP: release binary not found (checked: {checked})",);
+                eprintln!("[perf_regression] SKIP: release binary not found (checked: {checked})");
                 return;
             }
             Err(err) => {
                 harness.log().info(
                     "missing_release_binary",
-                    format!("strict_mode=true env={PI_PERF_STRICT_ENV} checked={checked}",),
+                    format!("strict_mode=true env={PI_PERF_STRICT_ENV} checked={checked}"),
                 );
                 assert!(!strict_mode, "{err}");
                 return;
