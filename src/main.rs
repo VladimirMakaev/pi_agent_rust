@@ -130,10 +130,8 @@ fn main_impl() -> Result<()> {
                 tag,
                 sort,
                 limit,
-            } => {
-                if handle_search_blocking(query, tag.as_deref(), sort, *limit)? {
-                    return Ok(());
-                }
+            } if handle_search_blocking(query, tag.as_deref(), sort, *limit)? => {
+                return Ok(());
             }
             cli::Commands::Doctor {
                 path,
