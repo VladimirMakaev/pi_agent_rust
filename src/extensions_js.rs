@@ -14518,6 +14518,7 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
 
                             #[cfg(not(target_os = "linux"))]
                             {
+                                use std::io::Read as _;
                                 let checked_path = std::fs::canonicalize(&requested_abs)
                                     .map(crate::extensions::strip_unc_prefix)
                                     .or_else(|err| {
@@ -14602,8 +14603,6 @@ impl<C: SchedulerClock + 'static> PiJsRuntime<C> {
                                     }
                                 })?;
 
-                                #[allow(clippy::items_after_statements)]
-                                use std::io::Read as _;
                                 let mut reader = file.take(MAX_SYNC_READ_SIZE + 1);
                                 let mut buffer = Vec::new();
                                 reader.read_to_end(&mut buffer).map_err(|err| {

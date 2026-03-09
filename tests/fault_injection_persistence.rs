@@ -1239,7 +1239,7 @@ fn fault_inject_large_session_scattered_corruption() {
         trace.log(
             "DIAGNOSTIC",
             "skipped_entry",
-            format!("line={}, error={}", skip.line_number, skip.error,),
+            format!("line={}, error={}", skip.line_number, skip.error),
         );
     }
 
