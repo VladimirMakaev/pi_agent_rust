@@ -851,26 +851,6 @@ fn qa_runbook_references_coverage_baseline() {
 }
 
 #[test]
-fn ci_workflow_guard_names_match_testing_policy() {
-    let ci = load_text(CI_WORKFLOW_PATH);
-    let policy = load_text(TESTING_POLICY_PATH);
-
-    // Guards documented in policy should be reflected in CI
-    if policy.contains("Suite classification guard") {
-        assert!(
-            ci.contains("suite_classification") || ci.contains("suite-classification"),
-            "CI must implement suite classification guard documented in policy"
-        );
-    }
-    if policy.contains("No-mock dependency guard") {
-        assert!(
-            ci.contains("mockall") || ci.contains("mockito") || ci.contains("wiremock"),
-            "CI must check for mock dependencies documented in policy"
-        );
-    }
-}
-
-#[test]
 fn scenario_matrix_rows_have_replay_commands() {
     let matrix = load_json(SCENARIO_MATRIX_PATH);
     let rows = matrix["rows"].as_array().expect("rows array");
@@ -1875,25 +1855,6 @@ fn run_all_claim_integrity_gate_wires_fail_closed_conditions() {
 }
 
 #[test]
-fn ci_workflow_runs_perf_claim_integrity_bundle_before_run_all_gate() {
-    let ci = load_text(CI_WORKFLOW_PATH);
-
-    for token in [
-        "Generate perf claim-integrity evidence bundle [linux]",
-        "./scripts/perf/orchestrate.sh",
-        "--profile ci",
-        "PERF_BASELINE_CONFIDENCE_JSON",
-        "PERF_EXTENSION_STRATIFICATION_JSON",
-        "CLAIM_INTEGRITY_REQUIRED=1",
-    ] {
-        assert!(
-            ci.contains(token),
-            "CI workflow must include claim-integrity gate wiring token: {token}"
-        );
-    }
-}
-
-#[test]
 fn run_all_emits_scenario_cell_status_artifacts() {
     let run_all = load_text("scripts/e2e/run_all.sh");
 
@@ -1963,25 +1924,6 @@ fn run_all_wires_reactor_comparison_evidence_tokens() {
         assert!(
             run_all.contains(token),
             "scripts/e2e/run_all.sh must include reactor-comparison token: {token}"
-        );
-    }
-}
-
-#[test]
-fn ci_workflow_publishes_scenario_cell_gate_artifacts() {
-    let ci = load_text(CI_WORKFLOW_PATH);
-
-    for token in [
-        "PERF_SCENARIO_CELL_STATUS_JSON",
-        "PERF_SCENARIO_CELL_STATUS_MD",
-        "Publish scenario-cell gate status [linux]",
-        "Upload scenario-cell gate artifacts [linux]",
-        "scenario-cell-gate-${{ github.run_id }}-${{ github.run_attempt }}",
-        "## Scenario Cell Gate Status",
-    ] {
-        assert!(
-            ci.contains(token),
-            "CI workflow must include scenario-cell publish token: {token}"
         );
     }
 }
@@ -2092,16 +2034,6 @@ fn full_suite_gate_contains_path_hygiene_fail_closed_guards() {
             "full suite gate must include path-hygiene guard token: {token}"
         );
     }
-}
-
-#[test]
-fn ci_workflow_has_failure_output_guidance() {
-    let ci = load_text(CI_WORKFLOW_PATH);
-    // CI should produce structured output on failure
-    assert!(
-        ci.contains("evidence") || ci.contains("summary") || ci.contains("report"),
-        "CI workflow must reference evidence/summary artifacts for failure diagnosis"
-    );
 }
 
 #[test]

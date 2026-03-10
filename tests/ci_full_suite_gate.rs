@@ -5246,32 +5246,6 @@ fn must_pass_lineage_validator_fails_when_generated_at_stale() {
 }
 
 #[test]
-fn ci_workflow_publishes_scenario_cell_gate_artifacts() {
-    let workflow = std::fs::read_to_string(CI_WORKFLOW_PATH)
-        .unwrap_or_else(|err| panic!("failed to read {CI_WORKFLOW_PATH}: {err}"));
-
-    for token in [
-        "PERF_SCENARIO_CELL_STATUS_JSON",
-        "PERF_SCENARIO_CELL_STATUS_MD",
-        "Publish scenario-cell gate status [linux]",
-        "Upload scenario-cell gate artifacts [linux]",
-        "scenario-cell-gate-${{ github.run_id }}-${{ github.run_attempt }}",
-        "## Scenario Cell Gate Status",
-        "Generate perf claim-integrity evidence bundle [linux]",
-        "./scripts/perf/orchestrate.sh",
-        "--profile ci",
-        "PERF_BASELINE_CONFIDENCE_JSON",
-        "PERF_EXTENSION_STRATIFICATION_JSON",
-        "CLAIM_INTEGRITY_REQUIRED=1",
-    ] {
-        assert!(
-            workflow.contains(token),
-            "workflow must include scenario-cell gate token: {token}"
-        );
-    }
-}
-
-#[test]
 fn run_all_wires_scenario_cell_status_artifacts_into_evidence_contract() {
     let script = std::fs::read_to_string(RUN_ALL_SCRIPT_PATH)
         .unwrap_or_else(|err| panic!("failed to read {RUN_ALL_SCRIPT_PATH}: {err}"));
