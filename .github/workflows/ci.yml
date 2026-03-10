@@ -73,9 +73,12 @@ jobs:
           components: clippy, rustfmt
 
       - name: Configure sccache
+        id: sccache
         uses: mozilla-actions/sccache-action@v0.0.7
+        continue-on-error: true
 
       - name: Set sccache env
+        if: steps.sccache.outcome == 'success'
         run: |
           echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
           echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
@@ -90,6 +93,7 @@ jobs:
         run: cargo test --all-targets
 
       - name: Show sccache stats
+        if: steps.sccache.outcome == 'success'
         run: sccache -s
 
   notify:
