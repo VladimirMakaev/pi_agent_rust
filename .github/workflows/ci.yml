@@ -65,7 +65,7 @@ jobs:
 
       - name: Install system deps (macOS)
         if: runner.os == 'macOS'
-        run: brew install ripgrep fd
+        run: brew install ripgrep fd bash
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
