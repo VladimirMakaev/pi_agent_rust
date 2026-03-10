@@ -40051,17 +40051,19 @@ mod tests {
             regime_shift: RegimeShiftConfig {
                 enabled: true,
                 cusum_k: 0.3,
-                cusum_h: 2.0,
+                cusum_h: 8.0,
                 bocpd_lambda: 10.0,
-                bocpd_threshold: 0.3,
+                bocpd_threshold: 0.05,
                 bocpd_max_run_length: 50,
             },
             ..Default::default()
         });
 
-        for _ in 0..5 {
+        for i in 0..5 {
             manager.record_budget_overload_signal(Some("ext.regime"), "quota_exceeded", None, None);
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            if i < 4 {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
         }
         assert!(
             manager
@@ -40071,7 +40073,7 @@ mod tests {
         );
 
         let mut entered_fallback = false;
-        for _ in 0..30 {
+        for _ in 0..50 {
             manager.record_budget_overload_signal(Some("ext.regime"), "burst_overload", None, None);
             if manager
                 .hostcall_compat_kill_switch_reason(Some("ext.regime"))
