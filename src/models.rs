@@ -860,8 +860,29 @@ fn built_in_models(auth: &AuthStorage, mode: ModelRegistryLoadMode) -> Vec<Model
             provider.to_ascii_lowercase(),
             normalized_model_id.to_ascii_lowercase()
         );
-        if !seen.insert(dedupe_key) {
-            continue;
+        if !seen.insert(dedupe_key.clone()) {
+            // Prefer the entry whose original ID already matches the canonical
+            // form (e.g. prefer "openrouter/auto" over "auto" when both
+            // canonicalize to "openrouter/auto").
+            let original_is_canonical = legacy.id.trim().eq_ignore_ascii_case(&normalized_model_id);
+            if original_is_canonical {
+                // Replace the earlier (alias) entry with this canonical one.
+                if let Some(pos) = models.iter().position(|e: &ModelEntry| {
+                    let k = format!(
+                        "{}::{}",
+                        e.model.provider.to_ascii_lowercase(),
+                        e.model.id.to_ascii_lowercase()
+                    );
+                    k == dedupe_key
+                }) {
+                    models.remove(pos);
+                    // Fall through to insert the canonical entry below.
+                } else {
+                    continue;
+                }
+            } else {
+                continue;
+            }
         }
 
         let routing_defaults = provider_routing_defaults(provider);
