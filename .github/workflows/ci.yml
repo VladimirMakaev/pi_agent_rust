@@ -28,8 +28,6 @@ jobs:
     timeout-minutes: 45
     env:
       RUST_BACKTRACE: "1"
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: "sccache"
     steps:
       - name: Free disk space (Linux)
         if: runner.os == 'Linux'
@@ -84,19 +82,24 @@ jobs:
         if: steps.sccache.outcome == 'success'
         continue-on-error: true
         run: |
-          if sccache -s >/dev/null 2>&1; then
+          export SCCACHE_GHA_ENABLED=true
+          if sccache --start-server 2>/dev/null && sccache -s >/dev/null 2>&1; then
             echo "sccache is healthy"
           else
             echo "sccache server failed to start"
             exit 1
           fi
 
-      - name: Disable sccache on failure
-        if: steps.sccache.outcome != 'success' || steps.sccache-check.outcome != 'success'
+      - name: Enable sccache
+        if: steps.sccache-check.outcome == 'success'
         run: |
-          echo "RUSTC_WRAPPER=" >> $GITHUB_ENV
-          echo "SCCACHE_GHA_ENABLED=" >> $GITHUB_ENV
-          echo "⚠️ sccache unavailable, building without cache"
+          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+          echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
+          echo "✅ sccache enabled"
+
+      - name: Sccache unavailable
+        if: steps.sccache-check.outcome != 'success'
+        run: echo "⚠️ sccache unavailable, building without cache"
 
       - name: Check formatting
         run: cargo fmt --check
