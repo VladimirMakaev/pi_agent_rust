@@ -28,6 +28,8 @@ jobs:
     timeout-minutes: 45
     env:
       RUST_BACKTRACE: "1"
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
     steps:
       - name: Free disk space (Linux)
         if: runner.os == 'Linux'
@@ -101,6 +103,9 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
+
+      - name: Clean build artifacts (save disk for tests)
+        run: cargo clean
 
       - name: Run tests
         run: cargo test --all-targets
