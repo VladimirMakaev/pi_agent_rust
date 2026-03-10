@@ -37,17 +37,18 @@ jobs:
           MODELS_TS="legacy_pi_mono_code/pi-mono/packages/ai/src/models.generated.ts"
           if [ ! -f "$MODELS_TS" ]; then
             mkdir -p "$(dirname "$MODELS_TS")"
-            cat > "$MODELS_TS" <<'STUB'
-          // Stub — the real file lives in the pi-mono submodule.
-          export const MODELS = {} as const;
-          STUB
+            cp test-fixtures/models.generated.ts "$MODELS_TS"
           fi
 
       - name: Install system deps (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+          sudo apt-get install -y libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev ripgrep fd-find
+
+      - name: Install system deps (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ripgrep fd
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
