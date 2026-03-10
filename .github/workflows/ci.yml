@@ -178,7 +178,12 @@ jobs:
           echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
           echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
 
+      - name: Check disk space
+        run: df -h /
+
       - name: Run tests
+        env:
+          CARGO_BUILD_JOBS: "4"
         run: cargo test --all-targets
 
   notify:
