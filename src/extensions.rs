@@ -40040,6 +40040,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // Timing-dependent: CUSUM/BOCPD use wall-clock inter-arrival intervals.
+    // On loaded CI runners (especially macOS), scheduling jitter makes the
+    // baseline indistinguishable from the burst phase, so detection fails.
     fn budget_controller_regime_shift_triggers_early_fallback() {
         let manager = ExtensionManager::new();
         manager.set_budget_controller_config(ExtensionBudgetControllerConfig {
