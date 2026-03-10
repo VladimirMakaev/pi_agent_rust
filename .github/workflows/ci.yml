@@ -77,11 +77,24 @@ jobs:
         uses: mozilla-actions/sccache-action@v0.0.7
         continue-on-error: true
 
-      - name: Set sccache env
+      - name: Verify sccache works
+        id: sccache-check
         if: steps.sccache.outcome == 'success'
+        continue-on-error: true
         run: |
-          echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
-          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+          if sccache -s >/dev/null 2>&1; then
+            echo "sccache is healthy"
+          else
+            echo "sccache server failed to start"
+            exit 1
+          fi
+
+      - name: Disable sccache on failure
+        if: steps.sccache.outcome != 'success' || steps.sccache-check.outcome != 'success'
+        run: |
+          echo "RUSTC_WRAPPER=" >> $GITHUB_ENV
+          echo "SCCACHE_GHA_ENABLED=" >> $GITHUB_ENV
+          echo "⚠️ sccache unavailable, building without cache"
 
       - name: Check formatting
         run: cargo fmt --check
@@ -93,7 +106,7 @@ jobs:
         run: cargo test --all-targets
 
       - name: Show sccache stats
-        if: steps.sccache.outcome == 'success'
+        if: steps.sccache-check.outcome == 'success'
         run: sccache -s
 
   notify:
