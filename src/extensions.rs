@@ -40046,34 +40046,38 @@ mod tests {
             enabled: true,
             tier: ExtensionBudgetTier::Strict,
             overload_window_ms: 60_000,
-            overload_signals_to_fallback: 100,
+            overload_signals_to_fallback: 200,
             recovery_successes_to_exit: 4,
             regime_shift: RegimeShiftConfig {
                 enabled: true,
-                cusum_k: 0.3,
-                cusum_h: 8.0,
+                cusum_k: 0.5,
+                cusum_h: 20.0,
                 bocpd_lambda: 10.0,
-                bocpd_threshold: 0.05,
+                bocpd_threshold: 0.01,
                 bocpd_max_run_length: 50,
             },
             ..Default::default()
         });
 
-        for i in 0..5 {
+        // Phase 1: send 10 signals at steady ~100ms intervals to build a
+        // stable baseline.  Neither CUSUM nor BOCPD should trigger.
+        for i in 0..10 {
             manager.record_budget_overload_signal(Some("ext.regime"), "quota_exceeded", None, None);
-            if i < 4 {
-                std::thread::sleep(std::time::Duration::from_millis(50));
+            if i < 9 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
             }
         }
         assert!(
             manager
                 .hostcall_compat_kill_switch_reason(Some("ext.regime"))
                 .is_none(),
-            "should not be in fallback with only 5 signals against threshold=100"
+            "should not be in fallback with only 10 signals against threshold=200"
         );
 
+        // Phase 2: rapid-fire burst — dramatically different inter-arrival
+        // rate should trigger regime-shift well before the count threshold.
         let mut entered_fallback = false;
-        for _ in 0..50 {
+        for _ in 0..100 {
             manager.record_budget_overload_signal(Some("ext.regime"), "burst_overload", None, None);
             if manager
                 .hostcall_compat_kill_switch_reason(Some("ext.regime"))

@@ -1719,6 +1719,11 @@ mod tests {
             .collect();
 
         let mut mismatches = Vec::new();
+        // Track which canonical keys we've already checked — when multiple
+        // legacy entries map to the same canonical key (e.g. "auto" and
+        // "openrouter/auto"), only the first one's name survives dedup in
+        // `built_in_models`, so we must only check the first occurrence.
+        let mut checked_keys = HashSet::new();
         for legacy in legacy_generated_models() {
             let normalized_id = canonicalize_model_id_for_provider(&legacy.provider, &legacy.id);
             if normalized_id.is_empty() {
@@ -1728,6 +1733,10 @@ mod tests {
                 legacy.provider.to_ascii_lowercase(),
                 normalized_id.to_ascii_lowercase(),
             );
+            if !checked_keys.insert(key.clone()) {
+                // Already checked this canonical key via an earlier alias.
+                continue;
+            }
             let Some(built_name) = name_by_key.get(&key) else {
                 continue;
             };
